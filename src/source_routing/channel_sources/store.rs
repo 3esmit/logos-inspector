@@ -36,6 +36,7 @@ use super::probe::{
 
 const SETTINGS_VERSION: u64 = 2;
 const CHANNEL_SOURCE_CONFIGS_KEY: &str = "channel_source_configs";
+const TESTNET_DEFAULT_SCOPES_KEY: &str = "testnet_default_scopes";
 const SOURCE_ID_GENERATION_ATTEMPTS: usize = 8;
 
 pub(crate) type ChannelSourceConfigMutationFuture =
@@ -56,6 +57,13 @@ pub(crate) struct ChannelSourceConfigApplyOutcome {
 
 pub(crate) trait ChannelSourceConfigMutationInterface: Send + Sync + 'static {
     fn load(&self) -> Result<Vec<ChannelSourceConfig>>;
+
+    fn ensure_testnet_defaults(
+        &self,
+        _network_scope: NetworkScope,
+    ) -> Result<Vec<ChannelSourceConfig>> {
+        self.load()
+    }
 
     fn apply(
         self: Arc<Self>,
@@ -161,6 +169,13 @@ impl ChannelSourceConfigMutationInterface for SettingsChannelSourceConfigMutatio
         Ok(store.load_document_locked(&guard)?.channel_source_configs)
     }
 
+    fn ensure_testnet_defaults(
+        &self,
+        network_scope: NetworkScope,
+    ) -> Result<Vec<ChannelSourceConfig>> {
+        self.store()?.ensure_testnet_defaults(network_scope)
+    }
+
     fn apply(
         self: Arc<Self>,
         request: ChannelSourceConfigApplyRequest,
@@ -202,6 +217,10 @@ pub(crate) fn load_settings_state() -> Result<Value> {
 
 pub(crate) fn save_user_settings_state(state: &Value) -> Result<Value> {
     SettingsStore::new(settings_state_path()?).save_user_settings(state)
+}
+
+pub(crate) fn restore_default_settings_state() -> Result<Value> {
+    SettingsStore::new(settings_state_path()?).restore_defaults()
 }
 
 pub(crate) fn settings_state_from_stored(stored: &StoredBytes) -> Result<Value> {
@@ -246,13 +265,81 @@ impl SettingsStore {
     fn save_user_settings(&self, state: &Value) -> Result<Value> {
         let mut guard = settings_guard(&self.path)?;
         let current = self.load_document_locked(&guard)?;
-        let incoming = SettingsDocument::from_user_value(state.clone())?;
+        let mut incoming = SettingsDocument::from_user_value(state.clone())?;
+        if let Some(scopes) = current.fields.get(TESTNET_DEFAULT_SCOPES_KEY) {
+            incoming
+                .fields
+                .insert(TESTNET_DEFAULT_SCOPES_KEY.to_owned(), scopes.clone());
+        }
         let document = SettingsDocument {
             fields: incoming.fields,
             channel_source_configs: current.channel_source_configs,
         };
         let durability = self.write_document_locked(&mut guard, &document)?;
         Ok(saved_report(&self.path, durability))
+    }
+
+    fn restore_defaults(&self) -> Result<Value> {
+        let mut guard = settings_guard(&self.path)?;
+        let document = SettingsDocument::default();
+        self.write_document_locked(&mut guard, &document)?;
+        document.into_value()
+    }
+
+    fn ensure_testnet_defaults(
+        &self,
+        network_scope: NetworkScope,
+    ) -> Result<Vec<ChannelSourceConfig>> {
+        let mut guard = settings_guard(&self.path)?;
+        let mut document = self.load_document_locked(&guard)?;
+        let network_scope = normalize_network_scope(network_scope)?;
+        let mut applied_scopes = testnet_default_scopes(&document.fields)?;
+        if applied_scopes.contains(&network_scope) {
+            return Ok(document.channel_source_configs);
+        }
+
+        let channel_id = normalize_channel_id(crate::testnet::LOGOS_TESTNET_CHANNEL_ID)?;
+        let exists = document
+            .channel_source_configs
+            .iter()
+            .any(|config| config.network_scope == network_scope && config.channel_id == channel_id);
+        if !exists {
+            let mut source_ids = configured_source_ids(&document.channel_source_configs);
+            let sequencer_source_id = fresh_source_id(&mut source_ids)?;
+            let indexer_source_id = fresh_source_id(&mut source_ids)?;
+            document.channel_source_configs.push(
+                ChannelSourceConfig {
+                    network_scope: network_scope.clone(),
+                    channel_id,
+                    config_revision: 1,
+                    sequencer_sources: vec![ConfiguredSequencerSource {
+                        source_id: sequencer_source_id.clone(),
+                        label: Some("Logos Execution Zone Testnet".to_owned()),
+                        target: ChannelSourceTarget::Rpc {
+                            endpoint: crate::testnet::LEZ_TESTNET_SEQUENCER_ENDPOINT.to_owned(),
+                        },
+                        channel_attestation: PersistedSequencerAttestation::Pending,
+                    }],
+                    selected_sequencer_source_id: Some(sequencer_source_id),
+                    indexer_source: Some(ConfiguredIndexerSource {
+                        source_id: indexer_source_id,
+                        label: Some("Local Testnet Indexer".to_owned()),
+                        target: ChannelSourceTarget::Rpc {
+                            endpoint: crate::testnet::LOCAL_INDEXER_ENDPOINT.to_owned(),
+                        },
+                    }),
+                }
+                .normalized()?,
+            );
+        }
+        applied_scopes.push(network_scope);
+        document.fields.insert(
+            TESTNET_DEFAULT_SCOPES_KEY.to_owned(),
+            serde_json::to_value(applied_scopes)
+                .context("failed to serialize Testnet default scopes")?,
+        );
+        self.write_document_locked(&mut guard, &document)?;
+        Ok(document.channel_source_configs)
     }
 
     #[cfg(test)]
@@ -651,6 +738,7 @@ impl SettingsDocument {
         settings_version(fields.get("version"))?;
         fields.remove("version");
         fields.remove(CHANNEL_SOURCE_CONFIGS_KEY);
+        fields.remove(TESTNET_DEFAULT_SCOPES_KEY);
         Ok(Self {
             fields,
             channel_source_configs: Vec::new(),
@@ -694,9 +782,62 @@ impl SettingsDocument {
     }
 }
 
+fn testnet_default_scopes(fields: &Map<String, Value>) -> Result<Vec<NetworkScope>> {
+    let raw = fields
+        .get(TESTNET_DEFAULT_SCOPES_KEY)
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let stored: Vec<NetworkScope> =
+        serde_json::from_value(raw).context("Testnet default scope list is invalid")?;
+    let mut normalized = Vec::with_capacity(stored.len());
+    for scope in stored {
+        let scope = normalize_network_scope(scope)?;
+        if !normalized.contains(&scope) {
+            normalized.push(scope);
+        }
+    }
+    Ok(normalized)
+}
+
 impl Default for SettingsDocument {
     fn default() -> Self {
         let fields = json!({
+            "network_profile": "default",
+            "node_url": crate::testnet::LOCAL_BEDROCK_ENDPOINT,
+            "network_connector_config": {
+                "scopes": {
+                    "l1": {
+                        "connector_id": "direct_l1_rpc",
+                        "provenance": "testnet_default"
+                    },
+                    "delivery": {
+                        "connector_id": "logoscore_cli_delivery_module",
+                        "provenance": "testnet_default"
+                    },
+                    "storage": {
+                        "connector_id": "logoscore_cli_storage_module",
+                        "provenance": "testnet_default"
+                    }
+                }
+            },
+            "messaging_rest_url": "http://127.0.0.1:8645",
+            "messaging_metrics_url": "http://127.0.0.1:8008/metrics",
+            "messaging_network_preset": crate::testnet::LOGOS_TESTNET_PRESET,
+            "messaging_rolling_window": 120,
+            "messaging_admin_rest_enabled": false,
+            "messaging_mutating_diagnostics_enabled": false,
+            "storage_rest_url": "http://127.0.0.1:8080/api/storage/v1",
+            "storage_metrics_url": "http://127.0.0.1:8008/metrics",
+            "storage_network_preset": crate::testnet::LOGOS_TESTNET_PRESET,
+            "storage_data_dir": "",
+            "storage_cid_probe": "",
+            "storage_rolling_window": 120,
+            "storage_local_diagnostics_enabled": false,
+            "storage_privileged_debug_enabled": false,
+            "storage_mutating_diagnostics_enabled": false,
+            "local_nodes_enabled": true,
+            "local_devnet_enabled": false,
+            "settings_backup_encrypted": false,
             "blockchain_refresh_rate": 30,
             "messaging_refresh_rate": 30,
             "storage_refresh_rate": 30,
@@ -707,7 +848,10 @@ impl Default for SettingsDocument {
             "shared_idl_policy": "suggestion",
             "shared_idl_auto_share": false,
             "social_auto_shared_idls": {},
-            "favorites": []
+            "favorites": [],
+            "footer_fields": {},
+            "dashboard_graphs": {},
+            "testnet_default_scopes": []
         })
         .as_object()
         .cloned()
@@ -1051,6 +1195,12 @@ mod tests {
         let settings = store.load()?;
 
         if settings.get("version").and_then(Value::as_u64) != Some(SETTINGS_VERSION)
+            || settings.get("network_profile").and_then(Value::as_str) != Some("default")
+            || settings.get("local_nodes_enabled").and_then(Value::as_bool) != Some(true)
+            || settings
+                .pointer("/network_connector_config/scopes/l1/connector_id")
+                .and_then(Value::as_str)
+                != Some("direct_l1_rpc")
             || settings
                 .get(CHANNEL_SOURCE_CONFIGS_KEY)
                 .and_then(Value::as_array)
@@ -1067,6 +1217,123 @@ mod tests {
             if settings.get(legacy_key).is_some() {
                 bail!("fresh settings expose legacy key `{legacy_key}`: {settings}");
             }
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[test]
+    fn verified_testnet_channel_materializes_local_indexer_and_remote_sequencer_once() -> Result<()>
+    {
+        let (directory, store) = test_store("testnet-default-sources")?;
+        let scope = network_scope('b');
+
+        let first = store.ensure_testnet_defaults(scope.clone())?;
+        let second = store.ensure_testnet_defaults(scope.clone())?;
+        let config = first
+            .iter()
+            .find(|config| {
+                config.network_scope == scope
+                    && config.channel_id == crate::testnet::LOGOS_TESTNET_CHANNEL_ID
+            })
+            .context("missing Testnet Channel source config")?;
+        let sequencer = config
+            .sequencer_sources
+            .first()
+            .context("missing Testnet Sequencer source")?;
+        if first != second
+            || config.config_revision != 1
+            || config.selected_sequencer_source_id.as_deref() != Some(sequencer.source_id.as_str())
+            || sequencer.target
+                != (ChannelSourceTarget::Rpc {
+                    endpoint: crate::testnet::LEZ_TESTNET_SEQUENCER_ENDPOINT.to_owned(),
+                })
+            || sequencer.channel_attestation != PersistedSequencerAttestation::Pending
+            || config.indexer_source.as_ref().map(|source| &source.target)
+                != Some(&ChannelSourceTarget::Rpc {
+                    endpoint: crate::testnet::LOCAL_INDEXER_ENDPOINT.to_owned(),
+                })
+        {
+            bail!("unexpected Testnet Channel defaults: {config:?}");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[test]
+    fn testnet_default_application_is_scoped_by_verified_network() -> Result<()> {
+        let (directory, store) = test_store("testnet-default-network-scopes")?;
+        let first_scope = network_scope('b');
+        let second_scope = network_scope('d');
+
+        store.ensure_testnet_defaults(first_scope.clone())?;
+        let configs = store.ensure_testnet_defaults(second_scope.clone())?;
+
+        for scope in [&first_scope, &second_scope] {
+            if !configs.iter().any(|config| {
+                &config.network_scope == scope
+                    && config.channel_id == crate::testnet::LOGOS_TESTNET_CHANNEL_ID
+            }) {
+                bail!("missing scope-qualified Testnet defaults for {scope:?}");
+            }
+        }
+        let settings = store.load()?;
+        let applied: Vec<NetworkScope> = serde_json::from_value(
+            settings
+                .get(TESTNET_DEFAULT_SCOPES_KEY)
+                .cloned()
+                .context("missing Testnet default scope marker")?,
+        )?;
+        if applied.len() != 2 {
+            bail!("Testnet defaults used a global marker: {applied:?}");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[test]
+    fn testnet_defaults_never_overwrite_existing_channel_row() -> Result<()> {
+        let (directory, store) = test_store("testnet-default-preserve")?;
+        let scope = network_scope('c');
+        let existing = ChannelSourceConfig {
+            network_scope: scope.clone(),
+            channel_id: crate::testnet::LOGOS_TESTNET_CHANNEL_ID.to_owned(),
+            config_revision: 7,
+            sequencer_sources: Vec::new(),
+            selected_sequencer_source_id: None,
+            indexer_source: None,
+        };
+        store.write_document_unlocked(&SettingsDocument {
+            channel_source_configs: vec![existing.clone()],
+            ..SettingsDocument::default()
+        })?;
+
+        let configs = store.ensure_testnet_defaults(scope)?;
+        if configs != [existing] {
+            bail!("Testnet defaults overwrote an existing Channel row: {configs:?}");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[test]
+    fn restore_defaults_replaces_only_settings_and_preserves_wallet_and_idls() -> Result<()> {
+        let (directory, store) = test_store("restore-defaults")?;
+        let wallet_path = directory.join("wallet.json");
+        let idl_path = directory.join("idls.json");
+        let wallet = br#"{"wallet":"sentinel"}"#;
+        let idls = br#"{"idls":["sentinel"]}"#;
+        fs::write(&wallet_path, wallet)?;
+        fs::write(&idl_path, idls)?;
+        store.save_user_settings(&json!({
+            "version": 2,
+            "network_profile": "custom",
+            "local_nodes_enabled": false
+        }))?;
+
+        let restored = store.restore_defaults()?;
+        if restored.get("network_profile").and_then(Value::as_str) != Some("default")
+            || restored.get("local_nodes_enabled").and_then(Value::as_bool) != Some(true)
+            || fs::read(&wallet_path)? != wallet
+            || fs::read(&idl_path)? != idls
+        {
+            bail!("restore defaults changed protected local state: {restored}");
         }
         cleanup_test_dir(&directory)
     }

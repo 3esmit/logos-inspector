@@ -2,9 +2,10 @@ use serde_json::Value;
 
 use crate::source_routing::execution_zone_layer;
 
-use super::{LocalNodeAdapter, NodeAction, NodeConfigContext, NodeKind, NodeLifecycle};
-
-const UNAVAILABLE_REASON: &str = "no verified logoscore module lifecycle contract";
+use super::{
+    LocalNodeAdapter, NodeAction, NodeCommandContext, NodeCommandPlan, NodeConfigContext, NodeKind,
+    NodeLifecycle,
+};
 
 #[derive(Debug)]
 pub(super) struct IndexerAdapter;
@@ -25,13 +26,23 @@ impl LocalNodeAdapter for IndexerAdapter {
     }
 
     fn lifecycle(&self) -> NodeLifecycle {
-        NodeLifecycle::Unavailable {
-            reason: UNAVAILABLE_REASON,
+        NodeLifecycle::RegisteredProcess {
+            program: execution_zone_layer::managed_indexer_program(),
         }
     }
 
     fn workflow_actions(&self) -> &'static [NodeAction] {
-        &[]
+        &[
+            NodeAction::Install,
+            NodeAction::Start,
+            NodeAction::Stop,
+            NodeAction::Uninstall,
+            NodeAction::Purge,
+        ]
+    }
+
+    fn startup_rpc_health_method(&self) -> Option<&'static str> {
+        Some("checkHealth")
     }
 
     fn build_config(&self, context: NodeConfigContext<'_>) -> Value {
@@ -40,6 +51,24 @@ impl LocalNodeAdapter for IndexerAdapter {
             context.data_dir,
             context.endpoint,
             context.port,
+            context.public_testnet,
         )
+    }
+
+    fn command_plan(
+        &self,
+        action: NodeAction,
+        context: NodeCommandContext<'_>,
+    ) -> Option<NodeCommandPlan> {
+        (action == NodeAction::Start).then(|| NodeCommandPlan::DetachedProcess {
+            program: execution_zone_layer::managed_indexer_program(),
+            args: vec![
+                context.config_path.to_owned(),
+                "--port".to_owned(),
+                context.port.unwrap_or(8779).to_string(),
+                "--data-dir".to_owned(),
+                context.data_dir.to_owned(),
+            ],
+        })
     }
 }

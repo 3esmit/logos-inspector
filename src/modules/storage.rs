@@ -220,10 +220,12 @@ async fn logoscore_backup_download_readiness_probe(
     let result = match module_transport.logoscore_cli_transport() {
         Some(transport) => {
             let runtime = transport.runtime();
-            tokio::task::spawn_blocking(move || runtime.storage_backup_download_readiness())
-                .await
-                .context("Storage backup readiness worker failed")
-                .and_then(|result| result)
+            tokio::task::spawn_blocking(move || {
+                runtime.and_then(|runtime| runtime.storage_backup_download_readiness())
+            })
+            .await
+            .context("Storage backup readiness worker failed")
+            .and_then(|result| result)
         }
         None => Err(anyhow::anyhow!(
             "active LogosCore CLI transport does not expose its runtime"

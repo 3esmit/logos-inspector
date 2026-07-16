@@ -577,16 +577,61 @@ pub async fn dispatch_module_call(
     Ok(reply)
 }
 
+type LogoscoreRuntimeResolver =
+    Arc<dyn Fn() -> Result<Option<LogoscoreCliRuntime>> + Send + Sync + 'static>;
+
+#[derive(Clone)]
+enum LogoscoreRuntimeBinding {
+    Fixed(LogoscoreCliRuntime),
+    ConfiguredWithFallback(LogoscoreRuntimeResolver),
+}
+
+impl std::fmt::Debug for LogoscoreRuntimeBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fixed(_) => formatter.write_str("Fixed"),
+            Self::ConfiguredWithFallback(_) => formatter.write_str("ConfiguredWithFallback"),
+        }
+    }
+}
+
+impl LogoscoreRuntimeBinding {
+    fn resolve(&self) -> Result<LogoscoreCliRuntime> {
+        let explicitly_configured = logoscore_environment_is_configured().then(configured_runtime);
+        self.resolve_with_explicit(explicitly_configured)
+    }
+
+    fn resolve_with_explicit(
+        &self,
+        explicitly_configured: Option<LogoscoreCliRuntime>,
+    ) -> Result<LogoscoreCliRuntime> {
+        match self {
+            Self::Fixed(runtime) => Ok(runtime.clone()),
+            Self::ConfiguredWithFallback(resolver) => {
+                if let Some(runtime) = explicitly_configured {
+                    return Ok(runtime);
+                }
+                Ok(resolver()?.unwrap_or_else(configured_runtime))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LogoscoreCliTransport {
-    runtime: LogoscoreCliRuntime,
+    runtime: LogoscoreRuntimeBinding,
 }
 
 impl Default for LogoscoreCliTransport {
     fn default() -> Self {
-        Self {
-            runtime: configured_runtime(),
-        }
+        let runtime = if logoscore_environment_is_configured() {
+            LogoscoreRuntimeBinding::Fixed(configured_runtime())
+        } else {
+            LogoscoreRuntimeBinding::ConfiguredWithFallback(Arc::new(
+                crate::local_nodes::running_managed_logoscore_runtime,
+            ))
+        };
+        Self { runtime }
     }
 }
 
@@ -594,12 +639,15 @@ impl LogoscoreCliTransport {
     #[cfg(test)]
     pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
         Self {
-            runtime: LogoscoreCliRuntime::managed(binary_path, config_dir),
+            runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime::managed(
+                binary_path,
+                config_dir,
+            )),
         }
     }
 
-    pub(crate) fn runtime(&self) -> LogoscoreCliRuntime {
-        self.runtime.clone()
+    pub(crate) fn runtime(&self) -> Result<LogoscoreCliRuntime> {
+        self.runtime.resolve()
     }
 }
 
@@ -615,6 +663,7 @@ impl ModuleTransport for LogoscoreCliTransport {
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
         let runtime = self.runtime.clone();
         Box::pin(async move {
+            let runtime = runtime.resolve()?;
             let transport = call.transport();
             if transport != ModuleTransportKind::LogoscoreCli {
                 bail!(
@@ -653,6 +702,7 @@ impl ModuleTransport for LogoscoreCliTransport {
     ) -> ModuleCallFuture<'_> {
         let runtime = self.runtime.clone();
         Box::pin(async move {
+            let runtime = runtime.resolve()?;
             let transport = call.transport();
             if transport != ModuleTransportKind::LogoscoreCli {
                 bail!(
@@ -720,6 +770,7 @@ impl ModuleTransport for LogoscoreCliTransport {
     fn status(&self) -> ModuleDiagnosticFuture<'_> {
         let runtime = self.runtime.clone();
         Box::pin(async move {
+            let runtime = runtime.resolve()?;
             let output = tokio::task::spawn_blocking(move || runtime.status())
                 .await
                 .context("LogosCore CLI status worker failed")??;
@@ -730,6 +781,7 @@ impl ModuleTransport for LogoscoreCliTransport {
     fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
         let runtime = self.runtime.clone();
         Box::pin(async move {
+            let runtime = runtime.resolve()?;
             let module_label = module.clone();
             let output = tokio::task::spawn_blocking(move || runtime.module_info(&module))
                 .await
@@ -2496,6 +2548,17 @@ fn configured_runtime() -> LogoscoreCliRuntime {
     }
 }
 
+fn logoscore_environment_is_configured() -> bool {
+    [
+        "LOGOSCORE_BIN",
+        "LOGOSCORE_USER",
+        "LOGOSCORE_HOME",
+        "LOGOSCORE_CONFIG_DIR",
+    ]
+    .into_iter()
+    .any(|key| env::var(key).is_ok_and(|value| !value.trim().is_empty()))
+}
+
 fn normalize_call_value(value: &mut Value) {
     let Some(call_value) = value
         .get_mut("result")
@@ -3194,7 +3257,7 @@ mod tests {
         permissions.set_mode(0o700);
         fs::set_permissions(&program, permissions)?;
         let transport = LogoscoreCliTransport {
-            runtime: LogoscoreCliRuntime {
+            runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime {
                 runner: LogosCoreRunner {
                     program: program.to_string_lossy().into_owned(),
                     sudo_user: None,
@@ -3202,7 +3265,7 @@ mod tests {
                     config_dir: None,
                     label: "test logoscore".to_owned(),
                 },
-            },
+            }),
         };
         let cancellation = CancellationToken::new();
         let cancel_request = cancellation.clone();
@@ -3265,7 +3328,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let marker = directory.path().join("unexpected-start");
         let transport = LogoscoreCliTransport {
-            runtime: LogoscoreCliRuntime {
+            runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime {
                 runner: LogosCoreRunner {
                     program: marker.to_string_lossy().into_owned(),
                     sudo_user: None,
@@ -3273,7 +3336,7 @@ mod tests {
                     config_dir: None,
                     label: "test logoscore".to_owned(),
                 },
-            },
+            }),
         };
         let cancellation = CancellationToken::new();
         cancellation.cancel();
@@ -3561,6 +3624,47 @@ mod tests {
                 "--json"
             ]
         );
+    }
+
+    #[test]
+    fn dynamic_runtime_binding_tracks_start_restart_stop_and_explicit_precedence() -> Result<()> {
+        let current = Arc::new(Mutex::new(None::<LogoscoreCliRuntime>));
+        let resolver_state = Arc::clone(&current);
+        let binding = LogoscoreRuntimeBinding::ConfiguredWithFallback(Arc::new(move || {
+            resolver_state
+                .lock()
+                .map(|runtime| runtime.clone())
+                .map_err(|_| anyhow::anyhow!("runtime resolver lock poisoned"))
+        }));
+
+        *current
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime state lock poisoned"))? = Some(
+            LogoscoreCliRuntime::managed("/bin/first".to_owned(), "/config/first".to_owned()),
+        );
+        let first = binding.resolve_with_explicit(None)?;
+        *current
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime state lock poisoned"))? = Some(
+            LogoscoreCliRuntime::managed("/bin/second".to_owned(), "/config/second".to_owned()),
+        );
+        let second = binding.resolve_with_explicit(None)?;
+        *current
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime state lock poisoned"))? = None;
+        let stopped = binding.resolve_with_explicit(None)?;
+        let explicit =
+            LogoscoreCliRuntime::managed("/bin/external".to_owned(), "/config/external".to_owned());
+        let selected_explicit = binding.resolve_with_explicit(Some(explicit.clone()))?;
+
+        anyhow::ensure!(
+            first.runner.config_dir.as_deref() == Some("/config/first")
+                && second.runner.config_dir.as_deref() == Some("/config/second")
+                && stopped.runner.config_dir.is_none()
+                && selected_explicit == explicit,
+            "dynamic LogosCore runtime selection retained stale state"
+        );
+        Ok(())
     }
 
     #[test]

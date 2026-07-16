@@ -116,6 +116,9 @@ QtObject {
     function publishAccountIdl(entityRef, ownerProgramId, idlEntry, onComplete) {
         return Orchestrator.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry, onComplete)
     }
+    function publishRegisteredIdl(accountId, idlKey, onComplete) {
+        return Orchestrator.publishRegisteredIdl(root, accountId, idlKey, onComplete)
+    }
     function maybeAutoShareAccountIdl(entityRef, ownerProgramId, idlEntry) {
         return Orchestrator.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry)
     }

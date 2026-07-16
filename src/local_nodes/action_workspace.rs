@@ -13,12 +13,13 @@ use crate::support::{
 
 use super::adapters::{NodeActionPolicy, NodeConfigContext, adapter_for};
 use super::commands::{
-    command_spec_for, ensure_module_loaded, execute_command_spec, operation_detail_from_value,
+    command_spec_for, ensure_module_loaded, execute_command_spec, execute_ready_process_spec,
+    operation_detail_from_value,
 };
 use super::lifecycle::{has_event_contract, reset_module_contexts};
 use super::model::{
-    LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord, LocalNodeOperationReport,
-    LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
+    LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord, LocalNodeDeployment,
+    LocalNodeOperationReport, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
 };
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::process::{find_command, process_is_alive, stop_process};
@@ -26,7 +27,7 @@ use super::runtime::LogoscoreRuntimeProfile;
 use super::workflow::node_set_for_profile;
 
 const MANIFEST_FILE: &str = "local-network.json";
-const DEFAULT_DEPLOYMENT: &str = "local";
+const TESTNET_ID: &str = "logos-testnet";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct LocalNodeActionWorkspace;
@@ -139,6 +140,7 @@ fn new_network(
             .with_context(|| format!("failed to create workspace {}", workspace.display()))?;
         let now = now_millis();
         let record = LocalDevnetRecord {
+            deployment: LocalNodeDeployment::LocalDevnet,
             id: id.clone(),
             label: request
                 .label
@@ -373,7 +375,7 @@ fn runtime_stop(
 
 fn node_install(
     state: &mut LocalNodesState,
-    _profile: &str,
+    profile: &str,
     request: &LocalNodeActionRequest,
 ) -> LocalNodeActionResult {
     let node = request.node;
@@ -396,7 +398,7 @@ fn node_install(
         let Some(binary) = find_command(executable) else {
             return Ok(needs_configuration(&format!("{executable} not found")));
         };
-        let record = active_devnet_mut(state)?;
+        let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         config.package_path = Some(binary);
         config.installed = true;
@@ -413,7 +415,7 @@ fn node_install(
 fn node_initialize(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
-    _profile: &str,
+    profile: &str,
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
@@ -436,18 +438,35 @@ fn node_initialize(
                 "start an Inspector-managed logoscore runtime before initializing a module node",
             ));
         };
-        let record = active_devnet_mut(state)?;
+        let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
+        let action_config_path = action_config_path(config, NodeAction::Initialize);
         let spec = command_spec_for(
             kind,
             NodeAction::Initialize,
-            &config.config_path,
-            DEFAULT_DEPLOYMENT,
+            action_config_path,
+            &config.data_dir,
+            config.port,
         )
         .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
         let cli = runtime.cli_runtime()?;
         if ensure_loaded {
             ensure_module_loaded(&spec, Some(&cli), control)?;
+        }
+        if reusable_generated_config(adapter, config) {
+            config.installed = true;
+            config.package_path = Some(spec.program.clone());
+            config.lifecycle_state = NodeLifecycleState::Stopped;
+            config.pending_lifecycle_action = None;
+            record.updated_at = now_millis();
+            write_devnet_manifest(record)?;
+            return Ok(OperationOutcome {
+                status: "initialized".to_owned(),
+                detail: "reused existing generated configuration; module is loaded".to_owned(),
+                command: adapter
+                    .managed_contract()
+                    .map(|contract| format!("logoscore module load {}", contract.module_id())),
+            });
         }
         match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
@@ -476,7 +495,7 @@ fn node_initialize(
 fn node_uninstall(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
-    _profile: &str,
+    profile: &str,
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
@@ -488,7 +507,7 @@ fn node_uninstall(
         if let Some(reason) = policy.blocked_reason() {
             return Ok(needs_configuration(reason));
         }
-        let record = active_devnet_mut(state)?;
+        let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         if policy == NodeActionPolicy::RemoveExecutableRegistration {
             stop_owned_process(config);
@@ -524,7 +543,8 @@ fn node_uninstall(
             kind,
             NodeAction::Uninstall,
             &config.config_path,
-            DEFAULT_DEPLOYMENT,
+            &config.data_dir,
+            config.port,
         ) else {
             return Ok(needs_configuration(
                 "this module has no verified context-destroy contract; stop the managed runtime to clear it",
@@ -555,7 +575,7 @@ fn node_uninstall(
 fn node_start(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
-    _profile: &str,
+    profile: &str,
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
@@ -567,7 +587,7 @@ fn node_start(
         if let Some(reason) = policy.blocked_reason() {
             return Ok(needs_configuration(reason));
         }
-        let record = active_devnet_mut(state)?;
+        let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         fs::create_dir_all(&config.data_dir)
             .with_context(|| format!("failed to create {}", config.data_dir))?;
@@ -575,11 +595,24 @@ fn node_start(
             kind,
             NodeAction::Start,
             &config.config_path,
-            DEFAULT_DEPLOYMENT,
+            &config.data_dir,
+            config.port,
         )
         .with_context(|| format!("{} start is not implemented", adapter.label()))?;
         if policy == NodeActionPolicy::ExecuteDetached {
-            return match execute_command_spec(&spec, None, control) {
+            let execution = match adapter.startup_rpc_health_method() {
+                Some(method) => execute_ready_process_spec(
+                    &spec,
+                    config
+                        .endpoint
+                        .as_deref()
+                        .context("registered process RPC endpoint is required")?,
+                    method,
+                    control,
+                ),
+                None => execute_command_spec(&spec, None, control),
+            };
+            return match execution {
                 Ok(value) => {
                     config.process_id = value
                         .get("pid")
@@ -662,7 +695,7 @@ fn node_start(
 fn node_stop(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
-    _profile: &str,
+    profile: &str,
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
@@ -674,9 +707,15 @@ fn node_stop(
         if let Some(reason) = policy.blocked_reason() {
             return Ok(needs_configuration(reason));
         }
-        let record = active_devnet_mut(state)?;
+        let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         if policy == NodeActionPolicy::ExecuteDetached {
+            if config.process_id.is_none() {
+                return Ok(needs_configuration(&format!(
+                    "no Inspector-owned {} process is recorded",
+                    adapter.label()
+                )));
+            }
             stop_owned_process(config);
             record.updated_at = now_millis();
             write_devnet_manifest(record)?;
@@ -715,7 +754,8 @@ fn node_stop(
             kind,
             NodeAction::Stop,
             &config.config_path,
-            DEFAULT_DEPLOYMENT,
+            &config.data_dir,
+            config.port,
         )
         .with_context(|| format!("{} stop is not implemented", adapter.label()))?;
         let cli = runtime.cli_runtime()?;
@@ -748,7 +788,7 @@ fn node_stop(
 
 fn node_purge(
     state: &mut LocalNodesState,
-    _profile: &str,
+    profile: &str,
     request: &LocalNodeActionRequest,
 ) -> LocalNodeActionResult {
     let node = request.node;
@@ -769,8 +809,8 @@ fn node_purge(
             );
         };
         let workspace_root = PathBuf::from(&state.managed_workspace_root);
-        let Some(record) = state.active_devnet_mut() else {
-            bail!("active devnet is required");
+        let Some(record) = state.active_topology_mut(profile) else {
+            bail!("active local node topology is required");
         };
         let Some(config) = node_config_mut(record, kind) else {
             bail!("{} config is not available", adapter.label());
@@ -818,10 +858,31 @@ fn needs_configuration(detail: &str) -> OperationOutcome {
     }
 }
 
-fn active_devnet_mut(state: &mut LocalNodesState) -> Result<&mut LocalDevnetRecord> {
+fn active_topology_mut<'a>(
+    state: &'a mut LocalNodesState,
+    profile: &str,
+) -> Result<&'a mut LocalDevnetRecord> {
     state
-        .active_devnet_mut()
-        .context("active local devnet is required")
+        .active_topology_mut(profile)
+        .context("active local node topology is required")
+}
+
+fn action_config_path(config: &LocalNodeConfigRecord, action: NodeAction) -> &str {
+    if action == NodeAction::Initialize {
+        config
+            .initialization_config_path
+            .as_deref()
+            .unwrap_or(&config.config_path)
+    } else {
+        &config.config_path
+    }
+}
+
+fn reusable_generated_config(
+    adapter: &dyn super::adapters::LocalNodeAdapter,
+    config: &LocalNodeConfigRecord,
+) -> bool {
+    adapter.preserve_generated_config_on_runtime_reset() && Path::new(&config.config_path).is_file()
 }
 
 fn required_node_config(
@@ -934,13 +995,24 @@ fn target_network_id(state: &LocalNodesState, request: &LocalNodeActionRequest) 
 fn default_node_config(workspace: &Path, kind: NodeKind) -> LocalNodeConfigRecord {
     let adapter = adapter_for(kind);
     let port = adapter.default_port();
+    let config_name = if kind == NodeKind::Bedrock {
+        "bedrock.yaml".to_owned()
+    } else {
+        format!("{}.json", kind.as_str())
+    };
     LocalNodeConfigRecord {
         kind,
         config_path: workspace
             .join("configs")
-            .join(format!("{}.json", kind.as_str()))
+            .join(config_name)
             .display()
             .to_string(),
+        initialization_config_path: (kind == NodeKind::Bedrock).then(|| {
+            workspace
+                .join("configs/bedrock.init.json")
+                .display()
+                .to_string()
+        }),
         data_dir: workspace
             .join("data")
             .join(kind.as_str())
@@ -958,19 +1030,30 @@ fn default_node_config(workspace: &Path, kind: NodeKind) -> LocalNodeConfigRecor
 }
 
 fn generate_devnet_files(record: &LocalDevnetRecord) -> Result<()> {
+    generate_topology_files(record, true)
+}
+
+fn generate_topology_files(record: &LocalDevnetRecord, overwrite: bool) -> Result<()> {
     for node in &record.nodes {
         fs::create_dir_all(&node.data_dir)
             .with_context(|| format!("failed to create {}", node.data_dir))?;
-        let config_path = PathBuf::from(&node.config_path);
+        let write_path = node
+            .initialization_config_path
+            .as_deref()
+            .unwrap_or(&node.config_path);
+        let config_path = PathBuf::from(write_path);
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
+        if !overwrite && config_path.is_file() {
+            continue;
+        }
         let value = generated_node_config(record, node);
         let text = serde_json::to_string_pretty(&value)
             .context("failed to serialize local node config")?;
-        fs::write(&node.config_path, text)
-            .with_context(|| format!("failed to write {}", node.config_path))?;
+        fs::write(&config_path, text)
+            .with_context(|| format!("failed to write {}", config_path.display()))?;
     }
     Ok(())
 }
@@ -978,10 +1061,42 @@ fn generate_devnet_files(record: &LocalDevnetRecord) -> Result<()> {
 fn generated_node_config(record: &LocalDevnetRecord, node: &LocalNodeConfigRecord) -> Value {
     adapter_for(node.kind).build_config(NodeConfigContext {
         network_id: &record.id,
+        config_path: &node.config_path,
         data_dir: &node.data_dir,
         endpoint: node.endpoint.as_deref(),
         port: node.port,
+        public_testnet: record.deployment == LocalNodeDeployment::PublicTestnet,
     })
+}
+
+pub(super) fn ensure_testnet_topology(state: &mut LocalNodesState) -> Result<bool> {
+    if let Some(record) = state.testnet.as_ref() {
+        generate_topology_files(record, false)?;
+        return Ok(false);
+    }
+
+    let workspace = PathBuf::from(&state.managed_workspace_root).join(TESTNET_ID);
+    fs::create_dir_all(&workspace)
+        .with_context(|| format!("failed to create workspace {}", workspace.display()))?;
+    let now = now_millis();
+    let record = LocalDevnetRecord {
+        deployment: LocalNodeDeployment::PublicTestnet,
+        id: TESTNET_ID.to_owned(),
+        label: "Logos Testnet".to_owned(),
+        workspace: workspace.display().to_string(),
+        manifest_path: workspace.join(MANIFEST_FILE).display().to_string(),
+        created_at: now,
+        updated_at: now,
+        nodes: node_set_for_profile("default")
+            .into_iter()
+            .map(|kind| default_node_config(&workspace, kind))
+            .collect(),
+    };
+    generate_topology_files(&record, false)?;
+    write_devnet_manifest(&record)?;
+    state.testnet = Some(record);
+    state.version = 2;
+    Ok(true)
 }
 
 fn write_devnet_manifest(record: &LocalDevnetRecord) -> Result<()> {

@@ -25,10 +25,10 @@ use crate::{
             ChannelSourceConfigReport, ZONE_CATALOG_REPORT_SCHEMA_VERSION,
             ZoneCatalogConfigureReport, ZoneCatalogConfigureRequest, ZoneCatalogControl,
             ZoneCatalogControlReport, ZoneCatalogControlRequest, ZoneCatalogCoverageReport,
-            ZoneCatalogIngestionReport, ZoneCatalogService, ZoneCatalogSourceDescriptor,
-            ZoneCatalogSourceRequest, ZoneCatalogStatusReport, ZoneCatalogStatusRequest,
-            ZoneCatalogWorker, ZoneDetailReport, ZoneDetailRequest, ZoneEvidenceDetailRequest,
-            ZoneEvidencePageRequest, ZoneEvidencePayloadChunkRequest,
+            ZoneCatalogDefaultTopology, ZoneCatalogIngestionReport, ZoneCatalogService,
+            ZoneCatalogSourceDescriptor, ZoneCatalogSourceRequest, ZoneCatalogStatusReport,
+            ZoneCatalogStatusRequest, ZoneCatalogWorker, ZoneDetailReport, ZoneDetailRequest,
+            ZoneEvidenceDetailRequest, ZoneEvidencePageRequest, ZoneEvidencePayloadChunkRequest,
             ZoneEvidencePayloadReleaseRequest, ZonesSummaryReport, ZonesSummaryRequest,
         },
     },
@@ -134,6 +134,7 @@ pub(crate) struct ZoneCatalogCommandInterface {
     source_store: Arc<dyn ChannelSourceConfigMutationInterface>,
     evidence: ZoneEvidenceCommandInterface,
     state: Mutex<ZoneProjectionLedger>,
+    default_topology: Mutex<Option<(u64, ZoneCatalogDefaultTopology)>>,
 }
 
 impl ZoneCatalogCommandInterface {
@@ -188,6 +189,7 @@ impl ZoneCatalogCommandInterface {
             source_store,
             evidence: ZoneEvidenceCommandInterface::new(evidence_reader),
             state: Mutex::new(ZoneProjectionLedger::default()),
+            default_topology: Mutex::new(None),
         }
     }
 
@@ -258,12 +260,18 @@ impl ZoneCatalogCommandInterface {
         runtime: &Runtime,
         request: ZoneCatalogConfigureRequest,
     ) -> Result<ZoneCatalogConfigureReport> {
-        let source = match request.source {
-            ZoneCatalogSourceRequest::DirectHttp { endpoint } => {
-                ZoneCatalogSourceDescriptor::direct_http(endpoint)?
-            }
+        let (source, default_topology) = match request.source {
+            ZoneCatalogSourceRequest::DirectHttp {
+                endpoint,
+                default_topology,
+            } => (
+                ZoneCatalogSourceDescriptor::direct_http(endpoint)?,
+                default_topology,
+            ),
         };
         let source_revision = runtime.block_on(self.service.configure(source.clone()))?;
+        *self.lock_default_topology()? =
+            default_topology.map(|topology| (source_revision, topology));
         self.evidence.configure_source(source_revision, source)?;
         self.refresh(runtime)?;
         Ok(ZoneCatalogConfigureReport {
@@ -447,11 +455,35 @@ impl ZoneCatalogCommandInterface {
     fn refresh(&self, runtime: &Runtime) -> Result<()> {
         let service = self.service.report();
         self.evidence.reconcile(&service)?;
-        let configs = self.source_store.load()?;
+        let default_topology = self
+            .lock_default_topology()?
+            .filter(|(source_revision, _)| *source_revision == service.source_revision)
+            .map(|(_, topology)| topology);
+        let configs = match service.catalog.as_deref() {
+            Some(catalog)
+                if default_topology == Some(ZoneCatalogDefaultTopology::LogosTestnet)
+                    && service.verification_state == CatalogVerificationState::Verified
+                    && catalog.zones.iter().any(|zone| {
+                        zone.channel_id == crate::testnet::LOGOS_TESTNET_CHANNEL_ID
+                    }) =>
+            {
+                self.source_store
+                    .ensure_testnet_defaults(catalog.metadata.network_scope.clone())?
+            }
+            _ => self.source_store.load()?,
+        };
         synchronize_monitor(runtime, self.monitor.as_ref(), &service, &configs)?;
         let observations = self.monitor.snapshot();
         let mut state = self.lock_state()?;
         state.refresh(&service, configs, observations)
+    }
+
+    fn lock_default_topology(
+        &self,
+    ) -> Result<MutexGuard<'_, Option<(u64, ZoneCatalogDefaultTopology)>>> {
+        self.default_topology
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Zone Catalog default topology lock is poisoned"))
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, ZoneProjectionLedger>> {
@@ -549,6 +581,96 @@ mod tests {
             ChannelSourceTarget, ConfiguredSequencerSource, PersistedSequencerAttestation,
         },
     };
+
+    #[test]
+    fn verified_catalog_admits_testnet_defaults_only_for_public_lez_channel() -> Result<()> {
+        let runtime = Runtime::new()?;
+        let network_scope = scope('9');
+        let block = evidence_block(crate::testnet::LOGOS_TESTNET_CHANNEL_ID, b"testnet");
+        let store = Arc::new(FakeSourceStore::new(Vec::new()));
+        let monitor = Arc::new(FakeMonitor::default());
+        let (worker, mut started) = PublishingWorker::new(evidence_snapshot(
+            network_scope.clone(),
+            crate::testnet::LOGOS_TESTNET_CHANNEL_ID,
+            &block,
+        ));
+        let interface = ZoneCatalogCommandInterface::with_dependencies(
+            &runtime,
+            Arc::new(worker),
+            store.clone(),
+            monitor,
+        );
+
+        interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{
+                "source": {
+                    "kind": "direct_http",
+                    "endpoint": "http://127.0.0.1:8080",
+                    "default_topology": "logos_testnet"
+                }
+            }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("catalog worker did not publish")?;
+        interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
+
+        let scopes = store
+            .testnet_default_scopes
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?;
+        if scopes.is_empty() || scopes.iter().any(|scope| scope != &network_scope) {
+            bail!("verified Testnet Channel did not admit scoped defaults: {scopes:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn verified_foreign_catalog_with_public_channel_id_does_not_admit_testnet_defaults()
+    -> Result<()> {
+        let runtime = Runtime::new()?;
+        let network_scope = scope('8');
+        let block = evidence_block(crate::testnet::LOGOS_TESTNET_CHANNEL_ID, b"foreign");
+        let store = Arc::new(FakeSourceStore::new(Vec::new()));
+        let monitor = Arc::new(FakeMonitor::default());
+        let (worker, mut started) = PublishingWorker::new(evidence_snapshot(
+            network_scope,
+            crate::testnet::LOGOS_TESTNET_CHANNEL_ID,
+            &block,
+        ));
+        let interface = ZoneCatalogCommandInterface::with_dependencies(
+            &runtime,
+            Arc::new(worker),
+            store.clone(),
+            monitor,
+        );
+
+        interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{
+                "source": {
+                    "kind": "direct_http",
+                    "endpoint": "https://custom.example"
+                }
+            }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("catalog worker did not publish")?;
+        interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
+
+        let scopes = store
+            .testnet_default_scopes
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?;
+        if !scopes.is_empty() {
+            bail!("foreign catalog admitted Testnet defaults: {scopes:?}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn catalog_reports_are_fenced_paged_and_cursor_immutable() -> Result<()> {
@@ -1162,6 +1284,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSourceStore {
         configs: Mutex<Vec<ChannelSourceConfig>>,
+        testnet_default_scopes: Mutex<Vec<NetworkScope>>,
         apply_results: Mutex<
             VecDeque<
                 Result<crate::source_routing::channel_sources::ChannelSourceConfigApplyOutcome>,
@@ -1173,6 +1296,7 @@ mod tests {
         fn new(configs: Vec<ChannelSourceConfig>) -> Self {
             Self {
                 configs: Mutex::new(configs),
+                testnet_default_scopes: Mutex::new(Vec::new()),
                 apply_results: Mutex::new(VecDeque::new()),
             }
         }
@@ -1204,6 +1328,17 @@ mod tests {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("fake source store lock poisoned"))?
                 .clone())
+        }
+
+        fn ensure_testnet_defaults(
+            &self,
+            network_scope: NetworkScope,
+        ) -> Result<Vec<ChannelSourceConfig>> {
+            self.testnet_default_scopes
+                .lock()
+                .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?
+                .push(network_scope);
+            self.load()
         }
 
         fn apply(

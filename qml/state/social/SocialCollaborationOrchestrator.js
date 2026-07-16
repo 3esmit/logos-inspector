@@ -1073,6 +1073,20 @@ function publishAccountIdl(root, entityRef, ownerProgramId, idlEntry, onComplete
     }, onComplete)
 }
 
+function publishRegisteredIdl(root, accountId, idlKey, onComplete) {
+    const account = String(accountId || "").trim()
+    const entry = root.gateway.idlEntryForKey(String(idlKey || ""))
+    const entityRef = root.gateway.zoneAccountEntityRef(account)
+    if (!account.length || !entry || String(entry.source || "") === "shared" || !entityRef) {
+        return false
+    }
+    const ownerProgramId = String(entry.programIdHex || entry.programId || "").trim()
+    if (!ownerProgramId.length) {
+        return false
+    }
+    return publishAccountIdl(root, entityRef, ownerProgramId, entry, onComplete)
+}
+
 function maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
     if (root.sharedIdlAutoShare !== true || !idlEntry || String(idlEntry.source || "") === "shared") {
         return false

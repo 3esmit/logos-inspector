@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{
     AccountReport, AccountTransactionSummary, IndexerBlockReport, TransactionSummary,
@@ -15,13 +15,11 @@ use crate::{
 
 use super::{
     ChannelSourceTarget,
-    layer::{
-        ExecutionZoneReadResult, capability_error, managed_config as shared_managed_config,
-        map_read_error, optional_u64,
-    },
+    layer::{ExecutionZoneReadResult, capability_error, map_read_error, optional_u64},
 };
 
 pub(crate) const MODULE_ID: &str = INDEXER_MODULE;
+pub(crate) const MANAGED_PROGRAM: &str = "indexer_service";
 
 const RPC_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     key: "rpc_endpoint",
@@ -280,8 +278,18 @@ pub(crate) fn managed_config(
     data_dir: &str,
     endpoint: Option<&str>,
     port: Option<u16>,
+    public_testnet: bool,
 ) -> Value {
-    shared_managed_config("indexer", network_id, data_dir, endpoint, port)
+    if !public_testnet {
+        return super::layer::managed_config("indexer", network_id, data_dir, endpoint, port);
+    }
+    json!({
+        "consensus_info_polling_interval": "1s",
+        "bedrock_config": {
+            "addr": crate::testnet::LOCAL_BEDROCK_ENDPOINT.trim_end_matches('/'),
+        },
+        "channel_id": crate::testnet::LOGOS_TESTNET_CHANNEL_ID,
+    })
 }
 
 #[cfg(test)]

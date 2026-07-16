@@ -7,6 +7,12 @@ license.workspace = true
 repository = "https://github.com/logos-blockchain/logos-inspector"
 description = "Native CLI and GUI inspector for Logos networks"
 publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
 
 [workspace]
 members = [".", "crates/core-ffi", "crates/standalone-gui"]
@@ -35,10 +41,21 @@ tokio = "1"
 default = ["cli"]
 cli = ["dep:clap"]
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "logos-inspector"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[[test]]
+name = "api_surface"
+path = "tests/api_surface.rs"
+
+[[test]]
+name = "cli_backup"
+path = "tests/cli_backup.rs"
 
 [dependencies]
 anyhow = { workspace = true }

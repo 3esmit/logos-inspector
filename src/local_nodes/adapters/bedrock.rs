@@ -23,11 +23,24 @@ impl LocalNodeAdapter for BedrockAdapter {
     }
 
     fn lifecycle(&self) -> NodeLifecycle {
-        NodeLifecycle::RuntimeOwnedModule(bedrock_layer::managed_contract())
+        NodeLifecycle::InitializedModule(bedrock_layer::managed_contract())
     }
 
     fn workflow_actions(&self) -> &'static [NodeAction] {
-        &[NodeAction::Start, NodeAction::Stop, NodeAction::Purge]
+        &[
+            NodeAction::Initialize,
+            NodeAction::Start,
+            NodeAction::Stop,
+            NodeAction::Purge,
+        ]
+    }
+
+    fn preserve_generated_config_on_runtime_reset(&self) -> bool {
+        true
+    }
+
+    fn ensure_loaded_before_start(&self) -> bool {
+        true
     }
 
     fn build_config(&self, context: NodeConfigContext<'_>) -> Value {
@@ -36,6 +49,8 @@ impl LocalNodeAdapter for BedrockAdapter {
             context.data_dir,
             context.endpoint,
             context.port,
+            context.config_path,
+            context.public_testnet,
         )
     }
 }

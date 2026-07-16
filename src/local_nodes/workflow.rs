@@ -6,21 +6,22 @@ use super::model::{LocalNodeActionRequest, LocalNodesState, NodeAction, NodeKind
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LocalNodeWorkflow {
     profile: &'static str,
-    has_active_devnet: bool,
+    has_active_topology: bool,
 }
 
 impl LocalNodeWorkflow {
     #[must_use]
-    pub(super) fn new(profile: &str, has_active_devnet: bool) -> Self {
+    pub(super) fn new(profile: &str, has_active_topology: bool) -> Self {
         Self {
             profile: normalized_profile(profile),
-            has_active_devnet,
+            has_active_topology,
         }
     }
 
     #[must_use]
     pub(super) fn for_state(profile: &str, state: &LocalNodesState) -> Self {
-        Self::new(profile, state.active_devnet.is_some())
+        let profile = normalized_profile(profile);
+        Self::new(profile, state.active_topology(profile).is_some())
     }
 
     #[must_use]
@@ -35,12 +36,12 @@ impl LocalNodeWorkflow {
 
     #[must_use]
     pub(super) fn network_actions(self) -> Vec<NodeAction> {
-        available_actions_for(self.profile, None, self.has_active_devnet)
+        available_actions_for(self.profile, None, self.has_active_topology)
     }
 
     #[must_use]
     pub(super) fn node_actions(self, kind: NodeKind) -> Vec<NodeAction> {
-        available_actions_for(self.profile, Some(kind), self.has_active_devnet)
+        available_actions_for(self.profile, Some(kind), self.has_active_topology)
     }
 
     pub(super) fn validate_request(self, request: &LocalNodeActionRequest) -> Result<()> {
@@ -61,9 +62,9 @@ impl LocalNodeWorkflow {
 
     fn action_allowed(self, action: NodeAction, node: Option<NodeKind>) -> bool {
         if action.is_runtime_action() {
-            return self.profile == "local" && node.is_none();
+            return node.is_none();
         }
-        available_actions_for(self.profile, node, self.has_active_devnet).contains(&action)
+        available_actions_for(self.profile, node, self.has_active_topology).contains(&action)
     }
 }
 
@@ -80,13 +81,13 @@ pub(super) fn node_set_for_profile(profile: &str) -> Vec<NodeKind> {
 pub(super) fn available_actions_for(
     profile: &str,
     node: Option<NodeKind>,
-    has_active_devnet: bool,
+    has_active_topology: bool,
 ) -> Vec<NodeAction> {
     let local_mode = normalized_profile(profile) == "local";
     if node.is_none() {
         if local_mode {
             let mut actions = vec![NodeAction::NewNetwork, NodeAction::LoadNetwork];
-            if has_active_devnet {
+            if has_active_topology {
                 actions.extend([NodeAction::ResetNetwork, NodeAction::DeleteNetwork]);
             }
             return actions;
@@ -101,7 +102,7 @@ pub(super) fn available_actions_for(
         return Vec::new();
     }
 
-    if !local_mode || !has_active_devnet {
+    if !has_active_topology {
         return Vec::new();
     }
 

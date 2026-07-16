@@ -212,17 +212,17 @@ mod tests {
     }
 
     #[test]
-    fn standalone_defaults_use_logoscore_cli_connectors() -> Result<()> {
+    fn standalone_defaults_use_operational_testnet_connectors() -> Result<()> {
         let value =
             serde_json::to_value(capability_registry_report(CapabilityBuildMode::Standalone))?;
 
-        for (key, expected) in [
-            ("l1", "logoscore_cli_blockchain_module"),
-            ("storage", "logoscore_cli_storage_module"),
-            ("delivery", "logoscore_cli_delivery_module"),
+        for (key, expected, expected_type) in [
+            ("l1", "direct_l1_rpc", "direct_rpc"),
+            ("storage", "logoscore_cli_storage_module", "logoscore_cli"),
+            ("delivery", "logoscore_cli_delivery_module", "logoscore_cli"),
         ] {
             if default_connector_for(&value, key)? != expected {
-                bail!("standalone capability `{key}` did not default to LogosCore CLI");
+                bail!("standalone capability `{key}` used an unexpected default connector");
             }
             let provider_type = value
                 .get("provider_instances")
@@ -234,8 +234,8 @@ mod tests {
                 })
                 .and_then(|provider| provider.get("provider_type"))
                 .and_then(Value::as_str);
-            if provider_type != Some("logoscore_cli") {
-                bail!("standalone capability `{key}` conflated CLI with host module");
+            if provider_type != Some(expected_type) {
+                bail!("standalone capability `{key}` used an unexpected provider type");
             }
         }
         Ok(())

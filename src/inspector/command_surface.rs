@@ -789,8 +789,8 @@ mod tests {
         if operation.get("status").and_then(Value::as_str) != Some("completed") {
             bail!("runtime blockchain operation did not complete: {operation}");
         }
-        if l1_capability_status(&surface, 0)? != "available" {
-            bail!("authoritative terminal status did not project L1 evidence");
+        if l1_capability_status(&surface, 0)? != "degraded" {
+            bail!("authoritative terminal status did not project bounded L1 evidence");
         }
         surface.shutdown()
     }

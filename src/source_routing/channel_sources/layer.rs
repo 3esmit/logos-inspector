@@ -29,6 +29,11 @@ pub(crate) const fn managed_sequencer_program() -> &'static str {
 }
 
 #[must_use]
+pub(crate) const fn managed_indexer_program() -> &'static str {
+    indexer::MANAGED_PROGRAM
+}
+
+#[must_use]
 pub(crate) fn managed_sequencer_config(
     network_id: &str,
     data_dir: &str,
@@ -44,8 +49,9 @@ pub(crate) fn managed_indexer_config(
     data_dir: &str,
     endpoint: Option<&str>,
     port: Option<u16>,
+    public_testnet: bool,
 ) -> Value {
-    indexer::managed_config(network_id, data_dir, endpoint, port)
+    indexer::managed_config(network_id, data_dir, endpoint, port, public_testnet)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

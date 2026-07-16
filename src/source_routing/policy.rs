@@ -872,6 +872,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_direct_l1_rpc_advertises_live_block_observation() {
+        let policy = source_policy_report();
+        let supports_live_blocks = |key: &str| {
+            policy
+                .source_modes
+                .core
+                .iter()
+                .find(|mode| mode.key == key)
+                .is_some_and(|mode| {
+                    mode.adapter
+                        .capabilities
+                        .contains(&"l1.live_blocks.observe")
+                })
+        };
+
+        assert!(supports_live_blocks("rpc"));
+        assert!(!supports_live_blocks("module"));
+        assert!(!supports_live_blocks("logoscore_cli"));
+    }
+
     fn generated_source_policy_catalog() -> Result<String, serde_json::Error> {
         let policy_json = serde_json::to_string(&source_policy_report())?;
         let policy_literal = serde_json::to_string(&policy_json)?;

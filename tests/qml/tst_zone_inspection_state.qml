@@ -168,6 +168,30 @@ TestCase {
         }))
     }
 
+    function test_focused_l2_states_project_active_context_changes() {
+        let blockChanges = 0
+        let toolChanges = 0
+        l2BlockState.activeZoneContextChanged.connect(function () {
+            blockChanges += 1
+        })
+        l2ToolState.activeZoneContextChanged.connect(function () {
+            toolChanges += 1
+        })
+        const context = {
+            network_scope: scope("network-a"),
+            channel_id: "a".repeat(64),
+            zone_kind: "sequencer_zone",
+            context_revision: 1
+        }
+
+        zoneState.activeZoneContext = context
+
+        compare(l2BlockState.activeZoneContext, context)
+        compare(l2ToolState.activeZoneContext, context)
+        compare(blockChanges, 1)
+        compare(toolChanges, 1)
+    }
+
     function statusReport(overrides) {
         const report = {
             report_kind: "zones.catalog_status",
@@ -557,6 +581,43 @@ TestCase {
         verify(zoneState.summaryInFlight)
     }
 
+    function test_startup_selects_the_only_configured_sequencer_zone() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a", 7)
+
+        loadOneZone(row)
+
+        compare(zoneState.activeZoneId, "zone-a")
+        compare(zoneState.activeZoneContext.selected_sequencer_source_id, "seq-a")
+        compare(zoneState.activeZoneContext.indexer_source_id, "idx-a")
+        verify(zoneState.detailInFlight)
+        compare(gateway.requestCount("zoneDetail"), 1)
+    }
+
+    function test_startup_selection_does_not_fallback_after_the_zone_is_removed() {
+        configure("https://l1.example", 1)
+        const first = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a", 7)
+        const replacement = zoneRow("zone-b", "sequencer_zone", "seq-b", "idx-b", 8)
+        loadOneZone(first)
+        compare(zoneState.activeZoneId, "zone-a")
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete", gap_count: 0 },
+            ingestion: { worker_running: false, discovered_zone_count: 1 },
+            summary_revision: 2
+        })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(2, {
+            kind: "delta",
+            upserts: [replacement],
+            removed_zone_ids: ["zone-a"]
+        }, null)))
+
+        compare(zoneState.activeZoneId, "")
+        compare(gateway.requestCount("zoneDetail"), 1)
+    }
+
     function test_missing_or_unsupported_l1_source_never_polls() {
         zoneState.start()
         compare(gateway.requests.length, 0)
@@ -569,6 +630,21 @@ TestCase {
         }
         compare(gateway.requests.length, 0)
         verify(!zoneState.statusPollingEnabled)
+    }
+
+    function test_testnet_default_topology_is_explicit_in_catalog_configuration() {
+        zoneState.sourceDescriptor = {
+            kind: "direct_http",
+            endpoint: "http://127.0.0.1:8080/",
+            default_topology: "logos_testnet"
+        }
+        zoneState.start()
+
+        const request = gateway.pendingRequest("zoneCatalogConfigure")
+        verify(request !== null)
+        compare(request.args[0].source.kind, "direct_http")
+        compare(request.args[0].source.endpoint, "http://127.0.0.1:8080/")
+        compare(request.args[0].source.default_topology, "logos_testnet")
     }
 
     function test_configure_race_accepts_only_latest_source() {

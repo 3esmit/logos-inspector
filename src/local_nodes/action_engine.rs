@@ -97,7 +97,8 @@ impl LocalNodeActionEngine {
         let workflow = LocalNodeWorkflow::for_state(profile, &state);
         workflow.validate_request(&request)?;
 
-        let watch = self.start_lifecycle_watch(&state, runtime.as_ref(), &request)?;
+        let watch =
+            self.start_lifecycle_watch(&state, runtime.as_ref(), workflow.profile(), &request)?;
         let operation = self.workspace.apply(
             &mut state,
             &mut runtime,
@@ -124,6 +125,7 @@ impl LocalNodeActionEngine {
         &self,
         state: &LocalNodesState,
         runtime: Option<&LogoscoreRuntimeProfile>,
+        profile: &str,
         request: &LocalNodeActionRequest,
     ) -> Result<Option<super::lifecycle::LifecycleWatchRegistration>> {
         let Some(kind) = request.node else {
@@ -138,7 +140,10 @@ impl LocalNodeActionEngine {
         else {
             return Ok(None);
         };
-        let Some(network_id) = state.active_devnet.clone() else {
+        let Some(network_id) = state
+            .active_topology(profile)
+            .map(|topology| topology.id.clone())
+        else {
             return Ok(None);
         };
         let store = self.store.clone();
@@ -180,7 +185,7 @@ impl LocalNodeReportProjector {
     ) -> LocalNodeReport {
         let workflow = LocalNodeWorkflow::for_state(profile, state);
         let profile = workflow.profile();
-        let active = state.active_devnet();
+        let active = state.active_topology(profile);
         let tools = self.tool_statuses(runtime_profile);
         let nodes = workflow
             .node_set()
@@ -211,7 +216,7 @@ impl LocalNodeReportProjector {
             },
             available_runtime_actions: runtime_actions(profile, runtime_profile),
             primary_problem: presentation::primary_problem(profile, &tools, &nodes),
-            active_devnet: state.active_devnet.clone(),
+            active_devnet: active.map(|topology| topology.id.clone()),
             workspace_root: state.managed_workspace_root.clone(),
             summary: LocalNodeSummary {
                 total: nodes.len(),
@@ -297,10 +302,7 @@ impl LocalNodeReportProjector {
     }
 }
 
-fn runtime_actions(profile: &str, runtime: Option<&LogoscoreRuntimeProfile>) -> Vec<NodeAction> {
-    if profile != "local" {
-        return Vec::new();
-    }
+fn runtime_actions(_profile: &str, runtime: Option<&LogoscoreRuntimeProfile>) -> Vec<NodeAction> {
     match runtime {
         Some(runtime) if runtime.is_managed() && runtime.is_running() => {
             vec![NodeAction::StopRuntime]
@@ -336,19 +338,31 @@ impl LocalNodeStore {
 
     pub(super) fn load(&self) -> Result<LocalNodesState> {
         let path = self.state_path();
-        if !path.is_file() {
-            return Ok(LocalNodesState::default_for_config_dir(&self.config_dir));
-        }
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read local node state from {}", path.display()))?;
-        let mut state: LocalNodesState = serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse local node state from {}", path.display()))?;
+        let mut state: LocalNodesState = if path.is_file() {
+            let text = fs::read_to_string(&path).with_context(|| {
+                format!("failed to read local node state from {}", path.display())
+            })?;
+            serde_json::from_str(&text).with_context(|| {
+                format!("failed to parse local node state from {}", path.display())
+            })?
+        } else {
+            LocalNodesState::default_for_config_dir(&self.config_dir)
+        };
+        let mut changed = !path.is_file();
         if state.managed_workspace_root.trim().is_empty() {
             state.managed_workspace_root =
                 self.config_dir.join("local-nodes").display().to_string();
+            changed = true;
         }
-        if state.version == 0 {
-            state.version = 1;
+        if state.version < 2 {
+            state.version = 2;
+            changed = true;
+        }
+        if super::action_workspace::ensure_testnet_topology(&mut state)? {
+            changed = true;
+        }
+        if changed {
+            self.save(&state)?;
         }
         Ok(state)
     }

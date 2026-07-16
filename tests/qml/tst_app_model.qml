@@ -859,6 +859,38 @@ TestCase {
         compare(localNodeHistory[0].status, "completed")
     }
 
+    function test_local_node_observations_join_source_health_and_l2_heads() {
+        model.metrics.networkConnectionStatus = ({
+            blockchain: { known: true, ok: true, detail: "Online", checkedAt: "10:00" },
+            storage: { known: true, ok: true, detail: "25 DHT peers", checkedAt: "10:00" },
+            messaging: { known: true, ok: true, detail: "10 relay peers", checkedAt: "10:00" }
+        })
+        model.metrics.networkConnectionStatusRevision += 1
+        model.metrics.storageSourceReport = ({
+            health: { ready: true, status: "healthy", detail: "25 DHT peers" }
+        })
+        model.metrics.messagingSourceReport = ({
+            health: { ready: true, status: "healthy", detail: "10 relay peers" }
+        })
+        model.dashboardOverview = ({
+            sequencer: { head: { ok: true, value: 22418 } },
+            indexer: {
+                health: { ok: true, value: "reachable" },
+                head: { ok: true, value: 22352 }
+            }
+        })
+
+        const observations = model.localNodeObservedNodes()
+
+        compare(observations.bedrock.status, "healthy")
+        compare(observations.storage.status, "healthy")
+        compare(observations.messaging.status, "healthy")
+        compare(observations.indexer.status, "reachable")
+        compare(observations.indexer.head, 22352)
+        compare(observations.indexer.upstream_head, 22418)
+        compare(model.localNodes.observedRunState("indexer"), "online")
+    }
+
     function test_messaging_and_storage_use_standalone_connectors_without_basecamp() {
         compare(model.sourceRouting.normalizedMessagingSourceMode(model.messagingSourceMode), "rest")
         compare(model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
@@ -944,9 +976,9 @@ TestCase {
         compare(basecampModel.sourceRouting.storageSourceTarget(), basecampModel.storageModule)
     }
 
-    function test_standalone_defaults_to_logoscore_cli_and_hides_host_module_connector() {
+    function test_standalone_defaults_l1_to_direct_rpc_and_hides_host_module_connector() {
         const defaults = model.defaultNetworkConnectorConfig().scopes
-        compare(defaults.l1.connector_id, "logoscore_cli_blockchain_module")
+        compare(defaults.l1.connector_id, "direct_l1_rpc")
         compare(defaults.delivery.connector_id, "logoscore_cli_delivery_module")
         compare(defaults.storage.connector_id, "logoscore_cli_storage_module")
 
@@ -959,7 +991,7 @@ TestCase {
         verify(sourceOption(basecampOptions, "logoscore_cli") !== null)
     }
 
-    function test_standalone_normalizes_persisted_host_modules_to_logoscore_cli() {
+    function test_standalone_normalizes_persisted_host_modules_to_build_defaults() {
         const persisted = {
             scopes: {
                 l1: { connector_id: "blockchain_module", provenance: "network_profile" },
@@ -969,7 +1001,7 @@ TestCase {
         }
 
         const standalone = model.normalizedNetworkConnectorConfig(persisted).scopes
-        compare(standalone.l1.connector_id, "logoscore_cli_blockchain_module")
+        compare(standalone.l1.connector_id, "direct_l1_rpc")
         compare(standalone.delivery.connector_id, "logoscore_cli_delivery_module")
         compare(standalone.storage.connector_id, "logoscore_cli_storage_module")
         compare(standalone.storage.provenance, "build_default")
@@ -978,6 +1010,34 @@ TestCase {
         compare(basecamp.l1.connector_id, "blockchain_module")
         compare(basecamp.delivery.connector_id, "delivery_module")
         compare(basecamp.storage.connector_id, "storage_module")
+    }
+
+    function test_basecamp_translates_only_testnet_default_connector_scopes() {
+        basecampModel.loadNetworkConnectorConfig({
+            network_connector_config: {
+                scopes: {
+                    l1: {
+                        connector_id: "logoscore_cli_blockchain_module",
+                        provenance: "testnet_default"
+                    },
+                    delivery: {
+                        connector_id: "direct_delivery_rest",
+                        endpoint: "https://delivery.custom.example/",
+                        provenance: "network_profile"
+                    },
+                    storage: {
+                        connector_id: "logoscore_cli_storage_module",
+                        provenance: "testnet_default"
+                    }
+                }
+            }
+        })
+
+        const scopes = basecampModel.networkConnectorConfig.scopes
+        compare(scopes.l1.connector_id, "blockchain_module")
+        compare(scopes.delivery.connector_id, "direct_delivery_rest")
+        compare(scopes.delivery.endpoint, "https://delivery.custom.example/")
+        compare(scopes.storage.connector_id, "storage_module")
     }
 
     function test_local_network_profile_remains_selectable_when_endpoint_matches_default() {
@@ -1818,6 +1878,63 @@ TestCase {
         verify(fakeHost.lastArgs[0].footer_fields["overall.status"])
     }
 
+    function test_restore_defaults_loads_testnet_without_wallet_calls() {
+        model.settingsStateLoaded = true
+        model.networkProfile = "custom"
+        model.nodeUrl = "https://custom.example/"
+        model.localNodesEnabled = false
+        model.localDevnetEnabled = true
+        model.walletProfileLabel = "Wallet sentinel"
+        model.walletHome = "/wallet/sentinel"
+        fakeHost.reset()
+        fakeHost.responses = {
+            restoreDefaultSettingsState: {
+                ok: true,
+                value: {
+                    version: 2,
+                    network_profile: "default",
+                    node_url: "http://127.0.0.1:8080/",
+                    network_connector_config: {
+                        scopes: {
+                            l1: { connector_id: "logoscore_cli_blockchain_module", provenance: "testnet_default" },
+                            delivery: { connector_id: "logoscore_cli_delivery_module", provenance: "testnet_default" },
+                            storage: { connector_id: "logoscore_cli_storage_module", provenance: "testnet_default" }
+                        }
+                    },
+                    messaging_network_preset: "logos.test",
+                    storage_network_preset: "logos.test",
+                    local_nodes_enabled: true,
+                    local_devnet_enabled: false,
+                    blockchain_refresh_rate: 30,
+                    messaging_refresh_rate: 30,
+                    storage_refresh_rate: 30,
+                    social_identities: [],
+                    favorites: []
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        verify(model.restoreDefaultSettings())
+
+        compare(model.networkProfile, "default")
+        compare(model.nodeUrl, "http://127.0.0.1:8080/")
+        verify(model.localNodesEnabled)
+        verify(!model.localDevnetEnabled)
+        compare(model.networkConnectorConfig.scopes.l1.connector_id,
+            "direct_l1_rpc")
+        compare(model.zoneCatalogL1SourceDescriptor().default_topology, "logos_testnet")
+        compare(model.walletProfileLabel, "Wallet sentinel")
+        compare(model.walletHome, "/wallet/sentinel")
+        verify(fakeHost.calls.some(function (call) {
+            return call.method === "restoreDefaultSettingsState"
+        }))
+        verify(!fakeHost.calls.some(function (call) {
+            return call.method === "loadWalletState" || call.method === "saveWalletState"
+        }))
+    }
+
     function test_social_settings_round_trip_identity_and_shared_idl_policy() {
         fakeHost.responses = {
             loadSettingsState: {
@@ -2248,6 +2365,156 @@ TestCase {
         compare(model.registeredIdls.count, 0)
     }
 
+    function test_successful_account_inspection_hydrates_shared_idl_without_displacing_local() {
+        setActiveZone("")
+        const accountId = "a".repeat(64)
+        const programId = "12".repeat(32)
+        const topic = "/lez/account/" + accountId + "/idl"
+        const localEntry = {
+            key: "local-account-idl",
+            name: "Local",
+            programId: "0x" + programId,
+            programIdHex: programId,
+            programBinary: "",
+            json: "{\"name\":\"Local\",\"accounts\":[]}",
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: "",
+            accountType: ""
+        }
+        const sharedEntry = {
+            key: "shared-account-idl",
+            name: "Shared",
+            programId: "0x" + programId,
+            programIdHex: programId,
+            programBinary: "",
+            json: "{\"name\":\"Shared\",\"accounts\":[]}",
+            source: "shared",
+            sharedTopic: topic,
+            sharedIdentity: { display_name: "Testnet peer" },
+            sharedAccountId: accountId,
+            accountType: "State"
+        }
+        model.registeredIdls.append(localEntry)
+        model.social.sharedIdlPolicy = "autoRegister"
+        fakeHost.responses = {
+            zoneL2Account: function (args) {
+                const request = args[0]
+                return {
+                    ok: true,
+                    value: {
+                        report_kind: "lez.account",
+                        schema_version: 1,
+                        context: request.context,
+                        request_revision: request.request_revision,
+                        route: { policy: "composite", attempts: [] },
+                        route_completeness: "all_configured",
+                        warnings: [],
+                        data: {
+                            outcome: "found",
+                            value: {
+                                account: {
+                                    account_id: accountId,
+                                    account_id_base58: accountId,
+                                    account_id_hex: "34".repeat(32),
+                                    balance: "17",
+                                    nonce: "4",
+                                    owner_program_base58: "owner-program",
+                                    owner_program_hex: programId,
+                                    data_hex: "0102",
+                                    existence: "unknown"
+                                },
+                                anchor: {
+                                    block_id: 12,
+                                    block_hash: "56".repeat(32)
+                                },
+                                after_anchor: null,
+                                anchor_state: "exact",
+                                source: {
+                                    source_id: "idx-a",
+                                    source_role: "indexer",
+                                    source_config_revision: 7,
+                                    finality: "finalized",
+                                    retrieval: "live"
+                                }
+                            }
+                        }
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            },
+            zoneL2AccountActivity: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "activity unavailable"
+            },
+            socialZoneAccountIdlTopic: {
+                ok: true,
+                value: topic,
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "shared-idl-store",
+                        domain: "delivery",
+                        method: request.method,
+                        label: request.label,
+                        status: "completed",
+                        eventCursor: 1,
+                        result: { messages: [] },
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            },
+            acceptedSharedIdlEntriesFromStoreWithStorage: {
+                ok: true,
+                value: [sharedEntry],
+                text: "OK",
+                error: ""
+            }
+        }
+
+        verify(model.zoneInspection.l2.accounts.inspectL2AccountReference(accountId, {
+            kind: "exact",
+            source_id: "idx-a",
+            source_role: "indexer"
+        }))
+
+        tryCompare(model.registeredIdls, "count", 2)
+        const topicCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "socialZoneAccountIdlTopic"
+        })
+        compare(topicCalls.length, 1)
+        compare(topicCalls[0].args[0].network_scope.kind, "genesis_id")
+        compare(topicCalls[0].args[0].channel_id, model.zoneInspection.activeZoneId)
+        compare(topicCalls[0].args[0].entity_kind, "account")
+        compare(topicCalls[0].args[0].canonical_key, accountId)
+        compare(topicCalls[0].args[0].source.kind, "exact")
+        compare(topicCalls[0].args[0].source.source_id, "idx-a")
+        compare(topicCalls[0].args[0].source.source_role, "indexer")
+        const hydrationCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "acceptedSharedIdlEntriesFromStoreWithStorage"
+        })
+        compare(hydrationCalls.length, 1)
+        compare(hydrationCalls[0].args[0], topic)
+        compare(hydrationCalls[0].args[2], accountId)
+        compare(hydrationCalls[0].args[3], "0102")
+        compare(hydrationCalls[0].args[4], programId)
+        const entries = model.idlEntriesForProgram(programId)
+        compare(entries.length, 2)
+        compare(entries[0].key, "local-account-idl")
+        compare(entries[1].key, "shared-account-idl")
+    }
+
     function test_local_idl_priority_beats_shared_match() {
         setActiveZone("")
         const programIdHex = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -2526,6 +2793,63 @@ TestCase {
         verify(runtimeOperationCallIndex("deliverySend") > uploadIndex)
         compare(callCountFor("storageUploadPayload"), 0)
         compare(callCountFor("deliverySend"), 0)
+    }
+
+    function test_verified_local_idl_selection_honors_auto_share_setting() {
+        setActiveZone("")
+        model.storageMutatingDiagnosticsEnabled = true
+        model.messagingMutatingDiagnosticsEnabled = true
+        model.social.createIdentity("Auto publisher")
+        model.social.sharedIdlAutoShare = true
+        fakeHost.responses = {
+            socialZoneAccountIdlTopic: {
+                ok: true,
+                value: "/lez/account/" + "a".repeat(64) + "/idl",
+                text: "OK",
+                error: ""
+            },
+            socialTopicValid: {
+                ok: true,
+                value: true,
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStart: function (args) {
+                const request = args[0] || {}
+                return request.method === "storageUploadPayload" ? {
+                    ok: true,
+                    value: socialUploadOperation("auto-idl-upload", {
+                        cid: "cid-auto-idl",
+                        filename: "logos-inspector-shared-idl.json",
+                        endpoint: model.sourceRouting.configuredStorageRestUrl()
+                    }),
+                    text: "OK",
+                    error: ""
+                } : {
+                    ok: true,
+                    value: socialSendOperation("auto-idl-send", request.payload.topic, {
+                        messageHash: "hash-auto-idl"
+                    }),
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+        const programId = "12".repeat(32)
+        const entry = {
+            key: "auto-local-idl",
+            name: "Auto local",
+            programIdHex: programId,
+            json: "{\"name\":\"Auto local\",\"accounts\":[]}",
+            source: "local"
+        }
+
+        model.cacheAccountIdlSelection("a".repeat(64), entry, "State", programId)
+
+        tryVerify(function () {
+            return runtimeOperationCallIndex("deliverySend")
+                > runtimeOperationCallIndex("storageUploadPayload")
+        })
     }
 
     function test_settings_backup_blocks_when_upload_gate_unavailable() {
@@ -4470,6 +4794,11 @@ TestCase {
         compare(model.dashboardBlocks[0].block_id, 101)
         compare(model.dashboardLezBlockRows.length, 2)
         compare(model.dashboardL1Blocks.length, 1)
+        compare(model.metrics.sequencerHeadValue(), 104)
+        compare(model.metrics.indexerHeadValue(), 101)
+        compare(model.metrics.indexerLag(), 3)
+        compare(model.metrics.dashboardMetricRawValue(
+            "indexer.indexer_lag_vs_sequencer_head"), 3)
         compare(callCountFor("blockchainNode"), 0)
         compare(callCountFor("blockchainLiveBlocks"), 0)
         compare(runtimeOperationCallCount("blockchainNode"), 1)

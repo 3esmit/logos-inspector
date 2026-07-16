@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 
@@ -62,29 +62,50 @@ pub(crate) fn managed_call_spec(
     config_path: &str,
 ) -> Option<ManagedModuleCallSpec> {
     match action {
+        ManagedNodeAction::Initialize => Some(ManagedModuleCallSpec::new(
+            "generate_user_config",
+            "generate_user_config(QString)",
+            vec![format!("@{config_path}")],
+        )),
         ManagedNodeAction::Start => Some(ManagedModuleCallSpec::new(
             "start",
             "start(QString,QString)",
             vec![config_path.to_owned(), String::new()],
         )),
         ManagedNodeAction::Stop => Some(ManagedModuleCallSpec::new("stop", "stop()", Vec::new())),
-        ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
+        ManagedNodeAction::Destroy => None,
     }
 }
 
 #[must_use]
 pub(crate) fn managed_config(
-    network_id: &str,
+    _network_id: &str,
     data_dir: &str,
     endpoint: Option<&str>,
-    port: Option<u16>,
+    _port: Option<u16>,
+    output_path: &str,
+    public_testnet: bool,
 ) -> Value {
+    let http_addr = endpoint
+        .and_then(|value| value.strip_prefix("http://"))
+        .and_then(|value| value.strip_suffix('/'))
+        .unwrap_or("127.0.0.1:8080");
+    let initial_peers = if public_testnet {
+        crate::testnet::LOGOS_TESTNET_BOOTSTRAP_PEERS
+    } else {
+        &[]
+    };
     json!({
-        "network_id": network_id,
-        "node": "bedrock",
-        "data_dir": data_dir,
-        "endpoint": endpoint,
-        "port": port,
+        "initial_peers": initial_peers,
+        "output": output_path,
+        "net_port": 3000,
+        "blend_port": 3001,
+        "http_addr": http_addr,
+        "state_path": format!("{data_dir}/state"),
+        "storage_path": format!("{data_dir}/storage"),
+        "logs_path": format!("{data_dir}/logs"),
+        "skip_ibd": false,
+        "log_filter": "info",
     })
 }
 
@@ -94,12 +115,19 @@ const RPC_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     required: true,
 }];
 
-const BEDROCK_CAPABILITIES: &[&str] = &[
+const RPC_BEDROCK_CAPABILITIES: &[&str] = &[
     "l1.blocks.read",
     "l1.transactions.read",
     "l1.channels.read",
     "l1.wallet_balance.read",
     "l1.live_blocks.observe",
+];
+
+const MODULE_BEDROCK_CAPABILITIES: &[&str] = &[
+    "l1.blocks.read",
+    "l1.transactions.read",
+    "l1.channels.read",
+    "l1.wallet_balance.read",
 ];
 
 pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
@@ -125,7 +153,7 @@ pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
             target: "rpc_endpoint",
             module_id: None,
             inputs: RPC_INPUTS,
-            capabilities: BEDROCK_CAPABILITIES,
+            capabilities: RPC_BEDROCK_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: false,
             capability_scopes: &["l1"],
@@ -147,7 +175,7 @@ pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
             target: "module",
             module_id: Some(BLOCKCHAIN_MODULE),
             inputs: &[],
-            capabilities: BEDROCK_CAPABILITIES,
+            capabilities: MODULE_BEDROCK_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
             capability_scopes: &["l1", "wallet.l1"],
@@ -169,7 +197,7 @@ pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
             target: "module",
             module_id: Some(BLOCKCHAIN_MODULE),
             inputs: &[],
-            capabilities: BEDROCK_CAPABILITIES,
+            capabilities: MODULE_BEDROCK_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
             capability_scopes: &["l1", "wallet.l1"],
@@ -248,22 +276,15 @@ pub(crate) async fn live_blocks(
     slot_from: u64,
     slot_to: u64,
     limit: u64,
-    module_transport: &SharedModuleTransport,
+    _module_transport: &SharedModuleTransport,
 ) -> Result<BlockchainLiveBlocksReport> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => {
             crate::blockchain::blockchain_live_blocks_snapshot(endpoint, slot_from, slot_to, limit)
                 .await
         }
-        BedrockAdapter::Module { transport } => {
-            adapters::blockchain_live_blocks_snapshot(
-                module_transport,
-                transport,
-                slot_from,
-                slot_to,
-                limit,
-            )
-            .await
+        BedrockAdapter::Module { .. } => {
+            bail!("module adapter does not support live-block observation")
         }
     }
 }
@@ -375,7 +396,10 @@ pub(crate) async fn catalog_block(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::modules::logos_core::UnavailableModuleTransport;
     use crate::source_routing::adapter::{
         ManagedNodeAction,
         contract_tests::{assert_layer_contract, assert_managed_module_contract},
@@ -391,7 +415,11 @@ mod tests {
         assert_managed_module_contract(
             "bedrock",
             managed_contract(),
-            &[ManagedNodeAction::Start, ManagedNodeAction::Stop],
+            &[
+                ManagedNodeAction::Initialize,
+                ManagedNodeAction::Start,
+                ManagedNodeAction::Stop,
+            ],
         );
     }
 
@@ -409,5 +437,32 @@ mod tests {
                 transport: ModuleTransportKind::Module
             }
         );
+    }
+
+    #[tokio::test]
+    async fn module_adapter_rejects_live_blocks_before_transport_dispatch() -> Result<()> {
+        let transport: SharedModuleTransport =
+            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
+
+        let result = live_blocks(
+            BedrockAdapter::module(ModuleTransportKind::Module),
+            0,
+            9_007_199_254_740_991,
+            5,
+            &transport,
+        )
+        .await;
+        let Err(error) = result else {
+            return Err(anyhow::anyhow!(
+                "module live blocks unexpectedly reached transport"
+            ));
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("module adapter does not support live-block observation")
+        );
+        Ok(())
     }
 }

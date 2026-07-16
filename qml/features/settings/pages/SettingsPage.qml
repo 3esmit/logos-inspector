@@ -53,7 +53,7 @@ ColumnLayout {
     ListModel {
         id: profileOptions
 
-        ListElement { key: "default"; label: "Default"; summary: "Bedrock node profile" }
+        ListElement { key: "default"; label: "Testnet"; summary: "Local nodes with Logos Testnet" }
         ListElement {
             key: "custom"
             label: "Custom"
@@ -140,7 +140,7 @@ ColumnLayout {
     }
 
     Connections {
-        target: settingsRoot.model
+        target: settingsRoot.model.sourceRouting
 
         function onSourcePolicyChanged() {
             settingsRoot.refreshProfileOptions()
@@ -275,6 +275,27 @@ ColumnLayout {
                             checked: settingsRoot.model.localDevnetEnabled
                             Layout.fillWidth: true
                             onToggled: settingsRoot.model.localDevnetEnabled = checked
+                        }
+                    }
+
+                    RowLayout {
+                        spacing: settingsRoot.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        ActionButton {
+                            theme: settingsRoot.theme
+                            text: qsTr("Restore Testnet defaults")
+                            enabled: !settingsRoot.model.shell.busy
+                            onClicked: testnetDefaultsConfirm.open()
+                        }
+
+                        Text {
+                            text: qsTr("Resets network and UI settings. Wallet stays unchanged.")
+                            color: settingsRoot.theme.textMuted
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            font.pixelSize: settingsRoot.theme.secondaryText
+                            Layout.fillWidth: true
                         }
                     }
                 }
@@ -564,6 +585,17 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    ConfirmActionPopup {
+        id: testnetDefaultsConfirm
+
+        theme: settingsRoot.theme
+        title: qsTr("Restore Testnet defaults")
+        message: qsTr("Restore local Testnet nodes and Logos Execution Zone sources. Wallet and registered IDLs remain unchanged.")
+        confirmText: qsTr("Restore defaults")
+        confirmEnabled: !settingsRoot.model.shell.busy
+        onAccepted: settingsRoot.model.restoreDefaultSettings()
     }
 
     ConfirmActionPopup {

@@ -35,6 +35,10 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
     cargo_workspace = ("cargo", "check", "--workspace")
     clippy_workspace = ("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
     test_workspace = ("cargo", "test", "--workspace")
+    tracked_build_inputs = BuildStep(
+        "tracked build inputs",
+        (sys.executable, "scripts/check-tracked-build-inputs.py"),
+    )
     source_policy_artifact = (sys.executable, "scripts/source_policy_artifact.py", "check")
     native_steps = [
         BuildStep(
@@ -61,6 +65,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
     profiles: dict[str, list[BuildStep]] = {
         "ci": [
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
+            tracked_build_inputs,
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
             BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
@@ -79,6 +84,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         ],
         "local": [
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
+            tracked_build_inputs,
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
             BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
@@ -91,6 +97,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         ],
         "rust": [
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
+            tracked_build_inputs,
             BuildStep("cargo check workspace", cargo_workspace, rust_env),
             BuildStep("clippy workspace", clippy_workspace, rust_env),
             BuildStep("cargo test workspace", test_workspace, rust_env),

@@ -77,8 +77,11 @@ pub(crate) fn managed_config(data_dir: &str) -> Value {
     json!({
         "data-dir": data_dir,
         "log-level": "INFO",
-        "nat": "none",
-        "network": "logos.test",
+        "listen-ip": "0.0.0.0",
+        "listen-port": 8091,
+        "disc-port": 8090,
+        "nat": "any",
+        "network": crate::testnet::LOGOS_TESTNET_PRESET,
     })
 }
 

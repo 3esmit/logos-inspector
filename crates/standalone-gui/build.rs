@@ -6,6 +6,7 @@ fn main() {
     emit_qt_runtime_link_args();
 
     CxxQtBuilder::new_qml_module(QmlModule::new("LogosInspectorStandalone"))
+        .crate_include_root(None)
         .qt_module("Network")
         .file("src/bridge.rs")
         .build();

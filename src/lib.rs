@@ -21,6 +21,7 @@ mod rpc;
 pub mod social;
 pub mod source_routing;
 pub(crate) mod support;
+pub(crate) mod testnet;
 pub mod wallet;
 
 pub use public_surface::{

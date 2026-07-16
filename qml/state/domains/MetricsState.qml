@@ -21,6 +21,7 @@ QtObject {
     property int blockchainRefreshRate: 30
     property int messagingRefreshRate: 30
     property int storageRefreshRate: 30
+    property int observationTimeoutMs: 45000
     property var networkConnectionStatus: ({})
     property int networkConnectionStatusRevision: 0
     property var networkConnectionPending: ({})
@@ -74,6 +75,13 @@ QtObject {
         messaging: 0
     })
     property int observationRevision: 0
+
+    property Timer observationTimeoutTimer: Timer {
+        interval: Math.max(1, Math.min(root.observationTimeoutMs, 1000))
+        repeat: true
+        running: Object.keys(root.activeObservationLeases).length > 0
+        onTriggered: root.expireTimedOutObservations()
+    }
 
     function refreshInterval(seconds) {
         return AppModelNetwork.refreshInterval(root, seconds)
@@ -137,7 +145,8 @@ QtObject {
             requestKey: String(requestKey || ""),
             requestBaseKey: String(requestBaseKey || requestKey || ""),
             sensitiveProbe: sensitiveProbe === true,
-            interactive: interactive === true
+            interactive: interactive === true,
+            deadlineMs: Date.now() + Math.max(1, root.observationTimeoutMs)
         }
         const leases = copyMap(activeObservationLeases)
         leases[target] = lease
@@ -467,6 +476,22 @@ QtObject {
         const snapshot = sourceObservation(target)
         notifyObservationWaiters(target, response, snapshot)
         return true
+    }
+
+    function expireTimedOutObservations() {
+        const now = Date.now()
+        const leases = activeObservationLeases || ({})
+        for (const kind in leases) {
+            const lease = leases[kind]
+            if (!lease || Number(lease.deadlineMs || 0) > now) {
+                continue
+            }
+            completeObservation(lease, {
+                ok: false,
+                text: "",
+                error: qsTr("Source observation timed out.")
+            })
+        }
     }
 
     function commitObservation(kind, response, lease) {
@@ -869,7 +894,9 @@ QtObject {
         dashboardError = ""
         gateway.projectZoneDashboard()
 
-        let remaining = 4
+        const liveBlocksSupported = sourceRouting.blockchainSupportsCapability(
+            "l1.live_blocks.observe")
+        let remaining = liveBlocksSupported ? 4 : 3
         let successful = 0
         const errors = []
         const complete = function (response) {
@@ -923,6 +950,9 @@ QtObject {
             "storage", false, false, once(complete), "dashboard")
         observeNetworkConnection(
             "messaging", false, false, once(complete), "dashboard")
+        if (!liveBlocksSupported) {
+            return true
+        }
         const liveRequest = {
             method: "blockchainLiveBlocks",
             args: [0, 9007199254740991, 5],

@@ -71,7 +71,11 @@ pub(crate) fn managed_call_spec(
 pub(crate) fn managed_config(port: Option<u16>) -> Value {
     json!({
         "mode": "Core",
-        "preset": "logos.test",
+        "preset": crate::testnet::LOGOS_TESTNET_PRESET,
+        "tcpPort": 30303,
+        "discv5UdpPort": 9000,
+        "discv5Discovery": true,
+        "nat": "any",
         "rest": true,
         "restAddress": "127.0.0.1",
         "restPort": port.unwrap_or(8645),

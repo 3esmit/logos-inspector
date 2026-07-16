@@ -183,6 +183,8 @@ pub struct LocalNodeOperationReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalDevnetRecord {
+    #[serde(default)]
+    pub deployment: LocalNodeDeployment,
     pub id: String,
     pub label: String,
     pub workspace: String,
@@ -190,6 +192,14 @@ pub struct LocalDevnetRecord {
     pub created_at: u64,
     pub updated_at: u64,
     pub nodes: Vec<LocalNodeConfigRecord>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalNodeDeployment {
+    #[default]
+    LocalDevnet,
+    PublicTestnet,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -218,6 +228,8 @@ pub struct ToolStatus {
 pub struct LocalNodeConfigRecord {
     pub kind: NodeKind,
     pub config_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initialization_config_path: Option<String>,
     pub data_dir: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
@@ -276,6 +288,8 @@ impl NodeLifecycleState {
 pub(super) struct LocalNodesState {
     pub(super) version: u32,
     pub(super) active_devnet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) testnet: Option<LocalDevnetRecord>,
     pub(super) managed_workspace_root: String,
     pub(super) devnets: Vec<LocalDevnetRecord>,
     pub(super) operations: Vec<LocalNodeOperationReport>,
@@ -284,8 +298,9 @@ pub(super) struct LocalNodesState {
 impl LocalNodesState {
     pub(super) fn default_for_config_dir(config: &Path) -> Self {
         Self {
-            version: 1,
+            version: 2,
             active_devnet: None,
+            testnet: None,
             managed_workspace_root: config.join("local-nodes").display().to_string(),
             devnets: Vec::new(),
             operations: Vec::new(),
@@ -302,10 +317,37 @@ impl LocalNodesState {
         self.devnets.iter_mut().find(|record| record.id == active)
     }
 
+    pub(super) fn active_topology(&self, profile: &str) -> Option<&LocalDevnetRecord> {
+        if profile == "local" {
+            self.active_devnet()
+        } else {
+            self.testnet.as_ref()
+        }
+    }
+
+    pub(super) fn active_topology_mut(&mut self, profile: &str) -> Option<&mut LocalDevnetRecord> {
+        if profile == "local" {
+            self.active_devnet_mut()
+        } else {
+            self.testnet.as_mut()
+        }
+    }
+
     pub(super) fn devnet_mut(&mut self, network_id: &str) -> Option<&mut LocalDevnetRecord> {
         self.devnets
             .iter_mut()
             .find(|record| record.id == network_id)
+    }
+
+    pub(super) fn topology_mut(&mut self, network_id: &str) -> Option<&mut LocalDevnetRecord> {
+        if self
+            .testnet
+            .as_ref()
+            .is_some_and(|record| record.id == network_id)
+        {
+            return self.testnet.as_mut();
+        }
+        self.devnet_mut(network_id)
     }
 
     pub(super) fn push_operation(&mut self, operation: LocalNodeOperationReport) {
