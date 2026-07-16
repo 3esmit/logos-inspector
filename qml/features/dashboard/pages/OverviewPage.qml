@@ -67,13 +67,17 @@ ColumnLayout {
     }
 
     GridLayout {
+        objectName: "dashboardActivityGrid"
         columns: root.width < 860 ? 1 : 2
         columnSpacing: root.theme.gap
         rowSpacing: root.theme.gap
         Layout.fillWidth: true
 
         Frame {
+            objectName: "dashboardL1BlocksPanel"
             padding: 0
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: 1
             Layout.fillWidth: true
             Layout.row: 0
             Layout.column: 0
@@ -126,6 +130,8 @@ ColumnLayout {
         DashboardZonesPanel {
             theme: root.theme
             model: root.model
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: 1
             Layout.fillWidth: true
             Layout.row: root.width < 860 ? 2 : 0
             Layout.column: root.width < 860 ? 0 : 1
@@ -134,7 +140,10 @@ ColumnLayout {
         }
 
         Frame {
+            objectName: "dashboardL1TransactionsPanel"
             padding: 0
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: 1
             Layout.fillWidth: true
             Layout.row: 1
             Layout.column: 0

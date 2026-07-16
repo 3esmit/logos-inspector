@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtTest
 import "../../qml"
+import "fixtures/ZoneFixtureData.js" as ZoneFixtureData
 
 TestCase {
     id: testRoot
@@ -54,6 +55,62 @@ TestCase {
         for (let i = 0; i < views.length; ++i) {
             verifyStateNavigation(model, loader, views[i])
         }
+    }
+
+    function init() {
+        testWindow.width = testRoot.width
+    }
+
+    function cleanup() {
+        const model = findChild(shell, "appModel")
+        if (model !== null) {
+            model.zoneInspection.zoneSummaries = []
+        }
+    }
+
+    function test_dashboard_wide_layout_keeps_l1_panels_beside_zones() {
+        testWindow.width = 1560
+        const model = findChild(shell, "appModel")
+        const loader = findChild(shell, "pageLoader")
+        verify(model !== null)
+        verify(loader !== null)
+        model.shell.selectView("overview")
+        tryVerify(function () {
+            return loader.item !== null
+                && findChild(loader.item, "dashboardL1BlocksPanel") !== null
+                && findChild(loader.item, "dashboardL1TransactionsPanel") !== null
+                && findChild(loader.item, "dashboardZonesPanel") !== null
+        })
+
+        const fixtureZones = ZoneFixtureData.zones()
+        const manyZones = []
+        for (let index = 0; index < 20; ++index) {
+            manyZones.push(fixtureZones[index % fixtureZones.length])
+        }
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.summaryStale = false
+        model.zoneInspection.zoneSummaries = manyZones
+
+        const grid = findChild(loader.item, "dashboardActivityGrid")
+        const blocks = findChild(loader.item, "dashboardL1BlocksPanel")
+        const transactions = findChild(loader.item, "dashboardL1TransactionsPanel")
+        const zones = findChild(loader.item, "dashboardZonesPanel")
+        verify(grid !== null)
+        verify(blocks !== null)
+        verify(transactions !== null)
+        verify(zones !== null)
+        tryVerify(function () {
+            return blocks.width > 0 && transactions.width > 0 && zones.width > 0
+        })
+
+        verify(blocks.width >= 300)
+        verify(transactions.width >= 300)
+        verify(zones.width >= 300)
+        verify(Math.abs(blocks.width - zones.width) <= 1)
+        verify(Math.abs(transactions.width - zones.width) <= 1)
+        verify(blocks.x + blocks.width + grid.columnSpacing <= zones.x + 1)
+        verify(transactions.x + transactions.width
+               + grid.columnSpacing <= zones.x + 1)
     }
 
     function verifyButtonNavigation(model, loader, view) {
