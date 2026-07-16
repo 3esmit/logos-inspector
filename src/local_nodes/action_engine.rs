@@ -49,6 +49,10 @@ impl LocalNodeActionEngine {
         Ok(self.projector.report(profile, &state, runtime.as_ref()))
     }
 
+    pub(super) fn runtime_profile(&self) -> Result<Option<LogoscoreRuntimeProfile>> {
+        self.runtime_store.load()
+    }
+
     pub(super) fn devnets(&self, profile: &str) -> Result<LocalDevnetListReport> {
         let _state_lock = acquire_state_lock()?;
         let state = self.store.load()?;

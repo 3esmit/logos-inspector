@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    modules::logos_core::{LogoscoreCliTransport, ModuleTransportEvent},
+    modules::logos_core::{LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransportEvent},
     source_routing::{ManagedNodeAction, ManagedNodeContract},
     support::{command_runner::CommandControl, time::now_millis},
 };
@@ -19,11 +19,12 @@ use crate::{
 use super::{
     NodeAction, NodeKind, NodeLifecycleState,
     action_engine::LocalNodeActionEngine,
-    action_workspace::write_devnet_manifest,
+    action_workspace::{MessagingContextProbe, probe_messaging_context, write_devnet_manifest},
     adapters::{NodeLifecycle, adapter_for},
     lifecycle::acquire_state_lock,
     model::{LocalDevnetRecord, LocalNodeConfigRecord, LocalNodesState},
     process::process_group_has_live_members,
+    runtime::LogoscoreRuntimeProfile,
 };
 
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(10);
@@ -31,6 +32,7 @@ const DAEMON_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const PENDING_LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const NODE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+const MESSAGING_CONTEXT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
@@ -166,6 +168,8 @@ struct NodeLivenessProbe {
     process_backed: bool,
     module_availability: ModuleAvailability,
     alive: bool,
+    liveness_known: bool,
+    unavailable_detail: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -406,11 +410,11 @@ impl LocalNodeActionEngine {
         &self,
         cancellation: &CancellationToken,
     ) -> Result<ModuleWatcherPoll> {
-        let state = {
+        let (state, runtime) = {
             let _state_lock = acquire_state_lock()?;
-            self.store.load()?
+            (self.store.load()?, self.runtime_profile()?)
         };
-        let observation = observe_modules(&state, cancellation);
+        let observation = observe_modules(&state, runtime.as_ref(), cancellation);
         let lifecycle_events = self.apply_liveness_observation(&observation.probes)?;
         Ok(ModuleWatcherPoll {
             daemon: observation.daemon,
@@ -447,17 +451,25 @@ struct ModuleObservation {
     needs_fast_poll: bool,
 }
 
-fn observe_modules(state: &LocalNodesState, cancellation: &CancellationToken) -> ModuleObservation {
-    let runtime = LogoscoreCliTransport::default().runtime();
+fn observe_modules(
+    state: &LocalNodesState,
+    runtime_profile: Option<&LogoscoreRuntimeProfile>,
+    cancellation: &CancellationToken,
+) -> ModuleObservation {
+    let managed_runtime = runtime_profile.filter(|profile| profile.is_managed());
+    let runtime = managed_runtime
+        .map(LogoscoreRuntimeProfile::cli_runtime)
+        .transpose()
+        .and_then(|runtime| runtime.map_or_else(|| LogoscoreCliTransport::default().runtime(), Ok));
     let Ok(runtime) = runtime else {
-        return unavailable_observation(state);
+        return unavailable_observation(state, managed_runtime.is_some());
     };
     let now = Instant::now();
     let deadline = now.checked_add(DAEMON_STATUS_TIMEOUT).unwrap_or(now);
     let control = CommandControl::new(cancellation.clone(), deadline);
     let output = runtime.status_controlled(control);
     let Ok(output) = output else {
-        return unavailable_observation(state);
+        return unavailable_observation(state, managed_runtime.is_some());
     };
     let daemon = match output
         .value
@@ -469,8 +481,11 @@ fn observe_modules(state: &LocalNodesState, cancellation: &CancellationToken) ->
         _ => DaemonState::Unavailable,
     };
     let loaded_modules = loaded_modules(&output.value);
-    let probes =
+    let mut probes =
         collect_liveness_probes(state, &loaded_modules, daemon != DaemonState::Unavailable);
+    if managed_runtime.is_some() {
+        reconcile_messaging_liveness(&mut probes, &runtime, cancellation);
+    }
     let needs_fast_poll = probes.iter().any(|probe| probe.is_pending())
         || (daemon == DaemonState::Stopped
             && probes
@@ -484,13 +499,60 @@ fn observe_modules(state: &LocalNodesState, cancellation: &CancellationToken) ->
     }
 }
 
-fn unavailable_observation(state: &LocalNodesState) -> ModuleObservation {
-    let probes = collect_liveness_probes(state, &BTreeSet::new(), false);
+fn unavailable_observation(
+    state: &LocalNodesState,
+    managed_runtime_unavailable: bool,
+) -> ModuleObservation {
+    let mut probes = collect_liveness_probes(state, &BTreeSet::new(), false);
+    if managed_runtime_unavailable {
+        for probe in probes
+            .iter_mut()
+            .filter(|probe| probe.requires_module_context)
+        {
+            probe.liveness_known = false;
+            probe.unavailable_detail = Some("Inspector-managed runtime status is unavailable");
+        }
+    }
     ModuleObservation {
         daemon: DaemonState::Unavailable,
         loaded_modules: BTreeSet::new(),
         needs_fast_poll: probes.iter().any(NodeLivenessProbe::is_pending),
         probes,
+    }
+}
+
+fn reconcile_messaging_liveness(
+    probes: &mut [NodeLivenessProbe],
+    runtime: &LogoscoreCliRuntime,
+    cancellation: &CancellationToken,
+) {
+    for probe in probes.iter_mut().filter(|probe| {
+        probe.kind == NodeKind::Messaging
+            && probe.alive
+            && probe.module_availability == ModuleAvailability::Loaded
+    }) {
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(MESSAGING_CONTEXT_PROBE_TIMEOUT)
+            .unwrap_or(now);
+        let control = CommandControl::new(cancellation.clone(), deadline);
+        apply_messaging_context_probe(probe, probe_messaging_context(runtime, control));
+    }
+}
+
+fn apply_messaging_context_probe(probe: &mut NodeLivenessProbe, context: MessagingContextProbe) {
+    match context {
+        MessagingContextProbe::Available => {}
+        MessagingContextProbe::Absent => {
+            probe.alive = false;
+            probe.unavailable_detail =
+                Some("Messaging context is not initialized in the Inspector-managed runtime");
+        }
+        MessagingContextProbe::Unknown => {
+            probe.liveness_known = false;
+            probe.unavailable_detail =
+                Some("Messaging context could not be verified in the Inspector-managed runtime");
+        }
     }
 }
 
@@ -568,6 +630,8 @@ fn liveness_probe(
             ModuleAvailability::Unknown
         },
         alive,
+        liveness_known: true,
+        unavailable_detail: None,
     })
 }
 
@@ -637,117 +701,162 @@ fn apply_liveness_observation(
         };
         let confirmation_timed_out = observed_at.saturating_sub(probe.record_updated_at)
             >= LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS;
-        let event = match (
-            node.lifecycle_state,
-            node.pending_lifecycle_action,
-            probe.alive,
-        ) {
-            (NodeLifecycleState::Starting, Some(NodeAction::Start), true)
-            | (NodeLifecycleState::Unknown | NodeLifecycleState::Failed, None, true) => {
-                node.lifecycle_state = NodeLifecycleState::Running;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(probe, true, true, "endpoint is reachable")?)
-            }
-            (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
-                if probe.module_availability == ModuleAvailability::Unavailable =>
-            {
-                node.lifecycle_state = NodeLifecycleState::Failed;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(
-                    probe,
-                    true,
-                    false,
-                    "module is unavailable and endpoint is closed",
-                )?)
-            }
-            (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
-                if probe.process_backed =>
-            {
-                node.process_id = None;
-                node.lifecycle_state = NodeLifecycleState::Failed;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(
-                    probe,
-                    true,
-                    false,
-                    "Inspector-owned process exited before lifecycle confirmation",
-                )?)
-            }
-            (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
-                if confirmation_timed_out =>
-            {
-                node.lifecycle_state = NodeLifecycleState::Failed;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(
-                    probe,
-                    true,
-                    false,
-                    "endpoint did not become reachable before confirmation timeout",
-                )?)
-            }
-            (NodeLifecycleState::Stopping, Some(NodeAction::Stop), false) => {
-                if probe.process_backed {
-                    node.process_id = None;
+        let event = if !probe.liveness_known {
+            match (node.lifecycle_state, node.pending_lifecycle_action) {
+                (NodeLifecycleState::Starting, Some(NodeAction::Start))
+                    if confirmation_timed_out =>
+                {
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        true,
+                        false,
+                        probe.unavailable_detail.unwrap_or(
+                            "node liveness could not be verified before confirmation timeout",
+                        ),
+                    )?)
                 }
-                node.lifecycle_state = NodeLifecycleState::Stopped;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(probe, false, true, "endpoint is closed")?)
-            }
-            (NodeLifecycleState::Stopping, Some(NodeAction::Stop), true)
-                if probe.module_availability == ModuleAvailability::Unavailable =>
-            {
-                node.lifecycle_state = NodeLifecycleState::Failed;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(
-                    probe,
-                    false,
-                    false,
-                    "module is unavailable while endpoint remains reachable",
-                )?)
-            }
-            (NodeLifecycleState::Stopping, Some(NodeAction::Stop), true)
-                if confirmation_timed_out =>
-            {
-                node.lifecycle_state = NodeLifecycleState::Failed;
-                node.pending_lifecycle_action = None;
-                Some(lifecycle_event(
-                    probe,
-                    false,
-                    false,
-                    "endpoint did not close before confirmation timeout",
-                )?)
-            }
-            (NodeLifecycleState::Running, None, false) => {
-                if probe.process_backed {
-                    node.process_id = None;
+                (NodeLifecycleState::Stopping, Some(NodeAction::Stop))
+                    if confirmation_timed_out =>
+                {
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        false,
+                        false,
+                        probe.unavailable_detail.unwrap_or(
+                            "node liveness could not be verified before confirmation timeout",
+                        ),
+                    )?)
                 }
-                node.lifecycle_state = NodeLifecycleState::Unknown;
-                Some(unavailable_event(
-                    probe,
-                    if probe.module_availability == ModuleAvailability::Unavailable {
-                        "module is unavailable and endpoint is closed"
-                    } else {
-                        "endpoint is no longer reachable"
-                    },
-                )?)
+                _ => None,
             }
-            (NodeLifecycleState::Unknown, None, false) => {
-                if probe.process_backed {
-                    node.process_id = None;
+        } else {
+            match (
+                node.lifecycle_state,
+                node.pending_lifecycle_action,
+                probe.alive,
+            ) {
+                (NodeLifecycleState::Starting, Some(NodeAction::Start), true)
+                | (NodeLifecycleState::Unknown | NodeLifecycleState::Failed, None, true) => {
+                    node.lifecycle_state = NodeLifecycleState::Running;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(probe, true, true, "endpoint is reachable")?)
                 }
-                node.lifecycle_state = NodeLifecycleState::Stopped;
-                Some(lifecycle_event(
-                    probe,
-                    false,
-                    true,
-                    "endpoint remains closed",
-                )?)
+                (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
+                    if probe.module_availability == ModuleAvailability::Unavailable =>
+                {
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        true,
+                        false,
+                        "module is unavailable and endpoint is closed",
+                    )?)
+                }
+                (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
+                    if probe.process_backed =>
+                {
+                    node.process_id = None;
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        true,
+                        false,
+                        "Inspector-owned process exited before lifecycle confirmation",
+                    )?)
+                }
+                (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
+                    if confirmation_timed_out =>
+                {
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        true,
+                        false,
+                        probe.unavailable_detail.unwrap_or(
+                            "endpoint did not become reachable before confirmation timeout",
+                        ),
+                    )?)
+                }
+                (NodeLifecycleState::Stopping, Some(NodeAction::Stop), false) => {
+                    if probe.process_backed {
+                        node.process_id = None;
+                    }
+                    node.lifecycle_state = NodeLifecycleState::Stopped;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        false,
+                        true,
+                        probe.unavailable_detail.unwrap_or("endpoint is closed"),
+                    )?)
+                }
+                (NodeLifecycleState::Stopping, Some(NodeAction::Stop), true)
+                    if probe.module_availability == ModuleAvailability::Unavailable =>
+                {
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        false,
+                        false,
+                        "module is unavailable while endpoint remains reachable",
+                    )?)
+                }
+                (NodeLifecycleState::Stopping, Some(NodeAction::Stop), true)
+                    if confirmation_timed_out =>
+                {
+                    node.lifecycle_state = NodeLifecycleState::Failed;
+                    node.pending_lifecycle_action = None;
+                    Some(lifecycle_event(
+                        probe,
+                        false,
+                        false,
+                        probe
+                            .unavailable_detail
+                            .unwrap_or("endpoint did not close before confirmation timeout"),
+                    )?)
+                }
+                (NodeLifecycleState::Running, None, false) => {
+                    if probe.process_backed {
+                        node.process_id = None;
+                    }
+                    node.lifecycle_state = NodeLifecycleState::Unknown;
+                    Some(unavailable_event(
+                        probe,
+                        probe.unavailable_detail.unwrap_or(
+                            if probe.module_availability == ModuleAvailability::Unavailable {
+                                "module is unavailable and endpoint is closed"
+                            } else {
+                                "endpoint is no longer reachable"
+                            },
+                        ),
+                    )?)
+                }
+                (NodeLifecycleState::Unknown, None, false) => {
+                    if probe.process_backed {
+                        node.process_id = None;
+                    }
+                    node.lifecycle_state = NodeLifecycleState::Stopped;
+                    Some(lifecycle_event(
+                        probe,
+                        false,
+                        true,
+                        "endpoint remains closed",
+                    )?)
+                }
+                (NodeLifecycleState::Stopped, None, true) => {
+                    node.lifecycle_state = NodeLifecycleState::Running;
+                    Some(lifecycle_event(probe, true, true, "endpoint is reachable")?)
+                }
+                _ => None,
             }
-            (NodeLifecycleState::Stopped, None, true) => {
-                node.lifecycle_state = NodeLifecycleState::Running;
-                Some(lifecycle_event(probe, true, true, "endpoint is reachable")?)
-            }
-            _ => None,
         };
         if let Some(event) = event {
             record.updated_at = observed_at;
@@ -963,6 +1072,8 @@ mod tests {
             ),
             module_availability,
             alive,
+            liveness_known: true,
+            unavailable_detail: None,
         })
     }
 
@@ -1283,6 +1394,157 @@ mod tests {
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Failed
                 && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_messaging_context_does_not_treat_a_foreign_listener_as_running() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Running,
+            None,
+        );
+        let mut probe = probe_for(
+            NodeKind::Messaging,
+            NodeLifecycleState::Running,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+
+        apply_messaging_context_probe(&mut probe, MessagingContextProbe::Absent);
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(events[0].event() == "nodeUnavailable");
+        anyhow::ensure!(
+            events[0]
+                .args()
+                .first()
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+                .is_some_and(|detail| detail.contains("not initialized"))
+        );
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(node.lifecycle_state == NodeLifecycleState::Unknown);
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_messaging_context_fails_pending_start_after_confirmation_timeout() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        let current = now_millis();
+        state.devnets[0].updated_at = current;
+        let mut probe = probe_for(
+            NodeKind::Messaging,
+            NodeLifecycleState::Starting,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+        probe.record_updated_at = current;
+        apply_messaging_context_probe(&mut probe, MessagingContextProbe::Unknown);
+
+        let (pending_changed, pending_events) =
+            apply_liveness_observation(&mut state, std::slice::from_ref(&probe))?;
+
+        anyhow::ensure!(!pending_changed && pending_events.is_empty());
+        let pending_node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            pending_node.lifecycle_state == NodeLifecycleState::Starting
+                && pending_node.pending_lifecycle_action == Some(NodeAction::Start)
+        );
+
+        let expired = now_millis().saturating_sub(LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS + 1);
+        state.devnets[0].updated_at = expired;
+        probe.record_updated_at = expired;
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(events[0].event() == "nodeStarted");
+        anyhow::ensure!(events[0].args().first() == Some(&Value::Bool(false)));
+        anyhow::ensure!(
+            events[0]
+                .args()
+                .get(1)
+                .and_then(Value::as_str)
+                .is_some_and(|detail| detail.contains("could not be verified"))
+        );
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Failed
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_messaging_context_fails_pending_stop_after_confirmation_timeout() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        );
+        let expired = now_millis().saturating_sub(LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS + 1);
+        state.devnets[0].updated_at = expired;
+        let mut probe = probe_for(
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopping,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+        probe.record_updated_at = expired;
+        apply_messaging_context_probe(&mut probe, MessagingContextProbe::Unknown);
+
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(events[0].event() == "nodeStopped");
+        anyhow::ensure!(events[0].args().first() == Some(&Value::Bool(false)));
+        anyhow::ensure!(
+            events[0]
+                .args()
+                .get(1)
+                .and_then(Value::as_str)
+                .is_some_and(|detail| detail.contains("could not be verified"))
+        );
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Failed
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_managed_runtime_never_uses_tcp_as_module_liveness() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopped,
+            None,
+        );
+
+        let observation = unavailable_observation(&state, true);
+        let probe = observation
+            .probes
+            .first()
+            .context("missing Messaging liveness probe")?;
+
+        anyhow::ensure!(
+            !probe.liveness_known
+                && probe.unavailable_detail
+                    == Some("Inspector-managed runtime status is unavailable")
         );
         Ok(())
     }
