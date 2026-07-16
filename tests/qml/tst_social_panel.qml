@@ -83,4 +83,12 @@ TestCase {
         compare(hint.text, "Delivery rejected the comment.")
         compare(body.text, "Retry this comment")
     }
+
+    function test_identity_selector_exposes_semantic_accessibility() {
+        const identity = findChild(panel, "commentIdentity")
+
+        verify(identity !== null)
+        compare(identity.Accessible.name, "Comment identity")
+        compare(identity.Accessible.description, identity.displayText)
+    }
 }
