@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::source_routing::{ManagedModuleCallSpec, ManagedNodeAction, ManagedNodeContract};
 
 use super::{
-    NodeAction, NodeKind,
+    NodeAction, NodeKind, NodeLifecycleState,
     model::{LocalNodeConfigRecord, LocalNodeTools},
     runtime::LogoscoreRuntimeProfile,
 };
@@ -350,12 +350,30 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 {
                     return Vec::new();
                 }
+                let Some(config) = context.config else {
+                    return Vec::new();
+                };
                 let mut actions = context.workflow_actions.clone();
-                if context.config.is_some_and(|node| node.installed) {
-                    actions.retain(|action| *action != NodeAction::Initialize);
-                } else {
-                    actions.retain(|action| *action == NodeAction::Initialize);
-                }
+                actions.retain(|action| match (config.installed, action) {
+                    (false, NodeAction::Initialize | NodeAction::Purge) => true,
+                    (false, _) => false,
+                    (true, NodeAction::Start) => {
+                        config.lifecycle_state == NodeLifecycleState::Stopped
+                    }
+                    (true, NodeAction::Stop) => matches!(
+                        config.lifecycle_state,
+                        NodeLifecycleState::Running
+                            | NodeLifecycleState::Unknown
+                            | NodeLifecycleState::Failed
+                    ),
+                    (true, NodeAction::Uninstall) => matches!(
+                        config.lifecycle_state,
+                        NodeLifecycleState::Stopped
+                            | NodeLifecycleState::Unknown
+                            | NodeLifecycleState::Failed
+                    ),
+                    (true, _) => false,
+                });
                 actions
             }
         }
@@ -439,11 +457,12 @@ pub(super) const fn managed_action(action: NodeAction) -> Option<ManagedNodeActi
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, process};
 
     use anyhow::{Result, bail};
 
     use super::*;
+    use crate::local_nodes::runtime::{LogoscoreRuntimeOwnership, LogoscoreTimeoutProfile};
 
     fn registered_process_config(
         installed: bool,
@@ -478,6 +497,58 @@ mod tests {
                 path: None,
             },
         }
+    }
+
+    fn running_managed_runtime() -> LogoscoreRuntimeProfile {
+        LogoscoreRuntimeProfile {
+            id: "inspector-managed-local".to_owned(),
+            binary_path: "/usr/bin/logoscore".to_owned(),
+            config_dir: "/tmp/logoscore".to_owned(),
+            modules_dir: Some("/tmp/modules".to_owned()),
+            persistence_path: Some("/tmp/node-data".to_owned()),
+            ownership: LogoscoreRuntimeOwnership::InspectorManaged,
+            timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            daemon_process_id: Some(process::id()),
+        }
+    }
+
+    fn managed_module_config(
+        kind: NodeKind,
+        installed: bool,
+        lifecycle_state: NodeLifecycleState,
+    ) -> LocalNodeConfigRecord {
+        LocalNodeConfigRecord {
+            kind,
+            config_path: "/tmp/module.json".to_owned(),
+            initialization_config_path: None,
+            data_dir: "/tmp/module".to_owned(),
+            endpoint: adapter_for(kind).endpoint(adapter_for(kind).default_port()),
+            port: adapter_for(kind).default_port(),
+            package_path: installed.then(|| "logoscore".to_owned()),
+            module_path: None,
+            process_id: None,
+            installed,
+            lifecycle_state,
+            pending_lifecycle_action: None,
+        }
+    }
+
+    fn projected_actions(
+        adapter: &dyn LocalNodeAdapter,
+        runtime: &LogoscoreRuntimeProfile,
+        tools: &LocalNodeTools,
+        config: &LocalNodeConfigRecord,
+    ) -> Vec<NodeAction> {
+        adapter
+            .project_status(NodeStatusContext {
+                config: Some(config),
+                runtime: Some(runtime),
+                tools,
+                process_running: false,
+                executable_available: false,
+                workflow_actions: adapter.workflow_actions().to_vec(),
+            })
+            .available_actions
     }
 
     fn assert_adapter_contract(adapter: &dyn LocalNodeAdapter) -> Result<()> {
@@ -641,5 +712,61 @@ mod tests {
 
             assert_eq!(status.run_state, expected_run_state);
         }
+    }
+
+    #[test]
+    fn managed_module_actions_follow_lifecycle_state() {
+        let adapter = adapter_for(NodeKind::Messaging);
+        let runtime = running_managed_runtime();
+        let tools = configured_tools();
+
+        let uninitialized = managed_module_config(
+            NodeKind::Messaging,
+            false,
+            NodeLifecycleState::NotInitialized,
+        );
+        assert_eq!(
+            projected_actions(adapter, &runtime, &tools, &uninitialized),
+            vec![NodeAction::Initialize, NodeAction::Purge]
+        );
+
+        let stopped = managed_module_config(NodeKind::Messaging, true, NodeLifecycleState::Stopped);
+        assert_eq!(
+            projected_actions(adapter, &runtime, &tools, &stopped),
+            vec![NodeAction::Start]
+        );
+
+        let running = managed_module_config(NodeKind::Messaging, true, NodeLifecycleState::Running);
+        assert_eq!(
+            projected_actions(adapter, &runtime, &tools, &running),
+            vec![NodeAction::Stop]
+        );
+
+        for state in [NodeLifecycleState::Unknown, NodeLifecycleState::Failed] {
+            let recoverable = managed_module_config(NodeKind::Messaging, true, state);
+            assert_eq!(
+                projected_actions(adapter, &runtime, &tools, &recoverable),
+                vec![NodeAction::Stop]
+            );
+        }
+    }
+
+    #[test]
+    fn managed_module_uninstall_requires_stopped_context() {
+        let adapter = adapter_for(NodeKind::Storage);
+        let runtime = running_managed_runtime();
+        let tools = configured_tools();
+
+        let stopped = managed_module_config(NodeKind::Storage, true, NodeLifecycleState::Stopped);
+        assert_eq!(
+            projected_actions(adapter, &runtime, &tools, &stopped),
+            vec![NodeAction::Start, NodeAction::Uninstall]
+        );
+
+        let running = managed_module_config(NodeKind::Storage, true, NodeLifecycleState::Running);
+        assert_eq!(
+            projected_actions(adapter, &runtime, &tools, &running),
+            vec![NodeAction::Stop]
+        );
     }
 }
