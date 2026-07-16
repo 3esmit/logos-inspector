@@ -516,27 +516,25 @@ fn node_initialize(
             };
             runtime.cli_runtime()?
         };
-        let record = active_topology_mut(state, profile)?;
-        let config = required_node_config(record, kind)?;
-        let action_config_path = action_config_path(config, NodeAction::Initialize);
-        let spec = command_spec_for(
-            kind,
-            NodeAction::Initialize,
-            action_config_path,
-            &config.data_dir,
-            config.port,
-        )
-        .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
+        let (spec, reuse_generated_config) = {
+            let record = active_topology_mut(state, profile)?;
+            let config = required_node_config(record, kind)?;
+            let action_config_path = action_config_path(config, NodeAction::Initialize);
+            let spec = command_spec_for(
+                kind,
+                NodeAction::Initialize,
+                action_config_path,
+                &config.data_dir,
+                config.port,
+            )
+            .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
+            (spec, reusable_generated_config(adapter, config))
+        };
         if ensure_loaded {
             ensure_module_loaded(&spec, Some(&cli), control)?;
         }
-        if reusable_generated_config(adapter, config) {
-            config.installed = true;
-            config.package_path = Some(spec.program.clone());
-            config.lifecycle_state = NodeLifecycleState::Stopped;
-            config.pending_lifecycle_action = None;
-            record.updated_at = now_millis();
-            write_devnet_manifest(record)?;
+        if reuse_generated_config {
+            mark_node_initialized(state, profile, kind, &spec.program)?;
             return Ok(OperationOutcome {
                 status: "initialized".to_owned(),
                 detail: "reused existing generated configuration; module is loaded".to_owned(),
@@ -547,12 +545,7 @@ fn node_initialize(
         }
         match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
-                config.installed = true;
-                config.package_path = Some(spec.program.clone());
-                config.lifecycle_state = NodeLifecycleState::Stopped;
-                config.pending_lifecycle_action = None;
-                record.updated_at = now_millis();
-                write_devnet_manifest(record)?;
+                mark_node_initialized(state, profile, kind, &spec.program)?;
                 Ok(OperationOutcome {
                     status: "initialized".to_owned(),
                     detail: operation_detail_from_value(&value),
@@ -568,14 +561,9 @@ fn node_initialize(
                     .context(
                         "Inspector-managed logoscore runtime disappeared during Messaging recovery",
                     )?;
-                match verify_messaging_context(runtime, control) {
+                match verify_messaging_context(state, runtime, control) {
                     Ok(verification) => {
-                        config.installed = true;
-                        config.package_path = Some(spec.program.clone());
-                        config.lifecycle_state = NodeLifecycleState::Stopped;
-                        config.pending_lifecycle_action = None;
-                        record.updated_at = now_millis();
-                        write_devnet_manifest(record)?;
+                        mark_node_initialized(state, profile, kind, &spec.program)?;
                         Ok(OperationOutcome {
                             status: "initialized".to_owned(),
                             detail: messaging_context_recovery_detail(&verification),
@@ -602,6 +590,22 @@ fn node_initialize(
     })
 }
 
+fn mark_node_initialized(
+    state: &mut LocalNodesState,
+    profile: &str,
+    kind: NodeKind,
+    package_path: &str,
+) -> Result<()> {
+    let record = active_topology_mut(state, profile)?;
+    let config = required_node_config(record, kind)?;
+    config.installed = true;
+    config.package_path = Some(package_path.to_owned());
+    config.lifecycle_state = NodeLifecycleState::Stopped;
+    config.pending_lifecycle_action = None;
+    record.updated_at = now_millis();
+    write_devnet_manifest(record)
+}
+
 fn is_ambiguous_messaging_create_error(error: &anyhow::Error) -> bool {
     error.to_string().contains("RPC_FAILED")
 }
@@ -626,6 +630,7 @@ fn messaging_context_recovery_detail(verification: &MessagingContextVerification
 }
 
 fn verify_messaging_context(
+    state: &mut LocalNodesState,
     runtime: &mut LogoscoreRuntimeProfile,
     control: Option<&CommandControl>,
 ) -> Result<MessagingContextVerification> {
@@ -648,6 +653,7 @@ fn verify_messaging_context(
                     "Messaging context verification found the restarted Inspector-managed LogosCore runtime stopped"
                 );
             }
+            reset_module_contexts(state);
             restart_managed_runtime_for_messaging_context(runtime, control)?;
             runtime_restarts += 1;
         }
@@ -1739,6 +1745,19 @@ esac
 
         let mut state = LocalNodesState::default_for_config_dir(directory.path());
         ensure_testnet_topology(&mut state)?;
+        let storage = state
+            .testnet
+            .as_mut()
+            .and_then(|record| {
+                record
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Storage)
+            })
+            .context("missing Storage node for runtime recovery test")?;
+        storage.installed = true;
+        storage.lifecycle_state = NodeLifecycleState::Running;
+        storage.pending_lifecycle_action = Some(NodeAction::Start);
         let request = LocalNodeActionRequest {
             action: NodeAction::Initialize,
             node: Some(NodeKind::Messaging),
@@ -1791,6 +1810,13 @@ esac
         anyhow::ensure!(
             messaging.installed && messaging.lifecycle_state == NodeLifecycleState::Stopped,
             "Messaging context was not persisted after restart recovery: {messaging:?}"
+        );
+        let storage = testnet_node(&state, NodeKind::Storage)?;
+        anyhow::ensure!(
+            !storage.installed
+                && storage.lifecycle_state == NodeLifecycleState::NotInitialized
+                && storage.pending_lifecycle_action.is_none(),
+            "runtime recovery retained a stale Storage module context: {storage:?}"
         );
         anyhow::ensure!(
             result
