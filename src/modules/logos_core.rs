@@ -33,6 +33,7 @@ use crate::support::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
 const LOGOSCORE_JSON_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const LOGOSCORE_CLIENT_CONFIG_LIMIT: usize = 64 * 1024;
 const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
@@ -1669,12 +1670,7 @@ impl SharedFilesystemTransport {
     fn from_runner(runner: &LogosCoreRunner, method: &str) -> Result<Self> {
         let config_dir = runner_config_dir(runner)?;
         let config_path = config_dir.join("client").join("config.json");
-        let config_bytes = fs::read(&config_path).with_context(|| {
-            format!(
-                "failed to read logoscore client config `{}`",
-                config_path.display()
-            )
-        })?;
+        let config_bytes = read_runner_client_config(runner, &config_path)?;
         let config: Value = serde_json::from_slice(&config_bytes)
             .context("logoscore client config contains invalid JSON")?;
         let instance_id = local_transport_instance_id(&config, method)?;
@@ -1742,6 +1738,55 @@ fn runner_config_dir(runner: &LogosCoreRunner) -> Result<PathBuf> {
         .filter(|value| !value.trim().is_empty())
         .context("HOME is required to locate logoscore client config")?;
     Ok(PathBuf::from(home).join(".logoscore"))
+}
+
+fn read_runner_client_config(runner: &LogosCoreRunner, config_path: &Path) -> Result<Vec<u8>> {
+    let config_bytes = if let Some(command) = runner_client_config_read_command(runner, config_path)
+    {
+        let output = run_command(
+            command,
+            CommandRunPolicy {
+                label: &runner.label,
+                timeout: command_timeout(),
+                poll_interval: LOGOSCORE_POLL_INTERVAL,
+                redactions: &[],
+                output_limit: 0,
+            },
+        )
+        .with_context(|| {
+            format!(
+                "failed to read logoscore client config `{}` through configured service identity",
+                config_path.display()
+            )
+        })?;
+        output.stdout
+    } else {
+        fs::read(config_path).with_context(|| {
+            format!(
+                "failed to read logoscore client config `{}`",
+                config_path.display()
+            )
+        })?
+    };
+    anyhow::ensure!(
+        config_bytes.len() <= LOGOSCORE_CLIENT_CONFIG_LIMIT,
+        "logoscore client config exceeds {LOGOSCORE_CLIENT_CONFIG_LIMIT} byte limit"
+    );
+    Ok(config_bytes)
+}
+
+fn runner_client_config_read_command(
+    runner: &LogosCoreRunner,
+    config_path: &Path,
+) -> Option<Command> {
+    let user = runner.sudo_user.as_deref()?;
+    let mut command = Command::new("sudo");
+    command.arg("-n").arg("-u").arg(user).arg("env");
+    if let Some(home) = &runner.home {
+        command.arg(format!("HOME={home}"));
+    }
+    command.arg("/bin/cat").arg("--").arg(config_path);
+    Some(command)
 }
 
 fn local_transport_instance_id<'a>(config: &'a Value, method: &str) -> Result<&'a str> {
@@ -3015,6 +3060,89 @@ mod tests {
                 "shared staging accepted incompatible client config: {incompatible}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn configured_service_config_reader_uses_sudo_without_shell() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let runner = LogosCoreRunner {
+            program: "/usr/local/bin/logoscore".to_owned(),
+            sudo_user: Some("logos".to_owned()),
+            home: Some("/var/lib/logos-node".to_owned()),
+            config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
+            label: "configured logoscore".to_owned(),
+        };
+        let config_path = Path::new("/var/lib/logos-node/.logoscore/client/config.json");
+        let command = runner_client_config_read_command(&runner, config_path)
+            .context("configured service runner did not build config reader")?;
+
+        anyhow::ensure!(
+            command.get_program() == OsStr::new("sudo"),
+            "configured service config reader bypassed sudo"
+        );
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            args == [
+                "-n",
+                "-u",
+                "logos",
+                "env",
+                "HOME=/var/lib/logos-node",
+                "/bin/cat",
+                "--",
+                "/var/lib/logos-node/.logoscore/client/config.json",
+            ],
+            "configured service config reader arguments drifted: {args:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn client_config_reader_rejects_oversized_local_file() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config_path = directory.path().join("config.json");
+        fs::write(&config_path, vec![b'x'; LOGOSCORE_CLIENT_CONFIG_LIMIT + 1])?;
+        let runner = LogosCoreRunner {
+            program: "logoscore".to_owned(),
+            sudo_user: None,
+            home: None,
+            config_dir: None,
+            label: "test logoscore".to_owned(),
+        };
+
+        let error = read_runner_client_config(&runner, &config_path)
+            .err()
+            .context("oversized client config was accepted")?;
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("logoscore client config exceeds 65536 byte limit"),
+            "unexpected oversized client config error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_client_config_reader_keeps_direct_file_path() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config_path = directory.path().join("config.json");
+        let expected = br#"{"instance_id":"local"}"#;
+        fs::write(&config_path, expected)?;
+        let runner = LogosCoreRunner {
+            program: "logoscore".to_owned(),
+            sudo_user: None,
+            home: None,
+            config_dir: None,
+            label: "test logoscore".to_owned(),
+        };
+
+        let read = read_runner_client_config(&runner, &config_path)?;
+        anyhow::ensure!(read == expected, "local client config content drifted");
         Ok(())
     }
 
