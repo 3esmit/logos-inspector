@@ -1072,14 +1072,14 @@ fn node_start(
                     adapter.label()
                 )));
             }
-            let execution = match adapter.startup_rpc_health_method() {
-                Some(method) => execute_ready_process_spec(
+            let execution = match adapter.startup_rpc_readiness() {
+                Some(readiness) => execute_ready_process_spec(
                     &spec,
                     config
                         .endpoint
                         .as_deref()
                         .context("registered process RPC endpoint is required")?,
-                    method,
+                    readiness,
                     control,
                 ),
                 None => execute_command_spec(&spec, None, control),

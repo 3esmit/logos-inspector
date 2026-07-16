@@ -14,9 +14,8 @@ use anyhow::{Context as _, Result, bail};
 
 use crate::support::command_runner::CommandControl;
 
-const RPC_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const RPC_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
-const RPC_PROBE_INTERVAL: Duration = Duration::from_millis(50);
+use super::adapters::RpcStartupReadiness;
+
 const STARTUP_LOG_TAIL_BYTES: u64 = 4 * 1024;
 const RPC_RESPONSE_LIMIT: u64 = 64 * 1024;
 
@@ -137,11 +136,35 @@ pub(super) fn spawn_rpc_ready(
     mut command: Command,
     label: &str,
     endpoint: &str,
-    health_method: &str,
+    readiness: RpcStartupReadiness,
     control: Option<&CommandControl>,
 ) -> Result<u32> {
-    if rpc_endpoint_ready(endpoint, health_method)? {
+    validate_rpc_readiness(readiness)?;
+    let started_at = Instant::now();
+    let configured_deadline = started_at
+        .checked_add(readiness.startup_timeout)
+        .context("registered process RPC startup timeout overflowed")?;
+    let deadline = control
+        .map(CommandControl::deadline)
+        .map_or(configured_deadline, |control_deadline| {
+            configured_deadline.min(control_deadline)
+        });
+    if let Some(control) = control {
+        control.check_active()?;
+    }
+    let preflight_timeout = remaining_probe_timeout(deadline, readiness.probe_timeout)
+        .context("registered process RPC readiness deadline expired before startup")?;
+    if rpc_endpoint_ready(endpoint, readiness.method, preflight_timeout)? {
         bail!("{label} RPC endpoint is already serving another process");
+    }
+    if let Some(control) = control {
+        control.check_active()?;
+    }
+    if Instant::now() >= deadline {
+        bail!(
+            "{label} RPC readiness deadline expired before startup after {}",
+            display_duration(readiness.startup_timeout)
+        );
     }
     command
         .stdin(Stdio::null())
@@ -156,7 +179,6 @@ pub(super) fn spawn_rpc_ready(
         .spawn()
         .with_context(|| format!("failed to start {label}"))?;
     let output = BoundedChildOutput::start(&mut child, label)?;
-    let deadline = Instant::now() + RPC_STARTUP_TIMEOUT;
     loop {
         if let Some(control) = control
             && let Err(error) = control.check_active()
@@ -172,19 +194,68 @@ pub(super) fn spawn_rpc_ready(
             let detail = output.finish();
             bail!("{label} exited before RPC readiness with {status}{detail}");
         }
-        if rpc_endpoint_ready(endpoint, health_method)? {
-            return Ok(child.id());
-        }
         if Instant::now() >= deadline {
             terminate_child(&mut child);
             let detail = output.finish();
-            bail!("{label} did not reach RPC readiness within 10 seconds{detail}");
+            bail!(
+                "{label} did not reach RPC readiness within {}{detail}",
+                display_duration(readiness.startup_timeout)
+            );
         }
-        thread::sleep(RPC_PROBE_INTERVAL);
+        let Some(probe_timeout) = remaining_probe_timeout(deadline, readiness.probe_timeout) else {
+            continue;
+        };
+        let ready = match rpc_endpoint_ready(endpoint, readiness.method, probe_timeout) {
+            Ok(ready) => ready,
+            Err(error) => {
+                terminate_child(&mut child);
+                let detail = output.finish();
+                return Err(error.context(format!("{label} RPC readiness probe failed{detail}")));
+            }
+        };
+        if ready && Instant::now() < deadline {
+            return Ok(child.id());
+        }
+        if ready {
+            continue;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(readiness.retry_interval.min(remaining));
     }
 }
 
-fn rpc_endpoint_ready(endpoint: &str, health_method: &str) -> Result<bool> {
+fn validate_rpc_readiness(readiness: RpcStartupReadiness) -> Result<()> {
+    if readiness.method.trim().is_empty() {
+        bail!("registered process RPC readiness method is empty");
+    }
+    if readiness.startup_timeout.is_zero()
+        || readiness.probe_timeout.is_zero()
+        || readiness.retry_interval.is_zero()
+    {
+        bail!("registered process RPC readiness durations must be positive");
+    }
+    Ok(())
+}
+
+fn remaining_probe_timeout(deadline: Instant, configured: Duration) -> Option<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    (!remaining.is_zero()).then(|| configured.min(remaining))
+}
+
+fn display_duration(duration: Duration) -> String {
+    let milliseconds = duration.as_millis();
+    if milliseconds.is_multiple_of(1_000) {
+        format!("{} seconds", milliseconds / 1_000)
+    } else {
+        format!("{milliseconds} milliseconds")
+    }
+}
+
+fn rpc_endpoint_ready(
+    endpoint: &str,
+    health_method: &str,
+    probe_timeout: Duration,
+) -> Result<bool> {
     let url =
         reqwest::Url::parse(endpoint).context("registered process RPC endpoint is invalid")?;
     if url.scheme() != "http" {
@@ -202,11 +273,11 @@ fn rpc_endpoint_ready(endpoint: &str, health_method: &str) -> Result<bool> {
     let Some(address) = addresses.next() else {
         return Ok(false);
     };
-    let Ok(mut stream) = TcpStream::connect_timeout(&address, RPC_PROBE_TIMEOUT) else {
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, probe_timeout) else {
         return Ok(false);
     };
-    stream.set_read_timeout(Some(RPC_PROBE_TIMEOUT))?;
-    stream.set_write_timeout(Some(RPC_PROBE_TIMEOUT))?;
+    stream.set_read_timeout(Some(probe_timeout))?;
+    stream.set_write_timeout(Some(probe_timeout))?;
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -338,9 +409,7 @@ fn spawn_bounded_drain(
 mod tests {
     #[cfg(target_os = "linux")]
     use std::fs;
-    use std::net::TcpListener;
-    #[cfg(target_os = "linux")]
-    use std::time::Duration;
+    use std::{net::TcpListener, time::Duration};
 
     use super::*;
 
@@ -361,12 +430,47 @@ mod tests {
             Ok(())
         });
 
-        if !rpc_endpoint_ready(&format!("http://{address}/"), "checkHealth")? {
+        if !rpc_endpoint_ready(
+            &format!("http://{address}/"),
+            "checkHealth",
+            Duration::from_secs(1),
+        )? {
             bail!("valid JSON-RPC health response was not ready");
         }
         server
             .join()
             .map_err(|_| anyhow::anyhow!("RPC readiness server panicked"))??;
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_readiness_allows_a_slow_health_response_within_policy() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 2048];
+            let _read = stream.read(&mut request)?;
+            thread::sleep(Duration::from_millis(500));
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":null}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )?;
+            Ok(())
+        });
+
+        if !rpc_endpoint_ready(
+            &format!("http://{address}/"),
+            "checkHealth",
+            Duration::from_secs(1),
+        )? {
+            bail!("slow JSON-RPC health response was not ready within policy");
+        }
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("slow RPC readiness server panicked"))??;
         Ok(())
     }
 
@@ -383,7 +487,12 @@ mod tests {
             command,
             "test indexer",
             &format!("http://{address}/"),
-            "checkHealth",
+            RpcStartupReadiness::new(
+                "checkHealth",
+                Duration::from_secs(1),
+                Duration::from_millis(100),
+                Duration::from_millis(10),
+            ),
             None,
         ) {
             Ok(pid) => bail!("early exit unexpectedly reached readiness with process {pid}"),
@@ -394,6 +503,111 @@ mod tests {
             || !detail.contains("indexer-startup-failed")
         {
             bail!("early exit diagnostics were lost: {detail}");
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rpc_ready_spawn_reports_configured_timeout_and_reaps_child() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        drop(listener);
+        let directory = tempfile::tempdir()?;
+        let pid_path = directory.path().join("startup.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; sleep 30",
+            "sh",
+            pid_path
+                .to_str()
+                .context("test PID path is not valid UTF-8")?,
+        ]);
+
+        let error = match spawn_rpc_ready(
+            command,
+            "test indexer",
+            &format!("http://{address}/"),
+            RpcStartupReadiness::new(
+                "checkHealth",
+                Duration::from_millis(150),
+                Duration::from_millis(25),
+                Duration::from_millis(10),
+            ),
+            None,
+        ) {
+            Ok(pid) => bail!("unready process unexpectedly reached readiness with process {pid}"),
+            Err(error) => error,
+        };
+        let detail = error.to_string();
+        if !detail.contains("within 150 milliseconds") {
+            bail!("configured readiness timeout was not reported: {detail}");
+        }
+        let pid = fs::read_to_string(&pid_path)?
+            .trim()
+            .parse::<u32>()
+            .context("test startup PID is invalid")?;
+        if process_is_alive(pid) {
+            bail!("timed-out readiness process {pid} remained alive");
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rpc_ready_spawn_honors_shorter_command_deadline_and_reaps_child() -> Result<()> {
+        use crate::support::command_runner::{CommandStopReason, CommandTerminated};
+        use tokio_util::sync::CancellationToken;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        drop(listener);
+        let directory = tempfile::tempdir()?;
+        let pid_path = directory.path().join("controlled-startup.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; sleep 30",
+            "sh",
+            pid_path
+                .to_str()
+                .context("test PID path is not valid UTF-8")?,
+        ]);
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_millis(150),
+        );
+
+        let error = match spawn_rpc_ready(
+            command,
+            "controlled indexer",
+            &format!("http://{address}/"),
+            RpcStartupReadiness::new(
+                "checkHealth",
+                Duration::from_secs(5),
+                Duration::from_millis(25),
+                Duration::from_millis(10),
+            ),
+            Some(&control),
+        ) {
+            Ok(pid) => {
+                bail!("controlled process unexpectedly reached readiness with process {pid}")
+            }
+            Err(error) => error,
+        };
+        let termination = error
+            .downcast_ref::<CommandTerminated>()
+            .context("controlled readiness did not retain typed termination")?;
+        if termination.reason() != CommandStopReason::DeadlineExceeded {
+            bail!("controlled readiness stopped for the wrong reason");
+        }
+        let pid = fs::read_to_string(&pid_path)?
+            .trim()
+            .parse::<u32>()
+            .context("controlled startup PID is invalid")?;
+        if process_is_alive(pid) {
+            bail!("deadline-stopped readiness process {pid} remained alive");
         }
         Ok(())
     }

@@ -3,7 +3,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use super::adapters::{NodeCommandContext, NodeCommandPlan, adapter_for};
+use super::adapters::{NodeCommandContext, NodeCommandPlan, RpcStartupReadiness, adapter_for};
 use super::{
     NodeAction, NodeKind,
     process::{spawn_detached, spawn_rpc_ready},
@@ -167,7 +167,7 @@ pub(super) fn execute_preflighted_command_spec(
 pub(super) fn execute_ready_process_spec(
     spec: &LocalNodeCommandSpec,
     endpoint: &str,
-    health_method: &str,
+    readiness: RpcStartupReadiness,
     control: Option<&CommandControl>,
 ) -> Result<Value> {
     if !matches!(&spec.backend, CommandBackend::SpawnProcess) {
@@ -180,7 +180,7 @@ pub(super) fn execute_ready_process_spec(
     for arg in &spec.args {
         command.arg(arg);
     }
-    let pid = spawn_rpc_ready(command, &spec.display, endpoint, health_method, control)?;
+    let pid = spawn_rpc_ready(command, &spec.display, endpoint, readiness, control)?;
     Ok(json!({
         "pid": pid,
         "command": spec.display,
