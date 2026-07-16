@@ -140,6 +140,7 @@ Pane {
 
                 Accessible.role: Accessible.ComboBox
                 Accessible.name: qsTr("Loaded row count")
+                Accessible.description: String(loadCombo.currentValue || root.loadCount)
             }
 
             Text {

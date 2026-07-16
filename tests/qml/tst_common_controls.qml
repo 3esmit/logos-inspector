@@ -44,6 +44,14 @@ TestCase {
                 onClicked: testRoot.actionClicks += 1
             }
 
+            ListToolbar {
+                id: listToolbar
+
+                theme: theme
+                loadCount: 20
+                Layout.fillWidth: true
+            }
+
             SummarySection {
                 id: summarySection
 
@@ -95,6 +103,7 @@ TestCase {
     function init() {
         actionClicks = 0
         acceptedCount = 0
+        listToolbar.loadCount = 20
         confirmPopup.close()
     }
 
@@ -120,6 +129,16 @@ TestCase {
         verify(dataTableFrame.visible)
         verify(dataTableFrame.width > 0)
         verify(hasVisibleText(dataTableFrame, "row-visible-value"))
+    }
+
+    function test_loaded_row_count_exposes_current_value() {
+        const combo = findAccessibleByName(listToolbar, "Loaded row count")
+        verify(combo !== null)
+        compare(combo.Accessible.description, "20")
+
+        listToolbar.loadCount = 50
+
+        tryCompare(combo.Accessible, "description", "50")
     }
 
     function test_confirm_popup_accept_action() {
@@ -155,5 +174,22 @@ TestCase {
             }
         }
         return false
+    }
+
+    function findAccessibleByName(item, expected) {
+        if (!item) {
+            return null
+        }
+        if (item.Accessible && String(item.Accessible.name) === expected) {
+            return item
+        }
+        const children = item.children || []
+        for (let i = 0; i < children.length; ++i) {
+            const match = findAccessibleByName(children[i], expected)
+            if (match) {
+                return match
+            }
+        }
+        return null
     }
 }
