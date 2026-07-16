@@ -90,10 +90,18 @@ TestCase {
     }
 
     QtObject {
+        id: decodeSocial
+
+        property int sharedIdlRevision: 0
+    }
+
+    QtObject {
         id: decodeAppModel
 
         property var registeredIdls: decodeRegistry
         property var candidates: []
+        property int accountIdlSelectionRevision: 0
+        property var social: decodeSocial
 
         function accountDecodeCandidates(accountId, ownerProgramId) {
             return candidates.slice()
@@ -132,6 +140,8 @@ TestCase {
         activeZoneSeenOnSummaryChange = ""
         decodeRegistry.count = 0
         decodeAppModel.candidates = []
+        decodeAppModel.accountIdlSelectionRevision = 0
+        decodeSocial.sharedIdlRevision = 0
         zoneState = stateComponent.createObject(testRoot, {
             gateway: gateway
         })
@@ -1393,6 +1403,56 @@ TestCase {
         const decodeRequest = accountDecodeRequest("0102")
         gateway.respond(decodeRequest, ok(accountDecodeSession("TokenDefinition", "Pebble")))
         compare(l2AccountState.l2AccountProvisionalDecode.report.account_type, "TokenDefinition")
+    }
+
+    function test_l2_account_redecodes_loaded_snapshot_when_decode_candidates_change() {
+        zoneState.appModel = decodeAppModel
+        decodeRegistry.count = 1
+        loadConfiguredL2Zone()
+        verify(l2AccountState.inspectL2Account("account-a"))
+        const provisionalRequest = l2AccountRequest("provisional")
+        const provisional = l2AccountSnapshot("account-a", "19",
+            l2Source("seq-a", "sequencer", "provisional"), "exact", 14)
+        provisional.account.data_hex = "0102"
+        gateway.respond(provisionalRequest, ok(l2Report(provisionalRequest, "lez.account", {
+            outcome: "found",
+            value: provisional
+        })))
+        compare(gateway.requestCount("selectAccountDecodeSession"), 0)
+
+        decodeAppModel.candidates = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "local"
+        }]
+        decodeAppModel.accountIdlSelectionRevision += 1
+        tryVerify(function () {
+            return accountDecodeRequest("0102") !== null
+        })
+        const selectionDecode = accountDecodeRequest("0102")
+        gateway.respond(selectionDecode, ok(accountDecodeSession("TokenDefinition", "Pebble")))
+        compare(l2AccountState.l2AccountProvisionalDecode.report.account_type, "TokenDefinition")
+
+        decodeAppModel.candidates = []
+        decodeAppModel.accountIdlSelectionRevision += 1
+        compare(l2AccountState.l2AccountProvisionalDecode, null)
+        decodeAppModel.candidates = [{
+            key: "shared-token-idl",
+            name: "Shared Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "shared"
+        }]
+        decodeSocial.sharedIdlRevision += 1
+        tryVerify(function () {
+            return accountDecodeRequest("0102") !== null
+                && gateway.requestCount("selectAccountDecodeSession") === 2
+        })
+        const sharedDecode = accountDecodeRequest("0102")
+        gateway.respond(sharedDecode, ok(accountDecodeSession("TokenDefinition", "Pebble")))
+        compare(l2AccountState.l2AccountProvisionalDecode.report.rows[0].value, "Pebble")
     }
 
     function test_l2_account_activity_appends_oldest_first_without_touching_snapshots() {
