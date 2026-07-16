@@ -63,11 +63,41 @@ pub(super) fn process_group_is_alive(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+pub(super) fn process_group_has_live_members(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return process_group_is_alive(pid);
+        };
+        entries.filter_map(|entry| entry.ok()).any(|entry| {
+            let Ok(process_id) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                return false;
+            };
+            linux_process_group_state(process_id).is_some_and(|(process_group, state)| {
+                process_group == pid && !matches!(state, 'Z' | 'X')
+            })
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        process_group_is_alive(pid)
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn linux_process_state(pid: u32) -> Option<char> {
+    linux_process_group_state(pid).map(|(_, state)| state)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_group_state(pid: u32) -> Option<(u32, char)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let (_, suffix) = stat.rsplit_once(") ")?;
-    suffix.chars().next()
+    let mut fields = suffix.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let _parent_process_id = fields.next()?;
+    let process_group = fields.next()?.parse::<u32>().ok()?;
+    Some((process_group, state))
 }
 
 pub(super) fn stop_process(pid: u32) -> Result<()> {
@@ -398,5 +428,57 @@ mod tests {
             bail!("zombie process {pid} was reported as alive");
         }
         Ok(())
+    }
+
+    #[cfg(all(unix, target_os = "linux"))]
+    #[test]
+    fn process_group_live_members_ignore_a_zombie_leader() -> Result<()> {
+        use anyhow::Context as _;
+        use std::os::unix::process::CommandExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let child_path = directory.path().join("child.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "sleep 30 & printf '%s' \"$!\" > \"$1\"; exit 0",
+                "sh",
+                child_path
+                    .to_str()
+                    .context("test child path is not valid UTF-8")?,
+            ])
+            .process_group(0);
+        let mut leader = command.spawn()?;
+        let leader_process_id = leader.id();
+
+        let result = (|| -> Result<()> {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !child_path.is_file() || process_is_alive(leader_process_id) {
+                if Instant::now() >= deadline {
+                    bail!("test process group leader did not exit after starting its child");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            anyhow::ensure!(
+                process_group_has_live_members(leader_process_id),
+                "live child was not found in the zombie leader process group"
+            );
+
+            stop_process(leader_process_id)?;
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while process_group_has_live_members(leader_process_id) {
+                if Instant::now() >= deadline {
+                    bail!("live child remained after process group termination");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        })();
+        if process_group_is_alive(leader_process_id) {
+            let _ignored = stop_process(leader_process_id);
+        }
+        let _status = leader.wait()?;
+        result
     }
 }
