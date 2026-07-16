@@ -18,6 +18,7 @@ use super::adapters::{NodeActionPolicy, NodeConfigContext, adapter_for};
 use super::commands::{
     command_spec_for, ensure_module_loaded, execute_command_spec, execute_preflighted_command_spec,
     execute_ready_process_spec, operation_detail_from_value, preflight_command_spec,
+    preflight_command_spec_once,
 };
 use super::lifecycle::{has_event_contract, reset_module_contexts};
 use super::model::{
@@ -615,7 +616,7 @@ fn retry_initialization_preflight(
         Err(error) if is_control_interruption(&error) => Err(error),
         Err(first_error) => {
             sleep_with_control(control, INITIALIZATION_PREFLIGHT_RETRY_DELAY)?;
-            preflight_command_spec(spec, Some(cli), Some(control)).with_context(|| {
+            preflight_command_spec_once(spec, Some(cli), control).with_context(|| {
                 format!("module initialization preflight retry after: {first_error:#}")
             })
         }
@@ -1712,6 +1713,49 @@ fi
 
     #[cfg(unix)]
     #[test]
+    fn messaging_initialize_stops_after_one_extra_preflight_attempt() -> Result<()> {
+        // Arrange
+        let (result, state, calls) = messaging_initialize_test_case("preflight-exhausted")?;
+
+        // Act & Assert
+        if result.report.status != "failed" {
+            bail!(
+                "Messaging initialization unexpectedly recovered: {}",
+                result.report.detail
+            );
+        }
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        if messaging.installed || messaging.lifecycle_state != NodeLifecycleState::NotInitialized {
+            bail!("Messaging persisted a failed preflight: {messaging:?}");
+        }
+        let module_info_calls = calls
+            .iter()
+            .filter(|call| call.as_str() == "module-info")
+            .count();
+        if module_info_calls != 4 {
+            bail!(
+                "expected three initial and one retry preflight attempts, found {module_info_calls}: {calls:?}"
+            );
+        }
+        if calls.iter().any(|call| call == "createNode") {
+            bail!("Messaging createNode ran after failed preflight: {calls:?}");
+        }
+        if !result
+            .report
+            .detail
+            .contains("module initialization preflight retry after")
+            || !result.report.detail.contains("RPC_FAILED")
+        {
+            bail!(
+                "Messaging preflight failure lost retry diagnostics: {}",
+                result.report.detail
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn messaging_initialize_restarts_crashed_runtime_without_replaying_create() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1921,7 +1965,8 @@ case "$1" in
         ;;
     module-info)
         printf '%s\n' module-info >> "$config_dir/calls"
-        if [ "$(cat "$config_dir/recovery-mode")" = preflight-retry ]; then
+        recovery_mode="$(cat "$config_dir/recovery-mode")"
+        if [ "$recovery_mode" = preflight-retry ] || [ "$recovery_mode" = preflight-exhausted ]; then
             count_path="$config_dir/module-info-count"
             count=0
             if [ -f "$count_path" ]; then
@@ -1929,7 +1974,7 @@ case "$1" in
             fi
             count=$((count + 1))
             printf '%s' "$count" > "$count_path"
-            if [ "$count" -lt 4 ]; then
+            if [ "$recovery_mode" = preflight-exhausted ] || [ "$count" -lt 4 ]; then
                 printf '%s\n' '{"code":"RPC_FAILED","message":"delivery replica is starting","status":"error"}'
                 exit 4
             fi

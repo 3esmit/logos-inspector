@@ -1218,6 +1218,17 @@ impl LogoscoreCliRuntime {
             .require_method(method, signature)
     }
 
+    pub(crate) fn require_module_method_controlled_once(
+        &self,
+        module: &str,
+        method: &str,
+        signature: &str,
+        control: CommandControl,
+    ) -> Result<()> {
+        self.discover_module_controlled_once(module, control)?
+            .require_method(method, signature)
+    }
+
     pub(crate) fn require_module_contract_controlled(
         &self,
         module: &str,
@@ -1248,6 +1259,20 @@ impl LogoscoreCliRuntime {
         )
     }
 
+    fn discover_module_controlled_once(
+        &self,
+        module: &str,
+        control: CommandControl,
+    ) -> Result<LogoscoreModuleDiscovery> {
+        self.discover_module_controlled_with_attempts(
+            module,
+            control,
+            LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT,
+            Duration::ZERO,
+            1,
+        )
+    }
+
     fn discover_module_controlled_with(
         &self,
         module: &str,
@@ -1255,7 +1280,27 @@ impl LogoscoreCliRuntime {
         attempt_timeout: Duration,
         retry_delay: Duration,
     ) -> Result<LogoscoreModuleDiscovery> {
-        for attempt in 0..LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS {
+        self.discover_module_controlled_with_attempts(
+            module,
+            control,
+            attempt_timeout,
+            retry_delay,
+            LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS,
+        )
+    }
+
+    fn discover_module_controlled_with_attempts(
+        &self,
+        module: &str,
+        control: CommandControl,
+        attempt_timeout: Duration,
+        retry_delay: Duration,
+        attempts: usize,
+    ) -> Result<LogoscoreModuleDiscovery> {
+        if attempts == 0 {
+            bail!("logoscore module discovery requires at least one attempt");
+        }
+        for attempt in 0..attempts {
             control.check_active()?;
             let attempt_deadline = StdInstant::now()
                 .checked_add(attempt_timeout)
@@ -1273,8 +1318,7 @@ impl LogoscoreCliRuntime {
             match result {
                 Ok(discovery) => return Ok(discovery),
                 Err(error)
-                    if attempt + 1 < LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS
-                        && is_transient_module_discovery_error(&error) =>
+                    if attempt + 1 < attempts && is_transient_module_discovery_error(&error) =>
                 {
                     control.check_active()?;
                     thread::sleep(retry_delay);
@@ -1286,13 +1330,13 @@ impl LogoscoreCliRuntime {
                     bail!(
                         "logoscore module `{module}` discovery attempt {}/{} exceeded its bounded deadline: {error:#}",
                         attempt + 1,
-                        LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS,
+                        attempts,
                     );
                 }
                 Err(error) => return Err(error),
             }
         }
-        unreachable!("module discovery retry loop always returns")
+        bail!("logoscore module `{module}` discovery completed without an attempt result")
     }
 
     pub(crate) fn ensure_module_loaded(&self, module: &str) -> Result<()> {

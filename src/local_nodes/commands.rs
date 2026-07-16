@@ -109,6 +109,25 @@ pub(super) fn preflight_command_spec(
     }
 }
 
+pub(super) fn preflight_command_spec_once(
+    spec: &LocalNodeCommandSpec,
+    runtime: Option<&LogoscoreCliRuntime>,
+    control: &CommandControl,
+) -> Result<()> {
+    match &spec.backend {
+        CommandBackend::LogosCore { contract, call } => {
+            let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
+            runtime.require_module_method_controlled_once(
+                contract.module_id(),
+                call.method,
+                call.signature,
+                control.clone(),
+            )
+        }
+        CommandBackend::SpawnProcess => Ok(()),
+    }
+}
+
 pub(super) fn execute_preflighted_command_spec(
     spec: &LocalNodeCommandSpec,
     runtime: Option<&LogoscoreCliRuntime>,
