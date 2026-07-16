@@ -309,12 +309,12 @@ fn runtime_start(
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) if still_running => Ok(OperationOutcome {
                 status: "starting".to_owned(),
-                detail: error.to_string(),
+                detail: operation_error_detail(&error),
                 command: Some(display),
             }),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
-                detail: error.to_string(),
+                detail: operation_error_detail(&error),
                 command: Some(display),
             }),
         }
@@ -534,7 +534,7 @@ fn node_initialize(
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
-                detail: error.to_string(),
+                detail: operation_error_detail(&error),
                 command: Some(spec.display),
             }),
         }
@@ -690,7 +690,7 @@ fn node_uninstall(
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
-                detail: error.to_string(),
+                detail: operation_error_detail(&error),
                 command: Some(spec.display),
             }),
         }
@@ -755,7 +755,7 @@ fn node_start(
                 Err(error) if is_control_interruption(&error) => Err(error),
                 Err(error) => Ok(OperationOutcome {
                     status: "failed".to_owned(),
-                    detail: error.to_string(),
+                    detail: operation_error_detail(&error),
                     command: Some(spec.display),
                 }),
             };
@@ -810,7 +810,7 @@ fn node_start(
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
-                detail: error.to_string(),
+                detail: operation_error_detail(&error),
                 command: Some(spec.display),
             }),
         }
@@ -904,7 +904,7 @@ fn node_stop(
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
-                detail: error.to_string(),
+                detail: operation_error_detail(&error),
                 command: Some(spec.display),
             }),
         }
@@ -1103,6 +1103,10 @@ fn interrupted_operation(
 
 fn is_control_interruption(error: &anyhow::Error) -> bool {
     error.downcast_ref::<CommandTerminated>().is_some()
+}
+
+fn operation_error_detail(error: &anyhow::Error) -> String {
+    format!("{error:#}")
 }
 
 fn required_node(request: &LocalNodeActionRequest) -> Result<NodeKind> {
@@ -1314,6 +1318,16 @@ mod tests {
     #[test]
     fn runtime_stop_reaps_module_hosts_after_daemon_exit() -> Result<()> {
         runtime_stop_reaps_module_hosts(false)
+    }
+
+    #[test]
+    fn operation_error_detail_keeps_nested_cause() -> Result<()> {
+        let error = anyhow::anyhow!("inner CLI failure").context("outer operation failure");
+        let detail = operation_error_detail(&error);
+        if !detail.contains("outer operation failure") || !detail.contains("inner CLI failure") {
+            bail!("operation error detail lost a cause: {detail}");
+        }
+        Ok(())
     }
 
     #[cfg(unix)]
