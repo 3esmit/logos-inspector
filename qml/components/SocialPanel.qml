@@ -212,12 +212,16 @@ ColumnLayout {
             ComboBox {
                 id: identityCombo
 
+                objectName: "commentIdentity"
                 model: root.identityLabels()
                 currentIndex: root.identityIndex()
                 hoverEnabled: true
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.theme.controlHeight
                 onActivated: index => root.selectIdentity(index)
+
+                Accessible.name: qsTr("Comment identity")
+                Accessible.description: identityCombo.displayText
 
                 contentItem: TextField {
                     text: identityCombo.displayText
