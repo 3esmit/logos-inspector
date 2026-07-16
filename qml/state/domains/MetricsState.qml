@@ -135,7 +135,8 @@ QtObject {
     }
 
     function beginObservation(kind, origin, requestKey, requestBaseKey,
-            sensitiveProbe, interactive, waiter) {
+            sensitiveProbe, runtimeDiagnosticsEnabled,
+            runtimeDiagnosticsReduced, interactive, waiter) {
         const target = String(kind || "")
         const lease = {
             kind: target,
@@ -145,6 +146,8 @@ QtObject {
             requestKey: String(requestKey || ""),
             requestBaseKey: String(requestBaseKey || requestKey || ""),
             sensitiveProbe: sensitiveProbe === true,
+            runtimeDiagnosticsEnabled: runtimeDiagnosticsEnabled === true,
+            runtimeDiagnosticsReduced: runtimeDiagnosticsReduced === true,
             interactive: interactive === true,
             deadlineMs: Date.now() + Math.max(1, root.observationTimeoutMs)
         }
@@ -227,7 +230,12 @@ QtObject {
 
     function observeNetworkConnection(kind, showResult, includeSensitiveProbe, callback, origin) {
         const target = String(kind || "")
-        const request = networkConnectionRequest(target, includeSensitiveProbe === true)
+        const requestOrigin = String(origin || "manual")
+        const request = networkConnectionRequest(
+            target,
+            includeSensitiveProbe === true,
+            requestOrigin
+        )
         if (!request) {
             return {
                 ok: false,
@@ -242,12 +250,20 @@ QtObject {
         ])
         const requestBaseKey = observationRequestBaseKey(target, request)
         const sensitiveProbe = observationRequestIncludesSensitiveProbe(target, request)
+        const runtimeDiagnosticsEnabled =
+            observationRequestIncludesRuntimeDiagnostics(target, request)
+        const runtimeDiagnosticsReduced =
+            request.runtimeDiagnosticsReduced === true
         const interactive = showResult === true
         const waiter = observationWaiter(callback, interactive, request.label)
         if (networkConnectionIsPending(target)) {
             const active = activeObservationLeases[target]
             if (observationRequestCompatible(
-                    active, requestKey, requestBaseKey, sensitiveProbe)) {
+                    active,
+                    requestKey,
+                    requestBaseKey,
+                    sensitiveProbe,
+                    runtimeDiagnosticsEnabled)) {
                 if (interactive) {
                     promoteObservationInteractive(target)
                 }
@@ -260,8 +276,28 @@ QtObject {
                     error: ""
                 }
             }
-            if (observationRequestUpgrade(
-                    active, requestBaseKey, sensitiveProbe)) {
+            if (active && active.runtimeDiagnosticsEnabled === true
+                    && runtimeDiagnosticsEnabled !== true) {
+                const response = {
+                    ok: false,
+                    pending: true,
+                    skipped: true,
+                    text: "",
+                    error: qsTr("A full source observation is already pending.")
+                }
+                if (waiter) {
+                    completeObservationPresentation(waiter, response)
+                    if (typeof waiter.callback === "function") {
+                        waiter.callback(response, sourceObservation(target))
+                    }
+                }
+                return response
+            } else if (observationRequestUpgrade(
+                    active,
+                    requestKey,
+                    requestBaseKey,
+                    sensitiveProbe,
+                    runtimeDiagnosticsEnabled)) {
                 supersedeObservation(target, true)
             } else if (active && active.interactive === true && !interactive) {
                 const response = {
@@ -285,10 +321,12 @@ QtObject {
 
         const lease = beginObservation(
             target,
-            origin,
+            requestOrigin,
             requestKey,
             requestBaseKey,
             sensitiveProbe,
+            runtimeDiagnosticsEnabled,
+            runtimeDiagnosticsReduced,
             interactive,
             waiter
         )
@@ -342,10 +380,11 @@ QtObject {
         const target = String(kind || "")
         const args = request && Array.isArray(request.args)
             ? request.args.slice(0) : []
-        if (target === "storage" && args.length > 0
+        if ((target === "storage" || target === "messaging") && args.length > 0
                 && args[0] && typeof args[0] === "object") {
             const head = copyMap(args[0])
-            if (head.inputs && typeof head.inputs === "object") {
+            if (target === "storage" && head.inputs
+                    && typeof head.inputs === "object") {
                 const inputs = copyMap(head.inputs)
                 delete inputs.include_sensitive_probe
                 head.inputs = inputs
@@ -353,6 +392,7 @@ QtObject {
             if (head.options && typeof head.options === "object") {
                 const options = copyMap(head.options)
                 delete options.cid
+                delete options.runtime_diagnostics_enabled
                 head.options = options
             }
             delete head.include_sensitive_probe
@@ -380,26 +420,55 @@ QtObject {
         return cid.length > 0 || nestedFlag || head.include_sensitive_probe === true
     }
 
+    function observationRequestIncludesRuntimeDiagnostics(kind, request) {
+        const target = String(kind || "")
+        if ((target !== "storage" && target !== "messaging") || !request
+                || !Array.isArray(request.args) || request.args.length === 0) {
+            return false
+        }
+        const head = request.args[0]
+        return head && typeof head === "object"
+            && head.options && typeof head.options === "object"
+            && head.options.runtime_diagnostics_enabled === true
+    }
+
     function observationRequestCompatible(active, requestKey, requestBaseKey,
-            sensitiveProbe) {
+            sensitiveProbe, runtimeDiagnosticsEnabled) {
         if (!active) {
             return false
         }
         if (String(active.requestKey || "") === String(requestKey || "")) {
             return true
         }
-        return String(active.kind || "") === "storage"
+        const target = String(active.kind || "")
+        return (target === "storage" || target === "messaging")
             && String(active.requestBaseKey || "") === String(requestBaseKey || "")
-            && active.sensitiveProbe === true
             && sensitiveProbe !== true
+            && (runtimeDiagnosticsEnabled !== true
+                || active.runtimeDiagnosticsEnabled === true)
     }
 
-    function observationRequestUpgrade(active, requestBaseKey, sensitiveProbe) {
-        return active
-            && String(active.kind || "") === "storage"
+    function observationRequestUpgrade(active, requestKey, requestBaseKey,
+            sensitiveProbe, runtimeDiagnosticsEnabled) {
+        if (!active) {
+            return false
+        }
+        if (active.sensitiveProbe === true && sensitiveProbe === true
+                && String(active.requestKey || "") !== String(requestKey || "")) {
+            return false
+        }
+        const target = String(active.kind || "")
+        const sameFamily = (target === "storage" || target === "messaging")
             && String(active.requestBaseKey || "") === String(requestBaseKey || "")
-            && active.sensitiveProbe !== true
-            && sensitiveProbe === true
+        const requestedDominates =
+            (active.sensitiveProbe !== true || sensitiveProbe === true)
+            && (active.runtimeDiagnosticsEnabled !== true
+                || runtimeDiagnosticsEnabled === true)
+        const strictlyStronger =
+            (active.sensitiveProbe !== true && sensitiveProbe === true)
+            || (active.runtimeDiagnosticsEnabled !== true
+                && runtimeDiagnosticsEnabled === true)
+        return sameFamily && requestedDominates && strictlyStronger
     }
 
     function supersedeObservation(kind, retainWaiters) {
@@ -418,7 +487,7 @@ QtObject {
         }, sourceObservation(target))
     }
 
-    function networkConnectionRequest(kind, includeSensitiveProbe) {
+    function networkConnectionRequest(kind, includeSensitiveProbe, origin) {
         switch (String(kind || "")) {
         case "blockchain":
             return {
@@ -428,28 +497,87 @@ QtObject {
                 label: qsTr("Blockchain node")
             }
         case "messaging":
-            return {
-                module: inspectorModule,
-                method: "deliverySourceReport",
-                args: observationArgsWithGeneration(
-                    "messaging",
-                    sourceRouting.deliverySourceReportArgs()
-                ),
-                label: qsTr("Delivery source")
-            }
+            return sourceNetworkConnectionRequest(
+                "messaging",
+                "deliverySourceReport",
+                sourceRouting.deliverySourceReportArgs(),
+                qsTr("Delivery source"),
+                origin
+            )
         case "storage":
-            return {
-                module: inspectorModule,
-                method: "storageSourceReport",
-                args: observationArgsWithGeneration(
-                    "storage",
-                    sourceRouting.storageSourceReportArgs(includeSensitiveProbe === true)
+            return sourceNetworkConnectionRequest(
+                "storage",
+                "storageSourceReport",
+                sourceRouting.storageSourceReportArgs(
+                    includeSensitiveProbe === true
                 ),
-                label: qsTr("Storage source")
-            }
+                qsTr("Storage source"),
+                origin
+            )
         default:
             return null
         }
+    }
+
+    function sourceNetworkConnectionRequest(kind, method, args, label, origin) {
+        const runtimeDiagnosticsReduced =
+            sourceObservationReducesRuntimeDiagnostics(args, origin)
+        return {
+            module: inspectorModule,
+            method: method,
+            args: observationArgsWithGeneration(
+                kind,
+                sourceObservationArgs(args, origin)
+            ),
+            label: label,
+            runtimeDiagnosticsReduced: runtimeDiagnosticsReduced
+        }
+    }
+
+    function passiveSourceObservation(origin) {
+        switch (String(origin || "")) {
+        case "scheduler":
+        case "dashboard":
+        case "module-event":
+        case "storage-refresh":
+            return true
+        default:
+            return false
+        }
+    }
+
+    function sourceObservationArgs(args, origin) {
+        const values = Array.isArray(args) ? args.slice(0) : []
+        if (!sourceObservationReducesRuntimeDiagnostics(values, origin)) {
+            return values
+        }
+        const request = copyMap(values[0])
+        const options = copyMap(request.options)
+        options.runtime_diagnostics_enabled = false
+        request.options = options
+        values[0] = request
+        return values
+    }
+
+    function sourceObservationReducesRuntimeDiagnostics(args, origin) {
+        if (!passiveSourceObservation(origin)
+                || !Array.isArray(args)
+                || args.length === 0
+                || !args[0]
+                || typeof args[0] !== "object") {
+            return false
+        }
+        const request = args[0]
+        const sourceMode = String(request.source_mode || "")
+            .trim()
+            .toLowerCase()
+        const moduleSource = sourceMode === "module"
+            || sourceMode === "logoscore_cli"
+            || sourceMode === "logoscore-cli"
+        return moduleSource
+            && request.options
+            && typeof request.options === "object"
+            && request.options.runtime_diagnostics_enabled === true
     }
 
     function observationArgsWithGeneration(kind, args) {
@@ -496,12 +624,17 @@ QtObject {
 
     function commitObservation(kind, response, lease) {
         const target = String(kind || "")
+        const preserveFullReport =
+            reducedObservationPreservesFullReport(target, lease)
         const checkedAtMs = Date.now()
         const successfulTransport = response && response.ok === true
         const value = successfulTransport && response.value !== undefined
             ? response.value : null
-        const healthy = successfulTransport && connectionValueOk(target, value)
         const storedReport = sourceReport(target)
+        const statusValue = successfulTransport && preserveFullReport
+            ? storedReport : value
+        const healthy = successfulTransport
+            && connectionValueOk(target, statusValue)
         const compatibleStoredReport = storedReport !== null
             && storedReport !== undefined
             && observationReportCompatible(target, lease)
@@ -518,13 +651,19 @@ QtObject {
             checkedAtMs: checkedAtMs,
             configurationGeneration: Number(lease.configurationGeneration || 0),
             requestGeneration: Number(lease.sequence || 0),
-            origin: String(lease.origin || "manual")
+            origin: String(lease.origin || "manual"),
+            runtimeDiagnosticsReduced:
+                lease.runtimeDiagnosticsReduced === true
         }
         const attempts = copyMap(observationAttempts)
         attempts[target] = attempt
         observationAttempts = attempts
 
-        if (successfulTransport) {
+        if (successfulTransport && preserveFullReport) {
+            return
+        }
+
+        if (successfulTransport && !preserveFullReport) {
             cacheObservationValue(target, value, lease, checkedAtMs)
         }
 
@@ -535,9 +674,9 @@ QtObject {
             transportOk: successfulTransport,
             text: healthy ? qsTr("OK") : qsTr("Error"),
             detail: successfulTransport
-                ? networkConnectionSummary(target, value)
+                ? networkConnectionSummary(target, statusValue)
                 : attempt.error,
-            value: value,
+            value: statusValue,
             checkedAt: new Date(checkedAtMs).toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
             checkedAtMs: checkedAtMs,
             stale: !successfulTransport && priorReport !== null && priorReport !== undefined,
@@ -551,6 +690,24 @@ QtObject {
         observationRevision += 1
         recordDashboardSnapshot()
         gateway.refreshCapabilityRegistryIfLoaded()
+    }
+
+    function reducedObservationPreservesFullReport(kind, lease) {
+        const target = String(kind || "")
+        if (!lease || (target !== "storage" && target !== "messaging")
+                || lease.runtimeDiagnosticsReduced !== true
+                || !passiveSourceObservation(lease.origin)) {
+            return false
+        }
+        const report = sourceReport(target)
+        const identity = observationReportRequestIdentities[target] || null
+        return report !== null
+            && report !== undefined
+            && identity !== null
+            && identity.runtimeDiagnosticsEnabled === true
+            && identity.runtimeDiagnosticsReduced !== true
+            && Number(identity.configurationGeneration || 0)
+                === Number(lease.configurationGeneration || 0)
     }
 
     function cacheObservationValue(kind, value, lease, checkedAtMs) {
@@ -578,7 +735,8 @@ QtObject {
                 identity,
                 lease.requestKey,
                 lease.requestBaseKey,
-                lease.sensitiveProbe === true
+                lease.sensitiveProbe === true,
+                lease.runtimeDiagnosticsEnabled === true
             )
     }
 
@@ -833,7 +991,11 @@ QtObject {
                 requestKey: String(requestIdentity.requestKey || ""),
                 requestBaseKey: String(requestIdentity.requestBaseKey
                     || requestIdentity.requestKey || ""),
-                sensitiveProbe: requestIdentity.sensitiveProbe === true
+                sensitiveProbe: requestIdentity.sensitiveProbe === true,
+                runtimeDiagnosticsEnabled:
+                    requestIdentity.runtimeDiagnosticsEnabled === true,
+                runtimeDiagnosticsReduced:
+                    requestIdentity.runtimeDiagnosticsReduced === true
             }
         } else {
             delete identities[target]

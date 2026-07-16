@@ -19,6 +19,8 @@ TestCase {
 
         property string storageEndpoint: "http://storage.invalid"
         property string storageCid: "z-test-cid"
+        property string deliverySourceMode: "logoscore_cli"
+        property string storageSourceMode: "logoscore_cli"
         property bool supportsLiveBlocks: true
 
         function blockchainSupportsCapability(capability) {
@@ -26,18 +28,23 @@ TestCase {
         }
 
         function deliverySourceReportArgs() {
-            return [{ source_mode: "rest", inputs: { rest_endpoint: "http://delivery.invalid" } }]
+            return [{
+                source_mode: deliverySourceMode,
+                inputs: { rest_endpoint: "http://delivery.invalid" },
+                options: { runtime_diagnostics_enabled: true }
+            }]
         }
 
         function storageSourceReportArgs(includeSensitiveProbe) {
             return [{
-                source_mode: "rest",
+                source_mode: storageSourceMode,
                 inputs: {
                     rest_endpoint: storageEndpoint
                 },
                 options: {
                     cid: includeSensitiveProbe === true ? storageCid : "",
-                    privileged_debug_enabled: false
+                    privileged_debug_enabled: false,
+                    runtime_diagnostics_enabled: true
                 }
             }]
         }
@@ -311,6 +318,8 @@ TestCase {
         gateway.reset()
         sourceRouting.storageEndpoint = "http://storage.invalid"
         sourceRouting.storageCid = "z-test-cid"
+        sourceRouting.deliverySourceMode = "logoscore_cli"
+        sourceRouting.storageSourceMode = "logoscore_cli"
         sourceRouting.supportsLiveBlocks = true
         testRoot.dashboardOverview = null
         testRoot.dashboardNode = null
@@ -411,7 +420,8 @@ TestCase {
     }
 
     function test_second_observer_joins_active_family_lease() {
-        metrics.queryNetworkConnection("messaging", false)
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "dashboard")
         const joined = metrics.observeNetworkConnection(
             "messaging",
             false,
@@ -427,14 +437,16 @@ TestCase {
         compare(metrics.sourceReport("messaging").marker, "joined")
     }
 
-    function test_interactive_observer_joins_background_lease_and_presents() {
+    function test_interactive_observer_supersedes_passive_lease_and_presents() {
         metrics.queryNetworkConnection("messaging", false, false, "scheduler")
-        const joined = metrics.queryNetworkConnection(
+        metrics.queryNetworkConnection(
             "messaging", true, false, "source-inspection")
 
-        verify(joined.joined)
-        compare(gateway.requests.length, 1)
+        compare(gateway.requests.length, 2)
         compare(gateway.presentationBeginCount, 1)
+        verify(metrics.activeObservationLeases.messaging.interactive)
+        verify(!gateway.completeRequest(
+            0, success(sourceReport(true, "passive-stale"))))
 
         gateway.completeRequest(0, success(sourceReport(true, "presented")))
 
@@ -444,11 +456,10 @@ TestCase {
         compare(metrics.sourceReport("messaging").marker, "presented")
     }
 
-    function test_interactive_join_prevents_incompatible_background_supersede() {
+    function test_interactive_full_request_blocks_incompatible_background_supersede() {
         metrics.queryNetworkConnection("storage", false, false, "scheduler")
-        const joined = metrics.queryNetworkConnection(
+        metrics.queryNetworkConnection(
             "storage", true, false, "source-inspection")
-        verify(joined.joined)
         verify(metrics.activeObservationLeases.storage.interactive)
 
         sourceRouting.storageEndpoint = "http://new-storage.invalid"
@@ -456,8 +467,10 @@ TestCase {
             "storage", false, false, "scheduler")
 
         verify(skipped.skipped)
-        compare(gateway.requests.length, 1)
+        compare(gateway.requests.length, 2)
         verify(metrics.networkConnectionIsPending("storage"))
+        verify(!gateway.completeRequest(
+            0, success(sourceReport(true, "passive-stale"))))
         gateway.completeRequest(0, success(sourceReport(true, "interactive")))
         compare(gateway.presentationCompleteCount, 1)
         compare(metrics.sourceReport("storage").marker, "interactive")
@@ -472,6 +485,54 @@ TestCase {
         compare(gateway.requests.length, 1)
         gateway.completeRequest(0, success(sourceReport(true, "sensitive")))
         compare(metrics.sourceReport("storage").marker, "sensitive")
+    }
+
+    function test_full_noninteractive_lease_satisfies_passive_observer() {
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        const joined = metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+
+        verify(joined.joined)
+        compare(gateway.requests.length, 1)
+        gateway.completeRequest(
+            0, success(sourceReport(true, "full-noninteractive")))
+        compare(metrics.sourceReport("storage").marker, "full-noninteractive")
+        compare(
+            metrics.sourceObservation("storage").provenance.origin,
+            "source-inspection"
+        )
+    }
+
+    function test_passive_sensitive_lease_cannot_satisfy_full_observer() {
+        metrics.queryNetworkConnection(
+            "storage", false, true, "scheduler")
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+
+        compare(gateway.requests.length, 2)
+        verify(!gateway.completeRequest(
+            0, success(sourceReport(true, "passive-sensitive"))))
+        verify(gateway.completeRequest(
+            0, success(sourceReport(true, "full-current"))))
+        compare(metrics.sourceReport("storage").marker, "full-current")
+        compare(
+            metrics.sourceObservation("storage").provenance.origin,
+            "source-inspection"
+        )
+    }
+
+    function test_passive_sensitive_observer_cannot_cancel_active_full_lease() {
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        const skipped = metrics.queryNetworkConnection(
+            "storage", false, true, "scheduler")
+
+        verify(skipped.skipped)
+        compare(gateway.requests.length, 1)
+        verify(gateway.completeRequest(
+            0, success(sourceReport(true, "full-current"))))
+        compare(metrics.sourceReport("storage").marker, "full-current")
     }
 
     function test_sensitive_upgrade_transfers_waiters_and_presentation() {
@@ -531,6 +592,166 @@ TestCase {
         const observation = metrics.sourceObservation("messaging")
         compare(observation.provenance.origin, "scheduler")
         compare(observation.status.origin, "scheduler")
+    }
+
+    function test_passive_observations_skip_runtime_module_calls() {
+        const passiveOrigins = [
+            "scheduler",
+            "dashboard",
+            "module-event",
+            "storage-refresh"
+        ]
+        for (let i = 0; i < passiveOrigins.length; ++i) {
+            const origin = passiveOrigins[i]
+            const storage = metrics.networkConnectionRequest(
+                "storage", false, origin)
+            const messaging = metrics.networkConnectionRequest(
+                "messaging", false, origin)
+            compare(
+                storage.args[0].options.runtime_diagnostics_enabled,
+                false
+            )
+            compare(
+                messaging.args[0].options.runtime_diagnostics_enabled,
+                false
+            )
+        }
+
+        const fullOrigins = ["manual", "source-inspection", "entity-open"]
+        for (let i = 0; i < fullOrigins.length; ++i) {
+            const origin = fullOrigins[i]
+            const storage = metrics.networkConnectionRequest(
+                "storage", origin === "entity-open", origin)
+            const messaging = metrics.networkConnectionRequest(
+                "messaging", false, origin)
+            compare(
+                storage.args[0].options.runtime_diagnostics_enabled,
+                true
+            )
+            compare(
+                messaging.args[0].options.runtime_diagnostics_enabled,
+                true
+            )
+        }
+    }
+
+    function test_passive_completion_preserves_explicit_full_report() {
+        metrics.queryNetworkConnection(
+            "storage", true, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "explicit-full")))
+        const statusRevision = metrics.networkConnectionStatusRevision
+        const reportRevision = metrics.observationReportRevisions.storage
+        const capabilityRefreshCount = gateway.capabilityRefreshCount
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        compare(
+            gateway.requests[0].args[0].options.runtime_diagnostics_enabled,
+            false
+        )
+        gateway.completeRequest(
+            0, success(sourceReport(false, "passive-static")))
+
+        const observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "explicit-full")
+        compare(observation.provenance.origin, "source-inspection")
+        verify(observation.status.ok)
+        compare(observation.latestAttempt.origin, "scheduler")
+        verify(observation.latestAttempt.transportOk)
+        verify(observation.latestAttempt.runtimeDiagnosticsReduced)
+        compare(metrics.networkConnectionStatusRevision, statusRevision)
+        compare(metrics.observationReportRevisions.storage, reportRevision)
+        compare(gateway.capabilityRefreshCount, capabilityRefreshCount)
+    }
+
+    function test_passive_failure_marks_preserved_full_report_stale() {
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "explicit-full")))
+        const reportRevision = metrics.observationReportRevisions.storage
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        gateway.completeRequest(0, failure("passive transport down"))
+
+        const observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "explicit-full")
+        compare(observation.provenance.origin, "source-inspection")
+        verify(!observation.status.ok)
+        verify(observation.status.stale)
+        compare(observation.status.detail, "passive transport down")
+        compare(metrics.observationReportRevisions.storage, reportRevision)
+    }
+
+    function test_passive_blockchain_completion_replaces_explicit_report() {
+        metrics.queryNetworkConnection(
+            "blockchain", false, false, "manual")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "explicit-blockchain")))
+        const reportRevision = metrics.observationReportRevisions.blockchain
+
+        metrics.queryNetworkConnection(
+            "blockchain", false, false, "dashboard")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "dashboard-blockchain")))
+
+        const observation = metrics.sourceObservation("blockchain")
+        compare(observation.sourceReport.marker, "dashboard-blockchain")
+        compare(observation.provenance.origin, "dashboard")
+        compare(
+            metrics.observationReportRevisions.blockchain,
+            reportRevision + 1
+        )
+    }
+
+    function test_passive_endpoint_observation_refreshes_live_report() {
+        sourceRouting.storageSourceMode = "rest"
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "endpoint-explicit")))
+        const reportRevision = metrics.observationReportRevisions.storage
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        verify(
+            gateway.requests[0].args[0].options.runtime_diagnostics_enabled
+        )
+        verify(!metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+        gateway.completeRequest(
+            0, success(sourceReport(true, "endpoint-scheduled")))
+
+        const observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "endpoint-scheduled")
+        compare(observation.provenance.origin, "scheduler")
+        compare(
+            metrics.observationReportRevisions.storage,
+            reportRevision + 1
+        )
+    }
+
+    function test_compatibility_projection_replaces_full_report() {
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "explicit-full")))
+        const reportRevision = metrics.observationReportRevisions.storage
+
+        verify(metrics.updateNetworkConnectionStatus(
+            "storage",
+            success(sourceReport(true, "compatibility-full"))
+        ))
+
+        const observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "compatibility-full")
+        compare(observation.provenance.origin, "compatibility")
+        compare(
+            metrics.observationReportRevisions.storage,
+            reportRevision + 1
+        )
     }
 
     function test_different_request_identity_supersedes_active_lease() {
