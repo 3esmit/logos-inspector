@@ -241,17 +241,20 @@ TestCase {
         verify(scheduler.enabled("blockchain"))
         verify(scheduler.enabled("messaging"))
         verify(scheduler.enabled("storage"))
+        verify(scheduler.enabled("dashboard"))
 
         fakeModel.shell.busy = true
 
         verify(!scheduler.enabled("blockchain"))
         verify(!scheduler.enabled("messaging"))
         verify(!scheduler.enabled("storage"))
+        verify(!scheduler.enabled("dashboard"))
 
         fakeModel.shell.busy = false
         verify(scheduler.enabled("blockchain"))
         verify(scheduler.enabled("messaging"))
         verify(scheduler.enabled("storage"))
+        verify(scheduler.enabled("dashboard"))
     }
 
     function test_backup_download_enables_storage_polling_and_uses_download_session() {
