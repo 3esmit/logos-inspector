@@ -89,6 +89,7 @@ QtObject {
         gateway: root.gateway
         activeZoneContext: root.activeZoneContext
         verification: root.verification
+        appModel: root.appModel
     }
     readonly property ZoneEvidenceState evidence: ZoneEvidenceState {
         gateway: root.gateway

@@ -16,6 +16,9 @@ ColumnLayout {
     property var report: null
     property string error: ""
     property bool busy: false
+    property var decode: null
+    property string decodeError: ""
+    property bool decodeInFlight: false
     readonly property var account: root.snapshot && root.snapshot.account
         ? root.snapshot.account : ({})
     readonly property var source: root.snapshot && root.snapshot.source
@@ -84,6 +87,25 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    StatusMessage {
+        visible: root.decodeInFlight
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Decoding account")
+        message: qsTr("Matching registered IDL against this snapshot.")
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: !root.decodeInFlight && root.decode === null
+            && root.decodeError.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("IDL decode unavailable")
+        message: root.decodeError
+        Layout.fillWidth: true
+    }
+
     Text {
         visible: !root.busy && root.error.length === 0 && root.snapshot === null
         text: root.emptyText
@@ -112,6 +134,13 @@ ColumnLayout {
         theme: root.theme
         title: qsTr("Source Evidence")
         rows: root.sourceRows()
+    }
+
+    ZoneFactSection {
+        visible: root.decode !== null
+        theme: root.theme
+        title: qsTr("IDL Decode")
+        rows: root.decodeRows()
     }
 
     function accountRows() {
@@ -219,6 +248,33 @@ ColumnLayout {
             label: qsTr("Route policy"),
             value: Presentation.words(route.policy)
         }]
+    }
+
+    function decodeRows() {
+        const value = root.decode && root.decode.report ? root.decode.report : ({})
+        const evidence = root.decode && root.decode.evidence ? root.decode.evidence : ({})
+        const rows = [{
+            label: qsTr("IDL"),
+            value: Presentation.text(evidence.name),
+            monospace: false
+        }, {
+            label: qsTr("IDL Type"),
+            value: Presentation.text(value.account_type || evidence.account_type),
+            monospace: false
+        }, {
+            label: qsTr("Bytes consumed"),
+            value: qsTr("%1 / %2").arg(Presentation.numberText(value.consumed_bytes))
+                .arg(Presentation.numberText(value.total_bytes))
+        }]
+        const fields = Array.isArray(value.rows) ? value.rows : []
+        for (let index = 0; index < fields.length; ++index) {
+            const field = fields[index] || ({})
+            rows.push({
+                label: Presentation.text(field.path),
+                value: Presentation.text(field.value)
+            })
+        }
+        return rows
     }
 
     function hexBytes(value) {

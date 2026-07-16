@@ -104,12 +104,18 @@ QtObject {
     property string l2AccountFinalizedError: ""
     property var l2AccountFinalizedErrorDetails: null
     property bool l2AccountFinalizedInFlight: false
+    property var l2AccountFinalizedDecode: null
+    property string l2AccountFinalizedDecodeError: ""
+    property bool l2AccountFinalizedDecodeInFlight: false
     property var l2AccountProvisionalReport: FixtureData.l2RouteReport(
         "lez.account", FixtureData.l2AccountSnapshot("provisional").source)
     property var l2AccountProvisional: FixtureData.l2AccountSnapshot("provisional")
     property string l2AccountProvisionalError: ""
     property var l2AccountProvisionalErrorDetails: null
     property bool l2AccountProvisionalInFlight: false
+    property var l2AccountProvisionalDecode: FixtureData.l2AccountDecode()
+    property string l2AccountProvisionalDecodeError: ""
+    property bool l2AccountProvisionalDecodeInFlight: false
     property var l2AccountHistoricalTarget: ({
         block_id: 12790,
         block_hash: FixtureData.identity("0")
@@ -120,6 +126,9 @@ QtObject {
     property string l2AccountHistoricalError: ""
     property var l2AccountHistoricalErrorDetails: null
     property bool l2AccountHistoricalInFlight: false
+    property var l2AccountHistoricalDecode: null
+    property string l2AccountHistoricalDecodeError: ""
+    property bool l2AccountHistoricalDecodeInFlight: false
     property int l2AccountActivityLimit: 25
     property var l2AccountActivityReport: FixtureData.l2FoundReport(
         "lez.account_activity", {
@@ -263,6 +272,9 @@ QtObject {
             ? FixtureData.l2AccountSnapshot("provisional") : null
         l2AccountHistorical = l2Applicable
             ? FixtureData.l2AccountSnapshot("historical") : null
+        l2AccountFinalizedDecode = null
+        l2AccountProvisionalDecode = l2Applicable ? FixtureData.l2AccountDecode() : null
+        l2AccountHistoricalDecode = null
         l2AccountActivityRows = l2Applicable
             ? FixtureData.l2AccountActivityRows() : []
         l2AccountActivityLoaded = l2Applicable
