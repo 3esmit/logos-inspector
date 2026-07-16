@@ -46,14 +46,20 @@ ColumnLayout {
             Layout.fillWidth: true
         }
 
-        Text {
+        LinkCell {
+            objectName: "transactionHashLink"
             text: root.detail ? root.detail.hash : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
-            font.family: "monospace"
-            font.pixelSize: 12
+            theme: root.theme
+            link: root.detail !== null && root.detail.hash.length > 0
+            copyable: root.detail !== null && root.detail.hash.length > 0
+            copyText: root.detail ? root.detail.hash : ""
+            monospace: true
+            wrap: true
+            textColor: root.theme.textMuted
+            textPixelSize: 12
             Layout.fillWidth: true
+            onActivated: root.model.entityNavigation.openReference(
+                root.primaryHashReferenceKind(), root.detail.hash)
         }
 
         RowLayout {
@@ -577,6 +583,11 @@ ColumnLayout {
 
     function favoriteButtonAccessibleName() {
         return root.model.favoriteStore.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove transaction from favorites") : qsTr("Add transaction to favorites")
+    }
+
+    function primaryHashReferenceKind() {
+        return root.detail && root.detail.mode === "blockchain"
+            ? "mantleTransaction" : "transaction"
     }
 
     function socialTopic() {
