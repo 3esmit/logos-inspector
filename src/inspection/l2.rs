@@ -75,6 +75,7 @@ pub struct ZoneL2Request<T> {
 pub struct ZoneL2BlocksQuery {
     pub cursor: Option<String>,
     pub limit: Option<u16>,
+    pub exact_source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

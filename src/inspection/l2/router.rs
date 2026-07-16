@@ -86,6 +86,9 @@ impl ZoneL2Router {
             Some(cursor) => {
                 let state = self.block_cursor(cursor)?;
                 validate_cursor_context(&request.context, &state.context)?;
+                if request.query.exact_source_id != state.exact_source_id {
+                    return Err(cursor_invalidated());
+                }
                 self.continue_blocks(request, zone, state, limit).await
             }
             None => self.initial_blocks(request, zone, limit).await,
@@ -98,8 +101,31 @@ impl ZoneL2Router {
         zone: ResolvedActiveZoneContext,
         limit: usize,
     ) -> Result<L2ReadReport<L2BlocksPage>, L2ReadFailure> {
-        let indexer = contributor_plan(zone.source_plan(ZoneSourceRole::Indexer));
-        let sequencer = contributor_plan(zone.source_plan(ZoneSourceRole::Sequencer));
+        let exact_source_id = request.query.exact_source_id.clone();
+        let (indexer, sequencer, route_policy) = if let Some(source_id) = exact_source_id.as_deref()
+        {
+            let source = zone
+                .source(source_id, None)
+                .map_err(L2ReadFailure::from_context)?;
+            match source.role {
+                ZoneSourceRole::Indexer => (
+                    ContributorPlan::Eligible(source),
+                    ContributorPlan::Absent,
+                    L2RoutePolicy::ExactSource,
+                ),
+                ZoneSourceRole::Sequencer => (
+                    ContributorPlan::Absent,
+                    ContributorPlan::Eligible(source),
+                    L2RoutePolicy::ExactSource,
+                ),
+            }
+        } else {
+            (
+                contributor_plan(zone.source_plan(ZoneSourceRole::Indexer)),
+                contributor_plan(zone.source_plan(ZoneSourceRole::Sequencer)),
+                L2RoutePolicy::Composite,
+            )
+        };
         if matches!(indexer, ContributorPlan::Absent)
             && matches!(sequencer, ContributorPlan::Absent)
         {
@@ -118,7 +144,7 @@ impl ZoneL2Router {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        let route = route_from_contributors(&results);
+        let route = route_from_contributors(&results, route_policy);
         let successful = results
             .iter()
             .filter(|result| result.failure.is_none())
@@ -154,6 +180,7 @@ impl ZoneL2Router {
         if page.has_more {
             let cursor = self.insert_block_cursor(BlockCursorState {
                 context: request.context,
+                exact_source_id,
                 contributors: pinned,
                 source_heads: page.source_heads.clone(),
                 next_before: page
@@ -212,7 +239,12 @@ impl ZoneL2Router {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        let route = route_from_contributors(&results);
+        let route_policy = if state.exact_source_id.is_some() {
+            L2RoutePolicy::ExactSource
+        } else {
+            L2RoutePolicy::Composite
+        };
+        let route = route_from_contributors(&results, route_policy);
         if let Some(failure) = results.iter().find_map(|result| result.failure.clone()) {
             return Err(failure.with_route(route));
         }
@@ -240,6 +272,7 @@ impl ZoneL2Router {
             };
             page.next_cursor = Some(self.insert_block_cursor(BlockCursorState {
                 context: request.context,
+                exact_source_id: state.exact_source_id,
                 contributors: pinned,
                 source_heads: page.source_heads.clone(),
                 next_before,
@@ -1590,6 +1623,7 @@ struct L2RouterState {
 #[derive(Debug, Clone)]
 struct BlockCursorState {
     context: ActiveZoneContext,
+    exact_source_id: Option<String>,
     contributors: Vec<PinnedContributor>,
     source_heads: Vec<L2SourceHead>,
     next_before: u64,
@@ -2270,9 +2304,9 @@ fn contributor_plan(plan: ResolvedSourcePlan) -> ContributorPlan {
     }
 }
 
-fn route_from_contributors(results: &[ContributorResult]) -> L2ReadRoute {
+fn route_from_contributors(results: &[ContributorResult], policy: L2RoutePolicy) -> L2ReadRoute {
     L2ReadRoute {
-        policy: L2RoutePolicy::Composite,
+        policy,
         attempts: results
             .iter()
             .map(|result| result.attempt.clone())
