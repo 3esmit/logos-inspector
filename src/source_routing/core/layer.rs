@@ -458,10 +458,11 @@ mod tests {
             ));
         };
 
-        assert!(
+        anyhow::ensure!(
             error
                 .to_string()
-                .contains("module adapter does not support live-block observation")
+                .contains("module adapter does not support live-block observation"),
+            "unexpected module adapter error: {error:#}"
         );
         Ok(())
     }
