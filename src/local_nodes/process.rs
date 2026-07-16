@@ -36,6 +36,7 @@ pub(super) fn process_is_alive(pid: u32) -> bool {
     let exists = Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
+        .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success());
     if !exists {
@@ -46,6 +47,20 @@ pub(super) fn process_is_alive(pid: u32) -> bool {
     #[cfg(not(target_os = "linux"))]
     let terminated = false;
     !terminated
+}
+
+pub(super) fn process_group_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    let target = format!("-{pid}");
+    #[cfg(not(unix))]
+    let target = pid.to_string();
+    Command::new("kill")
+        .arg("-0")
+        .arg("--")
+        .arg(target)
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(target_os = "linux")]
@@ -62,6 +77,7 @@ pub(super) fn stop_process(pid: u32) -> Result<()> {
     let target = pid.to_string();
     let status = Command::new("kill")
         .arg("-TERM")
+        .arg("--")
         .arg(target)
         .status()
         .with_context(|| format!("failed to stop process {pid}"))?;
