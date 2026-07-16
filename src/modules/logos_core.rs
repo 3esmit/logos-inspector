@@ -8,7 +8,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, LazyLock, Mutex, MutexGuard, TryLockError,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -1770,35 +1770,41 @@ impl LogoscoreCliRuntime {
     }
 }
 
-fn logoscore_cli_command_gate(runner: &LogosCoreRunner) -> Result<Arc<Mutex<()>>> {
+#[derive(Debug, Default)]
+struct LogoscoreCliCommandGate {
+    lock: Mutex<()>,
+    controlled_waiters: AtomicUsize,
+}
+
+fn logoscore_cli_command_gate(runner: &LogosCoreRunner) -> Result<Arc<LogoscoreCliCommandGate>> {
     let mut gates = LOGOSCORE_CLI_COMMAND_GATES
         .lock()
         .map_err(|_| anyhow::anyhow!("logoscore CLI command gate registry is poisoned"))?;
     Ok(Arc::clone(
         gates
             .entry(LogoscoreCliCommandGateKey::from(runner))
-            .or_insert_with(|| Arc::new(Mutex::new(()))),
+            .or_insert_with(|| Arc::new(LogoscoreCliCommandGate::default())),
     ))
 }
 
 fn acquire_logoscore_cli_command_gate<'gate>(
-    gate: &'gate Mutex<()>,
+    gate: &'gate LogoscoreCliCommandGate,
     control: Option<&CommandControl>,
     deadline: Option<StdInstant>,
 ) -> Result<MutexGuard<'gate, ()>> {
-    loop {
-        if let Some(control) = control {
-            control.check_active()?;
-        }
-        if deadline.is_some_and(|deadline| StdInstant::now() >= deadline) {
-            bail!("logoscore CLI request timed out waiting for another request");
-        }
-        match gate.try_lock() {
-            Ok(permit) => return Ok(permit),
-            Err(TryLockError::Poisoned(_)) => {
-                bail!("logoscore CLI command gate is poisoned");
+    let controlled_waiter = control.is_some();
+    if controlled_waiter {
+        gate.controlled_waiters.fetch_add(1, Ordering::SeqCst);
+    }
+    let result = (|| {
+        loop {
+            if let Some(control) = control {
+                control.check_active()?;
             }
-            Err(TryLockError::WouldBlock) => {
+            if deadline.is_some_and(|deadline| StdInstant::now() >= deadline) {
+                bail!("logoscore CLI request timed out waiting for another request");
+            }
+            if !controlled_waiter && gate.controlled_waiters.load(Ordering::SeqCst) > 0 {
                 let sleep_duration = deadline
                     .map(|deadline| {
                         LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL
@@ -1809,9 +1815,32 @@ fn acquire_logoscore_cli_command_gate<'gate>(
                     bail!("logoscore CLI request timed out waiting for another request");
                 }
                 thread::sleep(sleep_duration);
+                continue;
+            }
+            match gate.lock.try_lock() {
+                Ok(permit) => return Ok(permit),
+                Err(TryLockError::Poisoned(_)) => {
+                    bail!("logoscore CLI command gate is poisoned");
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let sleep_duration = deadline
+                        .map(|deadline| {
+                            LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL
+                                .min(deadline.saturating_duration_since(StdInstant::now()))
+                        })
+                        .unwrap_or(LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL);
+                    if sleep_duration == Duration::ZERO {
+                        bail!("logoscore CLI request timed out waiting for another request");
+                    }
+                    thread::sleep(sleep_duration);
+                }
             }
         }
+    })();
+    if controlled_waiter {
+        gate.controlled_waiters.fetch_sub(1, Ordering::SeqCst);
     }
+    result
 }
 
 fn is_transient_module_discovery_error(error: &anyhow::Error) -> bool {
@@ -1861,7 +1890,7 @@ impl From<&LogosCoreRunner> for LogoscoreCliCommandGateKey {
 }
 
 static LOGOSCORE_CLI_COMMAND_GATES: LazyLock<
-    Mutex<HashMap<LogoscoreCliCommandGateKey, Arc<Mutex<()>>>>,
+    Mutex<HashMap<LogoscoreCliCommandGateKey, Arc<LogoscoreCliCommandGate>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn status() -> Result<LogosCoreOutput> {
@@ -4002,8 +4031,9 @@ esac
 
     #[test]
     fn controlled_cli_request_waiting_for_gate_preserves_deadline() -> Result<()> {
-        let gate = Mutex::new(());
+        let gate = LogoscoreCliCommandGate::default();
         let held = gate
+            .lock
             .lock()
             .map_err(|_| anyhow::anyhow!("test command gate is poisoned"))?;
         let control = CommandControl::new(
@@ -4022,6 +4052,48 @@ esac
             termination.reason() == CommandStopReason::DeadlineExceeded,
             "controlled CLI gate wait ended for the wrong reason"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_cli_request_is_not_starved_by_uncontrolled_barging() -> Result<()> {
+        let gate = Arc::new(LogoscoreCliCommandGate::default());
+        let held = gate
+            .lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("test command gate is poisoned"))?;
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let controlled_gate = Arc::clone(&gate);
+        let controlled = thread::spawn(move || -> Result<()> {
+            let control = CommandControl::new(
+                CancellationToken::new(),
+                StdInstant::now() + Duration::from_millis(120),
+            );
+            started_tx
+                .send(())
+                .map_err(|_| anyhow::anyhow!("controlled gate fixture did not start"))?;
+            let permit =
+                acquire_logoscore_cli_command_gate(&controlled_gate, Some(&control), None)?;
+            drop(permit);
+            Ok(())
+        });
+        started_rx
+            .recv_timeout(Duration::from_millis(50))
+            .context("controlled gate fixture did not report startup")?;
+        thread::sleep(Duration::from_millis(25));
+        drop(held);
+
+        let uncontrolled = acquire_logoscore_cli_command_gate(
+            &gate,
+            None,
+            Some(StdInstant::now() + Duration::from_millis(500)),
+        )?;
+        thread::sleep(Duration::from_millis(150));
+        drop(uncontrolled);
+
+        controlled
+            .join()
+            .map_err(|_| anyhow::anyhow!("controlled gate fixture panicked"))??;
         Ok(())
     }
 
