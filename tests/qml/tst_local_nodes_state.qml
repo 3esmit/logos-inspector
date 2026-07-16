@@ -281,6 +281,32 @@ TestCase {
         compare(state.toolProblem(), "sequencer_service not found. Local sequencer start requires a configured binary.")
     }
 
+    function test_runtime_modules_dir_defaults_to_system_modules() {
+        state.report = testnetReport()
+        state.revision += 1
+
+        compare(state.runtimeModulesDir(), "/opt/logos-node/modules")
+        state.beginRuntimeAction("start_runtime", "", "")
+        compare(state.pendingRuntimeModulesDir, "/opt/logos-node/modules")
+
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: testnetReport(),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+        state.runPendingAction()
+        compare(gateway.calls[0].args[1].runtime_modules_dir, "/opt/logos-node/modules")
+    }
+
     function test_testnet_observation_health_is_separate_from_control_ownership() {
         state.report = testnetReport()
         state.observedNodes = ({
