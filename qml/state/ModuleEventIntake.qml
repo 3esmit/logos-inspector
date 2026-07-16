@@ -43,6 +43,18 @@ QtObject {
                 || eventText === "daemonStopped"
                 || eventText === "daemonUnavailable"
         }
+        if (moduleText === String(model && model.blockchainModule ? model.blockchainModule : "")) {
+            return eventText === "moduleReady"
+                || eventText === "moduleUnavailable"
+                || eventText === "nodeStarted"
+                || eventText === "nodeStopped"
+                || eventText === "nodeUnavailable"
+        }
+        if (moduleText === "indexer_service" || moduleText === "sequencer_service") {
+            return eventText === "nodeStarted"
+                || eventText === "nodeStopped"
+                || eventText === "nodeUnavailable"
+        }
         if (moduleText === String(model && model.deliveryModule ? model.deliveryModule : "")) {
             return eventText === "moduleReady"
                 || eventText === "moduleUnavailable"

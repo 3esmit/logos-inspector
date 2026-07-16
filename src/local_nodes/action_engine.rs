@@ -17,7 +17,7 @@ use super::model::{
     LocalNodesState, NodeAction, NodeKind, ToolStatus,
 };
 use super::presentation;
-use super::process::{find_command, process_is_alive};
+use super::process::{find_command, process_group_has_live_members};
 use super::runtime::{self, LogoscoreRuntimeProfile, LogoscoreRuntimeStore};
 use super::workflow::{LocalNodeWorkflow, normalized_profile};
 
@@ -191,7 +191,7 @@ impl LocalNodeReportProjector {
         let adapter = adapter_for(kind);
         let config = active.and_then(|devnet| node_config(devnet, kind));
         let process_id = config.and_then(|node| node.process_id);
-        let process_running = process_id.is_some_and(|pid| self.process_is_alive(pid));
+        let process_running = process_id.is_some_and(process_group_has_live_members);
         let executable_available = adapter
             .required_executable()
             .is_some_and(|command| find_command(command).is_some());
@@ -221,10 +221,6 @@ impl LocalNodeReportProjector {
             available_actions: status.available_actions,
             detail: status.detail,
         }
-    }
-
-    fn process_is_alive(self, pid: u32) -> bool {
-        process_is_alive(pid)
     }
 
     fn tool_statuses(self, runtime: Option<&LogoscoreRuntimeProfile>) -> LocalNodeTools {

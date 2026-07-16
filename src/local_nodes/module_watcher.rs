@@ -20,9 +20,10 @@ use super::{
     NodeAction, NodeKind, NodeLifecycleState,
     action_engine::LocalNodeActionEngine,
     action_workspace::write_devnet_manifest,
-    adapters::adapter_for,
+    adapters::{NodeLifecycle, adapter_for},
     lifecycle::acquire_state_lock,
     model::{LocalDevnetRecord, LocalNodeConfigRecord, LocalNodesState},
+    process::process_group_has_live_members,
 };
 
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(10);
@@ -34,6 +35,8 @@ const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
 const STORAGE_LISTEN_PORT: u16 = 8091;
+const INDEXER_WATCHER_MODULE: &str = "indexer_service";
+const SEQUENCER_WATCHER_MODULE: &str = "sequencer_service";
 
 /// Polling fallback for LogosCore installations whose CLI event stream is not
 /// safe or available. The watcher owns daemon/module polling, lifecycle
@@ -157,12 +160,22 @@ struct NodeLivenessProbe {
     record_updated_at: u64,
     kind: NodeKind,
     lifecycle_state: NodeLifecycleState,
-    contract: &'static ManagedNodeContract,
     module: &'static str,
-    started_event: &'static str,
-    stopped_event: &'static str,
+    event_route: LifecycleEventRoute,
+    requires_module_context: bool,
+    process_backed: bool,
     module_availability: ModuleAvailability,
     alive: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LifecycleEventRoute {
+    Contract {
+        contract: &'static ManagedNodeContract,
+        started_event: &'static str,
+        stopped_event: &'static str,
+    },
+    Synthetic,
 }
 
 impl NodeLivenessProbe {
@@ -342,11 +355,32 @@ fn merge_snapshot(
         .iter()
         .filter(|event| is_lifecycle_status_event(event))
     {
-        lifecycle.retain(|current| current.module() != event.module());
+        lifecycle.retain(|current| !replaces_lifecycle_snapshot(current, event));
         lifecycle.push(event.clone());
     }
     baseline.extend(lifecycle);
     baseline
+}
+
+fn replaces_lifecycle_snapshot(
+    current: &ModuleTransportEvent,
+    replacement: &ModuleTransportEvent,
+) -> bool {
+    current.module() == replacement.module()
+        && match (
+            synthetic_lifecycle_identity(current),
+            synthetic_lifecycle_identity(replacement),
+        ) {
+            (Some(current), Some(replacement)) => current == replacement,
+            _ => true,
+        }
+}
+
+fn synthetic_lifecycle_identity(event: &ModuleTransportEvent) -> Option<(&str, &str)> {
+    event
+        .args()
+        .iter()
+        .find_map(|arg| Some((arg.get("node")?.as_str()?, arg.get("network_id")?.as_str()?)))
 }
 
 fn is_lifecycle_status_event(event: &ModuleTransportEvent) -> bool {
@@ -477,44 +511,54 @@ fn collect_liveness_probes(
     loaded_modules: &BTreeSet<String>,
     module_status_known: bool,
 ) -> Vec<NodeLivenessProbe> {
-    [NodeKind::Messaging, NodeKind::Storage]
-        .into_iter()
-        .filter_map(|kind| {
-            let record = state.module_context_topology(kind)?;
-            let node = record.nodes.iter().find(|node| node.kind == kind)?;
-            liveness_probe(record, node, loaded_modules, module_status_known)
+    state
+        .testnet
+        .iter()
+        .chain(state.devnets.iter())
+        .flat_map(|record| {
+            record.nodes.iter().filter_map(|node| {
+                liveness_probe(state, record, node, loaded_modules, module_status_known)
+            })
         })
         .collect()
 }
 
 fn liveness_probe(
+    state: &LocalNodesState,
     record: &LocalDevnetRecord,
     node: &LocalNodeConfigRecord,
     loaded_modules: &BTreeSet<String>,
     module_status_known: bool,
 ) -> Option<NodeLivenessProbe> {
-    if !node.installed || !node.lifecycle_state.has_module_context() {
+    let lifecycle = adapter_for(node.kind).lifecycle();
+    let requires_module_context = matches!(lifecycle, NodeLifecycle::InitializedModule(_));
+    if requires_module_context {
+        if state.module_context_topology_id(node.kind) != Some(record.id.as_str())
+            || !node.installed
+            || !node.lifecycle_state.has_module_context()
+        {
+            return None;
+        }
+    } else if !node.installed && node.process_id.is_none() {
         return None;
     }
-    let port = match node.kind {
-        NodeKind::Messaging => node.port.unwrap_or(8645),
-        NodeKind::Storage => STORAGE_LISTEN_PORT,
-        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer => return None,
+    let (module, event_route) = lifecycle_event_route(node.kind)?;
+    let process_backed = matches!(lifecycle, NodeLifecycle::RegisteredProcess { .. });
+    let alive = if process_backed {
+        node.process_id.is_some_and(process_group_has_live_members)
+    } else {
+        tcp_port_is_open(liveness_port(node)?)
     };
-    let contract = adapter_for(node.kind).managed_contract()?;
-    let module = contract.module_id();
-    let started_event = contract.lifecycle_event(ManagedNodeAction::Start)?;
-    let stopped_event = contract.lifecycle_event(ManagedNodeAction::Stop)?;
     Some(NodeLivenessProbe {
         topology_id: record.id.clone(),
         record_updated_at: record.updated_at,
         kind: node.kind,
         lifecycle_state: node.lifecycle_state,
-        contract,
         module,
-        started_event,
-        stopped_event,
-        module_availability: if module_status_known {
+        event_route,
+        requires_module_context,
+        process_backed,
+        module_availability: if module_status_known && requires_module_context {
             if loaded_modules.contains(module) {
                 ModuleAvailability::Loaded
             } else {
@@ -523,8 +567,41 @@ fn liveness_probe(
         } else {
             ModuleAvailability::Unknown
         },
-        alive: tcp_port_is_open(port),
+        alive,
     })
+}
+
+fn lifecycle_event_route(kind: NodeKind) -> Option<(&'static str, LifecycleEventRoute)> {
+    match adapter_for(kind).lifecycle() {
+        NodeLifecycle::InitializedModule(contract) => {
+            let route = match (
+                contract.lifecycle_event(ManagedNodeAction::Start),
+                contract.lifecycle_event(ManagedNodeAction::Stop),
+            ) {
+                (Some(started_event), Some(stopped_event)) => LifecycleEventRoute::Contract {
+                    contract,
+                    started_event,
+                    stopped_event,
+                },
+                _ => LifecycleEventRoute::Synthetic,
+            };
+            Some((contract.module_id(), route))
+        }
+        NodeLifecycle::RegisteredProcess { .. } => match kind {
+            NodeKind::Indexer => Some((INDEXER_WATCHER_MODULE, LifecycleEventRoute::Synthetic)),
+            NodeKind::Sequencer => Some((SEQUENCER_WATCHER_MODULE, LifecycleEventRoute::Synthetic)),
+            NodeKind::Bedrock | NodeKind::Storage | NodeKind::Messaging => None,
+        },
+    }
+}
+
+fn liveness_port(node: &LocalNodeConfigRecord) -> Option<u16> {
+    match node.kind {
+        NodeKind::Storage => Some(STORAGE_LISTEN_PORT),
+        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer | NodeKind::Messaging => {
+            node.port.or_else(|| adapter_for(node.kind).default_port())
+        }
+    }
 }
 
 fn tcp_port_is_open(port: u16) -> bool {
@@ -537,30 +614,36 @@ fn apply_liveness_observation(
     probes: &[NodeLivenessProbe],
 ) -> Result<(bool, Vec<ModuleTransportEvent>)> {
     let mut changed_records = BTreeSet::new();
+    let mut accepted_record_versions = BTreeSet::new();
     let mut events = Vec::new();
     let observed_at = now_millis();
     for probe in probes {
-        if state.module_context_topology_id(probe.kind) != Some(probe.topology_id.as_str()) {
+        if probe.requires_module_context
+            && state.module_context_topology_id(probe.kind) != Some(probe.topology_id.as_str())
+        {
             continue;
         }
         let Some(record) = state.topology_mut(&probe.topology_id) else {
             continue;
         };
-        if record.updated_at != probe.record_updated_at {
+        if !accepted_record_versions.contains(&probe.topology_id)
+            && record.updated_at != probe.record_updated_at
+        {
             continue;
         }
+        accepted_record_versions.insert(probe.topology_id.clone());
         let Some(node) = record.nodes.iter_mut().find(|node| node.kind == probe.kind) else {
             continue;
         };
-        let confirmation_timed_out =
-            observed_at.saturating_sub(record.updated_at) >= LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS;
+        let confirmation_timed_out = observed_at.saturating_sub(probe.record_updated_at)
+            >= LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS;
         let event = match (
             node.lifecycle_state,
             node.pending_lifecycle_action,
             probe.alive,
         ) {
             (NodeLifecycleState::Starting, Some(NodeAction::Start), true)
-            | (NodeLifecycleState::Unknown, None, true) => {
+            | (NodeLifecycleState::Unknown | NodeLifecycleState::Failed, None, true) => {
                 node.lifecycle_state = NodeLifecycleState::Running;
                 node.pending_lifecycle_action = None;
                 Some(lifecycle_event(probe, true, true, "endpoint is reachable")?)
@@ -578,6 +661,19 @@ fn apply_liveness_observation(
                 )?)
             }
             (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
+                if probe.process_backed =>
+            {
+                node.process_id = None;
+                node.lifecycle_state = NodeLifecycleState::Failed;
+                node.pending_lifecycle_action = None;
+                Some(lifecycle_event(
+                    probe,
+                    true,
+                    false,
+                    "Inspector-owned process exited before lifecycle confirmation",
+                )?)
+            }
+            (NodeLifecycleState::Starting, Some(NodeAction::Start), false)
                 if confirmation_timed_out =>
             {
                 node.lifecycle_state = NodeLifecycleState::Failed;
@@ -590,6 +686,9 @@ fn apply_liveness_observation(
                 )?)
             }
             (NodeLifecycleState::Stopping, Some(NodeAction::Stop), false) => {
+                if probe.process_backed {
+                    node.process_id = None;
+                }
                 node.lifecycle_state = NodeLifecycleState::Stopped;
                 node.pending_lifecycle_action = None;
                 Some(lifecycle_event(probe, false, true, "endpoint is closed")?)
@@ -619,6 +718,9 @@ fn apply_liveness_observation(
                 )?)
             }
             (NodeLifecycleState::Running, None, false) => {
+                if probe.process_backed {
+                    node.process_id = None;
+                }
                 node.lifecycle_state = NodeLifecycleState::Unknown;
                 Some(unavailable_event(
                     probe,
@@ -630,6 +732,9 @@ fn apply_liveness_observation(
                 )?)
             }
             (NodeLifecycleState::Unknown, None, false) => {
+                if probe.process_backed {
+                    node.process_id = None;
+                }
                 node.lifecycle_state = NodeLifecycleState::Stopped;
                 Some(lifecycle_event(
                     probe,
@@ -665,6 +770,35 @@ fn lifecycle_event(
     success: bool,
     detail: &str,
 ) -> Result<ModuleTransportEvent> {
+    match probe.event_route {
+        LifecycleEventRoute::Contract {
+            contract,
+            started_event,
+            stopped_event,
+        } => contract_lifecycle_event(
+            probe,
+            contract,
+            started_event,
+            stopped_event,
+            started,
+            success,
+            detail,
+        ),
+        LifecycleEventRoute::Synthetic => {
+            synthetic_lifecycle_event(probe, started, success, detail)
+        }
+    }
+}
+
+fn contract_lifecycle_event(
+    probe: &NodeLivenessProbe,
+    contract: &'static ManagedNodeContract,
+    started_event: &'static str,
+    stopped_event: &'static str,
+    started: bool,
+    success: bool,
+    detail: &str,
+) -> Result<ModuleTransportEvent> {
     let marker = json!({
         "success": success,
         "simulated": true,
@@ -695,8 +829,7 @@ fn lifecycle_event(
         .enumerate()
         .map(|(index, value)| (format!("arg{index}"), value.clone()))
         .collect::<Map<_, _>>();
-    let outcome = probe
-        .contract
+    let outcome = contract
         .decode_lifecycle_event(&data)
         .context("simulated lifecycle payload does not match the managed module contract")?;
     anyhow::ensure!(
@@ -707,11 +840,36 @@ fn lifecycle_event(
     ModuleTransportEvent::new(
         probe.module,
         if started {
-            probe.started_event
+            started_event
         } else {
-            probe.stopped_event
+            stopped_event
         },
         args,
+    )
+}
+
+fn synthetic_lifecycle_event(
+    probe: &NodeLivenessProbe,
+    started: bool,
+    success: bool,
+    detail: &str,
+) -> Result<ModuleTransportEvent> {
+    ModuleTransportEvent::new(
+        probe.module,
+        if started {
+            "nodeStarted"
+        } else {
+            "nodeStopped"
+        },
+        vec![json!({
+            "node": probe.kind.as_str(),
+            "network_id": probe.topology_id,
+            "success": success,
+            "simulated": true,
+            "source": "poll",
+            "message": detail,
+            "timestamp": now_millis(),
+        })],
     )
 }
 
@@ -720,6 +878,8 @@ fn unavailable_event(probe: &NodeLivenessProbe, detail: &str) -> Result<ModuleTr
         probe.module,
         "nodeUnavailable",
         vec![json!({
+            "node": probe.kind.as_str(),
+            "network_id": probe.topology_id,
             "simulated": true,
             "source": "poll",
             "message": detail,
@@ -768,7 +928,7 @@ mod tests {
                     initialization_config_path: None,
                     data_dir: directory.path().join("data").display().to_string(),
                     endpoint: None,
-                    port: Some(8645),
+                    port: adapter_for(kind).default_port(),
                     package_path: None,
                     module_path: None,
                     process_id: None,
@@ -787,25 +947,20 @@ mod tests {
         alive: bool,
         module_availability: ModuleAvailability,
     ) -> Result<NodeLivenessProbe> {
-        let contract = super::adapter_for(kind)
-            .managed_contract()
-            .with_context(|| format!("{} managed contract is missing", kind.as_str()))?;
-        let (module, started_event, stopped_event) = match kind {
-            NodeKind::Messaging => ("delivery_module", "nodeStarted", "nodeStopped"),
-            NodeKind::Storage => ("storage_module", "storageStart", "storageStop"),
-            NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer => {
-                anyhow::bail!("{} has no pollable lifecycle contract", kind.as_str())
-            }
-        };
+        let (module, event_route) = lifecycle_event_route(kind)
+            .with_context(|| format!("{} event route is missing", kind.as_str()))?;
         Ok(NodeLivenessProbe {
             topology_id: "devnet".to_owned(),
             record_updated_at: 0,
             kind,
             lifecycle_state,
-            contract,
             module,
-            started_event,
-            stopped_event,
+            event_route,
+            requires_module_context: adapter_for(kind).managed_contract().is_some(),
+            process_backed: matches!(
+                adapter_for(kind).lifecycle(),
+                NodeLifecycle::RegisteredProcess { .. }
+            ),
             module_availability,
             alive,
         })
@@ -845,6 +1000,178 @@ mod tests {
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Running
                 && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_start_synthesizes_bedrock_started_event() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Bedrock,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        let probe = probe_for(
+            NodeKind::Bedrock,
+            NodeLifecycleState::Starting,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(
+            events[0].module() == "blockchain_module" && events[0].event() == "nodeStarted"
+        );
+        anyhow::ensure!(
+            events[0].args()[0].get("node").and_then(Value::as_str) == Some("bedrock")
+                && events[0].args()[0]
+                    .get("network_id")
+                    .and_then(Value::as_str)
+                    == Some("devnet")
+                && events[0].args()[0]
+                    .get("simulated")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+        );
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Running
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_bedrock_context_recovers_when_its_endpoint_becomes_reachable() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Bedrock,
+            NodeLifecycleState::Failed,
+            None,
+        );
+        let probes = collect_liveness_probes(
+            &state,
+            &BTreeSet::from(["blockchain_module".to_owned()]),
+            true,
+        );
+        anyhow::ensure!(probes.len() == 1);
+
+        let probe = probe_for(
+            NodeKind::Bedrock,
+            NodeLifecycleState::Failed,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(
+            events[0].module() == "blockchain_module" && events[0].event() == "nodeStarted"
+        );
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Running
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_start_synthesizes_indexer_started_event() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        let probe = probe_for(
+            NodeKind::Indexer,
+            NodeLifecycleState::Starting,
+            true,
+            ModuleAvailability::Unknown,
+        )?;
+
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(
+            events[0].module() == INDEXER_WATCHER_MODULE && events[0].event() == "nodeStarted"
+        );
+        anyhow::ensure!(events[0].args()[0].get("node").and_then(Value::as_str) == Some("indexer"));
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Running
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_stop_confirms_indexer_process_group_exit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        );
+        state.devnets[0].nodes[0].process_id = Some(4242);
+        let probe = probe_for(
+            NodeKind::Indexer,
+            NodeLifecycleState::Stopping,
+            false,
+            ModuleAvailability::Unknown,
+        )?;
+
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(
+            events[0].module() == INDEXER_WATCHER_MODULE && events[0].event() == "nodeStopped"
+        );
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Stopped
+                && node.pending_lifecycle_action.is_none()
+                && node.process_id.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_stop_waits_for_indexer_process_group_exit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        );
+        state.devnets[0].nodes[0].process_id = Some(4242);
+        let updated_at = now_millis();
+        state.devnets[0].updated_at = updated_at;
+        let mut probe = probe_for(
+            NodeKind::Indexer,
+            NodeLifecycleState::Stopping,
+            true,
+            ModuleAvailability::Unknown,
+        )?;
+        probe.record_updated_at = updated_at;
+
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(!changed && events.is_empty());
+        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Stopping
+                && node.pending_lifecycle_action == Some(NodeAction::Stop)
+                && node.process_id == Some(4242)
         );
         Ok(())
     }
@@ -986,6 +1313,110 @@ mod tests {
     }
 
     #[test]
+    fn bound_bedrock_context_is_polled_with_synthetic_lifecycle_route() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let state = state_with_node(
+            &directory,
+            NodeKind::Bedrock,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+
+        let probes = collect_liveness_probes(
+            &state,
+            &BTreeSet::from(["blockchain_module".to_owned()]),
+            true,
+        );
+
+        anyhow::ensure!(probes.len() == 1);
+        anyhow::ensure!(
+            probes[0].module == "blockchain_module"
+                && matches!(probes[0].event_route, LifecycleEventRoute::Synthetic)
+                && probes[0].requires_module_context
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detached_nodes_are_polled_without_module_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Running,
+            None,
+        );
+        state
+            .module_context_topology_by_kind
+            .remove(&NodeKind::Indexer);
+        let mut sequencer = state.devnets[0].nodes[0].clone();
+        sequencer.kind = NodeKind::Sequencer;
+        sequencer.port = adapter_for(NodeKind::Sequencer).default_port();
+        state.devnets[0].nodes.push(sequencer);
+
+        let probes = collect_liveness_probes(&state, &BTreeSet::new(), false);
+
+        anyhow::ensure!(probes.len() == 2);
+        anyhow::ensure!(probes.iter().all(|probe| {
+            probe.process_backed
+                && !probe.requires_module_context
+                && matches!(probe.event_route, LifecycleEventRoute::Synthetic)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_batch_confirms_all_nodes_from_one_topology_snapshot() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Bedrock,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        for kind in [NodeKind::Messaging, NodeKind::Storage] {
+            let mut node = state.devnets[0].nodes[0].clone();
+            node.kind = kind;
+            node.port = adapter_for(kind).default_port();
+            state.devnets[0].nodes.push(node);
+            state
+                .module_context_topology_by_kind
+                .insert(kind, "devnet".to_owned());
+        }
+        let probes = [
+            probe_for(
+                NodeKind::Bedrock,
+                NodeLifecycleState::Starting,
+                true,
+                ModuleAvailability::Loaded,
+            )?,
+            probe_for(
+                NodeKind::Messaging,
+                NodeLifecycleState::Starting,
+                true,
+                ModuleAvailability::Loaded,
+            )?,
+            probe_for(
+                NodeKind::Storage,
+                NodeLifecycleState::Starting,
+                true,
+                ModuleAvailability::Loaded,
+            )?,
+        ];
+
+        let (changed, events) = apply_liveness_observation(&mut state, &probes)?;
+
+        anyhow::ensure!(changed && events.len() == 3);
+        anyhow::ensure!(
+            state.devnets[0]
+                .nodes
+                .iter()
+                .all(|node| node.lifecycle_state == NodeLifecycleState::Running)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn probes_only_use_the_bound_module_context() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mut state = state_with_node(
@@ -1068,6 +1499,24 @@ mod tests {
     }
 
     #[test]
+    fn store_migration_binds_an_unambiguous_bedrock_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Bedrock,
+            NodeLifecycleState::Running,
+            None,
+        );
+        state
+            .module_context_topology_by_kind
+            .remove(&NodeKind::Bedrock);
+
+        anyhow::ensure!(state.infer_unambiguous_module_context_topologies());
+        anyhow::ensure!(state.module_context_topology_id(NodeKind::Bedrock) == Some("devnet"));
+        Ok(())
+    }
+
+    #[test]
     fn late_subscription_replays_current_module_snapshot() -> Result<()> {
         let runtime_event = ModuleTransportEvent::new(
             RUNTIME_MODULE,
@@ -1104,6 +1553,39 @@ mod tests {
 
         anyhow::ensure!(snapshot.iter().any(|event| event.event() == "nodeStopped"));
         anyhow::ensure!(!snapshot.iter().any(|event| event.event() == "nodeStarted"));
+        Ok(())
+    }
+
+    #[test]
+    fn lifecycle_snapshot_keeps_detached_nodes_for_each_network() -> Result<()> {
+        let alpha = ModuleTransportEvent::new(
+            INDEXER_WATCHER_MODULE,
+            "nodeStarted",
+            vec![json!({ "node": "indexer", "network_id": "alpha" })],
+        )?;
+        let beta = ModuleTransportEvent::new(
+            INDEXER_WATCHER_MODULE,
+            "nodeStarted",
+            vec![json!({ "node": "indexer", "network_id": "beta" })],
+        )?;
+        let alpha_stopped = ModuleTransportEvent::new(
+            INDEXER_WATCHER_MODULE,
+            "nodeStopped",
+            vec![json!({ "node": "indexer", "network_id": "alpha" })],
+        )?;
+
+        let snapshot = merge_snapshot(&[alpha], Vec::new(), &[beta]);
+        let snapshot = merge_snapshot(&snapshot, Vec::new(), &[alpha_stopped]);
+
+        anyhow::ensure!(snapshot.len() == 2);
+        anyhow::ensure!(snapshot.iter().any(|event| {
+            event.event() == "nodeStopped"
+                && event.args()[0].get("network_id").and_then(Value::as_str) == Some("alpha")
+        }));
+        anyhow::ensure!(snapshot.iter().any(|event| {
+            event.event() == "nodeStarted"
+                && event.args()[0].get("network_id").and_then(Value::as_str) == Some("beta")
+        }));
         Ok(())
     }
 

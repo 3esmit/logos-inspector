@@ -411,6 +411,47 @@ TestCase {
         compare(runtimeModuleEventCalls(nativeWatcherHost.calls), 0)
     }
 
+    function test_native_watcher_refreshes_all_local_node_lifecycle_routes() {
+        bridge.host = nativeWatcherHost
+        nativeWatcherHost.calls = []
+
+        nativeWatcherHost.moduleEventJson(
+            model.blockchainModule,
+            "nodeStarted",
+            JSON.stringify([{ node: "bedrock", success: true, simulated: true }])
+        )
+        tryVerify(function () {
+            return nativeWatcherHost.calls.some(function(call) {
+                return call.method === "localNodesStatus"
+            })
+        })
+
+        nativeWatcherHost.calls = []
+        nativeWatcherHost.moduleEventJson(
+            "indexer_service",
+            "nodeStopped",
+            JSON.stringify([{ node: "indexer", success: true, simulated: true }])
+        )
+        tryVerify(function () {
+            return nativeWatcherHost.calls.some(function(call) {
+                return call.method === "localNodesStatus"
+            })
+        })
+
+        nativeWatcherHost.calls = []
+        nativeWatcherHost.moduleEventJson(
+            "sequencer_service",
+            "nodeUnavailable",
+            JSON.stringify([{ node: "sequencer", simulated: true }])
+        )
+        tryVerify(function () {
+            return nativeWatcherHost.calls.some(function(call) {
+                return call.method === "localNodesStatus"
+            })
+        })
+        compare(runtimeModuleEventCalls(nativeWatcherHost.calls), 0)
+    }
+
     function test_ingest_blockchain_event_updates_live_rows() {
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }

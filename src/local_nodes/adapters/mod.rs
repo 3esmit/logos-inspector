@@ -270,6 +270,23 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
             "needs_configuration"
         };
         let run_state = match self.lifecycle() {
+            NodeLifecycle::RegisteredProcess { .. }
+                if context.config.is_some_and(|node| {
+                    matches!(
+                        node.lifecycle_state,
+                        super::NodeLifecycleState::Initializing
+                            | super::NodeLifecycleState::Starting
+                            | super::NodeLifecycleState::Stopping
+                            | super::NodeLifecycleState::Unknown
+                            | super::NodeLifecycleState::Failed
+                    )
+                }) =>
+            {
+                context
+                    .config
+                    .map(|node| node.lifecycle_state.as_str())
+                    .unwrap_or("unknown")
+            }
             NodeLifecycle::RegisteredProcess { .. } if context.process_running => "running",
             NodeLifecycle::RegisteredProcess { .. }
                 if context.config.and_then(|node| node.process_id).is_some() =>
@@ -599,5 +616,30 @@ mod tests {
 
         assert!(!owned_status.available_actions.contains(&NodeAction::Start));
         assert!(owned_status.available_actions.contains(&NodeAction::Stop));
+    }
+
+    #[test]
+    fn registered_process_projection_surfaces_watcher_transitions() {
+        let adapter = adapter_for(NodeKind::Indexer);
+        let tools = configured_tools();
+        for (lifecycle_state, expected_run_state) in [
+            (super::super::NodeLifecycleState::Starting, "starting"),
+            (super::super::NodeLifecycleState::Stopping, "stopping"),
+            (super::super::NodeLifecycleState::Unknown, "unknown"),
+            (super::super::NodeLifecycleState::Failed, "failed"),
+        ] {
+            let mut config = registered_process_config(true, Some(42));
+            config.lifecycle_state = lifecycle_state;
+            let status = adapter.project_status(NodeStatusContext {
+                config: Some(&config),
+                runtime: None,
+                tools: &tools,
+                process_running: true,
+                executable_available: true,
+                workflow_actions: adapter.workflow_actions().to_vec(),
+            });
+
+            assert_eq!(status.run_state, expected_run_state);
+        }
     }
 }
