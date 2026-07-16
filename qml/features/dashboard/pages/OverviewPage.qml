@@ -8,6 +8,7 @@ import "../../../components/common"
 import "../../../state"
 import "../../../state/status/StatusFactsProjection.js" as StatusFactsProjection
 import "../../../theme"
+import "../controls"
 
 ColumnLayout {
     id: root
@@ -74,6 +75,8 @@ ColumnLayout {
         Frame {
             padding: 0
             Layout.fillWidth: true
+            Layout.row: 0
+            Layout.column: 0
 
             background: Rectangle {
                 color: root.theme.surface
@@ -120,64 +123,21 @@ ColumnLayout {
             }
         }
 
-        Frame {
-            padding: 0
+        DashboardZonesPanel {
+            theme: root.theme
+            model: root.model
             Layout.fillWidth: true
-
-            background: Rectangle {
-                color: root.theme.surface
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                DashboardHeader {
-                    theme: root.theme
-                    title: qsTr("Recent L2 Blocks")
-                    action: qsTr("View all")
-                    onActivated: {
-                        root.model.zoneInspection.requestedDetailTab = "l2"
-                        root.model.zoneInspection.requestedL2View = "blocks"
-                        root.model.selectView("zones")
-                    }
-                }
-
-                DashboardRow {
-                    theme: root.theme
-                    header: true
-                    columns: [qsTr("L2 block"), qsTr("Header"), qsTr("Tx"), qsTr("Bedrock")]
-                    columnWidths: [86, -1, 58, 86]
-                }
-
-                Repeater {
-                    model: root.l2BlockRows()
-
-                    DashboardRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        columns: [modelData.height, modelData.header, modelData.tx, modelData.status]
-                        columnWidths: [86, -1, 58, 86]
-                        linkKinds: ["indexerBlock", "indexerBlock", "", ""]
-                        linkValues: [modelData.blockHash, modelData.blockHash, "", ""]
-                        onCellActivated: function (column) {
-                            if (column === 0 || column === 1) {
-                                if (modelData.entityRef) {
-                                    root.model.openInspectionEntityRef(modelData.entityRef, true)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            Layout.row: root.width < 860 ? 2 : 0
+            Layout.column: root.width < 860 ? 0 : 1
+            Layout.rowSpan: root.width < 860 ? 1 : 2
+            Layout.alignment: Qt.AlignTop
         }
 
         Frame {
             padding: 0
             Layout.fillWidth: true
+            Layout.row: 1
+            Layout.column: 0
 
             background: Rectangle {
                 color: root.theme.surface
@@ -228,59 +188,6 @@ ColumnLayout {
             }
         }
 
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: root.theme.surface
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                DashboardHeader {
-                    theme: root.theme
-                    title: qsTr("Recent L2 Transactions")
-                    action: qsTr("View all")
-                    onActivated: {
-                        root.model.zoneInspection.requestedDetailTab = "l2"
-                        root.model.selectView("zones")
-                    }
-                }
-
-                DashboardRow {
-                    theme: root.theme
-                    header: true
-                    columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Header"), qsTr("Ops")]
-                    columnWidths: [86, -1, -1, 58]
-                }
-
-                Repeater {
-                    model: root.l2TransactionRows()
-
-                    DashboardRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        columns: [modelData.slot, modelData.hash, modelData.block, modelData.ops]
-                        columnWidths: [86, -1, -1, 58]
-                        linkKinds: ["", "transaction", "indexerBlock", ""]
-                        linkValues: ["", modelData.txHash, modelData.blockHash, ""]
-                        onCellActivated: function (column) {
-                            if (column === 1) {
-                                root.model.entityNavigation.openReference("transaction", modelData.txHash)
-                            } else if (column === 2) {
-                                root.model.entityNavigation.openReference("indexerBlock", modelData.blockHash, modelData.rawBlock)
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     StatusMessage {
@@ -521,38 +428,6 @@ ColumnLayout {
         return Number.isFinite(libSlot) && libSlot > 0 && Number.isFinite(slotTo) && slotTo >= libSlot
     }
 
-    function l2BlockRows() {
-        const blocks = root.l2BlocksForDashboard();
-        if (blocks.length > 0) {
-            return blocks.slice(0, 5).map(function (block) {
-                return {
-                    height: root.numberText(block.block_id),
-                    header: root.shortHash(block.header_hash),
-                    tx: root.numberText(block.tx_count),
-                    status: block.bedrock_status || "-",
-                    blockHash: String(block.header_hash || ""),
-                    rawBlock: block,
-                    entityRef: block.entity_ref
-                        ? Object.assign({ layer: "l2" }, block.entity_ref) : null
-                };
-            });
-        }
-        return [
-            {
-                height: "-",
-                header: qsTr("No indexed L2 blocks"),
-                tx: "-",
-                status: "-",
-                blockHash: "",
-                rawBlock: null
-            }
-        ];
-    }
-
-    function l2BlocksForDashboard() {
-        return root.model.chainPages.dashboardLezBlockRows || []
-    }
-
     function l1TransactionRows() {
         const transactions = root.model.chainPages.transactionRowsFromBlocks(
             root.model.chainPages.blocksPageRows || []).slice(0, 5)
@@ -580,41 +455,6 @@ ColumnLayout {
                 blockHash: ""
             }
         ]
-    }
-
-    function l2TransactionRows() {
-        const rows = [];
-        const blocks = root.l2BlocksForDashboard();
-        for (let i = 0; i < blocks.length && rows.length < 5; ++i) {
-            const block = blocks[i];
-            const transactions = block.transactions || [];
-            for (let j = 0; j < transactions.length && rows.length < 5; ++j) {
-                const tx = transactions[j];
-                rows.push({
-                    slot: root.numberText(block.block_id),
-                    hash: root.shortHash(tx.hash),
-                    block: root.shortHash(block.header_hash),
-                    ops: root.numberText((tx.instruction_data || []).length),
-                    txHash: String(tx.hash || ""),
-                    blockHash: String(block.header_hash || ""),
-                    rawBlock: block
-                });
-            }
-        }
-        if (rows.length > 0) {
-            return rows;
-        }
-        return [
-            {
-                slot: "-",
-                hash: qsTr("No indexed transactions"),
-                block: "-",
-                ops: "-",
-                txHash: "",
-                blockHash: "",
-                rawBlock: null
-            }
-        ];
     }
 
     component GraphTile: Frame {

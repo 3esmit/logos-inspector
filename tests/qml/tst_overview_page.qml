@@ -8,6 +8,7 @@ import "../../qml/services"
 import "../../qml/state"
 import "../../qml/theme"
 import "fixtures"
+import "fixtures/ZoneFixtureData.js" as ZoneFixtureData
 
 TestCase {
     id: testRoot
@@ -63,6 +64,7 @@ TestCase {
         model.metrics.dashboardMetricLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision = 0
         model.dashboardNode = null
+        model.dashboardLezBlockRows = []
         model.capabilityRegistryLoaded = true
         model.capabilityRegistryReport = ({
             schema_version: 1,
@@ -73,6 +75,17 @@ TestCase {
             }]
         })
         model.metrics.setDashboardGraphEnabled("bedrock.peer_count", true)
+        model.zoneInspection.networkScope = ZoneFixtureData.networkScope()
+        model.zoneInspection.networkScopeKey = "genesis_id:"
+            + ZoneFixtureData.networkScope().genesis_id
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.summaryStale = false
+        model.zoneInspection.summaryInFlight = false
+        model.zoneInspection.summaryError = ""
+        model.zoneInspection.zoneSummaries = dashboardZones()
+        model.zoneInspection.activeZoneContext = null
+        model.shell.currentView = "overview"
+        wait(0)
     }
 
     function test_live_dashboard_history_reaches_visible_graph_tile() {
@@ -116,5 +129,84 @@ TestCase {
                 }
             }
         }
+    }
+
+    function test_dashboard_uses_zone_catalog_instead_of_global_l2_rows() {
+        const panel = findChild(page, "dashboardZonesPanel")
+        verify(panel !== null)
+        compare(panel.zones.length, 3)
+        compare(panel.sequencerCount, 1)
+        compare(panel.dataCount, 1)
+        verify(hasVisibleText(panel, "Zones"))
+        verify(hasVisibleText(panel, "Devnet Settlement / 11111111...111111"))
+        verify(!hasVisibleText(page, "Recent L2 Blocks"))
+        verify(!hasVisibleText(page, "Recent L2 Transactions"))
+
+        const channelId = ZoneFixtureData.identity("1")
+        const row = findChild(panel, "dashboardZoneRow_" + channelId)
+        verify(row !== null)
+        compare(row.cells[0].text, "Devnet Settlement / 11111111...111111")
+        compare(row.cells[1].text, "Active")
+        compare(row.cells[2].text, "Reachable")
+        compare(row.cells[3].text, "Safe")
+
+        model.dashboardLezBlockRows = [{
+            block_id: 999,
+            header_hash: ZoneFixtureData.identity("f"),
+            transactions: [{ hash: ZoneFixtureData.identity("e") }]
+        }]
+        compare(panel.zones.length, 3)
+        verify(!hasVisibleText(page, "999"))
+    }
+
+    function test_dashboard_zone_activation_opens_zones() {
+        const panel = findChild(page, "dashboardZonesPanel")
+        const channelId = ZoneFixtureData.identity("8")
+        verify(panel.openZone(channelId))
+        compare(model.zoneInspection.activeZoneId, channelId)
+        compare(model.shell.currentView, "zones")
+
+        model.zoneInspection.summaryStale = true
+        verify(!panel.openZone(ZoneFixtureData.identity("1")))
+        compare(model.zoneInspection.activeZoneId, channelId)
+    }
+
+    function dashboardZones() {
+        const scope = ZoneFixtureData.networkScope()
+        return ZoneFixtureData.zones().map(function (zone) {
+            const sequencer = String(zone.kind || "") === "sequencer_zone"
+            return Object.assign({}, zone, {
+                active_zone_context_fields: {
+                    network_scope: scope,
+                    channel_id: String(zone.channel_id || ""),
+                    zone_kind: String(zone.kind || "unknown"),
+                    selected_sequencer_source_id: sequencer
+                        ? "src_11111111111111111111111111111111" : null,
+                    indexer_source_id: sequencer
+                        ? "src_33333333333333333333333333333333" : null,
+                    source_config_revision: sequencer ? 7 : 0
+                }
+            })
+        })
+    }
+
+    function hasVisibleText(item, expected) {
+        if (!item) {
+            return false
+        }
+        if (item.text !== undefined && String(item.text) === expected
+                && item.visible && item.width > 0 && item.height > 0) {
+            return true
+        }
+        if (item.contentItem && hasVisibleText(item.contentItem, expected)) {
+            return true
+        }
+        const children = item.children || []
+        for (let i = 0; i < children.length; ++i) {
+            if (hasVisibleText(children[i], expected)) {
+                return true
+            }
+        }
+        return false
     }
 }
