@@ -318,6 +318,29 @@ TestCase {
         compare(state.observedRunState("indexer"), "syncing")
     }
 
+    function test_testnet_indexer_finality_window_preserves_reachability() {
+        state.report = testnetReport()
+        state.observedNodes = ({
+            indexer: {
+                status: "reachable",
+                head: 22162,
+                upstream_head: 22418
+            }
+        })
+
+        compare(state.observedRunState("indexer"), "online")
+
+        state.observedNodes = ({
+            indexer: {
+                status: "reachable",
+                head: 22161,
+                upstream_head: 22418
+            }
+        })
+
+        compare(state.observedRunState("indexer"), "syncing")
+    }
+
     function test_node_action_draft_owns_confirmation_facts() {
         state.report = sampleReport()
         state.revision += 1
