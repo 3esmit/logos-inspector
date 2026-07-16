@@ -38,6 +38,8 @@ const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
+const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 2;
+const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_millis(250);
 const LOGOSCORE_WATCH_PROTOCOL: &str = "logoscore.watch";
 const LOGOSCORE_WATCH_PROTOCOL_VERSION: u64 = 1;
 static LOGOSCORE_WATCH_RECOVERY: LazyLock<
@@ -1210,13 +1212,7 @@ impl LogoscoreCliRuntime {
         signature: &str,
         control: CommandControl,
     ) -> Result<()> {
-        let modules = self
-            .list_modules_controlled(control.clone())
-            .context("failed to list logoscore modules")?;
-        let module_info = self
-            .module_info_controlled(module, control)
-            .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
-        module_discovery(module, &modules.value, &module_info.value)?
+        self.discover_module_controlled(module, control)?
             .require_method(method, signature)
     }
 
@@ -1227,13 +1223,7 @@ impl LogoscoreCliRuntime {
         events: &[(&str, &str)],
         control: CommandControl,
     ) -> Result<()> {
-        let modules = self
-            .list_modules_controlled(control.clone())
-            .context("failed to list logoscore modules")?;
-        let module_info = self
-            .module_info_controlled(module, control)
-            .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
-        let discovery = module_discovery(module, &modules.value, &module_info.value)?;
+        let discovery = self.discover_module_controlled(module, control)?;
         for (method, signature) in methods {
             discovery.require_method(method, signature)?;
         }
@@ -1241,6 +1231,37 @@ impl LogoscoreCliRuntime {
             discovery.require_event(event, signature)?;
         }
         Ok(())
+    }
+
+    fn discover_module_controlled(
+        &self,
+        module: &str,
+        control: CommandControl,
+    ) -> Result<LogoscoreModuleDiscovery> {
+        for attempt in 0..LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS {
+            control.check_active()?;
+            let result = (|| {
+                let modules = self
+                    .list_modules_controlled(control.clone())
+                    .context("failed to list logoscore modules")?;
+                let module_info = self
+                    .module_info_controlled(module, control.clone())
+                    .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
+                module_discovery(module, &modules.value, &module_info.value)
+            })();
+            match result {
+                Ok(discovery) => return Ok(discovery),
+                Err(error)
+                    if attempt + 1 < LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS
+                        && is_transient_module_discovery_error(&error) =>
+                {
+                    control.check_active()?;
+                    thread::sleep(LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("module discovery retry loop always returns")
     }
 
     pub(crate) fn ensure_module_loaded(&self, module: &str) -> Result<()> {
@@ -1639,6 +1660,12 @@ impl LogoscoreCliRuntime {
     {
         run_json_with_controlled(&self.runner, args, control)
     }
+}
+
+fn is_transient_module_discovery_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains("RPC_FAILED"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3447,6 +3474,147 @@ mod tests {
             .arg(pid.trim())
             .status()?;
         anyhow::ensure!(!alive.success(), "CLI child was not reaped");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_call_retries_transient_module_metadata_before_single_invocation() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-retry-metadata");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        count_path="$config_dir/module-info-count"
+        count=0
+        if [ -f "$count_path" ]; then
+            count="$(cat "$count_path")"
+        fi
+        count=$((count + 1))
+        printf '%s' "$count" > "$count_path"
+        if [ "$count" -eq 1 ]; then
+            printf '%s\n' '{"code":"RPC_FAILED","message":"storage replica is starting","status":"error"}'
+            exit 4
+        fi
+        printf '%s\n' '{"name":"storage_module","methods":[{"isInvokable":true,"name":"init","signature":"init(QString)"}]}'
+        ;;
+    call)
+        printf '%s\n' "$3" >> "$config_dir/calls"
+        printf '%s\n' '{"module":"storage_module","method":"init","result":{"success":true,"value":"ready"},"status":"ok"}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(5),
+        );
+
+        let result = runtime.call_checked_controlled(
+            "storage_module",
+            "init",
+            "init(QString)",
+            &["@/tmp/storage.json".to_owned()],
+            control,
+        )?;
+
+        anyhow::ensure!(
+            result
+                .pointer("/value/result/value")
+                .and_then(Value::as_str)
+                == Some("ready"),
+            "retrying metadata did not return the single Storage invocation result: {result}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("module-info-count"))?.trim() == "2",
+            "module metadata was not retried exactly once"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("calls"))?
+                .lines()
+                .eq(["init"]),
+            "Storage init was retried after metadata recovery"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_call_preserves_unready_metadata_error_without_invoking_mutation() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-unready-metadata");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        printf '%s\n' '{"code":"RPC_FAILED","message":"storage replica is unavailable","status":"error"}'
+        exit 4
+        ;;
+    call)
+        touch "$config_dir/mutation-invoked"
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(5),
+        );
+
+        let error = runtime
+            .call_checked_controlled(
+                "storage_module",
+                "init",
+                "init(QString)",
+                &["@/tmp/storage.json".to_owned()],
+                control,
+            )
+            .err()
+            .context("unready metadata unexpectedly invoked Storage init")?;
+
+        anyhow::ensure!(
+            format!("{error:#}").contains("RPC_FAILED"),
+            "unready metadata error lost its CLI cause: {error:#}"
+        );
+        anyhow::ensure!(
+            !directory.path().join("mutation-invoked").exists(),
+            "Storage init ran despite failed module metadata"
+        );
         Ok(())
     }
 
