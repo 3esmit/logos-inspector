@@ -643,8 +643,16 @@ mod tests {
             None,
         );
 
-        assert_eq!(operation.report.status, "needs_configuration");
-        assert!(operation.report.detail.contains("Inspector-owned"));
+        anyhow::ensure!(
+            operation.report.status == "needs_configuration",
+            "unexpected status: {}",
+            operation.report.status
+        );
+        anyhow::ensure!(
+            operation.report.detail.contains("Inspector-owned"),
+            "missing ownership diagnostic: {}",
+            operation.report.detail
+        );
         Ok(())
     }
 
