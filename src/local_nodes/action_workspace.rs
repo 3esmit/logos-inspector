@@ -16,8 +16,8 @@ use crate::support::{
 
 use super::adapters::{NodeActionPolicy, NodeConfigContext, adapter_for};
 use super::commands::{
-    command_spec_for, ensure_module_loaded, execute_command_spec, execute_ready_process_spec,
-    operation_detail_from_value,
+    command_spec_for, ensure_module_loaded, execute_command_spec, execute_preflighted_command_spec,
+    execute_ready_process_spec, operation_detail_from_value, preflight_command_spec,
 };
 use super::lifecycle::{has_event_contract, reset_module_contexts};
 use super::model::{
@@ -37,6 +37,7 @@ const TESTNET_ID: &str = "logos-testnet";
 const MESSAGING_CONTEXT_PROBE_ATTEMPTS: usize = 20;
 const MESSAGING_CONTEXT_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const MESSAGING_CONTEXT_RUNTIME_RESTARTS: usize = 1;
+const INITIALIZATION_PREFLIGHT_RETRY_DELAY: Duration = Duration::from_millis(500);
 const RUNTIME_PROCESS_GROUP_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const RUNTIME_PROCESS_GROUP_REAP_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -543,7 +544,21 @@ fn node_initialize(
                     .map(|contract| format!("logoscore module load {}", contract.module_id())),
             });
         }
-        match execute_command_spec(&spec, Some(&cli), control) {
+        let execution = match control {
+            Some(control) => match retry_initialization_preflight(&spec, &cli, control) {
+                Ok(()) => execute_preflighted_command_spec(&spec, Some(&cli), Some(control)),
+                Err(error) if is_control_interruption(&error) => return Err(error),
+                Err(error) => {
+                    return Ok(OperationOutcome {
+                        status: "failed".to_owned(),
+                        detail: operation_error_detail(&error),
+                        command: Some(spec.display.clone()),
+                    });
+                }
+            },
+            None => execute_command_spec(&spec, Some(&cli), None),
+        };
+        match execution {
             Ok(value) => {
                 mark_node_initialized(state, profile, kind, &spec.program)?;
                 Ok(OperationOutcome {
@@ -588,6 +603,30 @@ fn node_initialize(
             }),
         }
     })
+}
+
+fn retry_initialization_preflight(
+    spec: &super::commands::LocalNodeCommandSpec,
+    cli: &crate::modules::logos_core::LogoscoreCliRuntime,
+    control: &CommandControl,
+) -> Result<()> {
+    match preflight_command_spec(spec, Some(cli), Some(control)) {
+        Ok(()) => Ok(()),
+        Err(error) if is_control_interruption(&error) => Err(error),
+        Err(first_error) => {
+            sleep_with_control(control, INITIALIZATION_PREFLIGHT_RETRY_DELAY)?;
+            preflight_command_spec(spec, Some(cli), Some(control)).with_context(|| {
+                format!("module initialization preflight retry after: {first_error:#}")
+            })
+        }
+    }
+}
+
+fn sleep_with_control(control: &CommandControl, duration: Duration) -> Result<()> {
+    control.check_active()?;
+    let remaining = control.deadline().saturating_duration_since(Instant::now());
+    thread::sleep(duration.min(remaining));
+    control.check_active().map_err(Into::into)
 }
 
 fn mark_node_initialized(
@@ -1639,6 +1678,40 @@ fi
 
     #[cfg(unix)]
     #[test]
+    fn messaging_initialize_retries_preflight_before_single_create() -> Result<()> {
+        // Arrange
+        let (result, state, calls) = messaging_initialize_test_case("preflight-retry")?;
+
+        // Act & Assert
+        if result.report.status != "initialized" {
+            bail!(
+                "Messaging initialization did not recover after preflight retry: {}",
+                result.report.detail
+            );
+        }
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        if !messaging.installed || messaging.lifecycle_state != NodeLifecycleState::Stopped {
+            bail!("Messaging context was not persisted after preflight retry: {messaging:?}");
+        }
+        let module_info_calls = calls
+            .iter()
+            .filter(|call| call.as_str() == "module-info")
+            .count();
+        if module_info_calls != 4 {
+            bail!("expected four module preflight attempts, found {module_info_calls}: {calls:?}");
+        }
+        let create_calls = calls
+            .iter()
+            .filter(|call| call.as_str() == "createNode")
+            .count();
+        if create_calls != 1 {
+            bail!("Messaging createNode was replayed after preflight retry: {calls:?}");
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn messaging_initialize_restarts_crashed_runtime_without_replaying_create() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1847,12 +1920,30 @@ case "$1" in
         printf '%s\n' '{"modules":[{"name":"delivery_module","status":"loaded"}]}'
         ;;
     module-info)
+        printf '%s\n' module-info >> "$config_dir/calls"
+        if [ "$(cat "$config_dir/recovery-mode")" = preflight-retry ]; then
+            count_path="$config_dir/module-info-count"
+            count=0
+            if [ -f "$count_path" ]; then
+                count="$(cat "$count_path")"
+            fi
+            count=$((count + 1))
+            printf '%s' "$count" > "$count_path"
+            if [ "$count" -lt 4 ]; then
+                printf '%s\n' '{"code":"RPC_FAILED","message":"delivery replica is starting","status":"error"}'
+                exit 4
+            fi
+        fi
         printf '%s\n' '{"name":"delivery_module","methods":[{"isInvokable":true,"name":"createNode","signature":"createNode(QString)"},{"isInvokable":true,"name":"getNodeInfo","signature":"getNodeInfo(QString)"}]}'
         ;;
     call)
         case "$3" in
             createNode)
                 printf '%s\n' createNode >> "$config_dir/calls"
+                if [ "$(cat "$config_dir/recovery-mode")" = preflight-retry ]; then
+                    printf '%s\n' '{"module":"delivery_module","method":"createNode","result":{"success":true,"value":"created"},"status":"ok"}'
+                    exit 0
+                fi
                 printf '%s\n' '{"code":"RPC_FAILED","message":"delivery create response lost","status":"error"}'
                 exit 4
                 ;;
@@ -1908,7 +1999,7 @@ esac
         };
 
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(15))
+            .checked_add(Duration::from_secs(30))
             .context("Messaging recovery test deadline overflow")?;
         let control = CommandControl::new(tokio_util::sync::CancellationToken::new(), deadline);
         let mut runtime = Some(runtime);
