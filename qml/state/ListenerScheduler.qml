@@ -122,7 +122,8 @@ QtObject {
         case "storage":
             return model.shell.busy !== true && root.refreshRateFor(kind) > 0
         case "dashboard":
-            return model.shell.currentView === "overview"
+            return model.shell.busy !== true
+                && model.shell.currentView === "overview"
                 && root.intervalFor("dashboard") > 0
         case "storageOperation":
             return (root.storageApp() && root.storageApp().operation.running)
