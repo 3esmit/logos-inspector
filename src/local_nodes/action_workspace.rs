@@ -22,7 +22,7 @@ use super::model::{
     LocalNodeOperationReport, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
 };
 use super::paths::{path_is_inside, remove_dir_inside};
-use super::process::{find_command, process_is_alive, stop_process};
+use super::process::{find_command, process_group_is_alive, process_is_alive, stop_process};
 use super::runtime::LogoscoreRuntimeProfile;
 use super::workflow::node_set_for_profile;
 
@@ -357,6 +357,15 @@ fn runtime_stop(
             None => profile.wait_until_stopped(),
         };
         if stopped {
+            if let Some(process_id) = profile.daemon_process_id
+                && process_group_is_alive(process_id)
+            {
+                stop_process(process_id).with_context(|| {
+                    format!(
+                        "failed to stop remaining processes owned by Inspector-managed logoscore runtime {process_id}"
+                    )
+                })?;
+            }
             profile.daemon_process_id = None;
             reset_module_contexts(state);
             return Ok(OperationOutcome {
@@ -1153,4 +1162,156 @@ fn sanitize_network_id(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use std::{
+        fs,
+        os::unix::{fs::PermissionsExt as _, process::CommandExt as _},
+        process::Command,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use anyhow::{Context as _, Result, bail};
+
+    use super::*;
+
+    #[cfg(unix)]
+    struct ProcessGroupGuard {
+        process_id: u32,
+    }
+
+    #[cfg(unix)]
+    impl Drop for ProcessGroupGuard {
+        fn drop(&mut self) {
+            if process_group_is_alive(self.process_id) {
+                // INTENTIONAL: test cleanup must not mask the assertion that detects an orphan.
+                let _ignored = stop_process(self.process_id);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_stop_reaps_module_hosts_after_daemon_exit() -> Result<()> {
+        // Arrange
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" = "stop" ]; then
+    kill -TERM "$(cat "$config_dir/daemon.pid")"
+    printf '%s\n' '{"status":"stopped"}'
+fi
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+
+        let child_path = directory.path().join("module-host.pid");
+        let mut daemon_command = Command::new("/bin/sh");
+        daemon_command
+            .args([
+                "-c",
+                "sleep 30 & printf '%s' \"$!\" > \"$1\"; wait",
+                "sh",
+                child_path
+                    .to_str()
+                    .context("test child path is not valid UTF-8")?,
+            ])
+            .process_group(0);
+        let mut daemon = daemon_command.spawn()?;
+        let daemon_process_id = daemon.id();
+        let _cleanup = ProcessGroupGuard {
+            process_id: daemon_process_id,
+        };
+        let child_process_id = wait_for_process_id(&child_path)?;
+
+        let mut profile = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some(
+                cli.to_str()
+                    .context("test LogosCore CLI path is not valid UTF-8")?,
+            ),
+            Some(
+                directory
+                    .path()
+                    .to_str()
+                    .context("test modules path is not valid UTF-8")?,
+            ),
+        )?;
+        fs::create_dir_all(&profile.config_dir)?;
+        fs::write(
+            Path::new(&profile.config_dir).join("daemon.pid"),
+            daemon_process_id.to_string(),
+        )?;
+        profile.daemon_process_id = Some(daemon_process_id);
+        let mut runtime = Some(profile);
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        let request = LocalNodeActionRequest {
+            action: NodeAction::StopRuntime,
+            node: None,
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+
+        // Act
+        let result = runtime_stop(&mut state, &mut runtime, &request, None);
+
+        // Assert
+        if result.report.status != "stopped" {
+            bail!("runtime stop did not complete: {}", result.report.detail);
+        }
+        if runtime
+            .as_ref()
+            .and_then(|profile| profile.daemon_process_id)
+            .is_some()
+        {
+            bail!("runtime stop retained the daemon process id");
+        }
+        if !wait_until_stopped(child_process_id) {
+            bail!("runtime stop left module host {child_process_id} running");
+        }
+        let _status = daemon.wait()?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn wait_for_process_id(path: &Path) -> Result<u32> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if let Ok(value) = fs::read_to_string(path)
+                && let Ok(process_id) = value.trim().parse::<u32>()
+            {
+                return Ok(process_id);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        bail!("test module host did not publish its process id")
+    }
+
+    #[cfg(unix)]
+    fn wait_until_stopped(process_id: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if !process_is_alive(process_id) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
 }
