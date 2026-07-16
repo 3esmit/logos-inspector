@@ -24,7 +24,6 @@ TestCase {
         gateway.reset()
 
         state.networkProfile = "default"
-        state.sourceObservationBusy = false
         state.report = null
         state.error = ""
         state.operations = []
@@ -204,19 +203,6 @@ TestCase {
 
         compare(response, null)
         compare(gateway.requestCount, 0)
-        compare(gateway.resultTitle, "Local nodes")
-        verify(gateway.resultIsError)
-    }
-
-    function test_run_action_rejects_during_source_observation() {
-        state.report = sampleReport()
-        state.sourceObservationBusy = true
-
-        const response = state.runAction("stop", "bedrock", "", "", "Stop Bedrock")
-
-        compare(response, null)
-        compare(gateway.requestCount, 0)
-        verify(!state.actionEnabled("bedrock", "stop"))
         compare(gateway.resultTitle, "Local nodes")
         verify(gateway.resultIsError)
     }

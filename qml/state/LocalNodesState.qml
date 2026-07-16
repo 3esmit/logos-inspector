@@ -8,8 +8,6 @@ QtObject {
     required property var gateway
     property string networkProfile: "default"
     property bool busy: false
-    property bool sourceObservationBusy: false
-    readonly property bool actionBusy: busy || sourceObservationBusy
 
     property var report: null
     property string error: ""
@@ -68,7 +66,7 @@ QtObject {
     }
 
     function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath) {
-        if (actionBusy) {
+        if (busy) {
             gateway.setResult(qsTr("Local nodes"), qsTr("Another inspection is already running."), true, null);
             return null;
         }
@@ -350,11 +348,11 @@ QtObject {
     function actionEnabled(kind, action) {
         const node = nodeByKind(kind);
         const actions = node && Array.isArray(node.available_actions) ? node.available_actions : [];
-        return actions.indexOf(String(action || "")) >= 0 && !actionBusy;
+        return actions.indexOf(String(action || "")) >= 0 && busy !== true;
     }
 
     function networkActionEnabled(action) {
-        if (actionBusy) {
+        if (busy) {
             return false;
         }
         const key = String(action || "");
@@ -379,7 +377,7 @@ QtObject {
     }
 
     function runtimeActionEnabled(action) {
-        if (actionBusy) {
+        if (busy) {
             return false;
         }
         const reportValue = report || null;
