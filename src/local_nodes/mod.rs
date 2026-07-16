@@ -193,13 +193,19 @@ mod tests {
     #[test]
     fn indexer_uses_registered_process_lifecycle() -> Result<()> {
         let adapter = super::adapters::adapter_for(NodeKind::Indexer);
+        let readiness = adapter
+            .startup_rpc_readiness()
+            .context("Indexer did not expose RPC readiness")?;
         if !matches!(
             adapter.lifecycle(),
             super::adapters::NodeLifecycle::RegisteredProcess {
                 program: "indexer_service"
             }
         ) || !adapter.workflow_actions().contains(&NodeAction::Start)
-            || adapter.startup_rpc_health_method() != Some("checkHealth")
+            || readiness.method != "checkHealth"
+            || readiness.startup_timeout != std::time::Duration::from_secs(120)
+            || readiness.probe_timeout != std::time::Duration::from_secs(3)
+            || readiness.retry_interval != std::time::Duration::from_secs(1)
         {
             bail!("Indexer did not expose its registered process contract");
         }

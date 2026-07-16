@@ -1,16 +1,24 @@
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::source_routing::execution_zone_layer;
 
 use super::{
     LocalNodeAdapter, NodeAction, NodeCommandContext, NodeCommandPlan, NodeConfigContext, NodeKind,
-    NodeLifecycle,
+    NodeLifecycle, RpcStartupReadiness,
 };
 
 #[derive(Debug)]
 pub(super) struct IndexerAdapter;
 
 pub(super) static INDEXER_ADAPTER: IndexerAdapter = IndexerAdapter;
+const INDEXER_RPC_READINESS: RpcStartupReadiness = RpcStartupReadiness::new(
+    "checkHealth",
+    Duration::from_secs(120),
+    Duration::from_secs(3),
+    Duration::from_secs(1),
+);
 
 impl LocalNodeAdapter for IndexerAdapter {
     fn kind(&self) -> NodeKind {
@@ -41,8 +49,8 @@ impl LocalNodeAdapter for IndexerAdapter {
         ]
     }
 
-    fn startup_rpc_health_method(&self) -> Option<&'static str> {
-        Some("checkHealth")
+    fn startup_rpc_readiness(&self) -> Option<RpcStartupReadiness> {
+        Some(INDEXER_RPC_READINESS)
     }
 
     fn build_config(&self, context: NodeConfigContext<'_>) -> Value {

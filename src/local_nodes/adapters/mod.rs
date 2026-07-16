@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::source_routing::{ManagedModuleCallSpec, ManagedNodeAction, ManagedNodeContract};
@@ -105,6 +107,30 @@ pub(super) struct NodeStatusContext<'a> {
     pub workflow_actions: Vec<NodeAction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RpcStartupReadiness {
+    pub(super) method: &'static str,
+    pub(super) startup_timeout: Duration,
+    pub(super) probe_timeout: Duration,
+    pub(super) retry_interval: Duration,
+}
+
+impl RpcStartupReadiness {
+    pub(super) const fn new(
+        method: &'static str,
+        startup_timeout: Duration,
+        probe_timeout: Duration,
+        retry_interval: Duration,
+    ) -> Self {
+        Self {
+            method,
+            startup_timeout,
+            probe_timeout,
+            retry_interval,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NodeStatusProjection {
     pub install_state: &'static str,
@@ -138,7 +164,7 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         false
     }
 
-    fn startup_rpc_health_method(&self) -> Option<&'static str> {
+    fn startup_rpc_readiness(&self) -> Option<RpcStartupReadiness> {
         None
     }
 
