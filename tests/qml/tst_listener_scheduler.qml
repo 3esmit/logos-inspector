@@ -128,6 +128,7 @@ TestCase {
         }
         property QtObject shell: QtObject {
             property string currentView: "overview"
+            property bool busy: false
         }
         property bool blocksLiveEnabled: false
         property bool backupCatalogUploadRunning: false
@@ -161,6 +162,7 @@ TestCase {
         fakeModel.metrics.messagingRefreshRate = 0
         fakeModel.metrics.storageRefreshRate = 0
         fakeModel.shell.currentView = "overview"
+        fakeModel.shell.busy = false
         fakeModel.blocksLiveEnabled = false
         fakeModel.backupCatalogUploadRunning = false
         fakeModel.backupCatalogDownloadRunning = false
@@ -230,6 +232,26 @@ TestCase {
         verify(!scheduler.enabled("dashboard"))
         fakeModel.blocksLiveEnabled = true
         verify(scheduler.enabled("liveBlocks"))
+    }
+
+    function test_network_polling_pauses_while_shell_busy() {
+        fakeModel.metrics.messagingRefreshRate = 30
+        fakeModel.metrics.storageRefreshRate = 30
+
+        verify(scheduler.enabled("blockchain"))
+        verify(scheduler.enabled("messaging"))
+        verify(scheduler.enabled("storage"))
+
+        fakeModel.shell.busy = true
+
+        verify(!scheduler.enabled("blockchain"))
+        verify(!scheduler.enabled("messaging"))
+        verify(!scheduler.enabled("storage"))
+
+        fakeModel.shell.busy = false
+        verify(scheduler.enabled("blockchain"))
+        verify(scheduler.enabled("messaging"))
+        verify(scheduler.enabled("storage"))
     }
 
     function test_backup_download_enables_storage_polling_and_uses_download_session() {
