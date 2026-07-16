@@ -24,6 +24,7 @@ TestCase {
         gateway.reset()
 
         state.networkProfile = "default"
+        state.sourceObservationBusy = false
         state.report = null
         state.error = ""
         state.operations = []
@@ -207,6 +208,19 @@ TestCase {
         verify(gateway.resultIsError)
     }
 
+    function test_run_action_rejects_during_source_observation() {
+        state.report = sampleReport()
+        state.sourceObservationBusy = true
+
+        const response = state.runAction("stop", "bedrock", "", "", "Stop Bedrock")
+
+        compare(response, null)
+        compare(gateway.requestCount, 0)
+        verify(!state.actionEnabled("bedrock", "stop"))
+        compare(gateway.resultTitle, "Local nodes")
+        verify(gateway.resultIsError)
+    }
+
     function test_failed_action_appends_operation_history() {
         state.networkProfile = "local"
         gateway.responses = ({
@@ -305,6 +319,33 @@ TestCase {
         })
         state.runPendingAction()
         compare(gateway.calls[0].args[1].runtime_modules_dir, "/opt/logos-node/modules")
+    }
+
+    function test_runtime_diagnostics_follow_managed_node_lifecycle() {
+        verify(!state.runtimeDiagnosticsReady("messaging"))
+
+        state.report = testnetReport()
+        state.revision += 1
+        verify(state.runtimeDiagnosticsReady("messaging"))
+        verify(state.runtimeDiagnosticsReady("storage"))
+
+        const report = testnetReport()
+        report.runtime = {
+            ownership: "inspector_managed",
+            run_state: "running"
+        }
+        report.nodes[3].run_state = "running"
+        state.report = report
+        state.revision += 1
+
+        verify(state.runtimeDiagnosticsReady("messaging"))
+        verify(!state.runtimeDiagnosticsReady("storage"))
+
+        report.nodes[2].run_state = "running"
+        state.report = Object.assign({}, report)
+        state.revision += 1
+
+        verify(state.runtimeDiagnosticsReady("storage"))
     }
 
     function test_testnet_observation_health_is_separate_from_control_ownership() {

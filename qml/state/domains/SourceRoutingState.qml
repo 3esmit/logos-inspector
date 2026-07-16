@@ -108,6 +108,15 @@ QtObject {
         return SourcePolicyProjection.sourceModeSupportsMutatingDiagnostics(root, family, value)
     }
 
+    function runtimeDiagnosticsEnabled(family, sourceMode) {
+        const descriptor = sourceModeDescriptor(family, sourceMode)
+        if (descriptor.connectionType !== "logoscore_cli") {
+            return true
+        }
+        return !gateway || typeof gateway.runtimeDiagnosticsEnabled !== "function"
+            || gateway.runtimeDiagnosticsEnabled(family) !== false
+    }
+
     function coreSourceArgs(sourceMode, endpoint, extra) {
         return SourcePolicyProjection.coreSourceArgs(root, sourceMode, endpoint, extra)
     }
@@ -120,7 +129,13 @@ QtObject {
         if (arguments.length === 0) {
             return SourceRoutingUi.deliverySourceView(root).reportArgs()
         }
-        return SourcePolicyProjection.deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint)
+        return SourcePolicyProjection.deliverySourceReportArgs(
+            root,
+            sourceMode,
+            restEndpoint,
+            metricsEndpoint,
+            runtimeDiagnosticsEnabled("delivery", sourceMode)
+        )
     }
 
     function storageSourceReportArgs(sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
@@ -134,7 +149,8 @@ QtObject {
             metricsEndpoint,
             cid,
             includeCidProbe,
-            privilegedDebugEnabled
+            privilegedDebugEnabled,
+            runtimeDiagnosticsEnabled("storage", sourceMode)
         )
     }
 

@@ -161,7 +161,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Use Local profile")
                     primary: true
-                    enabled: !root.model.busy
+                    enabled: !root.model.actionBusy
                     Layout.preferredWidth: 176
                     onClicked: root.model.activateLocalProfile()
                 }
@@ -451,7 +451,7 @@ ColumnLayout {
         title: root.confirmTitle()
         message: root.confirmMessage()
         confirmText: root.model.actionLabel(root.model.pendingAction)
-        confirmEnabled: !root.model.busy && root.model.pendingAction.length > 0
+        confirmEnabled: !root.model.actionBusy && root.model.pendingAction.length > 0
         onAccepted: root.acceptPendingAction()
     }
 

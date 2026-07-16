@@ -48,6 +48,12 @@ QtObject {
             function prefersBasecampModules() {
                 return root.prefersBasecampModules()
             }
+
+            function runtimeDiagnosticsEnabled(family) {
+                const kind = String(family || "") === "delivery"
+                    ? "messaging" : String(family || "")
+                return localNodesState.runtimeDiagnosticsReady(kind)
+            }
         }
     }
     property Domains.ZoneInspectionState zoneInspection: Domains.ZoneInspectionState {
@@ -777,6 +783,9 @@ QtObject {
         }
         networkProfile: root.networkProfile
         busy: appShellState.busy
+        sourceObservationBusy: metricsState.networkConnectionIsPending("blockchain")
+            || metricsState.networkConnectionIsPending("storage")
+            || metricsState.networkConnectionIsPending("messaging")
         observedNodes: root.localNodeObservedNodes()
     }
     property alias localNodesReport: localNodesState.report

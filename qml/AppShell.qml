@@ -58,6 +58,7 @@ Item {
         Qt.callLater(function () {
             appModel.sourceRouting.loadSourcePolicy()
             appModel.loadSettingsState()
+            appModel.refreshLocalNodes(false)
             appModel.startZoneInspection()
             appModel.loadCapabilityRegistry()
             appModel.loadBackupCatalog()
