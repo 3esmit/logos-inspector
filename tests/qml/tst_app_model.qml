@@ -1978,6 +1978,26 @@ TestCase {
             .options.runtime_diagnostics_enabled)
     }
 
+    function test_pending_source_observations_do_not_starve_local_node_actions() {
+        model.localNodesReport = {
+            available_runtime_actions: ["start_runtime"],
+            runtime: {
+                ownership: "external",
+                run_state: "not_configured"
+            },
+            nodes: []
+        }
+        model.localNodesRevision += 1
+        model.metrics.networkConnectionPending = {
+            blockchain: true,
+            storage: true,
+            messaging: true
+        }
+        model.metrics.networkConnectionPendingRevision += 1
+
+        verify(model.localNodes.runtimeActionEnabled("start_runtime"))
+    }
+
     function test_restore_defaults_loads_testnet_without_wallet_calls() {
         model.settingsStateLoaded = true
         model.networkProfile = "custom"

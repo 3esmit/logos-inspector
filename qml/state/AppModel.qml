@@ -783,9 +783,6 @@ QtObject {
         }
         networkProfile: root.networkProfile
         busy: appShellState.busy
-        sourceObservationBusy: metricsState.networkConnectionIsPending("blockchain")
-            || metricsState.networkConnectionIsPending("storage")
-            || metricsState.networkConnectionIsPending("messaging")
         observedNodes: root.localNodeObservedNodes()
     }
     property alias localNodesReport: localNodesState.report
