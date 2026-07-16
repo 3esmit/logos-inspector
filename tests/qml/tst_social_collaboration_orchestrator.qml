@@ -24,6 +24,7 @@ TestCase {
     property var hydrationCallbacks: []
     property int syncStoreCalls: 0
     property string commentDecodeError: ""
+    property string currentZoneScope: "zone-a"
 
     QtObject {
         id: bridgeStub
@@ -252,7 +253,7 @@ TestCase {
             return String(value || "")
         }
         function zoneScopeKey() {
-            return "zone-a"
+            return testRoot.currentZoneScope
         }
     }
 
@@ -293,6 +294,7 @@ TestCase {
         hydrationCallbacks = []
         syncStoreCalls = 0
         commentDecodeError = ""
+        currentZoneScope = "zone-a"
         social.invalidateSourceRequests()
         social.socialIdentities.clear()
         social.selectedSocialIdentityKey = ""
@@ -305,6 +307,8 @@ TestCase {
         social.sharedIdlAutoShare = false
         social.socialAutoSharedIdls = ({})
         social.sharedIdlRevision = 0
+        social.sharedIdlRetryBaseDelayMs = 1000
+        social.sharedIdlRetryMaxAttempts = 4
     }
 
     function storeOperation(id, status, result, eventCursor) {
@@ -663,6 +667,121 @@ TestCase {
 
         compare(social.sharedIdlPolicy, "disabled")
         compare(social.sharedIdlSuggestions("account-1", "program-1").length, 0)
+    }
+
+    function test_shared_idl_empty_store_retries_and_auto_registers() {
+        gateEnabled = true
+        autoCompleteStore = false
+        autoCompleteHydration = false
+        social.setSharedIdlPolicy("autoRegister")
+        const entity = autoShareEntity()
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        compare(startCallbacks.length, 1)
+        replyStart(0, storeOperation("store-empty", "completed", { messages: [] }, 1))
+        compare(hydrationCallbacks.length, 1)
+        hydrationCallbacks[0]({ ok: true, value: [], error: "" })
+
+        tryVerify(function () {
+            social.pollOperations()
+            return startCallbacks.length === 2
+        }, 3000)
+        replyStart(1, storeOperation("store-retry", "completed", { messages: [] }, 2))
+        compare(hydrationCallbacks.length, 2)
+        hydrationCallbacks[1]({ ok: true, value: [sharedEntry("retried")], error: "" })
+
+        compare(registeredIdls.count, 1)
+        compare(registeredIdls.get(0).key, "retried")
+        verify(!social.operationsRunning)
+    }
+
+    function test_shared_idl_waits_for_hydration_before_retrying_store() {
+        gateEnabled = true
+        autoCompleteStore = false
+        autoCompleteHydration = false
+        social.setSharedIdlPolicy("autoRegister")
+        const entity = autoShareEntity()
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        replyStart(0, storeOperation("store-empty", "completed", { messages: [] }, 1))
+        compare(hydrationCallbacks.length, 1)
+
+        social.pollOperations()
+        compare(startCallbacks.length, 1)
+
+        hydrationCallbacks[0]({ ok: true, value: [], error: "" })
+        tryVerify(function () {
+            social.pollOperations()
+            return startCallbacks.length === 2
+        }, 3000)
+    }
+
+    function test_shared_idl_empty_store_stops_after_retry_cap() {
+        gateEnabled = true
+        autoCompleteStore = false
+        autoCompleteHydration = false
+        social.sharedIdlRetryBaseDelayMs = 1
+        social.setSharedIdlPolicy("autoRegister")
+        const entity = autoShareEntity()
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        for (let attempt = 0; attempt < 4; ++attempt) {
+            replyStart(attempt, storeOperation("store-" + attempt, "completed", { messages: [] }, attempt + 1))
+            compare(hydrationCallbacks.length, attempt + 1)
+            hydrationCallbacks[attempt]({ ok: true, value: [], error: "" })
+            if (attempt < 3) {
+                tryVerify(function () {
+                    social.pollOperations()
+                    return startCallbacks.length === attempt + 2
+                }, 500)
+            }
+        }
+
+        compare(startCallbacks.length, 4)
+        compare(registeredIdls.count, 0)
+        verify(!social.operationsRunning)
+    }
+
+    function test_shared_idl_source_or_zone_change_cancels_scheduled_retry() {
+        gateEnabled = true
+        autoCompleteStore = false
+        autoCompleteHydration = false
+        social.sharedIdlRetryBaseDelayMs = 1
+        social.setSharedIdlPolicy("autoRegister")
+        const entity = autoShareEntity()
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        replyStart(0, storeOperation("store-source", "completed", { messages: [] }, 1))
+        hydrationCallbacks[0]({ ok: true, value: [], error: "" })
+        social.invalidateSourceRequests()
+        social.pollOperations()
+        compare(startCallbacks.length, 1)
+        verify(!social.operationsRunning)
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        replyStart(1, storeOperation("store-zone", "completed", { messages: [] }, 2))
+        hydrationCallbacks[1]({ ok: true, value: [], error: "" })
+        currentZoneScope = "zone-b"
+        social.pollOperations()
+        compare(startCallbacks.length, 2)
+        verify(!social.operationsRunning)
+    }
+
+    function test_shared_idl_zone_change_cancels_active_store_request() {
+        gateEnabled = true
+        autoCompleteStore = false
+        social.setSharedIdlPolicy("autoRegister")
+        const entity = autoShareEntity()
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        compare(startCallbacks.length, 1)
+
+        currentZoneScope = "zone-b"
+        social.pollOperations()
+        verify(!social.operationsRunning)
+
+        verify(social.refreshSharedIdlsForAccount(entity, "aabb", "program-1"))
+        compare(startCallbacks.length, 2)
     }
 
     function test_identity_workflow_persists_through_narrow_gateway() {

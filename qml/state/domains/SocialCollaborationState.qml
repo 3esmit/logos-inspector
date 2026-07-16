@@ -28,6 +28,10 @@ QtObject {
     property bool sharedIdlAutoShare: false
     property var socialAutoSharedIdls: ({})
     property int sharedIdlRevision: 0
+    property int sharedIdlRetryGeneration: 0
+    property var sharedIdlRetryRequests: ({})
+    property int sharedIdlRetryBaseDelayMs: 1000
+    property int sharedIdlRetryMaxAttempts: 4
     property ListModel socialIdentities: ListModel {}
     readonly property var deliveryAdapterInitialization: sourceRouting.deliveryOperationAdapter()
     readonly property var storageAdapterInitialization: sourceRouting.storageOperationAdapter()
@@ -43,7 +47,9 @@ QtObject {
         storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
         deliveryMutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
     }
+    readonly property bool sharedIdlRetriesRunning: Object.keys(sharedIdlRetryRequests || {}).length > 0
     readonly property bool operationsRunning: storeQueryCoordinator.running || writeCoordinator.running
+        || sharedIdlRetriesRunning
     readonly property bool writesRunning: writeCoordinator.running
 
     onDeliveryAdapterInitializationChanged: invalidateReadSourceRequests()
@@ -135,8 +141,9 @@ QtObject {
     }
     function pollOperations() {
         const queryPolls = storeQueryCoordinator.poll()
+        const retryStarts = Orchestrator.pollSharedIdlRetries(root)
         const writePoll = writeCoordinator.poll()
-        return writePoll !== null ? writePoll : queryPolls
+        return writePoll !== null ? writePoll : (queryPolls || retryStarts)
     }
     function storeQueryCallerPending(callerKey) {
         return storeQueryCoordinator.callerPending(callerKey)
@@ -147,7 +154,11 @@ QtObject {
     function releaseStoreQuery(ticket) {
         return storeQueryCoordinator.release(ticket)
     }
+    function invalidateStoreQueryCaller(callerKey) {
+        return storeQueryCoordinator.invalidateCaller(callerKey)
+    }
     function invalidateSharedIdlRequests() {
+        Orchestrator.invalidateSharedIdlRetries(root)
         writeCoordinator.invalidateKind("shared-idl", qsTr("Shared IDL settings changed during publication."))
         storeQueryCoordinator.invalidateFamily("shared-idl")
     }
@@ -157,6 +168,7 @@ QtObject {
         invalidateReadSourceRequests()
     }
     function invalidateReadSourceRequests() {
+        Orchestrator.invalidateSharedIdlRetries(root)
         storeQueryCoordinator.invalidateSource()
         Orchestrator.invalidateSocialCommentRequests(root)
     }
