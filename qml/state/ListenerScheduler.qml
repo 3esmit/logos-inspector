@@ -120,7 +120,7 @@ QtObject {
         case "blockchain":
         case "messaging":
         case "storage":
-            return root.refreshRateFor(kind) > 0
+            return model.shell.busy !== true && root.refreshRateFor(kind) > 0
         case "dashboard":
             return model.shell.currentView === "overview"
                 && root.intervalFor("dashboard") > 0

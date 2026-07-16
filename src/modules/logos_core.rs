@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     env, fs,
     future::Future,
     io::{ErrorKind, Read as _},
@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     process::{Child, Command, Stdio},
     sync::{
-        Arc, LazyLock, Mutex,
+        Arc, LazyLock, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc,
     },
@@ -38,6 +38,7 @@ const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
+const LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 3;
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -1670,7 +1671,20 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        run_json_with(&self.runner, args, timeout)
+        let started_at = StdInstant::now();
+        let deadline = started_at.checked_add(timeout);
+        let gate = logoscore_cli_command_gate(&self.runner)?;
+        let _permit = acquire_logoscore_cli_command_gate(&gate, None, deadline)?;
+        let remaining_timeout = deadline
+            .map(|deadline| deadline.saturating_duration_since(StdInstant::now()))
+            .unwrap_or(timeout);
+        if remaining_timeout == Duration::ZERO {
+            bail!(
+                "{} request timed out waiting for another LogosCore CLI request",
+                self.runner.label
+            );
+        }
+        run_json_with(&self.runner, args, remaining_timeout)
     }
 
     fn run_json_controlled<I, S>(&self, args: I, control: CommandControl) -> Result<LogosCoreOutput>
@@ -1678,7 +1692,53 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let gate = logoscore_cli_command_gate(&self.runner)?;
+        let _permit = acquire_logoscore_cli_command_gate(&gate, Some(&control), None)?;
         run_json_with_controlled(&self.runner, args, control)
+    }
+}
+
+fn logoscore_cli_command_gate(runner: &LogosCoreRunner) -> Result<Arc<Mutex<()>>> {
+    let mut gates = LOGOSCORE_CLI_COMMAND_GATES
+        .lock()
+        .map_err(|_| anyhow::anyhow!("logoscore CLI command gate registry is poisoned"))?;
+    Ok(Arc::clone(
+        gates
+            .entry(LogoscoreCliCommandGateKey::from(runner))
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    ))
+}
+
+fn acquire_logoscore_cli_command_gate<'gate>(
+    gate: &'gate Mutex<()>,
+    control: Option<&CommandControl>,
+    deadline: Option<StdInstant>,
+) -> Result<MutexGuard<'gate, ()>> {
+    loop {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        if deadline.is_some_and(|deadline| StdInstant::now() >= deadline) {
+            bail!("logoscore CLI request timed out waiting for another request");
+        }
+        match gate.try_lock() {
+            Ok(permit) => return Ok(permit),
+            Err(TryLockError::Poisoned(_)) => {
+                bail!("logoscore CLI command gate is poisoned");
+            }
+            Err(TryLockError::WouldBlock) => {
+                let sleep_duration = deadline
+                    .map(|deadline| {
+                        LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL
+                            .min(deadline.saturating_duration_since(StdInstant::now()))
+                    })
+                    .unwrap_or(LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL);
+                if sleep_duration == Duration::ZERO {
+                    bail!("logoscore CLI request timed out waiting for another request");
+                }
+                thread::sleep(sleep_duration);
+            }
+        }
     }
 }
 
@@ -1697,6 +1757,29 @@ struct LogosCoreRunner {
     config_dir: Option<String>,
     label: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LogoscoreCliCommandGateKey {
+    program: String,
+    sudo_user: Option<String>,
+    home: Option<String>,
+    config_dir: Option<String>,
+}
+
+impl From<&LogosCoreRunner> for LogoscoreCliCommandGateKey {
+    fn from(runner: &LogosCoreRunner) -> Self {
+        Self {
+            program: runner.program.clone(),
+            sudo_user: runner.sudo_user.clone(),
+            home: runner.home.clone(),
+            config_dir: runner.config_dir.clone(),
+        }
+    }
+}
+
+static LOGOSCORE_CLI_COMMAND_GATES: LazyLock<
+    Mutex<HashMap<LogoscoreCliCommandGateKey, Arc<Mutex<()>>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn status() -> Result<LogosCoreOutput> {
     configured_runtime().status()
@@ -3634,6 +3717,103 @@ esac
         anyhow::ensure!(
             fs::read_to_string(directory.path().join("module-info-count"))?.trim() == "2",
             "timed-out metadata probe was not retried"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_requests_for_one_runtime_do_not_overlap() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-serialized-requests");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" != "status" ]; then
+    printf '%s\n' '{"code":"UNEXPECTED","status":"error"}'
+    exit 2
+fi
+if mkdir "$config_dir/in-flight" 2>/dev/null; then
+    touch "$config_dir/entered"
+    while [ ! -e "$config_dir/release" ]; do
+        sleep 0.01
+    done
+    rmdir "$config_dir/in-flight"
+    printf '%s\n' '{"status":"ok"}'
+else
+    touch "$config_dir/concurrent"
+    printf '%s\n' '{"code":"CONCURRENT","status":"error"}'
+    exit 3
+fi
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let first_runtime = runtime.clone();
+        let first =
+            thread::spawn(move || first_runtime.status_with_timeout(Duration::from_secs(3)));
+
+        let entered = directory.path().join("entered");
+        let entered_deadline = StdInstant::now() + Duration::from_secs(1);
+        while !entered.exists() {
+            anyhow::ensure!(
+                StdInstant::now() < entered_deadline,
+                "first CLI request did not enter the fake runtime"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let second_runtime = runtime.clone();
+        let second =
+            thread::spawn(move || second_runtime.status_with_timeout(Duration::from_secs(3)));
+        thread::sleep(Duration::from_millis(100));
+        fs::write(directory.path().join("release"), "release")?;
+
+        first
+            .join()
+            .map_err(|_| anyhow::anyhow!("first CLI request thread panicked"))??;
+        second
+            .join()
+            .map_err(|_| anyhow::anyhow!("second CLI request thread panicked"))??;
+        anyhow::ensure!(
+            !directory.path().join("concurrent").exists(),
+            "same-runtime CLI requests overlapped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_cli_request_waiting_for_gate_preserves_deadline() -> Result<()> {
+        let gate = Mutex::new(());
+        let held = gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("test command gate is poisoned"))?;
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_millis(10),
+        );
+
+        let Err(error) = acquire_logoscore_cli_command_gate(&gate, Some(&control), None) else {
+            bail!("controlled CLI request acquired an occupied command gate");
+        };
+        drop(held);
+        let termination = error
+            .downcast_ref::<CommandTerminated>()
+            .context("controlled CLI gate wait lost typed termination evidence")?;
+        anyhow::ensure!(
+            termination.reason() == CommandStopReason::DeadlineExceeded,
+            "controlled CLI gate wait ended for the wrong reason"
         );
         Ok(())
     }
