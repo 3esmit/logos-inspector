@@ -332,6 +332,18 @@ fn scripted_router(scripts: Arc<ScriptedAdapter>) -> ZoneL2Router {
     )
 }
 
+#[test]
+fn blocks_query_keeps_composite_routing_when_exact_source_is_omitted() -> Result<()> {
+    let query: ZoneL2BlocksQuery = serde_json::from_value(json!({
+        "cursor": null,
+        "limit": 25
+    }))?;
+    if query.exact_source_id.is_some() {
+        bail!("omitted exact source did not retain composite routing");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn composite_blocks_preserve_conflicts_and_pin_heads() -> Result<()> {
     let (facts, config) = facts(true, true);
@@ -366,6 +378,7 @@ async fn composite_blocks_preserve_conflicts_and_pin_heads() -> Result<()> {
                 ZoneL2BlocksQuery {
                     cursor: None,
                     limit: Some(3),
+                    exact_source_id: None,
                 },
             ),
         )
@@ -430,6 +443,7 @@ async fn composite_blocks_degrade_only_when_one_planned_source_returns() -> Resu
                 ZoneL2BlocksQuery {
                     cursor: None,
                     limit: Some(2),
+                    exact_source_id: None,
                 },
             ),
         )
@@ -440,6 +454,134 @@ async fn composite_blocks_degrade_only_when_one_planned_source_returns() -> Resu
             != Some(L2RouteAttemptOutcome::Failed)
     {
         bail!("composite degradation evidence is wrong: {report:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_sequencer_blocks_never_call_indexer_and_bind_cursor_to_source() -> Result<()> {
+    let (facts, config) = facts(true, true);
+    let adapter = Arc::new(ScriptedAdapter::default());
+    adapter.edit(|state| {
+        state
+            .heads
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(Some(block(3, '3'))));
+        state
+            .block_pages
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(vec![block(3, '3'), block(2, '2')]));
+        state
+            .blocks_by_id
+            .entry((sequencer_id(), 3))
+            .or_default()
+            .push_back(Ok(Some(block(3, '3'))));
+        state
+            .block_pages
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(vec![block(2, '2'), block(1, '1')]));
+    })?;
+    let router = scripted_router(adapter.clone());
+    let first = router
+        .blocks(
+            &facts,
+            request(
+                &config,
+                ZoneL2BlocksQuery {
+                    cursor: None,
+                    limit: Some(1),
+                    exact_source_id: Some(sequencer_id()),
+                },
+            ),
+        )
+        .await?;
+    let L2ReadOutcome::Found { value } = first.data else {
+        bail!("exact Sequencer block page was not found");
+    };
+    if first.route.policy != L2RoutePolicy::ExactSource
+        || first.route.attempts.len() != 1
+        || first
+            .route
+            .attempts
+            .first()
+            .map(|attempt| (&attempt.source_id, attempt.source_role))
+            != Some((&sequencer_id(), ZoneSourceRole::Sequencer))
+    {
+        bail!("exact Sequencer block route is wrong: {:?}", first.route);
+    }
+    let cursor = value
+        .next_cursor
+        .context("exact Sequencer block cursor is missing")?;
+    let calls_before_mismatch = adapter.calls()?;
+    let mismatch = router
+        .blocks(
+            &facts,
+            request(
+                &config,
+                ZoneL2BlocksQuery {
+                    cursor: Some(cursor.clone()),
+                    limit: Some(1),
+                    exact_source_id: Some(indexer_id()),
+                },
+            ),
+        )
+        .await;
+    let Err(failure) = mismatch else {
+        bail!("block cursor accepted a different exact source");
+    };
+    if failure.code != L2ReadErrorCode::CursorInvalidated
+        || adapter.calls()? != calls_before_mismatch
+    {
+        bail!("block cursor source mismatch reached a provider: {failure:?}");
+    }
+    let omitted = router
+        .blocks(
+            &facts,
+            request(
+                &config,
+                ZoneL2BlocksQuery {
+                    cursor: Some(cursor.clone()),
+                    limit: Some(1),
+                    exact_source_id: None,
+                },
+            ),
+        )
+        .await;
+    let Err(failure) = omitted else {
+        bail!("exact-source block cursor accepted composite routing");
+    };
+    if failure.code != L2ReadErrorCode::CursorInvalidated
+        || adapter.calls()? != calls_before_mismatch
+    {
+        bail!("removed block cursor source reached a provider: {failure:?}");
+    }
+    let second = router
+        .blocks(
+            &facts,
+            request(
+                &config,
+                ZoneL2BlocksQuery {
+                    cursor: Some(cursor),
+                    limit: Some(1),
+                    exact_source_id: Some(sequencer_id()),
+                },
+            ),
+        )
+        .await?;
+    if second.route.policy != L2RoutePolicy::ExactSource
+        || second.route.attempts.len() != 1
+        || adapter
+            .calls()?
+            .iter()
+            .any(|call| call.contains(&indexer_id()))
+    {
+        bail!(
+            "exact Sequencer block continuation used another source: {:?}",
+            second.route
+        );
     }
     Ok(())
 }
@@ -474,6 +616,7 @@ async fn changed_block_anchor_invalidates_cursor() -> Result<()> {
                 ZoneL2BlocksQuery {
                     cursor: None,
                     limit: Some(1),
+                    exact_source_id: None,
                 },
             ),
         )
@@ -490,6 +633,7 @@ async fn changed_block_anchor_invalidates_cursor() -> Result<()> {
                 ZoneL2BlocksQuery {
                     cursor: Some(cursor),
                     limit: Some(1),
+                    exact_source_id: None,
                 },
             ),
         )
@@ -543,6 +687,53 @@ async fn transactions_fallback_only_after_confirmed_not_found() -> Result<()> {
     if !matches!(calls.as_slice(), [first, second] if first.starts_with("tx:src_b") && second.starts_with("tx:src_a"))
     {
         bail!("transaction source order is wrong: {calls:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_sequencer_transaction_never_calls_indexer() -> Result<()> {
+    let (facts, config) = facts(true, true);
+    let transaction = transaction('a');
+    let adapter = Arc::new(ScriptedAdapter::default());
+    adapter.edit(|state| {
+        state
+            .transactions
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(Some(transaction.clone())));
+    })?;
+    let report = scripted_router(adapter.clone())
+        .transaction(
+            &facts,
+            request(
+                &config,
+                ZoneL2TransactionQuery {
+                    transaction_id: transaction.hash,
+                    exact_source_id: Some(sequencer_id()),
+                },
+            ),
+        )
+        .await?;
+    if report.route.policy != L2RoutePolicy::ExactSource
+        || report.route.attempts.len() != 1
+        || report
+            .route
+            .attempts
+            .first()
+            .map(|attempt| (&attempt.source_id, attempt.source_role))
+            != Some((&sequencer_id(), ZoneSourceRole::Sequencer))
+    {
+        bail!(
+            "exact Sequencer transaction route is wrong: {:?}",
+            report.route
+        );
+    }
+    let calls = adapter.calls()?;
+    if !matches!(calls.as_slice(), [call] if call.starts_with("tx:src_a:"))
+        || calls.iter().any(|call| call.contains(&indexer_id()))
+    {
+        bail!("exact Sequencer transaction used another source: {calls:?}");
     }
     Ok(())
 }
@@ -1278,6 +1469,7 @@ async fn advertised_head_with_empty_page_is_protocol_failure() -> Result<()> {
                 ZoneL2BlocksQuery {
                     cursor: None,
                     limit: Some(2),
+                    exact_source_id: None,
                 },
             ),
         )
