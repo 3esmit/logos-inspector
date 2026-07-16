@@ -999,6 +999,59 @@ TestCase {
         compare(statusRefreshSpy.count, 2)
     }
 
+    function test_stopped_catalog_worker_error_auto_retries_with_backoff() {
+        configure("https://l1.example", 1)
+        statusRefreshSpy.clear()
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "empty",
+            ingestion: {
+                worker_running: false,
+                discovered_zone_count: 0
+            },
+            current_error: "Bedrock unavailable"
+        })))
+
+        verify(zoneState.automaticRetryPending)
+        compare(zoneState.automaticRetryAttempt, 0)
+        compare(zoneState.statusPollInterval, 2000)
+        compare(gateway.requestCount("zoneCatalogRetry"), 0)
+
+        verify(zoneState.pollStatus())
+        compare(gateway.requestCount("zoneCatalogRetry"), 1)
+        compare(zoneState.automaticRetryAttempt, 1)
+        verify(!zoneState.automaticRetryPending)
+        verify(zoneState.controlInFlight)
+        verify(!zoneState.pollStatus())
+        compare(gateway.requestCount("zoneCatalogStatus"), 1)
+
+        gateway.respondNext("zoneCatalogRetry", ok({
+            report_kind: "zones.catalog_control",
+            schema_version: 1,
+            control: "retry",
+            source_revision: 2
+        }))
+        compare(statusRefreshSpy.count, 1)
+
+        verify(zoneState.pollStatus())
+        compare(gateway.requestCount("zoneCatalogRetry"), 1)
+        compare(gateway.requestCount("zoneCatalogStatus"), 2)
+    }
+
+    function test_running_catalog_worker_error_does_not_auto_retry() {
+        configure("https://l1.example", 1)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            current_error: "source is behind"
+        })))
+
+        verify(!zoneState.automaticRetryPending)
+        compare(zoneState.automaticRetryAttempt, 0)
+        compare(gateway.requestCount("zoneCatalogRetry"), 0)
+    }
+
     function test_evidence_pages_detail_chunks_and_release_are_context_fenced() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "data_channel", null, null)

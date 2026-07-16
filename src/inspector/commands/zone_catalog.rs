@@ -360,6 +360,7 @@ impl ZoneCatalogCommandInterface {
             ZoneCatalogControl::Retry => runtime.block_on(self.service.retry())?,
             ZoneCatalogControl::Rebuild => runtime.block_on(self.service.rebuild())?,
         };
+        self.rebind_default_topology(current, source_revision)?;
         self.evidence.rebind_source_revision(source_revision)?;
         self.refresh(runtime)?;
         Ok(ZoneCatalogControlReport {
@@ -484,6 +485,20 @@ impl ZoneCatalogCommandInterface {
         self.default_topology
             .lock()
             .map_err(|_| anyhow::anyhow!("Zone Catalog default topology lock is poisoned"))
+    }
+
+    fn rebind_default_topology(
+        &self,
+        previous_source_revision: u64,
+        source_revision: u64,
+    ) -> Result<()> {
+        let mut default_topology = self.lock_default_topology()?;
+        if let Some((bound_revision, _)) = default_topology.as_mut()
+            && *bound_revision == previous_source_revision
+        {
+            *bound_revision = source_revision;
+        }
+        Ok(())
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, ZoneProjectionLedger>> {
@@ -623,6 +638,67 @@ mod tests {
             .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?;
         if scopes.is_empty() || scopes.iter().any(|scope| scope != &network_scope) {
             bail!("verified Testnet Channel did not admit scoped defaults: {scopes:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retry_rebinds_testnet_default_topology_to_new_source_revision() -> Result<()> {
+        let runtime = Runtime::new()?;
+        let network_scope = scope('9');
+        let block = evidence_block(crate::testnet::LOGOS_TESTNET_CHANNEL_ID, b"testnet");
+        let store = Arc::new(FakeSourceStore::new(Vec::new()));
+        let monitor = Arc::new(FakeMonitor::default());
+        let (worker, mut started) = PublishingWorker::new(evidence_snapshot(
+            network_scope.clone(),
+            crate::testnet::LOGOS_TESTNET_CHANNEL_ID,
+            &block,
+        ));
+        let interface = ZoneCatalogCommandInterface::with_dependencies(
+            &runtime,
+            Arc::new(worker),
+            store.clone(),
+            monitor,
+        );
+
+        interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{
+                "source": {
+                    "kind": "direct_http",
+                    "endpoint": "http://127.0.0.1:8080",
+                    "default_topology": "logos_testnet"
+                }
+            }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("catalog worker did not publish")?;
+        store
+            .testnet_default_scopes
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?
+            .clear();
+        let retry = interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Retry,
+            &json!([{ "source_revision": 1 }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("retried catalog worker did not publish")?;
+        interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
+
+        if retry.get("source_revision").and_then(Value::as_u64) != Some(2) {
+            bail!("retry did not advance the source revision: {retry}");
+        }
+        let scopes = store
+            .testnet_default_scopes
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?;
+        if scopes.is_empty() || scopes.iter().any(|scope| scope != &network_scope) {
+            bail!("retry lost scoped Testnet defaults: {scopes:?}");
         }
         Ok(())
     }
