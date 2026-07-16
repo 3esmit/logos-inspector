@@ -53,6 +53,8 @@ QtObject {
     property bool controlInFlight: false
     property bool targetResolutionInFlight: false
     property int statusFailureCount: 0
+    property bool automaticRetryPending: false
+    property int automaticRetryAttempt: 0
     property bool startupAutoSelectionPending: true
 
     readonly property bool statusPollingEnabled: started
@@ -65,7 +67,9 @@ QtObject {
         || currentError.length > 0
     readonly property int statusPollInterval: statusFailureCount > 0
         ? failureBackoffInterval(statusFailureCount)
-        : (catalogBusy ? 1000 : 5000)
+        : automaticRetryPending
+            ? failureBackoffInterval(automaticRetryAttempt + 1)
+            : (catalogBusy ? 1000 : 5000)
 
     property var desiredSource: null
     property string desiredSourceKey: ""
@@ -257,8 +261,16 @@ QtObject {
     }
 
     function pollStatus() {
-        if (!statusPollingEnabled || statusInFlight) {
+        if (!statusPollingEnabled) {
             return false
+        }
+        if (statusInFlight || controlInFlight) {
+            return false
+        }
+        if (automaticRetryPending) {
+            automaticRetryPending = false
+            automaticRetryAttempt = Math.min(4, automaticRetryAttempt + 1)
+            return runCatalogControl("zoneCatalogRetry", true)
         }
 
         statusInFlight = true
@@ -328,6 +340,15 @@ QtObject {
         currentError = String(report.current_error || "")
         catalogStatus = report
         statusAcceptanceRevision += 1
+
+        if (currentError.length > 0 && ingestion.worker_running !== true) {
+            automaticRetryPending = true
+        } else {
+            automaticRetryPending = false
+            if (verification === "verified" || ingestion.worker_running === true) {
+                automaticRetryAttempt = 0
+            }
+        }
 
         if (verification === "verified") {
             reconcileSummaries()
@@ -767,16 +788,19 @@ QtObject {
     }
 
     function retryCatalog() {
-        return runCatalogControl("zoneCatalogRetry")
+        return runCatalogControl("zoneCatalogRetry", false)
     }
 
     function rebuildCatalog() {
-        return runCatalogControl("zoneCatalogRebuild")
+        return runCatalogControl("zoneCatalogRebuild", false)
     }
 
-    function runCatalogControl(method) {
+    function runCatalogControl(method, automatic) {
         if (!catalogConfigured || controlInFlight) {
             return null
+        }
+        if (automatic !== true) {
+            automaticRetryPending = false
         }
         controlRequestRevision += 1
         const requestRevision = controlRequestRevision
@@ -796,6 +820,9 @@ QtObject {
             }
             if (!validReportResponse(response, "zones.catalog_control")) {
                 controlError = responseError(response, qsTr("Zone Catalog control failed."))
+                if (automatic === true) {
+                    automaticRetryPending = true
+                }
                 return
             }
             const nextSourceRevision = numericRevision(response.value.source_revision)
@@ -1037,6 +1064,8 @@ QtObject {
         currentError = ""
         statusError = ""
         statusFailureCount = 0
+        automaticRetryPending = false
+        automaticRetryAttempt = 0
         networkScope = null
         networkScopeKey = ""
         catalogRevision = 0
