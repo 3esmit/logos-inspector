@@ -33,11 +33,26 @@ pub(super) fn find_command(command: &str) -> Option<String> {
 }
 
 pub(super) fn process_is_alive(pid: u32) -> bool {
-    Command::new("kill")
+    let exists = Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
         .status()
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success());
+    if !exists {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    let terminated = linux_process_state(pid).is_some_and(|state| matches!(state, 'Z' | 'X'));
+    #[cfg(not(target_os = "linux"))]
+    let terminated = false;
+    !terminated
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, suffix) = stat.rsplit_once(") ")?;
+    suffix.chars().next()
 }
 
 pub(super) fn stop_process(pid: u32) -> Result<()> {
@@ -275,7 +290,11 @@ fn spawn_bounded_drain(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::fs;
     use std::net::TcpListener;
+    #[cfg(target_os = "linux")]
+    use std::time::Duration;
 
     use super::*;
 
@@ -329,6 +348,38 @@ mod tests {
             || !detail.contains("indexer-startup-failed")
         {
             bail!("early exit diagnostics were lost: {detail}");
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_is_alive_treats_zombies_as_stopped() -> Result<()> {
+        let mut child = Command::new("/bin/sh").args(["-c", "exit 0"]).spawn()?;
+        let pid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut zombie = false;
+        while Instant::now() < deadline {
+            let state = fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    stat.rsplit_once(") ")
+                        .and_then(|(_, stat)| stat.chars().next())
+                });
+            if state == Some('Z') {
+                zombie = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let alive = process_is_alive(pid);
+        let _status = child.wait()?;
+
+        if !zombie {
+            bail!("test child did not enter the zombie state");
+        }
+        if alive {
+            bail!("zombie process {pid} was reported as alive");
         }
         Ok(())
     }
