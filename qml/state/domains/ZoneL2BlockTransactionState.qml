@@ -10,6 +10,9 @@ QtObject {
     readonly property bool l2ReadEnabled: l2Context.l2ReadEnabled
     readonly property bool l2IndexerReadEnabled: l2Context.l2IndexerReadEnabled
     readonly property bool l2SequencerReadEnabled: l2Context.l2SequencerReadEnabled
+    readonly property var appModel: l2Context.appModel || null
+    readonly property int registeredIdlCount: appModel && appModel.registeredIdls
+        ? Number(appModel.registeredIdls.count || 0) : 0
 
     function l2AvailabilityMessage() {
         return l2Context.l2AvailabilityMessage()
@@ -51,6 +54,10 @@ QtObject {
     property var l2TransactionDetailErrorDetails: null
     property var l2TransactionTraceReport: null
     property var l2TransactionTrace: null
+    property int l2TransactionIdlRegistryRevision: 0
+    property string l2TransactionTraceIdlProgramId: ""
+    property int l2TransactionTraceIdlRegistryRevision: -1
+    property bool l2TransactionTraceRedecodeQueued: false
     property string l2TransactionTraceError: ""
     property var l2TransactionTraceErrorDetails: null
     property bool l2BlocksInFlight: false
@@ -61,6 +68,11 @@ QtObject {
     property int l2BlockDetailRequestRevision: 0
     property int l2TransactionDetailRequestRevision: 0
     property int l2TransactionTraceRequestRevision: 0
+
+    onRegisteredIdlCountChanged: {
+        l2TransactionIdlRegistryRevision += 1
+        queueL2TransactionTraceRedecode()
+    }
 
     function resetL2BlocksState(clearRows) {
         l2BlocksRequestRevision += 1
@@ -111,6 +123,8 @@ QtObject {
         l2TransactionTraceInFlight = false
         l2TransactionTraceReport = null
         l2TransactionTrace = null
+        l2TransactionTraceIdlProgramId = ""
+        l2TransactionTraceIdlRegistryRevision = -1
         l2TransactionTraceError = ""
         l2TransactionTraceErrorDetails = null
     }
@@ -347,7 +361,7 @@ QtObject {
                 l2TransactionDetail = outcome.value
                 const source = outcome.value.source || ({})
                 const returnedSourceId = String(source.source_id || sourceId)
-                requestL2TransactionTrace(normalizedId, returnedSourceId, "")
+                requestL2TransactionTrace(normalizedId, returnedSourceId)
                 return
             }
             if (kind === "ambiguous") {
@@ -370,17 +384,19 @@ QtObject {
         return openL2Transaction(l2TransactionId, String(candidate.source_id))
     }
 
-    function requestL2TransactionTrace(transactionId, exactSourceId, idlProgramId) {
+    function requestL2TransactionTrace(transactionId, exactSourceId) {
         const normalizedId = String(transactionId || "").trim()
         if (!l2Context.l2ReadEnabled || normalizedId.length === 0) {
             return null
         }
+        const programId = automaticL2TransactionIdlProgramId()
         resetL2TransactionTraceState()
+        l2TransactionTraceIdlProgramId = programId
+        l2TransactionTraceIdlRegistryRevision = l2TransactionIdlRegistryRevision
         l2TransactionTraceRequestRevision += 1
         const requestRevision = l2TransactionTraceRequestRevision
         const requestContext = l2Context.l2RequestContext()
         const sourceId = String(exactSourceId || "")
-        const programId = String(idlProgramId || "")
         l2TransactionTraceInFlight = true
         return l2Context.dispatch("zoneL2TransactionTrace", {
             context: requestContext,
@@ -424,6 +440,46 @@ QtObject {
                 l2TransactionTraceError = qsTr("Transaction trace returned an invalid outcome.")
             }
         })
+    }
+
+    function automaticL2TransactionIdlProgramId() {
+        const model = appModel
+        const transaction = l2TransactionDetail && l2TransactionDetail.transaction
+            ? l2TransactionDetail.transaction : null
+        const programId = String(transaction && transaction.program_id_hex || "").trim()
+        if (!model || !programId.length || typeof model.idlEntriesForProgram !== "function") {
+            return ""
+        }
+        const entries = model.idlEntriesForProgram(programId)
+        return Array.isArray(entries) && entries.length > 0 ? programId : ""
+    }
+
+    function queueL2TransactionTraceRedecode() {
+        if (l2TransactionTraceRedecodeQueued) {
+            return
+        }
+        l2TransactionTraceRedecodeQueued = true
+        Qt.callLater(function () {
+            l2TransactionTraceRedecodeQueued = false
+            reDecodeL2TransactionTrace()
+        })
+    }
+
+    function reDecodeL2TransactionTrace() {
+        if (!l2TransactionDetail || l2TransactionId.length === 0) {
+            return null
+        }
+        const programId = automaticL2TransactionIdlProgramId()
+        if (!programId.length && !l2TransactionTraceIdlProgramId.length) {
+            return null
+        }
+        if (programId === l2TransactionTraceIdlProgramId
+                && l2TransactionIdlRegistryRevision
+                    === l2TransactionTraceIdlRegistryRevision) {
+            return null
+        }
+        const source = l2TransactionDetail.source || ({})
+        return requestL2TransactionTrace(l2TransactionId, String(source.source_id || ""))
     }
 
     function closeL2Transaction() {

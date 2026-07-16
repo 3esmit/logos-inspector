@@ -1897,27 +1897,100 @@ fn transaction_trace_value(
     let program_id = crate::normalize_program_id_hex(program_id).map_err(|_| {
         L2ReadFailure::new(L2ReadErrorCode::InvalidRequest, "IDL program id is invalid")
     })?;
+    let transaction_program_id = transaction
+        .program_id_hex
+        .as_deref()
+        .ok_or_else(|| {
+            L2ReadFailure::new(
+                L2ReadErrorCode::InvalidRequest,
+                "Transaction has no program id for IDL decode",
+            )
+        })
+        .and_then(|value| {
+            crate::normalize_program_id_hex(value).map_err(|_| {
+                L2ReadFailure::new(
+                    L2ReadErrorCode::InvalidRequest,
+                    "Transaction program id is invalid",
+                )
+            })
+        })?;
+    if program_id != transaction_program_id {
+        return Err(L2ReadFailure::new(
+            L2ReadErrorCode::InvalidRequest,
+            "IDL program id does not match transaction program",
+        ));
+    }
     let entries = crate::support::state_store::registered_idl_entries().map_err(|_| {
         L2ReadFailure::new(
             L2ReadErrorCode::Internal,
             "Registered IDL state could not be read",
         )
     })?;
-    let entry = entries
+    transaction_trace_value_with_registered_idls(transaction, &program_id, &entries)
+}
+
+fn transaction_trace_value_with_registered_idls(
+    transaction: &TransactionSummary,
+    program_id: &str,
+    entries: &[crate::support::state_store::RegisteredIdlEntry],
+) -> Result<crate::lez::TransactionTraceReport, L2ReadFailure> {
+    let mut first_partial = None;
+    let mut first_attempt = None;
+    let mut first_decode_failure = None;
+    let mut found_registered_idl = false;
+
+    for entry in entries
         .iter()
-        .find(|entry| entry.program_id_hex == program_id)
-        .ok_or_else(|| {
-            L2ReadFailure::new(
-                L2ReadErrorCode::InvalidRequest,
-                "Requested IDL program is not registered",
-            )
-        })?;
-    crate::lez::trace_transaction_summary_with_idl(transaction, &entry.json).map_err(|_| {
-        L2ReadFailure::new(
+        .filter(|entry| entry.program_id_hex == program_id)
+    {
+        found_registered_idl = true;
+        let trace = match crate::lez::trace_transaction_summary_with_idl(transaction, &entry.json) {
+            Ok(trace) => trace,
+            Err(_) => {
+                if first_decode_failure.is_none() {
+                    first_decode_failure = Some(L2ReadFailure::new(
+                        L2ReadErrorCode::InvalidRequest,
+                        "Registered IDL cannot decode this transaction",
+                    ));
+                }
+                continue;
+            }
+        };
+        if transaction_trace_has_full_idl_decode(&trace) {
+            return Ok(trace);
+        }
+        if trace.decoded_instruction.is_some() {
+            if first_partial.is_none() {
+                first_partial = Some(trace);
+            }
+        } else if first_attempt.is_none() {
+            first_attempt = Some(trace);
+        }
+    }
+
+    if let Some(trace) = first_partial.or(first_attempt) {
+        return Ok(trace);
+    }
+    if let Some(failure) = first_decode_failure {
+        return Err(failure);
+    }
+    if found_registered_idl {
+        return Err(L2ReadFailure::new(
             L2ReadErrorCode::InvalidRequest,
             "Registered IDL cannot decode this transaction",
-        )
-    })
+        ));
+    }
+    Err(L2ReadFailure::new(
+        L2ReadErrorCode::InvalidRequest,
+        "Requested IDL program is not registered",
+    ))
+}
+
+fn transaction_trace_has_full_idl_decode(trace: &crate::lez::TransactionTraceReport) -> bool {
+    trace
+        .decoded_instruction
+        .as_ref()
+        .is_some_and(|decoded| decoded.decode_error.is_none() && decoded.remaining_words.is_empty())
 }
 
 async fn fetch_initial_contributor(

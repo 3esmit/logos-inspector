@@ -297,6 +297,13 @@ TestCase {
             return findChild(transactionDetail, "zoneL2TraceSummary") !== null
         })
         verify(hasVisibleText(transactionDetail, "Trace steps"))
+        verify(hasVisibleText(transactionDetail, "Decoded Instruction"))
+        verify(hasVisibleText(transactionDetail, "transfer"))
+        verify(hasVisibleText(transactionDetail, "token"))
+        verify(hasVisibleText(transactionDetail, "Account sender"))
+        verify(hasVisibleText(transactionDetail, "Account recipient"))
+        verify(hasVisibleText(transactionDetail, "Argument amount_to_transfer: u128"))
+        verify(hasVisibleText(transactionDetail, "1234567"))
         verify(hasVisibleText(transactionDetail, "Content hash and signature checks"))
         verify(hasVisibleText(transactionDetail, "0. Parse transaction"))
         verify(hasVisibleText(transactionDetail,

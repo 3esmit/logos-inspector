@@ -11,7 +11,10 @@ use super::local_state::{LocalStateSession, StateFile, StoredBytes, with_local_s
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredIdlEntry {
+    pub(crate) key: String,
+    pub(crate) name: String,
     pub(crate) program_id_hex: String,
+    pub(crate) source: String,
     pub(crate) json: String,
 }
 
@@ -25,7 +28,11 @@ pub(crate) fn save_idl_state(state: &Value) -> Result<Value> {
 
 pub(crate) fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
     let state = load_idl_state()?;
-    Ok(state
+    Ok(registered_idl_entries_from_state(&state))
+}
+
+fn registered_idl_entries_from_state(state: &Value) -> Vec<RegisteredIdlEntry> {
+    let mut entries = state
         .get("idls")
         .and_then(Value::as_array)
         .into_iter()
@@ -40,11 +47,43 @@ pub(crate) fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
                 return None;
             }
             Some(RegisteredIdlEntry {
+                key: entry
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                name: entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
                 program_id_hex,
+                source: entry
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
                 json: json.to_owned(),
             })
         })
-        .collect())
+        .collect::<Vec<_>>();
+    entries.sort_by(registered_idl_entry_order);
+    entries
+}
+
+fn registered_idl_entry_order(
+    left: &RegisteredIdlEntry,
+    right: &RegisteredIdlEntry,
+) -> std::cmp::Ordering {
+    registered_idl_source_order(&left.source)
+        .cmp(&registered_idl_source_order(&right.source))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.key.cmp(&right.key))
+        .then_with(|| left.json.cmp(&right.json))
+}
+
+fn registered_idl_source_order(source: &str) -> u8 {
+    if source == "shared" { 1 } else { 0 }
 }
 
 pub(crate) fn load_wallet_state() -> Result<Value> {
@@ -134,4 +173,41 @@ fn normalized_program_id_hex_text(value: &str) -> Option<String> {
     normalize_program_id_hex(value)
         .ok()
         .filter(|text| !text.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_idl_entries_prefer_local_entries_before_shared_entries() {
+        let program_id = "ab".repeat(32);
+        let entries = registered_idl_entries_from_state(&json!({
+            "idls": [{
+                "key": "shared-first",
+                "name": "Shared",
+                "programIdHex": program_id,
+                "source": "shared",
+                "json": "{\"name\":\"shared\"}"
+            }, {
+                "key": "local-z",
+                "name": "Zulu",
+                "programIdHex": "ab".repeat(32),
+                "source": "local",
+                "json": "{\"name\":\"local-z\"}"
+            }, {
+                "key": "local-a",
+                "name": "Alpha",
+                "programIdHex": "ab".repeat(32),
+                "source": "local",
+                "json": "{\"name\":\"local-a\"}"
+            }]
+        }));
+
+        let names = entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Alpha", "Zulu", "Shared"]);
+    }
 }

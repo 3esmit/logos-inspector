@@ -447,9 +447,30 @@ function l2TransactionTrace(hashValue, sourceId) {
                 refs: { program_id_hex: detail.transaction.program_id_hex }
             }],
             inspection: detail.inspection,
-            decoded_instruction: null
+            decoded_instruction: l2DecodedInstruction()
         },
         source: detail.source
+    }
+}
+
+function l2DecodedInstruction() {
+    return {
+        program_id: identity("6"),
+        idl_name: "token",
+        instruction: "transfer",
+        variant_index: 0,
+        accounts: [{
+            path: "sender",
+            value: identity("7")
+        }, {
+            path: "recipient",
+            value: identity("8")
+        }],
+        args: [{
+            path: "amount_to_transfer: u128",
+            value: "1234567"
+        }],
+        remaining_words: []
     }
 }
 
