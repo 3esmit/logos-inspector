@@ -56,15 +56,24 @@ pub async fn storage_report(
             }
         });
     }
-    let metadata = module_info_probe(module_transport, adapter, STORAGE_MODULE).await;
+    let metadata = if runtime_diagnostics_enabled {
+        module_info_probe(module_transport, adapter, STORAGE_MODULE).await
+    } else {
+        unavailable_metadata_probe(adapter, STORAGE_MODULE)
+    };
     let module_info = match adapter {
-        ModuleTransportKind::Module if storage_module_info_value(&metadata).is_none() => probes
-            .iter()
-            .find(|probe| {
-                probe.probe_key.as_deref() == Some(SourceProbeKey::StorageModuleVersion.as_str())
-            })
-            .cloned()
-            .unwrap_or_else(|| unavailable_metadata_probe(adapter, STORAGE_MODULE)),
+        ModuleTransportKind::Module
+            if runtime_diagnostics_enabled && storage_module_info_value(&metadata).is_none() =>
+        {
+            probes
+                .iter()
+                .find(|probe| {
+                    probe.probe_key.as_deref()
+                        == Some(SourceProbeKey::StorageModuleVersion.as_str())
+                })
+                .cloned()
+                .unwrap_or_else(|| unavailable_metadata_probe(adapter, STORAGE_MODULE))
+        }
         ModuleTransportKind::Module | ModuleTransportKind::LogoscoreCli => metadata.clone(),
     };
     if runtime_diagnostics_enabled {
@@ -245,7 +254,13 @@ async fn logoscore_backup_download_readiness_probe(
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use anyhow::{Result, bail};
 
@@ -265,6 +280,7 @@ mod tests {
 
     struct FakeBasecampTransport {
         module_info: Value,
+        module_info_calls: Arc<AtomicUsize>,
         protocol: Value,
         shared_staging: bool,
         subscribable: bool,
@@ -289,6 +305,7 @@ mod tests {
         }
 
         fn module_info(&self, _module: String) -> ModuleDiagnosticFuture<'_> {
+            self.module_info_calls.fetch_add(1, Ordering::Relaxed);
             let module_info = self.module_info.clone();
             Box::pin(async move { Ok(module_info) })
         }
@@ -353,6 +370,7 @@ mod tests {
     fn fake_transport() -> FakeBasecampTransport {
         FakeBasecampTransport {
             module_info: exact_module_info(),
+            module_info_calls: Arc::new(AtomicUsize::new(0)),
             protocol: exact_protocol(),
             shared_staging: true,
             subscribable: true,
@@ -393,7 +411,9 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_only_report_skips_storage_runtime_probes() -> Result<()> {
-        let transport: SharedModuleTransport = Arc::new(fake_transport());
+        let fake_transport = fake_transport();
+        let module_info_calls = Arc::clone(&fake_transport.module_info_calls);
+        let transport: SharedModuleTransport = Arc::new(fake_transport);
 
         let report =
             storage_report(&transport, ModuleTransportKind::Module, None, false, false).await;
@@ -403,6 +423,9 @@ mod tests {
                 "metadata-only Storage report invoked runtime probes: {:?}",
                 report.probes
             );
+        }
+        if module_info_calls.load(Ordering::Relaxed) != 0 {
+            bail!("metadata-only Storage report queried Storage module metadata");
         }
         Ok(())
     }
