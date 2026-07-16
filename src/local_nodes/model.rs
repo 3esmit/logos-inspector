@@ -286,7 +286,12 @@ impl NodeLifecycleState {
     pub(super) fn has_module_context(self) -> bool {
         matches!(
             self,
-            Self::Starting | Self::Running | Self::Stopping | Self::Stopped | Self::Unknown
+            Self::Starting
+                | Self::Running
+                | Self::Stopping
+                | Self::Stopped
+                | Self::Unknown
+                | Self::Failed
         )
     }
 }
@@ -343,12 +348,6 @@ impl LocalNodesState {
         }
     }
 
-    pub(super) fn module_context_topology(&self, kind: NodeKind) -> Option<&LocalDevnetRecord> {
-        self.module_context_topology_by_kind
-            .get(&kind)
-            .and_then(|network_id| self.topology(network_id))
-    }
-
     pub(super) fn module_context_topology_id(&self, kind: NodeKind) -> Option<&str> {
         self.module_context_topology_by_kind
             .get(&kind)
@@ -385,7 +384,7 @@ impl LocalNodesState {
     }
 
     pub(super) fn infer_unambiguous_module_context_topologies(&mut self) -> bool {
-        let inferred = [NodeKind::Messaging, NodeKind::Storage]
+        let inferred = [NodeKind::Bedrock, NodeKind::Messaging, NodeKind::Storage]
             .into_iter()
             .filter_map(|kind| {
                 if self.module_context_topology_id(kind).is_some() {
@@ -412,17 +411,6 @@ impl LocalNodesState {
         }
         self.module_context_topology_by_kind.extend(inferred);
         true
-    }
-
-    pub(super) fn topology(&self, network_id: &str) -> Option<&LocalDevnetRecord> {
-        if let Some(record) = self
-            .testnet
-            .as_ref()
-            .filter(|record| record.id == network_id)
-        {
-            return Some(record);
-        }
-        self.devnets.iter().find(|record| record.id == network_id)
     }
 
     pub(super) fn devnet_mut(&mut self, network_id: &str) -> Option<&mut LocalDevnetRecord> {

@@ -27,8 +27,8 @@ use super::model::{
 };
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::process::{
-    find_command, process_group_has_live_members, process_group_is_alive, process_is_alive,
-    spawn_detached, stop_process,
+    find_command, process_group_has_live_members, process_group_is_alive, spawn_detached,
+    stop_process,
 };
 use super::runtime::LogoscoreRuntimeProfile;
 use super::workflow::node_set_for_profile;
@@ -950,6 +950,20 @@ fn node_start(
         )
         .with_context(|| format!("{} start is not implemented", adapter.label()))?;
         if policy == NodeActionPolicy::ExecuteDetached {
+            if config.lifecycle_state.is_pending() {
+                return Ok(needs_configuration(
+                    "a process lifecycle action is already pending confirmation",
+                ));
+            }
+            if config
+                .process_id
+                .is_some_and(process_group_has_live_members)
+            {
+                return Ok(needs_configuration(&format!(
+                    "an Inspector-owned {} process is already running",
+                    adapter.label()
+                )));
+            }
             let execution = match adapter.startup_rpc_health_method() {
                 Some(method) => execute_ready_process_spec(
                     &spec,
@@ -969,11 +983,16 @@ fn node_start(
                         .and_then(Value::as_u64)
                         .and_then(|pid| u32::try_from(pid).ok());
                     config.installed = true;
+                    config.lifecycle_state = NodeLifecycleState::Starting;
+                    config.pending_lifecycle_action = Some(NodeAction::Start);
                     record.updated_at = now_millis();
                     write_devnet_manifest(record)?;
                     Ok(OperationOutcome {
-                        status: "started".to_owned(),
-                        detail: operation_detail_from_value(&value),
+                        status: "starting".to_owned(),
+                        detail: format!(
+                            "{}; waiting for Inspector process confirmation",
+                            operation_detail_from_value(&value)
+                        ),
                         command: Some(spec.display),
                     })
                 }
@@ -1071,18 +1090,28 @@ fn node_stop(
         let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         if policy == NodeActionPolicy::ExecuteDetached {
+            if config.lifecycle_state.is_pending() {
+                return Ok(needs_configuration(
+                    "a process lifecycle action is already pending confirmation",
+                ));
+            }
             if config.process_id.is_none() {
                 return Ok(needs_configuration(&format!(
                     "no Inspector-owned {} process is recorded",
                     adapter.label()
                 )));
             }
-            stop_owned_process(config);
+            request_owned_process_stop(config)?;
+            config.lifecycle_state = NodeLifecycleState::Stopping;
+            config.pending_lifecycle_action = Some(NodeAction::Stop);
             record.updated_at = now_millis();
             write_devnet_manifest(record)?;
             return Ok(OperationOutcome {
-                status: "stopped".to_owned(),
-                detail: format!("stopped recorded {} process", adapter.label()),
+                status: "stopping".to_owned(),
+                detail: format!(
+                    "requested stop for Inspector-owned {} process; waiting for Inspector process confirmation",
+                    adapter.label()
+                ),
                 command: None,
             });
         }
@@ -1534,13 +1563,19 @@ fn stop_all_owned_processes(state: &mut LocalNodesState, network_id: &str) {
 }
 
 fn stop_owned_process(node: &mut LocalNodeConfigRecord) {
-    let Some(pid) = node.process_id else {
-        return;
-    };
-    if process_is_alive(pid) {
-        let _ignored = stop_process(pid);
-    }
+    let _ignored = request_owned_process_stop(node);
     node.process_id = None;
+}
+
+fn request_owned_process_stop(node: &LocalNodeConfigRecord) -> Result<()> {
+    let Some(pid) = node.process_id else {
+        return Ok(());
+    };
+    if process_group_has_live_members(pid) {
+        stop_process(pid)
+            .with_context(|| format!("failed to stop Inspector-owned process group {pid}"))?;
+    }
+    Ok(())
 }
 
 fn sanitize_network_id(value: &str) -> String {
@@ -1574,6 +1609,8 @@ mod tests {
 
     use anyhow::{Context as _, Result, bail};
 
+    #[cfg(unix)]
+    use super::super::process::process_is_alive;
     use super::*;
 
     #[cfg(unix)]
@@ -1604,6 +1641,60 @@ mod tests {
         if !detail.contains("outer operation failure") || !detail.contains("inner CLI failure") {
             bail!("operation error detail lost a cause: {detail}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn detached_lifecycle_actions_wait_for_watcher_confirmation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let indexer = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+            .context("missing Indexer node")?;
+        indexer.installed = true;
+        indexer.process_id = Some(u32::MAX);
+        indexer.lifecycle_state = NodeLifecycleState::Running;
+
+        let stop = LocalNodeActionRequest {
+            action: NodeAction::Stop,
+            node: Some(NodeKind::Indexer),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+        let stopped = node_stop(&mut state, None, "default", &stop, None);
+
+        anyhow::ensure!(stopped.report.status == "stopping");
+        let indexer = state
+            .testnet
+            .as_ref()
+            .and_then(|record| {
+                record
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Indexer)
+            })
+            .context("missing Indexer node after stop")?;
+        anyhow::ensure!(
+            indexer.lifecycle_state == NodeLifecycleState::Stopping
+                && indexer.pending_lifecycle_action == Some(NodeAction::Stop)
+                && indexer.process_id == Some(u32::MAX)
+        );
+
+        let repeated_stop = node_stop(&mut state, None, "default", &stop, None);
+        anyhow::ensure!(repeated_stop.report.status == "needs_configuration");
+
+        let start = LocalNodeActionRequest {
+            action: NodeAction::Start,
+            ..stop
+        };
+        let repeated_start = node_start(&mut state, None, "default", &start, None);
+        anyhow::ensure!(repeated_start.report.status == "needs_configuration");
         Ok(())
     }
 
