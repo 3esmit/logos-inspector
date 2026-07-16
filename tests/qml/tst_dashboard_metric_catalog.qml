@@ -9,6 +9,7 @@ TestCase {
         id: model
 
         property var dashboardBlocks: [1, 2, 3]
+        property var dashboardProvisionalBlocks: [1, 2, 3, 4, 5]
         property var dashboardMetricHistory: ({ "storage.failed_transfers_recent": [{ timestamp: 0, value: 2 }, { timestamp: 2000, value: 7 }] })
         property var dashboardMetricLastSeen: ({})
         property int dashboardMetricHistoryRevision: 0
@@ -137,7 +138,10 @@ TestCase {
 
     function test_raw_values_are_resolved_from_model_facade() {
         compare(DashboardMetricCatalog.dashboardMetricRawValue(model, "bedrock.peer_count"), 6)
-        compare(DashboardMetricCatalog.dashboardMetricRawValue(model, "lez.blocks_produced_recent"), 3)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model,
+            "lez.blocks_produced_recent"
+        ), 5)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(model, "storage.manifest_count"), 9)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(model, "messaging.network_ingress_recent"), 11)
     }

@@ -166,7 +166,8 @@ function dashboardMetricRawValue(root, key) {
     case "lez.rejected_tx_count_recent":
         return root.mantleValue(["rejected_tx_count_recent", "rejected_txs_recent"])
     case "lez.blocks_produced_recent":
-        return Array.isArray(root.dashboardBlocks) ? root.dashboardBlocks.length : null
+        return Array.isArray(root.dashboardProvisionalBlocks)
+            ? root.dashboardProvisionalBlocks.length : null
     case "lez.pending_blocks_count":
         return root.mantleValue(["pending_blocks_count", "pending_blocks"])
     case "indexer.indexer_lag_vs_sequencer_head":
