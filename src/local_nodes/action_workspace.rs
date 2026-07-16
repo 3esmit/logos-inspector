@@ -1,11 +1,14 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+use crate::modules::logos_core::normalize_module_call_value;
 use crate::support::{
     command_runner::{CommandControl, CommandTerminated},
     time::now_millis,
@@ -28,6 +31,8 @@ use super::workflow::node_set_for_profile;
 
 const MANIFEST_FILE: &str = "local-network.json";
 const TESTNET_ID: &str = "logos-testnet";
+const MESSAGING_CONTEXT_PROBE_ATTEMPTS: usize = 20;
+const MESSAGING_CONTEXT_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct LocalNodeActionWorkspace;
@@ -491,6 +496,34 @@ fn node_initialize(
                     command: Some(spec.display),
                 })
             }
+            Err(error)
+                if kind == NodeKind::Messaging && is_ambiguous_messaging_create_error(&error) =>
+            {
+                match verify_messaging_context(runtime, control) {
+                    Ok(peer_id) => {
+                        config.installed = true;
+                        config.package_path = Some(spec.program.clone());
+                        config.lifecycle_state = NodeLifecycleState::Stopped;
+                        config.pending_lifecycle_action = None;
+                        record.updated_at = now_millis();
+                        write_devnet_manifest(record)?;
+                        Ok(OperationOutcome {
+                            status: "initialized".to_owned(),
+                            detail: format!(
+                                "createNode response was lost; verified Messaging context with MyPeerId `{peer_id}`"
+                            ),
+                            command: Some(spec.display),
+                        })
+                    }
+                    Err(probe_error) => Ok(OperationOutcome {
+                        status: "failed".to_owned(),
+                        detail: format!(
+                            "{error}; Messaging context verification failed: {probe_error}"
+                        ),
+                        command: Some(spec.display),
+                    }),
+                }
+            }
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
@@ -499,6 +532,82 @@ fn node_initialize(
             }),
         }
     })
+}
+
+fn is_ambiguous_messaging_create_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("RPC_FAILED")
+}
+
+fn verify_messaging_context(
+    runtime: &LogoscoreRuntimeProfile,
+    control: Option<&CommandControl>,
+) -> Result<String> {
+    let deadline = control.map_or_else(
+        || {
+            Instant::now()
+                + MESSAGING_CONTEXT_PROBE_ATTEMPTS as u32 * MESSAGING_CONTEXT_PROBE_INTERVAL
+        },
+        CommandControl::deadline,
+    );
+    let mut last_error = None;
+    for attempt in 0..MESSAGING_CONTEXT_PROBE_ATTEMPTS {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        match messaging_peer_id(runtime, control) {
+            Ok(peer_id) => return Ok(peer_id),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt + 1 == MESSAGING_CONTEXT_PROBE_ATTEMPTS {
+            break;
+        }
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(MESSAGING_CONTEXT_PROBE_INTERVAL.min(remaining));
+    }
+    let detail = last_error
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "no getNodeInfo response".to_owned());
+    bail!("Messaging context verification did not find MyPeerId: {detail}")
+}
+
+fn messaging_peer_id(
+    runtime: &LogoscoreRuntimeProfile,
+    control: Option<&CommandControl>,
+) -> Result<String> {
+    let cli = runtime.cli_runtime()?;
+    let args = ["MyPeerId".to_owned()];
+    let response = match control {
+        Some(control) => cli.call_checked_controlled(
+            "delivery_module",
+            "getNodeInfo",
+            "getNodeInfo(QString)",
+            &args,
+            control.clone(),
+        ),
+        None => cli.call_checked(
+            "delivery_module",
+            "getNodeInfo",
+            "getNodeInfo(QString)",
+            &args,
+        ),
+    }?;
+    let value = response
+        .get("value")
+        .cloned()
+        .context("Messaging getNodeInfo returned no LogosCore value")?;
+    let peer_id = normalize_module_call_value("delivery_module", "getNodeInfo", value)?;
+    peer_id
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .context("Messaging getNodeInfo returned an empty MyPeerId")
 }
 
 fn node_uninstall(
@@ -1170,7 +1279,7 @@ mod tests {
     use std::{
         fs,
         os::unix::{fs::PermissionsExt as _, process::CommandExt as _},
-        process::Command,
+        process::{self, Command},
         thread,
         time::{Duration, Instant},
     };
@@ -1313,5 +1422,190 @@ fi
             thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn messaging_initialize_recovers_context_after_lost_create_reply() -> Result<()> {
+        // Arrange
+        let (result, state, calls) = messaging_initialize_test_case("ready")?;
+
+        // Act & Assert
+        if result.report.status != "initialized" {
+            bail!(
+                "Messaging initialization did not recover: {}",
+                result.report.detail
+            );
+        }
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        if !messaging.installed || messaging.lifecycle_state != NodeLifecycleState::Stopped {
+            bail!("Messaging context was not persisted after recovery: {messaging:?}");
+        }
+        assert_single_messaging_create(&calls)?;
+        if !result
+            .report
+            .detail
+            .contains("createNode response was lost")
+        {
+            bail!(
+                "Messaging recovery detail did not explain reply loss: {}",
+                result.report.detail
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn messaging_initialize_preserves_failure_when_context_is_absent() -> Result<()> {
+        // Arrange
+        let (result, state, calls) = messaging_initialize_test_case("absent")?;
+
+        // Act & Assert
+        if result.report.status != "failed" {
+            bail!(
+                "Messaging initialization unexpectedly recovered: {}",
+                result.report.detail
+            );
+        }
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        if messaging.installed || messaging.lifecycle_state != NodeLifecycleState::NotInitialized {
+            bail!("Messaging persisted an absent context: {messaging:?}");
+        }
+        assert_single_messaging_create(&calls)?;
+        if !result.report.detail.contains("RPC_FAILED")
+            || !result
+                .report
+                .detail
+                .contains("Messaging context verification failed")
+        {
+            bail!(
+                "Messaging failure lost original or recovery diagnostics: {}",
+                result.report.detail
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn messaging_initialize_test_case(
+        recovery_mode: &str,
+    ) -> Result<(LocalNodeActionResult, LocalNodesState, Vec<String>)> {
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"delivery_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        printf '%s\n' '{"name":"delivery_module","methods":[{"isInvokable":true,"name":"createNode","signature":"createNode(QString)"},{"isInvokable":true,"name":"getNodeInfo","signature":"getNodeInfo(QString)"}]}'
+        ;;
+    call)
+        case "$3" in
+            createNode)
+                printf '%s\n' createNode >> "$config_dir/calls"
+                printf '%s\n' '{"code":"RPC_FAILED","message":"delivery create response lost","status":"error"}'
+                exit 4
+                ;;
+            getNodeInfo)
+                printf '%s\n' getNodeInfo >> "$config_dir/calls"
+                if [ "$(cat "$config_dir/recovery-mode")" = ready ]; then
+                    printf '%s\n' '{"module":"delivery_module","method":"getNodeInfo","result":{"success":true,"value":"peer-test"},"status":"ok"}'
+                else
+                    printf '%s\n' '{"code":"CONTEXT_MISSING","message":"no delivery context","status":"error"}'
+                    exit 4
+                fi
+                ;;
+        esac
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+
+        let mut runtime = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some(
+                cli.to_str()
+                    .context("test LogosCore CLI path is not valid UTF-8")?,
+            ),
+            Some(
+                directory
+                    .path()
+                    .to_str()
+                    .context("test modules path is not valid UTF-8")?,
+            ),
+        )?;
+        fs::create_dir_all(&runtime.config_dir)?;
+        fs::write(
+            Path::new(&runtime.config_dir).join("recovery-mode"),
+            recovery_mode,
+        )?;
+        runtime.daemon_process_id = Some(process::id());
+
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Initialize,
+            node: Some(NodeKind::Messaging),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(6))
+            .context("Messaging recovery test deadline overflow")?;
+        let control = CommandControl::new(tokio_util::sync::CancellationToken::new(), deadline);
+        let result = node_initialize(
+            &mut state,
+            Some(&runtime),
+            "default",
+            &request,
+            Some(&control),
+        );
+        let calls_path = Path::new(&runtime.config_dir).join("calls");
+        let calls = calls_path
+            .is_file()
+            .then(|| fs::read_to_string(calls_path))
+            .transpose()?
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect();
+        Ok((result, state, calls))
+    }
+
+    #[cfg(unix)]
+    fn testnet_node(state: &LocalNodesState, kind: NodeKind) -> Result<&LocalNodeConfigRecord> {
+        state
+            .testnet
+            .as_ref()
+            .and_then(|record| record.nodes.iter().find(|node| node.kind == kind))
+            .with_context(|| format!("missing {kind:?} Testnet node"))
+    }
+
+    #[cfg(unix)]
+    fn assert_single_messaging_create(calls: &[String]) -> Result<()> {
+        let creates = calls
+            .iter()
+            .filter(|call| call.as_str() == "createNode")
+            .count();
+        if creates != 1 || !calls.iter().any(|call| call == "getNodeInfo") {
+            bail!("unexpected Messaging recovery calls: {calls:?}");
+        }
+        Ok(())
     }
 }
