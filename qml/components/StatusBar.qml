@@ -91,6 +91,7 @@ Pane {
             TextField {
                 id: lookupField
 
+                objectName: "globalReferenceLookup"
                 color: root.theme.text
                 placeholderText: qsTr("Open block, transaction, or account")
                 placeholderTextColor: root.theme.textDim
@@ -139,6 +140,7 @@ Pane {
             }
 
             ActionButton {
+                objectName: "globalReferenceSearch"
                 theme: root.theme
                 text: ""
                 iconOnly: true
@@ -208,6 +210,10 @@ Pane {
         if (!value.length) {
             return "any"
         }
+        const prefixed = value.match(/^([A-Za-z][A-Za-z0-9_-]*)(?:\s*:\s*|\s+)(.*)$/)
+        if (prefixed && String(prefixed[1]).toLowerCase() === "mantle") {
+            return "transaction"
+        }
         if (/^[0-9]+$/.test(value)) {
             return "block"
         }
@@ -226,6 +232,9 @@ Pane {
         }
         if (code === "account") {
             return qsTr("ACC")
+        }
+        if (code === "transaction") {
+            return qsTr("TX")
         }
         if (code === "invalid") {
             return qsTr("N/A")
