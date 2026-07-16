@@ -341,7 +341,7 @@ QtObject {
             l2TransactionDetail.source
         )
         requestL2TransactionTrace(l2TransactionId,
-            l2TransactionDetail.source.source_id, "")
+            l2TransactionDetail.source.source_id)
         return 1
     }
 
@@ -349,7 +349,7 @@ QtObject {
         return openL2Transaction(l2TransactionId, candidate && candidate.source_id)
     }
 
-    function requestL2TransactionTrace(transactionId, exactSourceId, idlProgramId) {
+    function requestL2TransactionTrace(transactionId, exactSourceId) {
         l2TransactionTrace = FixtureData.l2TransactionTrace(transactionId, exactSourceId)
         l2TransactionTraceReport = FixtureData.l2RouteReport(
             "lez.transaction_trace",

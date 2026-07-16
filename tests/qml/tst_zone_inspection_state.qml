@@ -100,8 +100,16 @@ TestCase {
 
         property var registeredIdls: decodeRegistry
         property var candidates: []
+        property var transactionIdlEntries: []
         property int accountIdlSelectionRevision: 0
         property var social: decodeSocial
+
+        function idlEntriesForProgram(programId) {
+            const expected = String(programId || "")
+            return transactionIdlEntries.filter(function (entry) {
+                return String(entry && entry.programIdHex || "") === expected
+            })
+        }
 
         function accountDecodeCandidates(accountId, ownerProgramId) {
             return candidates.slice()
@@ -140,6 +148,7 @@ TestCase {
         activeZoneSeenOnSummaryChange = ""
         decodeRegistry.count = 0
         decodeAppModel.candidates = []
+        decodeAppModel.transactionIdlEntries = []
         decodeAppModel.accountIdlSelectionRevision = 0
         decodeSocial.sharedIdlRevision = 0
         zoneState = stateComponent.createObject(testRoot, {
@@ -1154,8 +1163,24 @@ TestCase {
     }
 
     function test_l2_transaction_detail_auto_traces_same_source_and_fences_trace_race() {
+        zoneState.appModel = decodeAppModel
+        decodeAppModel.transactionIdlEntries = [{
+            key: "first-token-idl",
+            name: "First Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "local"
+        }, {
+            key: "replacement-token-idl",
+            name: "Replacement Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"replacement\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 2
         loadConfiguredL2Zone()
         const transaction = l2Transaction("e".repeat(64))
+        transaction.program_id_hex = "cd".repeat(32)
 
         verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
         const detailRequest = gateway.lastRequest("zoneL2Transaction")
@@ -1179,11 +1204,22 @@ TestCase {
         verify(firstTraceRequest !== null)
         compare(firstTraceRequest.args[0].query.transaction_id, transaction.hash)
         compare(firstTraceRequest.args[0].query.exact_source_id, "seq-a")
-        compare(firstTraceRequest.args[0].query.idl_program_id, null)
+        compare(firstTraceRequest.args[0].query.idl_program_id, "cd".repeat(32))
 
-        verify(l2BlockState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
+        decodeAppModel.transactionIdlEntries = [{
+            key: "replacement-token-idl",
+            name: "Replacement Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"replacement\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2TransactionTrace") === 2
+        })
         const secondTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
         verify(firstTraceRequest.args[0].request_revision < secondTraceRequest.args[0].request_revision)
+        compare(secondTraceRequest.args[0].query.idl_program_id, "cd".repeat(32))
         const staleTrace = {
             transaction: transaction,
             trace: { hash: "stale", kind: "public", source: "local", capabilities: [], limitations: [], steps: [], inspection: {}, decoded_instruction: null },
@@ -1205,7 +1241,15 @@ TestCase {
                 limitations: [],
                 steps: [{ index: 0, phase: "parse", label: "Parse", status: "ok", severity: "success", details: [], refs: null }],
                 inspection: {},
-                decoded_instruction: null
+                decoded_instruction: {
+                    program_id: "cd".repeat(32),
+                    idl_name: "replacement",
+                    instruction: "transfer",
+                    variant_index: 0,
+                    accounts: [{ path: "sender", value: "account-a" }],
+                    args: [{ path: "amount_to_transfer: u128", value: "1234567" }],
+                    remaining_words: []
+                }
             },
             source: l2Source("seq-a", "sequencer", "provisional", "memory_cache")
         }
@@ -1217,12 +1261,252 @@ TestCase {
         compare(l2BlockState.l2TransactionTrace.source.source_id, "seq-a")
         compare(l2BlockState.l2TransactionTrace.source.retrieval, "memory_cache")
         compare(l2BlockState.l2TransactionTrace.trace.steps.length, 1)
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction.idl_name,
+            "replacement")
+    }
+
+    function test_l2_transaction_redecodes_loaded_trace_when_matching_idl_is_registered() {
+        zoneState.appModel = decodeAppModel
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("f".repeat(64))
+        transaction.program_id_hex = "cd".repeat(32)
+
+        verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(detailRequest, ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [{ title: "Message", rows: [] }],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+
+        const genericTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        compare(genericTraceRequest.args[0].query.idl_program_id, null)
+        decodeAppModel.transactionIdlEntries = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        compare(gateway.requestCount("zoneL2TransactionTrace"), 1)
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2TransactionTrace") === 2
+        })
+        const decodedTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        compare(decodedTraceRequest.args[0].query.idl_program_id, "cd".repeat(32))
+
+        gateway.respond(genericTraceRequest, ok(l2Report(genericTraceRequest,
+            "lez.transaction_trace", {
+                outcome: "found",
+                value: {
+                    transaction: transaction,
+                    trace: {
+                        hash: transaction.hash,
+                        kind: transaction.kind,
+                        source: "local_derivation",
+                        capabilities: [],
+                        limitations: [],
+                        steps: [],
+                        inspection: {},
+                        decoded_instruction: null
+                    },
+                    source: l2Source("seq-a", "sequencer", "provisional")
+                }
+            })))
+        compare(l2BlockState.l2TransactionTrace, null)
+
+        gateway.respond(decodedTraceRequest, ok(l2Report(decodedTraceRequest,
+            "lez.transaction_trace", {
+                outcome: "found",
+                value: {
+                    transaction: transaction,
+                    trace: {
+                        hash: transaction.hash,
+                        kind: transaction.kind,
+                        source: "local_derivation",
+                        capabilities: ["IDL decode"],
+                        limitations: [],
+                        steps: [],
+                        inspection: {},
+                        decoded_instruction: {
+                            program_id: "cd".repeat(32),
+                            idl_name: "token",
+                            instruction: "transfer",
+                            variant_index: 0,
+                            accounts: [{ path: "sender", value: "account-a" }, {
+                                path: "recipient", value: "account-b"
+                            }],
+                            args: [{ path: "amount_to_transfer: u128", value: "1234567" }],
+                            remaining_words: []
+                        }
+                    },
+                    source: l2Source("seq-a", "sequencer", "provisional")
+                }
+            })))
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction.instruction,
+            "transfer")
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction.args[0].value,
+            "1234567")
+
+        decodeAppModel.transactionIdlEntries = []
+        decodeRegistry.count = 0
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2TransactionTrace") === 3
+        })
+        const postRemovalTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        compare(postRemovalTraceRequest.args[0].query.idl_program_id, null)
+    }
+
+    function test_l2_transaction_redecodes_when_registry_reload_keeps_same_count() {
+        zoneState.appModel = decodeAppModel
+        decodeAppModel.transactionIdlEntries = [{
+            key: "first-token-idl",
+            name: "First Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"first\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("b".repeat(64))
+        transaction.program_id_hex = "cd".repeat(32)
+
+        verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(detailRequest, ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [{ title: "Message", rows: [] }],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+        const firstTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        gateway.respond(firstTraceRequest, ok(l2Report(firstTraceRequest,
+            "lez.transaction_trace", {
+                outcome: "found",
+                value: {
+                    transaction: transaction,
+                    trace: {
+                        hash: transaction.hash,
+                        kind: transaction.kind,
+                        source: "local_derivation",
+                        capabilities: ["IDL decode"],
+                        limitations: [],
+                        steps: [],
+                        inspection: {},
+                        decoded_instruction: {
+                            program_id: "cd".repeat(32),
+                            idl_name: "first",
+                            instruction: "transfer",
+                            variant_index: 0,
+                            accounts: [],
+                            args: [],
+                            remaining_words: []
+                        }
+                    },
+                    source: l2Source("seq-a", "sequencer", "provisional")
+                }
+            })))
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction.idl_name, "first")
+
+        decodeAppModel.transactionIdlEntries = [{
+            key: "replacement-token-idl",
+            name: "Replacement Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"replacement\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 0
+        decodeRegistry.count = 1
+        compare(gateway.requestCount("zoneL2TransactionTrace"), 1)
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2TransactionTrace") === 2
+        })
+        const replacementTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        compare(replacementTraceRequest.args[0].query.idl_program_id, "cd".repeat(32))
+        gateway.respond(replacementTraceRequest, ok(l2Report(replacementTraceRequest,
+            "lez.transaction_trace", {
+                outcome: "found",
+                value: {
+                    transaction: transaction,
+                    trace: {
+                        hash: transaction.hash,
+                        kind: transaction.kind,
+                        source: "local_derivation",
+                        capabilities: ["IDL decode"],
+                        limitations: [],
+                        steps: [],
+                        inspection: {},
+                        decoded_instruction: {
+                            program_id: "cd".repeat(32),
+                            idl_name: "replacement",
+                            instruction: "transfer",
+                            variant_index: 0,
+                            accounts: [],
+                            args: [],
+                            remaining_words: []
+                        }
+                    },
+                    source: l2Source("seq-a", "sequencer", "provisional")
+                }
+            })))
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction.idl_name,
+            "replacement")
+    }
+
+    function test_l2_transaction_trace_skips_unmatched_registered_idl() {
+        zoneState.appModel = decodeAppModel
+        decodeAppModel.transactionIdlEntries = [{
+            key: "other-token-idl",
+            name: "Other Token Fixture",
+            programIdHex: "ef".repeat(32),
+            json: "{\"name\":\"other\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("a".repeat(64))
+        transaction.program_id_hex = "cd".repeat(32)
+
+        verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(detailRequest, ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [{ title: "Message", rows: [] }],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+
+        const traceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        compare(traceRequest.args[0].query.idl_program_id, null)
     }
 
     function test_l2_trace_rejects_different_source_provenance() {
         loadConfiguredL2Zone()
         const transaction = l2Transaction("9".repeat(64))
-        verify(l2BlockState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
+        verify(l2BlockState.requestL2TransactionTrace(transaction.hash, "seq-a") !== null)
         const request = gateway.lastRequest("zoneL2TransactionTrace")
         gateway.respondNext("zoneL2TransactionTrace", ok(l2Report(request, "lez.transaction_trace", {
             outcome: "found",

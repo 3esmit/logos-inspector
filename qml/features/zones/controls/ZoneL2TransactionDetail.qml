@@ -388,9 +388,13 @@ ColumnLayout {
     function decodedRows() {
         const decoded = root.trace && root.trace.decoded_instruction
             ? root.trace.decoded_instruction : ({})
-        return [{
+        const rows = [{
             label: qsTr("Instruction"),
             value: Presentation.text(decoded.instruction)
+        }, {
+            label: qsTr("Variant"),
+            value: Presentation.text(decoded.variant_index),
+            monospace: true
         }, {
             label: qsTr("Program"),
             value: Presentation.text(decoded.program_id),
@@ -400,6 +404,38 @@ ColumnLayout {
             label: qsTr("IDL"),
             value: Presentation.text(decoded.idl_name)
         }]
+        const accounts = Array.isArray(decoded.accounts) ? decoded.accounts : []
+        for (let i = 0; i < accounts.length; ++i) {
+            const account = accounts[i] || ({})
+            const value = Presentation.text(account.value)
+            rows.push({
+                label: qsTr("Account %1").arg(Presentation.text(account.path, qsTr("Value"))),
+                value: value,
+                copyable: value !== "-",
+                monospace: true
+            })
+        }
+        const args = Array.isArray(decoded.args) ? decoded.args : []
+        for (let j = 0; j < args.length; ++j) {
+            const arg = args[j] || ({})
+            const value = Presentation.text(arg.value)
+            rows.push({
+                label: qsTr("Argument %1").arg(Presentation.text(arg.path, qsTr("Value"))),
+                value: value,
+                copyable: value !== "-",
+                monospace: true
+            })
+        }
+        const remainingWords = Array.isArray(decoded.remaining_words)
+            ? decoded.remaining_words : []
+        if (remainingWords.length > 0) {
+            rows.push({
+                label: qsTr("Remaining instruction words"),
+                value: remainingWords.join(", "),
+                monospace: true
+            })
+        }
+        return rows
     }
 
     function candidateRows() {
@@ -448,6 +484,6 @@ ColumnLayout {
         const sourceId = String(root.detail && root.detail.source
             && root.detail.source.source_id || "")
         root.zoneState.requestL2TransactionTrace(root.zoneState.l2TransactionId,
-            sourceId, "")
+            sourceId)
     }
 }

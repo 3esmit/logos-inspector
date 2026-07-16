@@ -25,6 +25,7 @@ use crate::{
         ChannelSourceConfig, ChannelSourceMonitorSnapshot, ChannelSourceTarget,
         ConfiguredIndexerSource, ConfiguredSequencerSource, PersistedSequencerAttestation,
     },
+    support::state_store::RegisteredIdlEntry,
 };
 
 type Script<T> = Result<T, L2SourceError>;
@@ -652,6 +653,101 @@ async fn exact_transaction_uses_verified_memory_cache() -> Result<()> {
         != 1
     {
         bail!("transaction cache did not suppress second source call");
+    }
+    Ok(())
+}
+
+#[test]
+fn transaction_trace_rejects_idl_for_a_different_program() -> Result<()> {
+    let mut transaction = transaction('a');
+    transaction.program_id_hex = Some(identity('1'));
+
+    let error = transaction_trace_value(&transaction, Some(&identity('2')))
+        .err()
+        .context("transaction trace accepted an IDL program for a different transaction")?;
+    if error.code != L2ReadErrorCode::InvalidRequest
+        || error.message != "IDL program id does not match transaction program"
+    {
+        bail!("unexpected mismatched IDL program error: {error:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn transaction_trace_uses_later_registered_idl_after_incompatible_candidate() -> Result<()> {
+    let program_id = identity('1');
+    let mut transaction = transaction('a');
+    transaction.program_id_hex = Some(program_id.clone());
+    transaction.instruction_data = vec![0, 9];
+    let entries = vec![
+        registered_idl_entry(
+            &program_id,
+            "Incompatible",
+            r#"{"name":"incompatible","instructions":[]}"#,
+        ),
+        registered_idl_entry(
+            &program_id,
+            "Compatible",
+            r#"{
+                "name": "compatible",
+                "instructions": [{
+                    "name": "set_value",
+                    "accounts": [],
+                    "args": [{ "name": "value", "type": "u32" }]
+                }]
+            }"#,
+        ),
+    ];
+
+    let trace = transaction_trace_value_with_registered_idls(&transaction, &program_id, &entries)?;
+    let decoded = trace
+        .decoded_instruction
+        .context("later compatible IDL did not decode the transaction")?;
+    if decoded.idl_name.as_deref() != Some("compatible") || decoded.instruction != "set_value" {
+        bail!("transaction trace selected the wrong registered IDL: {decoded:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn transaction_trace_keeps_first_partial_registered_idl() -> Result<()> {
+    let program_id = identity('1');
+    let mut transaction = transaction('a');
+    transaction.program_id_hex = Some(program_id.clone());
+    transaction.instruction_data = vec![0, 9];
+    let entries = vec![
+        registered_idl_entry(
+            &program_id,
+            "First",
+            r#"{
+                "name": "first",
+                "instructions": [{
+                    "name": "first_instruction",
+                    "accounts": [],
+                    "args": []
+                }]
+            }"#,
+        ),
+        registered_idl_entry(
+            &program_id,
+            "Second",
+            r#"{
+                "name": "second",
+                "instructions": [{
+                    "name": "second_instruction",
+                    "accounts": [],
+                    "args": []
+                }]
+            }"#,
+        ),
+    ];
+
+    let trace = transaction_trace_value_with_registered_idls(&transaction, &program_id, &entries)?;
+    let decoded = trace
+        .decoded_instruction
+        .context("partial registered IDL trace lost its decode")?;
+    if decoded.idl_name.as_deref() != Some("first") || decoded.remaining_words != [9] {
+        bail!("transaction trace did not retain the first partial decode: {decoded:?}");
     }
     Ok(())
 }
@@ -1487,6 +1583,16 @@ fn transaction(hash: char) -> TransactionSummary {
         raw_signature_valid: None,
         message_prehash: None,
         prehash_signature_valid: None,
+    }
+}
+
+fn registered_idl_entry(program_id: &str, name: &str, json: &str) -> RegisteredIdlEntry {
+    RegisteredIdlEntry {
+        key: format!("{name}-key"),
+        name: name.to_owned(),
+        program_id_hex: program_id.to_owned(),
+        source: "local".to_owned(),
+        json: json.to_owned(),
     }
 }
 
