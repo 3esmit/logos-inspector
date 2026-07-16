@@ -12,6 +12,10 @@ QtObject {
     readonly property var appModel: l2Context.appModel || null
     readonly property int registeredIdlCount: appModel && appModel.registeredIdls
         ? Number(appModel.registeredIdls.count || 0) : 0
+    readonly property string l2AccountDecodeCandidateRevision: String(registeredIdlCount)
+        + ":" + String(appModel ? Number(appModel.accountIdlSelectionRevision || 0) : 0)
+        + ":" + String(appModel && appModel.social
+            ? Number(appModel.social.sharedIdlRevision || 0) : 0)
 
     function l2AvailabilityMessage() {
         return l2Context.l2AvailabilityMessage()
@@ -69,7 +73,7 @@ QtObject {
     property int l2AccountProvisionalDecodeRequestRevision: 0
     property int l2AccountHistoricalDecodeRequestRevision: 0
 
-    onRegisteredIdlCountChanged: reDecodeL2AccountSnapshots()
+    onL2AccountDecodeCandidateRevisionChanged: reDecodeL2AccountSnapshots()
 
     function resetL2AccountState(clearAccount) {
         resetL2CurrentAccountSnapshots()
