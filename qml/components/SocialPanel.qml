@@ -100,8 +100,17 @@ ColumnLayout {
 
                 required property var modelData
 
+                objectName: "socialCommentCard"
                 padding: root.theme.gap
                 Layout.fillWidth: true
+
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("%1. %2")
+                    .arg(String(commentFrame.modelData.displayName
+                        || qsTr("Pseudonym")))
+                    .arg(String(commentFrame.modelData.body || ""))
+                Accessible.description: root.shortTime(
+                    commentFrame.modelData.createdAt)
 
                 background: Rectangle {
                     color: root.theme.surface

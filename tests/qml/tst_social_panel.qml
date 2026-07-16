@@ -91,4 +91,33 @@ TestCase {
         compare(identity.Accessible.name, "Comment identity")
         compare(identity.Accessible.description, identity.displayText)
     }
+
+    function test_comment_card_exposes_author_body_and_time() {
+        model.social.socialCommentState = ({
+                "/topic/comment": {
+                    rows: [{
+                            key: "comment-1",
+                            displayName: "Pseudonym 7",
+                            body: "Accessible transaction comment",
+                            createdAt: "2026-07-16T20:31:00Z"
+                        }],
+                    cursor: "",
+                    loading: false,
+                    error: "",
+                    exhausted: true,
+                    sending: false,
+                    sendError: ""
+                }
+            })
+        model.social.socialCommentRevision += 1
+
+        const card = findChild(panel, "socialCommentCard")
+        verify(card !== null)
+        tryCompare(card, "visible", true)
+        compare(card.Accessible.role, Accessible.StaticText)
+        compare(card.Accessible.name,
+                "Pseudonym 7. Accessible transaction comment")
+        compare(card.Accessible.description,
+                panel.shortTime("2026-07-16T20:31:00Z"))
+    }
 }
