@@ -168,10 +168,14 @@ function coreSourceArgs(root, sourceMode, endpoint, extra) {
 }
 
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
-    return [adapterInitialization(root, "delivery", sourceMode, {
+    const initialization = adapterInitialization(root, "delivery", sourceMode, {
         rest_endpoint: String(restEndpoint || ""),
         metrics_endpoint: String(metricsEndpoint || "")
-    })]
+    })
+    initialization.options = {
+        runtime_diagnostics_enabled: true
+    }
+    return [initialization]
 }
 
 function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
@@ -181,7 +185,8 @@ function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint
     })
     initialization.options = {
         cid: includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
-        privileged_debug_enabled: privilegedDebugEnabled === true
+        privileged_debug_enabled: privilegedDebugEnabled === true,
+        runtime_diagnostics_enabled: true
     }
     return [initialization]
 }
