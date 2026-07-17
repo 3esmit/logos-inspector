@@ -1,3 +1,5 @@
+let cachedFooterSourceGroups = null
+
 function footerSelectorGroups() {
     return [
         { title: qsTr("Network"), fields: fields([
@@ -129,8 +131,11 @@ function dashboardGraphGroups() {
 }
 
 function footerSourceGroups() {
+    if (cachedFooterSourceGroups !== null) {
+        return cachedFooterSourceGroups
+    }
     const groups = footerSelectorGroups()
-    return groups.map(function (group) {
+    cachedFooterSourceGroups = groups.map(function (group) {
         const keys = group.fields.map(function (field) {
             return field.key
         })
@@ -141,6 +146,7 @@ function footerSourceGroups() {
             keys: keys
         }
     })
+    return cachedFooterSourceGroups
 }
 
 function defaultFooterFieldSelections() {
