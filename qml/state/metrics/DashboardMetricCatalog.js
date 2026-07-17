@@ -563,22 +563,33 @@ function windowDeltaFromSamples(samples, timestamp, windowMs) {
     return Math.max(0, latest.value - baseline.value)
 }
 
-function clearDashboardMetricHistoryForPrefix(root, prefix) {
-    const text = String(prefix || "")
-    if (!text.length) {
+function clearDashboardMetricHistoryForPrefixes(root, prefixes) {
+    const raw = Array.isArray(prefixes) ? prefixes : [prefixes]
+    const values = []
+    for (let i = 0; i < raw.length; ++i) {
+        const value = String(raw[i] || "")
+        if (value.length > 0) {
+            values.push(value)
+        }
+    }
+    if (values.length === 0) {
         return
     }
     const next = root.copyMap(root.dashboardMetricHistory)
     const seen = root.copyMap(root.dashboardMetricLastSeen)
     let changed = false
     for (const key in next) {
-        if (String(key || "").indexOf(text) === 0) {
+        if (values.some(function (prefix) {
+            return String(key || "").indexOf(prefix) === 0
+        })) {
             delete next[key]
             changed = true
         }
     }
     for (const seenKey in seen) {
-        if (String(seenKey || "").indexOf(text) === 0) {
+        if (values.some(function (prefix) {
+            return String(seenKey || "").indexOf(prefix) === 0
+        })) {
             delete seen[seenKey]
             changed = true
         }
@@ -588,4 +599,8 @@ function clearDashboardMetricHistoryForPrefix(root, prefix) {
         root.dashboardMetricLastSeen = seen
         root.dashboardMetricHistoryRevision += 1
     }
+}
+
+function clearDashboardMetricHistoryForPrefix(root, prefix) {
+    return clearDashboardMetricHistoryForPrefixes(root, [prefix])
 }

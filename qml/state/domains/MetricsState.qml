@@ -843,8 +843,14 @@ QtObject {
         observationAttempts = attempts
 
         clearObservationReport(target)
-        if (target === "storage" || target === "messaging") {
-            clearDashboardMetricHistoryForPrefix(target + ".")
+        if (target === "blockchain") {
+            clearDashboardMetricHistoryForPrefixes([
+                "bedrock.",
+                "lez.",
+                "indexer."
+            ])
+        } else if (target === "storage" || target === "messaging") {
+            clearDashboardMetricHistoryForPrefixes([target + "."])
         }
         observationRevision += 1
         notifyObservationWaiters(target, {
@@ -1261,6 +1267,7 @@ QtObject {
     function defaultFooterFieldSelections() { return AppModelMetrics.defaultFooterFieldSelections(root) }
     function defaultDashboardGraphSelections() { return AppModelMetrics.defaultDashboardGraphSelections(root) }
     function clearDashboardMetricHistoryForPrefix(prefix) { return AppModelMetrics.clearDashboardMetricHistoryForPrefix(root, prefix) }
+    function clearDashboardMetricHistoryForPrefixes(prefixes) { return AppModelMetrics.clearDashboardMetricHistoryForPrefixes(root, prefixes) }
 
     function networkConnectionSummary(kind, value) { return AppModelNetwork.networkConnectionSummary(root, kind, value) }
     function connectionValueOk(kind, value) { return AppModelNetwork.connectionValueOk(root, kind, value) }

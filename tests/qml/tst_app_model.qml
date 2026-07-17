@@ -2258,6 +2258,57 @@ TestCase {
         compare(model.dashboardProvisionalBlocks.length, 0)
     }
 
+    function test_zone_source_change_clears_zone_metric_history() {
+        setActiveZone("22".repeat(32))
+        model.metrics.dashboardMetricHistory = {
+            "bedrock.peer_count": [{ timestamp: 1, value: 4 }],
+            "lez.blocks_produced_recent": [{ timestamp: 1, value: 3 }],
+            "lez.pending_tx_count": [{ timestamp: 1, value: 9 }],
+            "indexer.indexer_lag_vs_sequencer_head": [
+                { timestamp: 1, value: 2 }
+            ],
+            "storage.peer_count": [{ timestamp: 1, value: 1 }]
+        }
+        model.metrics.dashboardMetricLastSeen = {
+            "bedrock.peer_count": { timestamp: 2, value: 4 },
+            "lez.blocks_produced_recent": { timestamp: 2, value: 3 },
+            "lez.pending_tx_count": { timestamp: 2, value: 9 },
+            "indexer.indexer_lag_vs_sequencer_head": {
+                timestamp: 2,
+                value: 2
+            },
+            "storage.peer_count": { timestamp: 2, value: 1 }
+        }
+        const historyRevision = model.metrics.dashboardMetricHistoryRevision
+
+        model.zoneInspection.activeZoneContext = Object.assign(
+            {}, model.zoneInspection.activeZoneContext, {
+                selected_sequencer_source_id: "seq-b",
+                indexer_source_id: "idx-b",
+                source_config_revision: 8,
+                context_revision: 2
+            })
+
+        compare(model.metrics.dashboardMetricHistory[
+            "lez.blocks_produced_recent"], undefined)
+        compare(model.metrics.dashboardMetricHistory[
+            "indexer.indexer_lag_vs_sequencer_head"], undefined)
+        compare(model.metrics.dashboardMetricLastSeen[
+            "lez.blocks_produced_recent"], undefined)
+        compare(model.metrics.dashboardMetricLastSeen[
+            "indexer.indexer_lag_vs_sequencer_head"], undefined)
+        verify(model.metrics.dashboardMetricHistory[
+            "bedrock.peer_count"] !== undefined)
+        verify(model.metrics.dashboardMetricHistory[
+            "lez.pending_tx_count"] !== undefined)
+        verify(model.metrics.dashboardMetricLastSeen[
+            "lez.pending_tx_count"] !== undefined)
+        verify(model.metrics.dashboardMetricHistory[
+            "storage.peer_count"] !== undefined)
+        compare(model.metrics.dashboardMetricHistoryRevision,
+            historyRevision + 1)
+    }
+
     function test_chain_search_uses_typed_candidate_resolver_and_keeps_local_shortcuts() {
         setActiveZone("")
         fakeHost.responses = {

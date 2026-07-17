@@ -881,6 +881,10 @@ QtObject {
             root.knownProgramIds = ({})
             root.knownProgramIdsRevision += 1
             root.shell.navRevision += 1
+            metricsState.clearDashboardMetricHistoryForPrefixes([
+                "lez.blocks_produced_recent",
+                "indexer."
+            ])
             Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
             entityNavigationState.projectZoneDashboard()
         }

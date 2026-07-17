@@ -524,3 +524,7 @@ function defaultDashboardGraphSelections(root) {
 function clearDashboardMetricHistoryForPrefix(root, prefix) {
     return DashboardMetricCatalog.clearDashboardMetricHistoryForPrefix(root, prefix)
 }
+
+function clearDashboardMetricHistoryForPrefixes(root, prefixes) {
+    return DashboardMetricCatalog.clearDashboardMetricHistoryForPrefixes(root, prefixes)
+}
