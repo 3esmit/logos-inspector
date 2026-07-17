@@ -17,7 +17,9 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (!model.blocksPageRows.length) {
+        if (model.blocksLiveEnabled) {
+            model.chainPages.refreshBlocksLivePage();
+        } else {
             model.chainPages.refreshBlocksPage();
         }
     }
