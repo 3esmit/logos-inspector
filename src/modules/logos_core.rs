@@ -708,20 +708,13 @@ impl ModuleTransport for LogoscoreCliTransport {
             }
             let module = call.module().to_owned();
             let method = call.method().to_owned();
-            let args = call
-                .args()
-                .iter()
-                .cloned()
-                .map(|value| match value {
-                    Value::String(value) => value,
-                    value => value.to_string(),
-                })
-                .collect::<Vec<_>>();
+            let args = call.args().to_vec();
             let module_label = module.clone();
             let method_label = method.clone();
-            let output = tokio::task::spawn_blocking(move || runtime.call(&module, &method, &args))
-                .await
-                .context("LogosCore CLI module-call worker failed")??;
+            let output =
+                tokio::task::spawn_blocking(move || runtime.call_typed(&module, &method, &args))
+                    .await
+                    .context("LogosCore CLI module-call worker failed")??;
             let value = normalize_module_call_value(&module_label, &method_label, output.value)?;
             Ok(ModuleCallReply::new(
                 ModuleTransportKind::LogoscoreCli,
@@ -747,15 +740,7 @@ impl ModuleTransport for LogoscoreCliTransport {
             }
             let module = call.module().to_owned();
             let method = call.method().to_owned();
-            let args = call
-                .args()
-                .iter()
-                .cloned()
-                .map(|value| match value {
-                    Value::String(value) => value,
-                    value => value.to_string(),
-                })
-                .collect::<Vec<_>>();
+            let args = call.args().to_vec();
             let module_label = module.clone();
             let method_label = method.clone();
             let command_control = CommandControl::new(
@@ -766,7 +751,7 @@ impl ModuleTransport for LogoscoreCliTransport {
             let worker_guard = control.blocking_worker_guard()?;
             let output = tokio::task::spawn_blocking(move || {
                 let _worker_guard = worker_guard;
-                runtime.call_controlled(&module, &method, &args, command_control)
+                runtime.call_typed_controlled(&module, &method, &args, command_control)
             })
             .await
             .context("LogosCore CLI module-call worker failed")?;
@@ -1514,6 +1499,24 @@ impl LogoscoreCliRuntime {
         args: &[String],
     ) -> Result<LogosCoreOutput> {
         let command_args = call_arguments(module, method, args)?;
+        self.call_with_arguments(module, command_args)
+    }
+
+    pub(crate) fn call_typed(
+        &self,
+        module: &str,
+        method: &str,
+        args: &[Value],
+    ) -> Result<LogosCoreOutput> {
+        let command_args = typed_call_arguments(module, method, args)?;
+        self.call_with_arguments(module, command_args)
+    }
+
+    fn call_with_arguments(
+        &self,
+        module: &str,
+        command_args: Vec<String>,
+    ) -> Result<LogosCoreOutput> {
         let mut output =
             self.with_command_gate(compound_command_timeout(), |runner, deadline| {
                 let modules =
@@ -1534,6 +1537,26 @@ impl LogoscoreCliRuntime {
         control: CommandControl,
     ) -> Result<LogosCoreOutput> {
         let command_args = call_arguments(module, method, args)?;
+        self.call_with_arguments_controlled(module, command_args, control)
+    }
+
+    pub(crate) fn call_typed_controlled(
+        &self,
+        module: &str,
+        method: &str,
+        args: &[Value],
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
+        let command_args = typed_call_arguments(module, method, args)?;
+        self.call_with_arguments_controlled(module, command_args, control)
+    }
+
+    fn call_with_arguments_controlled(
+        &self,
+        module: &str,
+        command_args: Vec<String>,
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
         let gate_control = control.clone();
         let mut output = self.with_controlled_command_gate(&gate_control, |runner| {
             let modules =
@@ -2290,6 +2313,26 @@ fn call_arguments(module: &str, method: &str, args: &[String]) -> Result<Vec<Str
     command_args.extend(args.iter().cloned());
     command_args.push("--json".to_owned());
     Ok(command_args)
+}
+
+fn typed_call_arguments(module: &str, method: &str, args: &[Value]) -> Result<Vec<String>> {
+    if module.trim().is_empty() {
+        bail!("module name is required");
+    }
+    if method.trim().is_empty() {
+        bail!("method name is required");
+    }
+
+    let encoded = serde_json::to_string(args)
+        .context("failed to encode exact LogosCore module-call arguments")?;
+    Ok(vec![
+        "call".to_owned(),
+        module.to_owned(),
+        method.to_owned(),
+        "--args-json".to_owned(),
+        encoded,
+        "--json".to_owned(),
+    ])
 }
 
 fn run_json_with<I, S>(
@@ -4767,6 +4810,87 @@ esac
         if command_args != ["call", "storage_module", "get", "alpha", "42", "--json"] {
             bail!("unexpected logoscore call arguments: {command_args:?}");
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_transport_preserves_typed_module_arguments() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-typed-call");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"lez_indexer_module","status":"loaded"}]}'
+        ;;
+    call)
+        : > "$config_dir/call-args"
+        for argument in "$@"; do
+            printf '%s\n' "$argument" >> "$config_dir/call-args"
+        done
+        printf '%s\n' '{"method":"getBlocks","module":"lez_indexer_module","result":"[]","status":"ok"}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let transport = LogoscoreCliTransport::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "lez_indexer_module",
+            "getBlocks",
+            vec![json!("25"), json!(3), json!(false), json!({"key": "value"})],
+        )?;
+
+        let reply = transport.call(call.clone()).await?.into_value();
+
+        anyhow::ensure!(reply == json!([]), "unexpected module reply: {reply}");
+        let expected = [
+            "call",
+            "lez_indexer_module",
+            "getBlocks",
+            "--args-json",
+            r#"["25",3,false,{"key":"value"}]"#,
+            "--json",
+        ];
+        let captured = fs::read_to_string(directory.path().join("call-args"))?;
+        let arguments = captured.lines().collect::<Vec<_>>();
+        anyhow::ensure!(
+            arguments == expected,
+            "typed module arguments were not preserved: {arguments:?}"
+        );
+
+        let control = ModuleCallControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        );
+        let controlled_reply = transport.call_controlled(call, control).await?.into_value();
+
+        anyhow::ensure!(
+            controlled_reply == json!([]),
+            "unexpected controlled module reply: {controlled_reply}"
+        );
+        let controlled_capture = fs::read_to_string(directory.path().join("call-args"))?;
+        let controlled_arguments = controlled_capture.lines().collect::<Vec<_>>();
+        anyhow::ensure!(
+            controlled_arguments == expected,
+            "controlled typed arguments were not preserved: {controlled_arguments:?}"
+        );
         Ok(())
     }
 
