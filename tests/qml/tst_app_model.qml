@@ -984,7 +984,7 @@ TestCase {
     function test_standalone_defaults_l1_to_direct_rpc_and_hides_host_module_connector() {
         const defaults = model.defaultNetworkConnectorConfig().scopes
         compare(defaults.l1.connector_id, "direct_l1_rpc")
-        compare(defaults.delivery.connector_id, "logoscore_cli_delivery_module")
+        compare(defaults.delivery.connector_id, "direct_delivery_rest")
         compare(defaults.storage.connector_id, "logoscore_cli_storage_module")
 
         const options = model.sourceRouting.sourceModeOptions("storage")
@@ -1007,7 +1007,7 @@ TestCase {
 
         const standalone = model.normalizedNetworkConnectorConfig(persisted).scopes
         compare(standalone.l1.connector_id, "direct_l1_rpc")
-        compare(standalone.delivery.connector_id, "logoscore_cli_delivery_module")
+        compare(standalone.delivery.connector_id, "direct_delivery_rest")
         compare(standalone.storage.connector_id, "logoscore_cli_storage_module")
         compare(standalone.storage.provenance, "build_default")
 
@@ -1015,6 +1015,29 @@ TestCase {
         compare(basecamp.l1.connector_id, "blockchain_module")
         compare(basecamp.delivery.connector_id, "delivery_module")
         compare(basecamp.storage.connector_id, "storage_module")
+    }
+
+    function test_standalone_migrates_only_auto_selected_delivery_cli() {
+        const scopes = {
+            l1: { connector_id: "direct_l1_rpc", provenance: "build_default" },
+            delivery: {
+                connector_id: "logoscore_cli_delivery_module",
+                provenance: "build_default"
+            },
+            storage: {
+                connector_id: "logoscore_cli_storage_module",
+                provenance: "build_default"
+            }
+        }
+
+        model.loadNetworkConnectorConfig({ network_connector_config: { scopes: scopes } })
+        compare(model.networkConnectorConfig.scopes.delivery.connector_id,
+                "direct_delivery_rest")
+
+        scopes.delivery.provenance = "network_profile"
+        model.loadNetworkConnectorConfig({ network_connector_config: { scopes: scopes } })
+        compare(model.networkConnectorConfig.scopes.delivery.connector_id,
+                "logoscore_cli_delivery_module")
     }
 
     function test_basecamp_translates_only_testnet_default_connector_scopes() {
@@ -1995,6 +2018,7 @@ TestCase {
         }
 
         model.loadSettingsState()
+        model.setNetworkConnectorMode("delivery", "logoscore_cli")
 
         verify(model.messagingMutatingDiagnosticsEnabled)
         verify(model.storageMutatingDiagnosticsEnabled)
@@ -2146,6 +2170,9 @@ TestCase {
         verify(!model.localDevnetEnabled)
         compare(model.networkConnectorConfig.scopes.l1.connector_id,
             "direct_l1_rpc")
+        compare(model.networkConnectorConfig.scopes.delivery.connector_id,
+            "direct_delivery_rest")
+        compare(model.messagingSourceMode, "rest")
         compare(model.zoneCatalogL1SourceDescriptor().default_topology, "logos_testnet")
         compare(model.walletProfileLabel, "Wallet sentinel")
         compare(model.walletHome, "/wallet/sentinel")
@@ -2555,6 +2582,65 @@ TestCase {
         compare(gate.missing[0].dependency, "delivery.store.query")
         verify(detail.indexOf("Delivery") >= 0)
         verify(detail.indexOf("delivery.store.query") >= 0)
+    }
+
+    function test_default_delivery_uses_configured_rest_for_social_store_reads() {
+        const topic = "/cryptarchia/account/account-1/comments"
+        model.networkConnectorConfig = model.defaultNetworkConnectorConfig()
+        model.syncSourceModesFromConnectorConfig()
+        model.messagingRestUrl = "http://127.0.0.1:8645"
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                key: "delivery",
+                label: "Delivery",
+                status: "available",
+                sub_capabilities: ["delivery.store.query", "delivery.send"]
+            }]
+        })
+        fakeHost.responses = {
+            socialTopicValid: {
+                ok: true,
+                value: true,
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "social-store-rest-fallback",
+                    domain: "delivery",
+                    method: "deliveryStoreQuery",
+                    label: "Comments",
+                    status: "completed",
+                    eventCursor: 1,
+                    result: { messages: [] }
+                },
+                text: "OK",
+                error: ""
+            },
+            socialCommentPageFromStore: {
+                ok: true,
+                value: { rows: [], cursor: "" },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        compare(model.messagingSourceMode, "rest")
+        verify(model.social.commentsView(topic).readGate.enabled)
+        verify(model.social.loadComments(topic, true, 20, ""))
+        tryVerify(function () {
+            return model.social.commentsView(topic).state.loading === false
+        })
+
+        const starts = fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationStart"
+        })
+        compare(starts.length, 1)
+        compare(starts[0].args[0].adapter.source_mode, "rest")
+        compare(starts[0].args[0].adapter.inputs.rest_endpoint,
+                "http://127.0.0.1:8645")
     }
 
     function test_social_comment_read_uses_runtime_operation_conversation() {

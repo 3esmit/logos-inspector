@@ -148,8 +148,6 @@ const REST_CAPABILITIES: &[&str] = &[
     "delivery.subscribe",
     "delivery.unsubscribe",
     "delivery.send",
-    "delivery.node.start",
-    "delivery.node.stop",
     "delivery.metrics.read",
 ];
 const METRICS_CAPABILITIES: &[&str] = &["delivery.metrics.read"];
@@ -427,6 +425,7 @@ mod tests {
             assert_managed_lifecycle_behavior, assert_managed_module_contract,
         },
     };
+    use anyhow::bail;
 
     #[test]
     fn messaging_adapters_satisfy_shared_seam_contract() {
@@ -535,6 +534,21 @@ mod tests {
         assert!(!supports_store_query("module"));
         assert!(!supports_store_query("logoscore_cli"));
         assert!(supports_store_query("rest"));
+    }
+
+    #[test]
+    fn messaging_rest_adapter_does_not_advertise_module_lifecycle() -> Result<()> {
+        let rest = MESSAGING_SOURCE_MODES
+            .iter()
+            .find(|mode| mode.key == "rest")
+            .context("REST delivery source policy is missing")?;
+
+        for lifecycle in ["delivery.node.start", "delivery.node.stop"] {
+            if rest.adapter.capabilities.contains(&lifecycle) {
+                bail!("REST delivery source overclaimed `{lifecycle}`");
+            }
+        }
+        Ok(())
     }
 
     #[test]

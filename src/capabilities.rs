@@ -219,7 +219,7 @@ mod tests {
         for (key, expected, expected_type) in [
             ("l1", "direct_l1_rpc", "direct_rpc"),
             ("storage", "logoscore_cli_storage_module", "logoscore_cli"),
-            ("delivery", "logoscore_cli_delivery_module", "logoscore_cli"),
+            ("delivery", "direct_delivery_rest", "direct_rest"),
         ] {
             if default_connector_for(&value, key)? != expected {
                 bail!("standalone capability `{key}` used an unexpected default connector");
@@ -532,6 +532,39 @@ mod tests {
         )?;
         if unavailable_contains(&rest, "delivery.store.query") {
             bail!("Direct Waku REST should provide Delivery Store queries: {rest}");
+        }
+        for lifecycle in ["delivery.node.start", "delivery.node.stop"] {
+            if !unavailable_contains(&rest, lifecycle) {
+                bail!("Direct Waku REST overclaimed `{lifecycle}`: {rest}");
+            }
+        }
+
+        let default_inputs = json!({
+            "messaging_rest_url": "http://127.0.0.1:8645",
+            "source_reports": {
+                "delivery": {
+                    "health": {
+                        "ready": true,
+                        "reachable": true,
+                        "status": "ready",
+                        "detail": "delivery source reachable"
+                    }
+                }
+            }
+        });
+        let default_value = serde_json::to_value(test_registry_report_with_value(
+            CapabilityBuildMode::Standalone,
+            Some(&default_inputs),
+        ))?;
+        let default_delivery = capability_for(&default_value, "delivery")
+            .context("default delivery capability missing")?;
+        if default_delivery
+            .get("configured_connector")
+            .and_then(Value::as_str)
+            != Some("direct_delivery_rest")
+            || unavailable_contains(default_delivery, "delivery.store.query")
+        {
+            bail!("standalone default did not expose Delivery Store: {default_delivery}");
         }
         Ok(())
     }
