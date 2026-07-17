@@ -10,6 +10,7 @@ TestCase {
     property var dashboardOverview: null
     property var dashboardNode: null
     property var dashboardL1Blocks: []
+    property int dashboardL1BlocksSlotTo: 0
     property var dashboardBlocks: []
     property var dashboardProvisionalBlocks: []
     property int joinedCompletionCount: 0
@@ -182,12 +183,15 @@ TestCase {
             return true
         }
 
-        function cacheBlockchainResult(method, value) {
+        function cacheBlockchainResult(method, value, slotTo) {
             if (method === "blockchainNode") {
                 testRoot.dashboardNode = value || null
             } else if (method === "blockchainLiveBlocks") {
                 testRoot.dashboardL1Blocks = value && Array.isArray(value.blocks)
                     ? value.blocks : []
+                const anchor = Number(slotTo || 0)
+                testRoot.dashboardL1BlocksSlotTo =
+                    Number.isSafeInteger(anchor) && anchor > 0 ? anchor : 0
             }
         }
 
@@ -201,6 +205,7 @@ TestCase {
             testRoot.dashboardOverview = null
             testRoot.dashboardNode = null
             testRoot.dashboardL1Blocks = []
+            testRoot.dashboardL1BlocksSlotTo = 0
             testRoot.dashboardBlocks = []
         }
         function invalidateDashboardOperations(reason) { invalidatedDashboardCount += 1 }
@@ -248,6 +253,7 @@ TestCase {
         dashboardOverview: testRoot.dashboardOverview
         dashboardNode: testRoot.dashboardNode
         dashboardL1Blocks: testRoot.dashboardL1Blocks
+        dashboardL1BlocksSlotTo: testRoot.dashboardL1BlocksSlotTo
         dashboardBlocks: testRoot.dashboardBlocks
         dashboardProvisionalBlocks: testRoot.dashboardProvisionalBlocks
     }
@@ -337,6 +343,7 @@ TestCase {
         testRoot.dashboardOverview = null
         testRoot.dashboardNode = null
         testRoot.dashboardL1Blocks = []
+        testRoot.dashboardL1BlocksSlotTo = 0
         testRoot.dashboardBlocks = []
         testRoot.dashboardProvisionalBlocks = []
         joinedCompletionCount = 0
@@ -974,8 +981,31 @@ TestCase {
         verify(!metrics.networkConnectionIsPending("messaging"))
         compare(metrics.sourceReport("storage").marker, "storage-dashboard")
         compare(metrics.sourceReport("messaging").marker, "messaging-dashboard")
+        compare(testRoot.dashboardL1BlocksSlotTo, 30)
         compare(gateway.dashboardResultCount, 1)
         verify(gateway.dashboardResultOk)
+    }
+
+    function test_failed_live_refresh_preserves_old_anchor_for_freshness_rejection() {
+        testRoot.dashboardL1Blocks = [{ id: "old-live-block" }]
+        testRoot.dashboardL1BlocksSlotTo = 29
+
+        verify(metrics.refreshDashboard())
+        gateway.completeRequest(0, success({
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 30, lib_slot: 20 }
+                }
+            }
+        }))
+        gateway.completeRequest(0, success(sourceReport(true, "storage")))
+        gateway.completeRequest(0, success(sourceReport(true, "messaging")))
+        gateway.completeRequest(0, failure("live blocks unavailable"))
+
+        verify(!metrics.dashboardRefreshing)
+        compare(testRoot.dashboardL1Blocks.length, 1)
+        compare(testRoot.dashboardL1Blocks[0].id, "old-live-block")
+        compare(testRoot.dashboardL1BlocksSlotTo, 29)
     }
 
     function test_dashboard_omits_live_block_request_when_connector_does_not_support_it() {
@@ -995,10 +1025,14 @@ TestCase {
     }
 
     function test_invalidated_dashboard_does_not_start_live_blocks_from_stale_node_reply() {
+        testRoot.dashboardL1Blocks = [{ id: "old-live-block" }]
+        testRoot.dashboardL1BlocksSlotTo = 29
         verify(metrics.refreshDashboard())
         compare(gateway.requests.length, 3)
 
         metrics.invalidateDashboard("test invalidation")
+        compare(testRoot.dashboardL1Blocks.length, 0)
+        compare(testRoot.dashboardL1BlocksSlotTo, 0)
         gateway.completeRequest(0, success({
             cryptarchia_info: {
                 value: {

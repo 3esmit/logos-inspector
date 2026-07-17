@@ -68,6 +68,7 @@ TestCase {
         model.metrics.dashboardMetricHistoryRevision = 0
         model.dashboardNode = null
         model.dashboardL1Blocks = []
+        model.dashboardL1BlocksSlotTo = 0
         model.blocksPageRows = []
         model.blocksPageSlotTo = 0
         model.transactionsPageRows = []
@@ -395,10 +396,10 @@ TestCase {
         })
     }
 
-    function test_dashboard_keeps_latest_snapshot_after_lib_advances() {
+    function test_dashboard_keeps_latest_snapshot_when_tip_matches() {
         const transactionHash = ZoneFixtureData.identity("a")
         model.dashboardNode = nodeWithSlots(6001, 6000)
-        model.transactionsPageBeforeBlock = 5999
+        model.transactionsPageBeforeBlock = 6001
         model.transactionsPageAtLatest = true
         model.transactionsPageRows = [{
             slot: 5999,
@@ -412,6 +413,202 @@ TestCase {
             return findAccessibleByName(
                 page, "Open Mantle transaction " + transactionHash) !== null
         })
+    }
+
+    function test_dashboard_rejects_cached_transaction_page_after_tip_advances() {
+        const currentTransactionHash = ZoneFixtureData.identity("b")
+        const staleTransactionHash = ZoneFixtureData.identity("a")
+        model.dashboardNode = nodeWithSlots(6001, 6000)
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 6001,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: []
+        }]
+        model.blocksPageRows = [{
+            header: {
+                slot: 6001,
+                id: ZoneFixtureData.identity("f")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: currentTransactionHash,
+                    ops: []
+                }
+            }]
+        }]
+        model.transactionsPageBeforeBlock = 6000
+        model.transactionsPageAtLatest = true
+        model.transactionsPageRows = [{
+            slot: 6000,
+            hash: staleTransactionHash,
+            block: ZoneFixtureData.identity("c"),
+            ops: 1,
+            operations: []
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction "
+                    + currentTransactionHash) !== null
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + staleTransactionHash), null)
+    }
+
+    function test_dashboard_prefers_fresh_live_transaction_over_page_caches() {
+        const liveTransactionHash = ZoneFixtureData.identity("b")
+        const loadedTransactionHash = ZoneFixtureData.identity("a")
+        const blocksPageHash = ZoneFixtureData.identity("d")
+        model.dashboardNode = nodeWithSlots(7000, 6500)
+        model.dashboardL1BlocksSlotTo = 7000
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 7000,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: liveTransactionHash,
+                    ops: []
+                }
+            }]
+        }]
+        model.transactionsPageBeforeBlock = 6999
+        model.transactionsPageAtLatest = true
+        model.transactionsPageRows = [{
+            slot: 7000,
+            hash: loadedTransactionHash,
+            block: ZoneFixtureData.identity("c"),
+            ops: 1,
+            operations: []
+        }]
+        model.blocksPageRows = [{
+            header: {
+                slot: 6999,
+                id: ZoneFixtureData.identity("f")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: blocksPageHash,
+                    ops: []
+                }
+            }]
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction "
+                    + liveTransactionHash) !== null
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + loadedTransactionHash), null)
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + blocksPageHash), null)
+    }
+
+    function test_dashboard_rejects_stale_live_transactions_after_tip_advances() {
+        const staleLiveHash = ZoneFixtureData.identity("a")
+        const currentBlocksPageHash = ZoneFixtureData.identity("d")
+        model.dashboardNode = nodeWithSlots(7001, 6500)
+        model.dashboardL1BlocksSlotTo = 7000
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 7000,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: staleLiveHash,
+                    ops: []
+                }
+            }]
+        }]
+        model.blocksPageRows = [{
+            header: {
+                slot: 7001,
+                id: ZoneFixtureData.identity("f")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: currentBlocksPageHash,
+                    ops: []
+                }
+            }]
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction "
+                    + currentBlocksPageHash) !== null
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + staleLiveHash), null)
+    }
+
+    function test_dashboard_current_empty_transaction_page_suppresses_stale_fallback() {
+        const staleTransactionHash = ZoneFixtureData.identity("d")
+        model.dashboardNode = nodeWithSlots(6000, 5500)
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 6000,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: []
+        }]
+        model.transactionsPageBeforeBlock = 6000
+        model.transactionsPageAtLatest = true
+        model.transactionsPageRows = []
+        model.blocksPageRows = [{
+            header: {
+                slot: 5999,
+                id: ZoneFixtureData.identity("f")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: staleTransactionHash,
+                    ops: []
+                }
+            }]
+        }]
+
+        tryVerify(function () {
+            return hasVisibleText(page, "No L1 transactions")
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + staleTransactionHash), null)
+    }
+
+    function test_dashboard_current_empty_live_page_suppresses_stale_fallback() {
+        const staleTransactionHash = ZoneFixtureData.identity("d")
+        model.dashboardNode = nodeWithSlots(6000, 5500)
+        model.dashboardL1BlocksSlotTo = 6000
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 6000,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: []
+        }]
+        model.blocksPageRows = [{
+            header: {
+                slot: 5999,
+                id: ZoneFixtureData.identity("f")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: staleTransactionHash,
+                    ops: []
+                }
+            }]
+        }]
+
+        tryVerify(function () {
+            return hasVisibleText(page, "No L1 transactions")
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + staleTransactionHash), null)
     }
 
     function test_dashboard_accepts_block_fallback_without_dashboard_node() {

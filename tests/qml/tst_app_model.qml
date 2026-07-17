@@ -5909,6 +5909,7 @@ TestCase {
         compare(model.dashboardBlocks[0].block_id, 101)
         compare(model.dashboardLezBlockRows.length, 2)
         compare(model.dashboardL1Blocks.length, 1)
+        compare(model.dashboardL1BlocksSlotTo, 30)
         compare(model.metrics.sequencerHeadValue(), 104)
         compare(model.metrics.indexerHeadValue(), 101)
         compare(model.metrics.indexerLag(), 3)

@@ -96,6 +96,7 @@ QtObject {
         dashboardOverview: chainPageState.dashboardOverview
         dashboardNode: chainPageState.dashboardNode
         dashboardL1Blocks: chainPageState.dashboardL1Blocks
+        dashboardL1BlocksSlotTo: chainPageState.dashboardL1BlocksSlotTo
         dashboardBlocks: chainPageState.dashboardBlocks
         dashboardProvisionalBlocks: chainPageState.dashboardProvisionalBlocks
         gateway: QtObject {
@@ -161,10 +162,13 @@ QtObject {
                 )
             }
 
-            function cacheBlockchainResult(method, value) {
+            function cacheBlockchainResult(method, value, slotTo) {
                 if (method === "blockchainLiveBlocks") {
                     chainPageState.dashboardL1Blocks = value && Array.isArray(value.blocks)
                         ? value.blocks : []
+                    const anchor = Number(slotTo || 0)
+                    chainPageState.dashboardL1BlocksSlotTo =
+                        Number.isSafeInteger(anchor) && anchor > 0 ? anchor : 0
                     return
                 }
                 if (method !== "blockchainNode") {
@@ -203,6 +207,7 @@ QtObject {
                 chainPageState.dashboardOverview = null
                 chainPageState.dashboardNode = null
                 chainPageState.dashboardL1Blocks = []
+                chainPageState.dashboardL1BlocksSlotTo = 0
                 chainPageState.dashboardBlocks = []
                 chainPageState.dashboardProvisionalBlocks = []
                 chainPageState.dashboardLezBlockRows = []
@@ -292,6 +297,7 @@ QtObject {
     property alias dashboardOverview: chainPageState.dashboardOverview
     property alias dashboardNode: chainPageState.dashboardNode
     property alias dashboardL1Blocks: chainPageState.dashboardL1Blocks
+    property alias dashboardL1BlocksSlotTo: chainPageState.dashboardL1BlocksSlotTo
     property alias dashboardBlocks: chainPageState.dashboardBlocks
     property alias dashboardProvisionalBlocks: chainPageState.dashboardProvisionalBlocks
     property alias dashboardLezBlockRows: chainPageState.dashboardLezBlockRows

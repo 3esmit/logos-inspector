@@ -17,6 +17,7 @@ QtObject {
     required property var dashboardOverview
     required property var dashboardNode
     required property var dashboardL1Blocks
+    required property int dashboardL1BlocksSlotTo
     required property var dashboardBlocks
     required property var dashboardProvisionalBlocks
 
@@ -1185,7 +1186,8 @@ QtObject {
                 liveRequest, function (liveResponse) {
                     if (refreshId === root.dashboardRefreshSerial
                             && liveResponse && liveResponse.ok === true) {
-                        gateway.cacheBlockchainResult(liveRequest.method, liveResponse.value)
+                        gateway.cacheBlockchainResult(
+                            liveRequest.method, liveResponse.value, slotTo)
                     }
                     liveComplete(liveResponse)
                     return false
