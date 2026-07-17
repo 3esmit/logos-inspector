@@ -591,8 +591,10 @@ QtObject {
                 return root.callInspector(method, args, label)
             }
 
-            function request(method, args, label, showResult, callback) {
-                return root.requestModuleAsync(root.inspectorModule, method, args, label, showResult === true, callback)
+            function request(method, args, label, showResult, callback, acceptResponse) {
+                return root.requestModuleAsync(
+                    root.inspectorModule, method, args, label,
+                    showResult === true, callback, acceptResponse)
             }
 
             function startRuntimeOperation(request, showResult, callback) {

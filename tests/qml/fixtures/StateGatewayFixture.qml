@@ -4,6 +4,7 @@ QtObject {
     property int callCount: 0
     property int requestCount: 0
     property int nextRequestId: 1
+    property int rejectedResponseCount: 0
     property bool deferRequests: false
     property bool asyncSupported: true
     property string lastMethod: ""
@@ -45,6 +46,7 @@ QtObject {
         callCount = 0
         requestCount = 0
         nextRequestId = 1
+        rejectedResponseCount = 0
         deferRequests = false
         asyncSupported = true
         lastMethod = ""
@@ -100,7 +102,7 @@ QtObject {
         return responseFor(lastMethod, callResponses)
     }
 
-    function request(method, args, label, showResult, callback) {
+    function request(method, args, label, showResult, callback, acceptResponse) {
         const requestId = nextRequestId
         nextRequestId += 1
         requestCount += 1
@@ -112,7 +114,8 @@ QtObject {
             method: lastMethod,
             args: lastArgs,
             label: lastLabel,
-            showResult: lastShowResult
+            showResult: lastShowResult,
+            acceptResponse: acceptResponse
         }])
         calls = calls.concat([{
             method: lastMethod,
@@ -126,8 +129,13 @@ QtObject {
                 requestId: requestId,
                 method: lastMethod,
                 response: response,
-                callback: callback
+                callback: callback,
+                acceptResponse: acceptResponse
             }])
+            return requestId
+        }
+        if (acceptResponse && !acceptResponse(response)) {
+            rejectedResponseCount += 1
             return requestId
         }
         if (callback) {
@@ -147,8 +155,14 @@ QtObject {
         }
         const request = rows.splice(index, 1)[0]
         pendingRequests = rows
+        const completedResponse = response === undefined ? request.response : response
+        if (request.acceptResponse
+                && !request.acceptResponse(completedResponse)) {
+            rejectedResponseCount += 1
+            return true
+        }
         if (request.callback) {
-            request.callback(response === undefined ? request.response : response)
+            request.callback(completedResponse)
         }
         return true
     }
