@@ -124,6 +124,7 @@ TestCase {
         actionClicks = 0
         acceptedCount = 0
         listToolbar.loadCount = 20
+        confirmPopup.message = qsTr("Deploy selected binary")
         confirmPopup.close()
     }
 
@@ -211,6 +212,38 @@ TestCase {
 
         tryCompare(confirmPopup, "opened", false)
         compare(acceptedCount, 1)
+    }
+
+    function test_confirm_popup_bounds_long_message_and_keeps_actions_reachable() {
+        const longPath = "/tmp/" + "deep-segment/".repeat(300) + "download.bin"
+        const message = "Download this CID to the local path?\nCID-fixture\n" + longPath
+        confirmPopup.message = message
+        confirmPopup.open()
+        tryCompare(confirmPopup, "opened", true)
+
+        const viewport = findChild(confirmPopup.contentItem, "messageViewport")
+        const messageText = findChild(confirmPopup.contentItem, "messageText")
+        const cancelButton = findChild(confirmPopup.contentItem, "cancelButton")
+        const confirmButton = findChild(confirmPopup.contentItem, "confirmButton")
+        verify(viewport !== null)
+        verify(messageText !== null)
+        verify(cancelButton !== null)
+        verify(confirmButton !== null)
+        compare(messageText.Accessible.name, message)
+        verify(viewport.contentHeight > viewport.height)
+        verify(confirmPopup.y >= 0)
+        verify(confirmPopup.y + confirmPopup.height <= confirmPopup.parent.height)
+
+        const cancelPosition = cancelButton.mapToItem(confirmPopup.contentItem, 0, 0)
+        const confirmPosition = confirmButton.mapToItem(confirmPopup.contentItem, 0, 0)
+        verify(cancelPosition.y >= 0)
+        verify(cancelPosition.y + cancelButton.height <= confirmPopup.contentItem.height)
+        verify(confirmPosition.y >= 0)
+        verify(confirmPosition.y + confirmButton.height <= confirmPopup.contentItem.height)
+
+        mouseClick(cancelButton, cancelButton.width / 2, cancelButton.height / 2)
+        tryCompare(confirmPopup, "opened", false)
+        compare(acceptedCount, 0)
     }
 
     function hasVisibleText(item, expected) {

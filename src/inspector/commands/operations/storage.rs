@@ -237,6 +237,15 @@ pub(super) async fn execute(
                 .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
                 .map(RuntimeOperationOutcome::Completed)
         }
+        storage_layer::StorageOperationOutput::ModuleDownload(download) => {
+            let cid = download.cid().to_owned();
+            let path = download.path().to_owned();
+            storage_module_download_commit(download, control)
+                .await
+                .map_err(map_storage_operation_error)
+                .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
+                .map(RuntimeOperationOutcome::Completed)
+        }
     }
 }
 
@@ -247,11 +256,24 @@ fn map_storage_operation_error(error: anyhow::Error) -> anyhow::Error {
         || error
             .downcast_ref::<storage_layer::StorageRemoveSettlementUnconfirmed>()
             .is_some()
+        || error
+            .downcast_ref::<storage_layer::StorageDownloadSettlementUnconfirmed>()
+            .is_some()
     {
         OperationCleanupUnconfirmed::new(error.to_string()).into()
     } else {
         error
     }
+}
+
+async fn storage_module_download_commit(
+    download: storage_layer::StorageModuleDownload,
+    control: &OperationControl,
+) -> Result<Value> {
+    non_cancellable_file_commit(control, "storage module download commit", move || {
+        download.commit()
+    })
+    .await
 }
 
 pub(super) fn add_operation_context(
@@ -325,17 +347,21 @@ pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationReques
 pub(super) fn termination_handshake_grace(
     request: &RuntimeOperationRequest,
 ) -> Result<Option<std::time::Duration>> {
-    if !matches!(
-        request.command(),
-        OperationCommand::Storage(StorageCommand::DownloadBackupCatalogEntry)
-    ) {
-        return Ok(None);
+    match request.command() {
+        OperationCommand::Storage(StorageCommand::DownloadBackupCatalogEntry) => Ok(
+            storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?
+                .client()
+                .backup_download_termination_handshake_grace(),
+        ),
+        OperationCommand::Storage(StorageCommand::DownloadToUrl) => {
+            Ok(storage_layer::StorageOperationRequest::parse(
+                request.node_request()?,
+                storage_layer::StorageOperation::Download,
+            )?
+            .termination_handshake_grace())
+        }
+        _ => Ok(None),
     }
-    Ok(
-        storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?
-            .client()
-            .backup_download_termination_handshake_grace(),
-    )
 }
 
 async fn execute_payload_upload(
@@ -887,6 +913,20 @@ mod tests {
             .downcast_ref::<OperationCleanupUnconfirmed>()
             .context("unsettled remove did not retain its exclusive lease")?;
         anyhow::ensure!(cleanup.to_string() == "remove terminal event was not observed");
+        Ok(())
+    }
+
+    #[test]
+    fn unsettled_storage_download_maps_to_nonterminal_cleanup_evidence() -> Result<()> {
+        let error = storage_layer::StorageDownloadSettlementUnconfirmed::new(
+            "download terminal event was not observed",
+        )
+        .into();
+        let mapped = map_storage_operation_error(error);
+        let cleanup = mapped
+            .downcast_ref::<OperationCleanupUnconfirmed>()
+            .context("unsettled download did not retain its exclusive lease")?;
+        anyhow::ensure!(cleanup.to_string() == "download terminal event was not observed");
         Ok(())
     }
 

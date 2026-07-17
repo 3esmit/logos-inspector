@@ -52,8 +52,9 @@ pub(crate) use layer::{
 };
 pub(crate) use operations::{
     StorageBackupDownloadRequest, StorageBackupUploadRequest, StorageClient,
-    StorageDownloadRequest, StorageExistsRequest, StorageOperation, StorageOperationOutput,
-    StorageOperationRequest, StoragePayloadUploadRequest, StorageRemoveSettlementUnconfirmed,
+    StorageDownloadRequest, StorageDownloadSettlementUnconfirmed, StorageExistsRequest,
+    StorageModuleDownload, StorageOperation, StorageOperationOutput, StorageOperationRequest,
+    StoragePayloadUploadRequest, StorageRemoveSettlementUnconfirmed,
     StorageUploadSettlementUnconfirmed, download_response, execute_operation,
 };
 pub(crate) use plan::storage_module_probe_plan;
