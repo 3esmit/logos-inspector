@@ -23,6 +23,9 @@ ColumnLayout {
         font.pixelSize: root.theme.secondaryText
         font.weight: Font.DemiBold
         Layout.fillWidth: true
+
+        Accessible.role: Accessible.Heading
+        Accessible.name: root.title
     }
 
     Rectangle {

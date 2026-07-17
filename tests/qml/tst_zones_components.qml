@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtTest
+import "../../qml/features/zones/controls"
 import "../../qml/features/zones/pages"
 import "../../qml/theme"
 import "fixtures"
@@ -13,6 +14,7 @@ TestCase {
     when: windowShown
     width: 1280
     height: 900
+    readonly property Theme testTheme: theme
 
     Theme {
         id: theme
@@ -57,6 +59,12 @@ TestCase {
                 width: parent ? parent.width : 1200
             }
         }
+    }
+
+    Component {
+        id: factSectionFactory
+
+        ZoneFactSection {}
     }
 
     function init() {
@@ -105,6 +113,31 @@ TestCase {
         verify(cachedRow !== null)
         verify(cachedRow.stale)
         verify(!cachedRow.interactive)
+    }
+
+    function test_zone_fact_section_exposes_heading_label_and_raw_value_semantics() {
+        const channelId = FixtureData.identity("1")
+        const section = factSectionFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            title: "Channel Details",
+            rows: [{
+                label: "L1 Channel",
+                value: channelId,
+                copyable: true,
+                monospace: true
+            }],
+            width: 600,
+            height: 300
+        })
+        verify(section !== null)
+        try {
+            verify(hasAccessibleNode(section, "Channel Details", Accessible.Heading))
+            verify(hasAccessibleNode(section, "L1 Channel", Accessible.StaticText))
+            verify(hasAccessibleNode(section, channelId, Accessible.StaticText))
+            verify(hasAccessibleNode(section, "Copy " + channelId, Accessible.Button))
+        } finally {
+            section.destroy()
+        }
     }
 
     function test_configured_zone_channel_opens_sequencer_dashboard() {
@@ -458,6 +491,27 @@ TestCase {
         const children = item.children || []
         for (let i = 0; i < children.length; ++i) {
             if (hasVisibleText(children[i], expected)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function hasAccessibleNode(item, expectedName, expectedRole) {
+        if (!item) {
+            return false
+        }
+        if (item.Accessible
+                && String(item.Accessible.name) === expectedName
+                && item.Accessible.role === expectedRole
+                && !item.Accessible.ignored
+                && item.visible) {
+            return true
+        }
+        const children = item.children || []
+        for (let i = 0; i < children.length; ++i) {
+            if (hasAccessibleNode(children[i], expectedName,
+                    expectedRole)) {
                 return true
             }
         }
