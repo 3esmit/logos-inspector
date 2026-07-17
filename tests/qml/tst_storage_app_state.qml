@@ -760,6 +760,58 @@ TestCase {
         verify(!gateway.resultIsError)
     }
 
+    function test_cache_dispatch_shows_acknowledgement_without_claiming_completion() {
+        const acknowledgement = {
+            adapter: "logoscore_cli",
+            cid: "z-cache",
+            dispatched: true,
+            method: "fetch",
+            module: "storage_module",
+            value: null
+        }
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-cache-1",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageFetch",
+                    status: "dispatched",
+                    terminalReason: "completion_unobservable",
+                    label: "Cache CID",
+                    cid: "z-cache",
+                    result: null,
+                    acknowledgement: acknowledgement,
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.confirmStorage("storageFetch", ["z-cache"], "Cache CID")
+        state.runPendingStorage()
+
+        compare(gateway.requestCount, 1)
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(gateway.lastArgs[0].method, "storageFetch")
+        compare(gateway.lastArgs[0].payload.cid, "z-cache")
+        compare(state.lastOperation, "Dispatched")
+        compare(state.operation.active.status, "dispatched")
+        compare(gateway.resultTitle, "Cache CID")
+        compare(gateway.resultOwner, "storage")
+        compare(gateway.resultValue.cid, "z-cache")
+        compare(gateway.resultValue.dispatched, true)
+        compare(gateway.resultValue.method, "fetch")
+        compare(gateway.resultValue.module, "storage_module")
+        verify(gateway.resultValue.operationId === undefined)
+        verify(gateway.resultText.indexOf("z-cache") >= 0)
+        verify(gateway.resultText.indexOf("operationId") < 0)
+        verify(gateway.resultText.indexOf("completion_unobservable") < 0)
+        verify(!gateway.resultIsError)
+    }
+
     function test_failed_manifest_fetch_keeps_terminal_status_and_owner() {
         gateway.requestResponses = ({
             runtimeOperationStart: {

@@ -425,7 +425,11 @@ QtObject {
         const label = String(operation && operation.label ? operation.label : qsTr("Storage operation"))
         const ok = isSuccessfulTerminal(operation)
         if (ok) {
-            const value = operation && operation.result !== undefined && operation.result !== null ? operation.result : operation
+            const value = operation && operation.result !== undefined && operation.result !== null
+                ? operation.result
+                : (operation && operation.acknowledgement !== undefined
+                    && operation.acknowledgement !== null
+                    ? operation.acknowledgement : operation)
             gateway.setResult(label, BridgeHelpers.formatValue(value), false, value, "storage")
         } else {
             gateway.setResult(label, String(operation && operation.error ? operation.error : qsTr("Storage operation failed.")), true, null, "storage")
