@@ -244,6 +244,8 @@ ColumnLayout {
                 FieldRow {
                     id: cidField
 
+                    objectName: "storageCidField"
+
                     theme: root.theme
                     label: qsTr("CID")
                     placeholderText: qsTr("zDv...")
@@ -542,6 +544,10 @@ ColumnLayout {
         implicitHeight: 74
         Layout.fillWidth: true
 
+        Accessible.role: Accessible.StaticText
+        Accessible.name: manifestRoot.accessibleName()
+        Accessible.description: manifestRoot.accessibleDescription()
+
         RowLayout {
             anchors.fill: parent
             anchors.margins: manifestRoot.theme.gap
@@ -585,10 +591,46 @@ ColumnLayout {
             ActionButton {
                 theme: manifestRoot.theme
                 text: qsTr("Use")
-                enabled: String(manifestRoot.row.cid || "").length > 0
+                visible: String(manifestRoot.row.cid || "").length > 0
+                enabled: visible
                 Layout.preferredWidth: 72
+                accessibleName: manifestRoot.useAccessibleName()
                 onClicked: manifestRoot.useCid(String(manifestRoot.row.cid || ""))
             }
+        }
+
+        function accessibleName() {
+            const name = String(manifestRoot.row.name || qsTr("Untitled"))
+            const cid = String(manifestRoot.row.cid || "")
+            return cid.length > 0
+                ? qsTr("%1, CID %2").arg(name).arg(cid)
+                : name
+        }
+
+        function accessibleDescription() {
+            const values = []
+            const size = String(manifestRoot.row.size || "").trim()
+            const mime = String(manifestRoot.row.mime || "").trim()
+            const detail = String(manifestRoot.row.detail || "").trim()
+            if (size.length > 0 && size !== "-") {
+                values.push(qsTr("Size %1").arg(size))
+            }
+            if (mime.length > 0 && mime !== "-") {
+                values.push(qsTr("Type %1").arg(mime))
+            }
+            if (detail.length > 0 && detail !== "-"
+                    && detail !== String(manifestRoot.row.cid || "")) {
+                values.push(detail)
+            }
+            return values.join(". ")
+        }
+
+        function useAccessibleName() {
+            const name = String(manifestRoot.row.name || qsTr("Untitled"))
+            const cid = String(manifestRoot.row.cid || "")
+            return cid.length > 0
+                ? qsTr("Use CID %1 for %2").arg(cid).arg(name)
+                : qsTr("Use manifest %1").arg(name)
         }
     }
 
