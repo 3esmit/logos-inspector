@@ -421,7 +421,7 @@ fn operation_plan(
         StorageOperation::Fetch => {
             let payload: CidPayload = request.payload("storage fetch")?;
             let cid = required_text(payload.cid, "CID")?;
-            plan_for_client(client, "fetch", vec![json!(cid)], vec![("cid", cid)], false)
+            plan_for_client(client, "fetch", vec![json!(cid)], vec![("cid", cid)], true)
         }
         StorageOperation::Upload => {
             let payload: UploadPayload = request.payload("storage upload")?;
@@ -1031,6 +1031,46 @@ mod tests {
         }
     }
 
+    struct CacheDispatchTransport {
+        kind: ModuleTransportKind,
+        calls: Mutex<Vec<(String, Vec<Value>)>>,
+    }
+
+    impl CacheDispatchTransport {
+        fn new(kind: ModuleTransportKind) -> Self {
+            Self {
+                kind,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Result<Vec<(String, Vec<Value>)>> {
+            self.calls
+                .lock()
+                .map(|calls| calls.clone())
+                .map_err(|_| anyhow::anyhow!("cache dispatch calls lock failed"))
+        }
+    }
+
+    impl ModuleTransport for CacheDispatchTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            self.kind
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let result = (|| {
+                anyhow::ensure!(call.module() == super::super::layer::module_id());
+                self.calls
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("cache dispatch calls lock failed"))?
+                    .push((call.method().to_owned(), call.args().to_vec()));
+                anyhow::ensure!(call.method() == "fetch", "unexpected Storage method");
+                Ok(ModuleCallReply::new(self.kind, Value::Null))
+            })();
+            Box::pin(async move { result })
+        }
+    }
+
     fn request(value: Value) -> Result<NodeOperationRequest> {
         NodeOperationRequest::from_value(&value)
     }
@@ -1382,7 +1422,7 @@ mod tests {
     }
 
     #[test]
-    fn module_fetch_plan_is_an_observed_call() -> Result<()> {
+    fn module_fetch_plan_is_an_unobservable_dispatch() -> Result<()> {
         let request = request(json!({
             "adapter": { "source_mode": "module", "inputs": {} },
             "mutating_enabled": true,
@@ -1396,9 +1436,54 @@ mod tests {
             method: "fetch",
             args: vec![json!("cid-a")],
             context: vec![("cid", "cid-a".to_owned())],
-            dispatch: false,
+            dispatch: true,
         };
         anyhow::ensure!(request.plan == expected, "unexpected Storage fetch plan");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_cache_returns_one_unobservable_dispatch_receipt() -> Result<()> {
+        for (source_mode, kind) in [
+            ("module", ModuleTransportKind::Module),
+            ("logoscore_cli", ModuleTransportKind::LogoscoreCli),
+        ] {
+            let transport = Arc::new(CacheDispatchTransport::new(kind));
+            let shared: SharedModuleTransport = transport.clone();
+            let request = request(json!({
+                "adapter": { "source_mode": source_mode, "inputs": {} },
+                "mutating_enabled": true,
+                "payload": { "cid": "cid-cache" }
+            }))?;
+            let request = StorageOperationRequest::parse(&request, StorageOperation::Fetch)?;
+
+            let output = execute_operation(
+                request,
+                shared,
+                module_call_control(Duration::from_secs(30)),
+            )
+            .await?;
+
+            anyhow::ensure!(
+                matches!(
+                    output,
+                    StorageOperationOutput::Outcome(NodeOperationOutcome::Dispatched(value))
+                        if value == json!({
+                            "adapter": kind,
+                            "cid": "cid-cache",
+                            "dispatched": true,
+                            "method": "fetch",
+                            "module": "storage_module",
+                            "value": null
+                        })
+                ),
+                "Storage Cache did not return its exact dispatch acknowledgement"
+            );
+            anyhow::ensure!(
+                transport.calls()? == [("fetch".to_owned(), vec![json!("cid-cache")])],
+                "Storage Cache issued calls beyond one exact-CID fetch"
+            );
+        }
         Ok(())
     }
 

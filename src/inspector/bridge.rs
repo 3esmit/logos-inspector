@@ -446,7 +446,18 @@ mod tests {
             }]),
         )?;
 
-        anyhow::ensure!(value == json!({ "handled": "fetch" }));
+        anyhow::ensure!(
+            value
+                == json!({
+                    "adapter": "logoscore_cli",
+                    "cid": "cid-cli",
+                    "dispatched": true,
+                    "method": "fetch",
+                    "module": "storage_module",
+                    "value": { "handled": "fetch" }
+                }),
+            "blocking bridge lost the Storage fetch dispatch acknowledgement: {value}"
+        );
         let calls = calls
             .lock()
             .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;
