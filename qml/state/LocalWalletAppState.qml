@@ -6,6 +6,25 @@ WalletState {
     id: root
 
     property var gateway: null
+    property int bedrockBalanceSourceRevision: 0
+    property int bedrockBalanceRequestRevision: 0
+    property int nextOperationRequestGeneration: 1
+    property int activeOperationRequestGeneration: 0
+
+    onPublicKeyProbeChanged: invalidateBedrockBalanceRequest()
+    onBedrockBalanceTipChanged: invalidateBedrockBalanceRequest()
+
+    function invalidateBedrockBalanceRequest() {
+        bedrockBalanceRequestRevision += 1
+        if (gateway) {
+            gateway.setBedrockWalletBalance(null, "")
+        }
+    }
+
+    function invalidateBedrockBalanceSource() {
+        bedrockBalanceSourceRevision += 1
+        invalidateBedrockBalanceRequest()
+    }
 
     function loadPersisted(value) {
         load(value)
@@ -124,11 +143,16 @@ WalletState {
     }
 
     function queryBedrockBalance() {
+        bedrockBalanceRequestRevision += 1
+        const requestRevision = bedrockBalanceRequestRevision
+        const requestedPublicKey = String(publicKeyProbe || "").trim()
+        const requestedTip = String(bedrockBalanceTip || "").trim()
         const draft = LocalWalletOperationDrafts.queryBedrockBalance(root)
         if (!draft.ok) {
             gateway.setBedrockWalletBalance(null, draft.balanceError)
             return null
         }
+        const sourceRevision = bedrockBalanceSourceRevision
         gateway.setBedrockWalletBalance(null, "")
         return runOperationDraft(draft, function (response) {
             if (response.ok) {
@@ -137,7 +161,12 @@ WalletState {
                 const error = response.error || qsTr("Balance query failed.")
                 gateway.setBedrockWalletBalance(null, error)
             }
-        }, true)
+        }, true, function () {
+            return bedrockBalanceSourceRevision === sourceRevision
+                && bedrockBalanceRequestRevision === requestRevision
+                && String(publicKeyProbe || "").trim() === requestedPublicKey
+                && String(bedrockBalanceTip || "").trim() === requestedTip
+        })
     }
 
     function operationDetail(value, fallback) {
@@ -190,22 +219,41 @@ WalletState {
         return /^(0x)?[0-9a-fA-F]{64}$/.test(String(value || "").trim())
     }
 
-    function runRequest(title, method, args, showResult, callback, beforeStart) {
+    function runRequest(title, method, args, showResult, callback, beforeStart,
+            acceptResponse) {
         if (!gateway) {
             return null
         }
         if (beforeStart) {
             beforeStart()
         }
+        const requestGeneration = nextOperationRequestGeneration
+        nextOperationRequestGeneration += 1
+        activeOperationRequestGeneration = requestGeneration
         gateway.setBusy(true)
         gateway.setStatus(title)
+
+        function releaseBusy() {
+            if (activeOperationRequestGeneration === requestGeneration) {
+                activeOperationRequestGeneration = 0
+                gateway.setBusy(false)
+            }
+        }
+
+        const guardedAcceptResponse = acceptResponse ? function (response) {
+            if (acceptResponse(response)) {
+                return true
+            }
+            releaseBusy()
+            return false
+        } : undefined
         return gateway.request(method, args, title, showResult === true, function (response) {
-            gateway.setBusy(false)
+            releaseBusy()
             callback(response)
-        })
+        }, guardedAcceptResponse)
     }
 
-    function runOperationDraft(draft, afterResponse, skipGenericResult) {
+    function runOperationDraft(draft, afterResponse, skipGenericResult, acceptResponse) {
         if (!draft || draft.ok !== true) {
             applyInvalidDraft(draft)
             return null
@@ -221,7 +269,7 @@ WalletState {
             }
             appendHistory(draft.historyLabel, response.ok ? draft.successStatus : "down",
                 response.ok ? operationDetail(response.value, draft.fallback) : (response.error || draft.failureMessage))
-        })
+        }, undefined, acceptResponse)
     }
 
     function applyInvalidDraft(draft) {

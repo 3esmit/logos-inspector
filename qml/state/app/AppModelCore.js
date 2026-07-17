@@ -5,6 +5,7 @@
 function handleNetworkConfigurationChanged(root) {
     resetDashboardConfiguration(root)
     root.metrics.invalidateConfiguration("blockchain", qsTr("Blockchain configuration changed."))
+    root.wallet.invalidateBedrockBalanceSource()
     root.chainPages.resetSourceScopedState(
         qsTr("Blockchain configuration changed."))
     sanitizeBlockchainNavigationState(root)
