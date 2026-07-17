@@ -95,8 +95,10 @@ QtObject {
             return 1
         }
         switch (String(kind || "")) {
-        case "dashboard":
-            return Math.max(1, Number(model.metrics.dashboardRefreshInterval()))
+        case "dashboard": {
+            const interval = Number(model.metrics.dashboardRefreshInterval())
+            return Number.isFinite(interval) ? Math.max(0, interval) : 0
+        }
         case "storageOperation":
         case "deliveryOperation":
         case "socialOperation":
