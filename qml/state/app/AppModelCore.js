@@ -5,16 +5,14 @@
 function handleNetworkConfigurationChanged(root) {
     resetDashboardConfiguration(root)
     root.metrics.invalidateConfiguration("blockchain", qsTr("Blockchain configuration changed."))
+    root.chainPages.resetSourceScopedState(
+        qsTr("Blockchain configuration changed."))
+    sanitizeBlockchainNavigationState(root)
     root.refreshCapabilityRegistryIfLoaded()
     with (root) {
         localNodesReport = null
         localNodesError = ""
         localNodesRevision += 1
-        blocksLiveEnabled = false
-        blocksLiveError = ""
-        blocksLiveSource = ""
-        blocksLiveUnknownEvents = 0
-        blocksLiveCheckedAt = ""
         saveSettingsState()
     }
 }
@@ -187,6 +185,64 @@ function cloneNavigationValue(root, value) {
     } catch (error) {
         return value
     }
+}
+
+function blockchainResultOwner(owner) {
+    const value = String(owner || "")
+    return value === "overview"
+        || value === "blocks"
+        || value === "transactions"
+        || value === "blockDetail"
+        || value === "transactionDetail"
+        || value === "blockchain"
+}
+
+function sanitizedBlockchainNavigationSnapshot(root, snapshot) {
+    const sanitized = cloneNavigationValue(root, snapshot)
+    if (!sanitized || typeof sanitized !== "object") {
+        return snapshot
+    }
+    const values = sanitized.values && typeof sanitized.values === "object"
+        ? sanitized.values : ({})
+    values.blockDetailValue = null
+    values.blockDetailError = ""
+    values.transactionDetailValue = null
+    values.transactionDetailError = ""
+    if (blockchainResultOwner(values.resultOwner)) {
+        values.statusText = qsTr("Ready")
+        values.resultTitle = qsTr("Output")
+        values.resultText = ""
+        values.resultValue = null
+        values.resultIsError = false
+        values.resultOwner = ""
+    }
+    sanitized.values = values
+    sanitized.label = navigationSnapshotLabel(root, sanitized)
+    sanitized.signature = navigationSnapshotSignature(root, sanitized)
+    return sanitized
+}
+
+function sanitizeBlockchainNavigationStack(root, stack) {
+    const source = Array.isArray(stack) ? stack : []
+    const sanitized = []
+    for (let i = 0; i < source.length; ++i) {
+        sanitized.push(sanitizedBlockchainNavigationSnapshot(root, source[i]))
+    }
+    return sanitized
+}
+
+function sanitizeBlockchainNavigationState(root) {
+    root.shell.navigationBackStack = sanitizeBlockchainNavigationStack(
+        root, root.shell.navigationBackStack)
+    root.shell.navigationForwardStack = sanitizeBlockchainNavigationStack(
+        root, root.shell.navigationForwardStack)
+    if (blockchainResultOwner(root.shell.resultOwner)) {
+        clearDisplayedResult(root)
+        if (!root.asyncPresentationBusy) {
+            root.shell.statusText = qsTr("Ready")
+        }
+    }
+    root.shell.navigationRevision += 1
 }
 
 function navigationSnapshot(root) {
@@ -487,8 +543,12 @@ function openSettings(root, section, subsection, recordHistory) {
 }
 
 function clearResult(root) {
+    root.shell.resultGeneration += 1
+    clearDisplayedResult(root)
+}
+
+function clearDisplayedResult(root) {
     with (root) {
-        shell.resultGeneration += 1
         shell.resultTitle = qsTr("Output")
         shell.resultText = ""
         shell.resultValue = null
