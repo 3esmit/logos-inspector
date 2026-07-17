@@ -55,6 +55,18 @@ QtObject {
     readonly property int transactionsPageBlockScanLimit: 500
     property int transactionsPageBlockBatch: transactionsPageBlockScanLimit - 1
     property int transactionsPageLimit: 20
+    property var transactionsPageWindowRows: []
+    property int transactionsPageRowOffset: 0
+    property bool transactionsPageWindowLoaded: false
+    property bool transactionsPageWindowAtLatest: false
+    property int transactionsPageSessionTip: 0
+    readonly property bool transactionsPageCanGoOlder: transactionsPageWindowLoaded
+        && (transactionsPageRowOffset + transactionsPageLimit
+            < transactionsPageWindowRows.length
+            || transactionsPageNextBeforeBlock > 0)
+    readonly property bool transactionsPageCanGoNewer: transactionsPageWindowLoaded
+        && transactionsPageBeforeBlock > 0
+        && !transactionsPageAtLatest
     property string transactionsPageError: ""
 
     function setResult(title, text, isError, value, owner) {
@@ -169,6 +181,11 @@ QtObject {
         transactionsPageBeforeBlock = 0
         transactionsPageNextBeforeBlock = 0
         transactionsPageAtLatest = false
+        transactionsPageWindowRows = []
+        transactionsPageRowOffset = 0
+        transactionsPageWindowLoaded = false
+        transactionsPageWindowAtLatest = false
+        transactionsPageSessionTip = 0
         transactionsPageError = ""
     }
 
