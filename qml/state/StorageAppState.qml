@@ -323,13 +323,16 @@ QtObject {
         if (command.runtime) {
             return startStorageOperation(method, args, label)
         }
-        return gateway.request(method, storageArgs(method, args), label, false, function (response) {
+        const acceptResponse = function () {
+            return requestGeneration === diagnosticRequestGeneration
+        }
+        return gateway.request(method, storageArgs(method, args), label, true, function (response) {
             if (requestGeneration !== diagnosticRequestGeneration) {
                 return
             }
             storageOperations.appendResult(label, response)
             lastOperation = response && response.ok ? label : qsTr("Error")
-        })
+        }, acceptResponse)
     }
 
     function confirmStorage(method, args, label) {

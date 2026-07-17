@@ -474,6 +474,7 @@ TestCase {
         compare(gateway.lastMethod, "storageExists")
         compare(gateway.lastArgs[0].adapter.source_mode, "rest")
         compare(gateway.lastArgs[0].payload.cid, "z-cid")
+        verify(gateway.lastShowResult)
         compare(state.lastOperation, "Storage exists")
         compare(state.operation.rows[0].label, "Storage exists")
     }
@@ -485,6 +486,8 @@ TestCase {
         state.runStorage("storageExists", ["z-new"], "New exists")
 
         compare(gateway.pendingRequests.length, 2)
+        verify(typeof gateway.requests[0].acceptResponse === "function")
+        verify(typeof gateway.requests[1].acceptResponse === "function")
         verify(gateway.completeRequestAt(1, {
             ok: true,
             value: { exists: true },
@@ -503,6 +506,30 @@ TestCase {
         }))
         compare(state.lastOperation, "New exists")
         compare(state.operation.rows.length, 1)
+        compare(gateway.rejectedResponseCount, 1)
+    }
+
+    function test_storage_exists_rejects_response_after_source_change() {
+        gateway.deferRequests = true
+
+        state.runStorage("storageExists", ["z-old-source"], "Old source exists")
+
+        compare(gateway.pendingRequests.length, 1)
+        verify(typeof gateway.requests[0].acceptResponse === "function")
+        state.currentView = ""
+        state.restEndpoint = "http://storage-new"
+        wait(0)
+
+        verify(gateway.completeRequestAt(0, {
+            ok: true,
+            value: { exists: true },
+            text: "true",
+            error: ""
+        }))
+
+        compare(gateway.rejectedResponseCount, 1)
+        compare(state.lastOperation, "None")
+        compare(state.operation.rows[0].label, "No operations")
     }
 
     function test_pending_mutation_starts_node_operation() {
