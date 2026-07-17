@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
 import "../../../state/modules/ModuleReportPresentation.js" as ModuleReportPresentation
+import "../../../state/chain/BlockchainBlockValidation.js" as BlockchainBlockValidation
 import "../../../state/chain/BlockchainRangeValidation.js" as BlockchainRangeValidation
 import "../../../state/source_operations/NodeOperationRequest.js" as NodeOperationRequest
 import "../../../theme"
@@ -239,6 +240,8 @@ ColumnLayout {
 
             readonly property var slotRangeValidation: BlockchainRangeValidation.validate(
                 slotFrom.text, slotTo.text)
+            readonly property var blockIdValidation: BlockchainBlockValidation.validate(
+                blockId.text)
 
             spacing: 12
 
@@ -285,9 +288,21 @@ ColumnLayout {
 
             FieldRow {
                 id: blockId
+                objectName: "moduleBlockId"
                 theme: root.theme
-                label: qsTr("Block id")
-                placeholderText: qsTr("Optional block id")
+                label: qsTr("Block ID (required)")
+                placeholderText: qsTr("64 hexadecimal characters")
+                errorMessage: blockchainControlRoot.blockIdValidation.message
+            }
+
+            StatusMessage {
+                objectName: "moduleBlockIdValidation"
+                visible: blockchainControlRoot.blockIdValidation.message.length > 0
+                theme: root.theme
+                tone: "error"
+                title: qsTr("Invalid block ID")
+                message: blockchainControlRoot.blockIdValidation.message
+                Layout.fillWidth: true
             }
 
             GridLayout {
@@ -324,13 +339,14 @@ ColumnLayout {
                 }
 
                 ActionButton {
+                    objectName: "moduleLoadBlock"
                     theme: root.theme
                     text: qsTr("Load block")
-                    enabled: !root.requestBusy && blockId.text.trim().length > 0
+                    enabled: !root.requestBusy && blockchainControlRoot.blockIdValidation.valid
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain block")
                     onClicked: root.model.presentBlockchainOperation("module-control.block",
-                        "blockchainBlock", [blockId.text.trim()],
+                        "blockchainBlock", [blockchainControlRoot.blockIdValidation.blockId],
                         qsTr("Blockchain block"), root.moduleKind)
                 }
             }

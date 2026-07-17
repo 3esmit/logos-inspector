@@ -3,6 +3,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     modules::logos_core::SharedModuleTransport, source_routing::bedrock_layer, support::args::Args,
+    support::entity_id::normalize_block_id_text,
 };
 
 use super::super::value::to_value;
@@ -153,10 +154,8 @@ fn operation_context(
             );
         }
         BlockchainCommand::Block => {
-            context.insert(
-                "blockId".to_owned(),
-                json!(args.string(source.next_index, "block id")?),
-            );
+            let block_id = normalize_block_id_text(args.string(source.next_index, "block id")?)?;
+            context.insert("blockId".to_owned(), json!(block_id));
         }
         BlockchainCommand::Transaction => {
             context.insert(

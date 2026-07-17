@@ -10,6 +10,7 @@ use crate::{
         verified_indexer_block_report, verified_indexer_transaction_summary,
     },
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
+    support::entity_id::normalize_block_id_text,
 };
 
 pub(crate) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
@@ -85,7 +86,7 @@ pub(crate) async fn blockchain_block(
     transport_kind: ModuleTransportKind,
     block_id: &str,
 ) -> Result<Value> {
-    let block_id = required_text(block_id, "block id")?;
+    let block_id = normalize_block_id_text(block_id)?;
     transport_call_value(
         transport,
         transport_kind,

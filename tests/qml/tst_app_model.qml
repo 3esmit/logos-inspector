@@ -4590,7 +4590,7 @@ TestCase {
         compare(model.transactionDetailValue.hash, "cached-transaction")
         compare(model.shell.resultValue.hash, "cached-transaction")
 
-        model.loadBlockchainBlockById("remote-block")
+        model.loadBlockchainBlockById("11".repeat(32))
         tryVerify(function () {
             return model.chainPages.operationPending("detail.block")
         })
@@ -4657,7 +4657,7 @@ TestCase {
             }
         }
 
-        model.loadBlockchainBlockById("missing-block")
+        model.loadBlockchainBlockById("22".repeat(32))
         tryVerify(function () {
             const entry = model.chainPages.operationCoordinator.pendingOperations["detail.block"]
             return entry && String(entry.operationId || "").length > 0
@@ -4927,6 +4927,7 @@ TestCase {
     }
 
     function test_transactions_and_detail_lookups_use_runtime_operations() {
+        const blockLookupId = "33".repeat(32)
         const blocksResult = [{
             header: { slot: 40, id: "block-40" },
             transactions: [{ mantle_tx: { hash: "tx-page", ops: [] } }]
@@ -4942,12 +4943,12 @@ TestCase {
                 },
                 blockchainBlocks: blocksResult,
                 blockchainBlock: {
-                    header: { slot: 41, id: "block-lookup" },
+                    header: { slot: 41, id: blockLookupId },
                     transactions: []
                 },
                 blockchainTransaction: {
                     mantle_tx: { hash: "tx-lookup", ops: [] },
-                    block_hash: "block-lookup",
+                    block_hash: blockLookupId,
                     slot: 41,
                     index: 0
                 }
@@ -4959,9 +4960,9 @@ TestCase {
         compare(model.transactionsPageRows[0].hash, "tx-page")
         verify(model.transactionsPageAtLatest)
 
-        model.loadBlockchainBlockById("block-lookup")
+        model.loadBlockchainBlockById(blockLookupId)
         tryVerify(function () {
-            return model.blockDetailValue && model.blockDetailValue.hash === "block-lookup"
+            return model.blockDetailValue && model.blockDetailValue.hash === blockLookupId
         })
 
         model.entityNavigation.openMantleTransaction("tx-lookup")
@@ -4980,7 +4981,7 @@ TestCase {
         compare(callCountFor("blockchainTransaction"), 0)
     }
 
-    function test_block_lookup_retries_failed_prefixed_id_with_normalized_id() {
+    function test_block_lookup_normalizes_prefixed_id_without_duplicate_retry() {
         const rawId = "0x" + "AB".repeat(32)
         const normalizedId = "ab".repeat(32)
         const attemptedIds = []
@@ -4988,7 +4989,6 @@ TestCase {
             runtimeOperationStart: function (args) {
                 const request = args[0]
                 const context = chainOperationContext(request)
-                const failed = attemptedIds.length === 0
                 attemptedIds.push(context.blockId)
                 return {
                     ok: true,
@@ -4999,16 +4999,13 @@ TestCase {
                         backend: context.source,
                         method: request.method,
                         label: request.label,
-                        status: failed ? "failed" : "completed",
+                        status: "failed",
                         eventCursor: 1,
                         context: context,
-                        result: failed ? null : {
-                            header: { slot: 41, id: normalizedId },
-                            transactions: []
-                        },
-                        error: failed ? "not found" : ""
+                        result: null,
+                        error: "not found"
                     },
-                    text: failed ? "" : "OK",
+                    text: "",
                     error: ""
                 }
             }
@@ -5016,14 +5013,12 @@ TestCase {
 
         model.loadBlockchainBlockById(rawId)
 
-        tryVerify(function () {
-            return model.blockDetailValue
-                && model.blockDetailValue.hash === normalizedId
-        })
-        compare(attemptedIds.join(","), rawId + "," + normalizedId)
-        compare(runtimeOperationCallCount("blockchainBlock"), 2)
+        tryVerify(function () { return model.blockDetailError.length > 0 })
+        compare(model.blockDetailValue, null)
+        compare(attemptedIds.join(","), normalizedId)
+        compare(runtimeOperationCallCount("blockchainBlock"), 1)
         compare(callCountFor("blockchainBlock"), 0)
-        compare(model.blockDetailError, "")
+        compare(model.blockDetailError, "L1 block " + rawId + " was not found.")
     }
 
     function test_blockchain_module_new_block_event_updates_live_rows() {

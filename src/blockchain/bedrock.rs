@@ -10,6 +10,7 @@ use crate::{
     rpc::raw_http_json,
     support::json_value::value_to_string,
     support::{
+        entity_id::normalize_block_id_text,
         http_response::{read_response_body_bytes_bounded, response_excerpt_bytes},
         raw_source_transport::{
             request_bytes_bounded, request_json_bounded, request_success_bounded, rest_url,
@@ -285,11 +286,7 @@ pub(crate) async fn blockchain_block_bounded(
     block_id: &str,
     max_bytes: usize,
 ) -> Result<Option<Value>> {
-    let block_id = block_id.trim();
-    if block_id.is_empty() {
-        bail!("block id is required");
-    }
-    reject_path_markers(block_id, "block id")?;
+    let block_id = normalize_block_id_text(block_id)?;
     let url = bedrock_url(endpoint, &format!("/cryptarchia/blocks/{block_id}"))?;
     let response = client
         .get(url)
@@ -540,11 +537,7 @@ async fn blockchain_block_value_bounded(
     block_id: &str,
     max_bytes: usize,
 ) -> Result<Value> {
-    let block_id = block_id.trim();
-    if block_id.is_empty() {
-        bail!("block id is required");
-    }
-    reject_path_markers(block_id, "block id")?;
+    let block_id = normalize_block_id_text(block_id)?;
     let url = rest_url(endpoint, &format!("cryptarchia/blocks/{block_id}"));
     request_json_bounded(
         reqwest::Client::new().get(&url),
@@ -941,7 +934,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9\r\nConnection: close\r\n\r\n",
         )?;
 
-        let error = blockchain_block_value_bounded(&endpoint, "block-a", 8)
+        let error = blockchain_block_value_bounded(&endpoint, &"ab".repeat(32), 8)
             .await
             .err()
             .context("oversized declared block-detail body should fail")?;
@@ -962,7 +955,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\n12345\r\n4\r\n6789\r\n0\r\n\r\n",
         )?;
 
-        let error = blockchain_block_value_bounded(&endpoint, "block-a", 8)
+        let error = blockchain_block_value_bounded(&endpoint, &"ab".repeat(32), 8)
             .await
             .err()
             .context("oversized chunked block-detail body should fail")?;

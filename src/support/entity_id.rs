@@ -2,6 +2,21 @@ use anyhow::{Context as _, Result, bail};
 use common::HashType;
 use lee::AccountId;
 
+pub(crate) fn normalize_block_id_text(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("block id is required");
+    }
+    let hex = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("block ID must be 64 hexadecimal characters (optional 0x prefix)");
+    }
+    Ok(hex.to_ascii_lowercase())
+}
+
 pub fn normalize_program_id_hex(value: &str) -> Result<String> {
     let text = value.trim();
     if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
@@ -84,6 +99,38 @@ pub(crate) fn parse_hash(value: &str, label: &str) -> Result<HashType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_id_normalization_matches_bedrock_header_id_text() -> Result<()> {
+        let canonical = "ab".repeat(32);
+        let normalized = normalize_block_id_text(&format!("  0x{}  ", canonical.to_uppercase()))?;
+        if normalized != canonical {
+            bail!("prefixed uppercase block id did not normalize");
+        }
+
+        for invalid in [
+            "block/path",
+            "block\\path",
+            ".",
+            "..",
+            "%2e%2e",
+            "a\nb",
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"g".repeat(64),
+        ] {
+            let Err(error) = normalize_block_id_text(invalid) else {
+                bail!("noncanonical block id {invalid:?} should fail");
+            };
+            if !error
+                .to_string()
+                .contains("block ID must be 64 hexadecimal characters (optional 0x prefix)")
+            {
+                bail!("unexpected error for {invalid:?}: {error:#}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn parse_account_id_accepts_hex_with_optional_prefix() {
