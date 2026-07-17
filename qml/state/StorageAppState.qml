@@ -37,6 +37,12 @@ QtObject {
 
     property var manifests: []
     property int manifestRequestGeneration: 0
+    property int manifestBootstrapGeneration: 0
+    property bool manifestRefreshDeferred: false
+    property bool manifestObservationPending: false
+    property bool manifestDeferredShowLog: false
+    property bool manifestBusyDeferred: false
+    property bool manifestBusyShowLog: false
     property int diagnosticRequestGeneration: 0
     property var manifestRefreshContext: null
     property alias lastOperation: storageOperations.lastOperation
@@ -62,6 +68,15 @@ QtObject {
         }
     }
 
+    property Connections capabilityGateConnections: Connections {
+        target: root.gateFacade
+        enabled: target !== null
+
+        function onRevisionChanged() {
+            root.retryDeferredManifestRefresh()
+        }
+    }
+
     onCidProbeChanged: {
         if (activeCid !== cidProbe) {
             activeCid = cidProbe
@@ -69,11 +84,40 @@ QtObject {
     }
 
     onAdapterInitializationChanged: {
+        const reloadVisiblePage = currentView === "storage"
         invalidateSourceRequests()
+        if (reloadVisiblePage) {
+            const reloadGeneration = manifestBootstrapGeneration
+            Qt.callLater(function () {
+                if (root.currentView === "storage"
+                        && reloadGeneration === root.manifestBootstrapGeneration) {
+                    root.refreshManifests(false)
+                }
+            })
+        }
+    }
+
+    onBusyChanged: {
+        if (!busy) {
+            if (manifestBusyDeferred) {
+                const showBusyLog = manifestBusyShowLog
+                manifestBusyDeferred = false
+                manifestBusyShowLog = false
+                refreshManifests(showBusyLog)
+            } else {
+                retryDeferredManifestRefresh()
+            }
+        }
     }
 
     function invalidateSourceRequests() {
         manifestRequestGeneration += 1
+        manifestBootstrapGeneration += 1
+        manifestRefreshDeferred = false
+        manifestObservationPending = false
+        manifestDeferredShowLog = false
+        manifestBusyDeferred = false
+        manifestBusyShowLog = false
         diagnosticRequestGeneration += 1
         manifestRefreshContext = null
         storageOperations.clearActive()
@@ -142,12 +186,25 @@ QtObject {
 
     function refreshManifests(showLog) {
         if (busy) {
+            manifestBusyDeferred = true
+            manifestBusyShowLog = manifestBusyShowLog || showLog === true
+            lastOperation = qsTr("Waiting")
             return null
         }
         const gate = storageActionGate("manifests", [])
         if (!gate.enabled) {
+            const gateStatus = String(gate.status || "")
+            if (gateStatus === "loading"
+                    || (showLog !== true && gateStatus === "disabled"
+                        && storageDataSource())) {
+                return deferManifestRefresh(showLog === true)
+            }
             return blockedStorageResponse(qsTr("List files"), gate, showLog === true)
         }
+        manifestRefreshDeferred = false
+        manifestDeferredShowLog = false
+        manifestBusyDeferred = false
+        manifestBusyShowLog = false
         if (storageOperations.view.busy) {
             const blocked = storageOperations.start("storageManifests", [], qsTr("Storage manifests"))
             lastOperation = qsTr("Busy")
@@ -186,6 +243,71 @@ QtObject {
             return started
         }
         return null
+    }
+
+    function deferManifestRefresh(showLog) {
+        manifestRefreshDeferred = true
+        manifestDeferredShowLog = manifestDeferredShowLog || showLog === true
+        lastOperation = qsTr("Loading")
+        if (manifestObservationPending) {
+            return null
+        }
+        if (!gateway || typeof gateway.observeStorage !== "function") {
+            const showDeferredLog = manifestDeferredShowLog
+            manifestRefreshDeferred = false
+            manifestDeferredShowLog = false
+            const gate = storageActionGate("manifests", [])
+            return blockedStorageResponse(
+                qsTr("List files"), gate, showDeferredLog)
+        }
+
+        manifestBootstrapGeneration += 1
+        const generation = manifestBootstrapGeneration
+        manifestObservationPending = true
+        return gateway.observeStorage(function (response) {
+            if (generation !== manifestBootstrapGeneration) {
+                return
+            }
+            manifestObservationPending = false
+            if (!response || response.ok !== true) {
+                const showDeferredLog = manifestDeferredShowLog
+                manifestRefreshDeferred = false
+                manifestDeferredShowLog = false
+                lastOperation = qsTr("Error")
+                if (showDeferredLog) {
+                    storageOperations.appendResult(qsTr("Storage source"), {
+                        ok: false,
+                        value: null,
+                        text: "",
+                        error: String(response && response.error
+                            ? response.error : qsTr("Storage source observation failed."))
+                    })
+                }
+                return
+            }
+            retryDeferredManifestRefresh()
+        })
+    }
+
+    function retryDeferredManifestRefresh() {
+        if (!manifestRefreshDeferred || manifestObservationPending || busy) {
+            return null
+        }
+        const gate = storageActionGate("manifests", [])
+        if (!gate.enabled) {
+            if (String(gate.status || "") === "loading") {
+                return null
+            }
+            const showDeferredLog = manifestDeferredShowLog
+            manifestRefreshDeferred = false
+            manifestDeferredShowLog = false
+            return blockedStorageResponse(
+                qsTr("List files"), gate, showDeferredLog)
+        }
+        const showDeferredLog = manifestDeferredShowLog
+        manifestRefreshDeferred = false
+        manifestDeferredShowLog = false
+        return refreshManifests(showDeferredLog)
     }
 
     function runStorage(method, args, label) {

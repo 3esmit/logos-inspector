@@ -31,6 +31,15 @@ QtObject {
     property var history: []
     property string openedSection: ""
     property string openedSubSection: ""
+    property int storageObservationCount: 0
+    property bool deferStorageObservations: false
+    property var storageObservationResponse: ({
+        ok: true,
+        value: {},
+        text: "OK",
+        error: ""
+    })
+    property var pendingStorageObservations: []
 
     function reset() {
         callCount = 0
@@ -57,6 +66,15 @@ QtObject {
         history = []
         openedSection = ""
         openedSubSection = ""
+        storageObservationCount = 0
+        deferStorageObservations = false
+        storageObservationResponse = ({
+            ok: true,
+            value: {},
+            text: "OK",
+            error: ""
+        })
+        pendingStorageObservations = []
     }
 
     function responseFor(method, primary) {
@@ -167,6 +185,36 @@ QtObject {
     function openSettings(section, subSection) {
         openedSection = String(section || "")
         openedSubSection = String(subSection || "")
+    }
+
+    function observeStorage(callback) {
+        storageObservationCount += 1
+        if (deferStorageObservations) {
+            pendingStorageObservations = pendingStorageObservations.concat([callback])
+            return {
+                ok: true,
+                pending: true,
+                text: "",
+                error: ""
+            }
+        }
+        if (callback) {
+            callback(storageObservationResponse)
+        }
+        return storageObservationResponse
+    }
+
+    function completeStorageObservationAt(index, response) {
+        const callbacks = pendingStorageObservations.slice(0)
+        if (index < 0 || index >= callbacks.length) {
+            return false
+        }
+        const callback = callbacks.splice(index, 1)[0]
+        pendingStorageObservations = callbacks
+        if (callback) {
+            callback(response === undefined ? storageObservationResponse : response)
+        }
+        return true
     }
 
     function valueText(value) {
