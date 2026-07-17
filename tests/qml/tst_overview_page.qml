@@ -435,6 +435,44 @@ TestCase {
         })
     }
 
+    function test_dashboard_block_transaction_opens_exact_payload_without_lookup() {
+        const transactionHash = ZoneFixtureData.identity("f")
+        const blockHash = ZoneFixtureData.identity("e")
+        const callsBefore = fakeHost.callCount
+        model.blocksPageRows = [{
+            header: {
+                slot: 7000,
+                id: blockHash
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: transactionHash,
+                    ops: []
+                },
+                payloadSentinel: "dashboard-block-transaction"
+            }]
+        }]
+
+        let transactionLink = null
+        tryVerify(function () {
+            transactionLink = findAccessibleByName(
+                page, "Open Mantle transaction " + transactionHash)
+            return transactionLink !== null
+        })
+
+        transactionLink.activated()
+
+        compare(model.shell.currentView, "transactionDetail")
+        verify(model.transactionDetailValue !== null)
+        compare(model.transactionDetailValue.hash, transactionHash)
+        compare(model.transactionDetailValue.block, blockHash)
+        compare(model.transactionDetailValue.slot, 7000)
+        compare(model.transactionDetailValue.raw.payloadSentinel,
+                "dashboard-block-transaction")
+        compare(model.transactionDetailError, "")
+        compare(fakeHost.callCount, callsBefore)
+    }
+
     function test_dashboard_live_block_links_open_exact_payload_data() {
         const hash = ZoneFixtureData.identity("a")
         return [

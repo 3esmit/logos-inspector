@@ -240,7 +240,17 @@ ColumnLayout {
                         ]
                         onCellActivated: function (column) {
                             if (column === 1) {
-                                root.model.entityNavigation.openMantleTransaction(modelData.txHash)
+                                if (modelData.rawTransaction !== null
+                                        && modelData.rawTransaction !== undefined) {
+                                    root.model.entityNavigation.openBlockchainTransaction(
+                                        modelData.rawTransaction, {
+                                            hash: modelData.blockHash,
+                                            slot: modelData.slotRaw
+                                        })
+                                } else {
+                                    root.model.entityNavigation.openMantleTransaction(
+                                        modelData.txHash)
+                                }
                             } else if (column === 2) {
                                 root.model.entityNavigation.openReference("block", modelData.blockHash)
                             }
@@ -511,11 +521,13 @@ ColumnLayout {
                 const blockHash = String(tx.block || "")
                 return {
                     slot: root.numberText(tx.slot),
+                    slotRaw: tx.slot,
                     hash: root.shortHash(txHash),
                     block: root.shortHash(blockHash),
                     ops: root.numberText(tx.ops),
                     txHash: txHash,
-                    blockHash: blockHash
+                    blockHash: blockHash,
+                    rawTransaction: tx
                 }
             })
         }
