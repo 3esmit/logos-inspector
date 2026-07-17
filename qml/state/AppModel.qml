@@ -312,6 +312,7 @@ QtObject {
     property alias transactionsPageRows: chainPageState.transactionsPageRows
     property alias transactionsPageBeforeBlock: chainPageState.transactionsPageBeforeBlock
     property alias transactionsPageNextBeforeBlock: chainPageState.transactionsPageNextBeforeBlock
+    property alias transactionsPageAtLatest: chainPageState.transactionsPageAtLatest
     property alias transactionsPageBlockBatch: chainPageState.transactionsPageBlockBatch
     property alias transactionsPageLimit: chainPageState.transactionsPageLimit
     property alias transactionsPageError: chainPageState.transactionsPageError

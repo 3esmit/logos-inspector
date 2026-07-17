@@ -17,8 +17,9 @@ function refreshTransactionsPage(root, beforeBlock) {
                         transactionsPageError, true, null)
                     return false
                 }
+                const tipSlot = ChainPageQuery.slotTip(node.value, true)
                 const window = ChainPageQuery.slotWindow(beforeBlock,
-                    ChainPageQuery.slotTip(node.value, true), transactionsPageBlockBatch)
+                    tipSlot, transactionsPageBlockBatch)
                 const slotFrom = window.slotFrom
                 const slotTo = window.slotTo
                 root.startOperation("transactions.page.range", "blockchainBlocks",
@@ -31,6 +32,7 @@ function refreshTransactionsPage(root, beforeBlock) {
                             return false
                         }
                         transactionsPageBeforeBlock = slotTo
+                        transactionsPageAtLatest = tipSlot > 0 && slotTo >= tipSlot
                         transactionsPageRows = root.transactionRowsFromBlocks(blocks.value)
                             .slice(0, transactionsPageLimit)
                         transactionsPageNextBeforeBlock = slotFrom > 0 ? slotFrom - 1 : 0
@@ -62,6 +64,11 @@ function setTransactionsPageLimit(root, limit) {
         return false
     }
     root.transactionsPageLimit = value
-    refreshTransactionsPage(root, root.transactionsPageBeforeBlock > 0 ? root.transactionsPageBeforeBlock : null)
+    const beforeBlock = root.transactionsPageAtLatest
+        ? null
+        : root.transactionsPageBeforeBlock > 0
+            ? root.transactionsPageBeforeBlock
+            : null
+    refreshTransactionsPage(root, beforeBlock)
     return true
 }

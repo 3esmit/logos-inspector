@@ -69,8 +69,15 @@ TestCase {
         model.dashboardNode = null
         model.dashboardL1Blocks = []
         model.blocksPageRows = []
+        model.blocksPageSlotTo = 0
+        model.transactionsPageRows = []
+        model.transactionsPageBeforeBlock = 0
+        model.transactionsPageNextBeforeBlock = 0
+        model.transactionsPageAtLatest = false
         model.blockDetailValue = null
         model.blockDetailError = ""
+        model.transactionDetailValue = null
+        model.transactionDetailError = ""
         model.dashboardLezBlockRows = []
         model.capabilityRegistryLoaded = true
         model.capabilityRegistryReport = ({
@@ -133,6 +140,19 @@ TestCase {
             network_info: {
                 value: {
                     n_peers: peerCount
+                }
+            }
+        }
+    }
+
+    function nodeWithSlots(slot, libSlot) {
+        return {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        slot: slot,
+                        lib_slot: libSlot
+                    }
                 }
             }
         }
@@ -214,7 +234,6 @@ TestCase {
                 }
             }]
         }]
-
         tryVerify(function () {
             return findAccessibleByName(
                 page, "Open L1 block at slot 123456") !== null
@@ -261,6 +280,150 @@ TestCase {
         verifyAccessibleControl(transactionBlockLink, Accessible.Link)
         verifyAccessibleControl(transactionBlockCopy, Accessible.Button)
         compare(transactionBlockLink.copyText, transactionBlockHash)
+    }
+
+    function test_dashboard_prefers_loaded_transaction_page_rows() {
+        const transactionHash = ZoneFixtureData.identity("b")
+        const blockHash = ZoneFixtureData.identity("c")
+        const oldTransactionHash = ZoneFixtureData.identity("d")
+        model.blocksPageRows = [{
+            header: {
+                slot: 123456,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: oldTransactionHash,
+                    ops: []
+                }
+            }]
+        }]
+        model.transactionsPageRows = [{
+            slot: 123457,
+            hash: transactionHash,
+            block: blockHash,
+            ops: 2,
+            operations: [],
+            raw: { payloadSentinel: "transactions-page" }
+        }]
+        model.dashboardNode = nodeWithSlots(123457, 123457)
+        model.transactionsPageBeforeBlock = 123457
+        model.transactionsPageAtLatest = true
+
+        let transactionLink = null
+        tryVerify(function () {
+            transactionLink = findAccessibleByName(
+                page, "Open Mantle transaction " + transactionHash)
+            return transactionLink !== null
+                && findAccessibleByName(
+                    page, "Open L1 block " + blockHash) !== null
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction " + oldTransactionHash), null)
+
+        const callsBefore = fakeHost.callCount
+        transactionLink.activated()
+        compare(model.shell.currentView, "transactionDetail")
+        compare(model.transactionDetailValue.hash, transactionHash)
+        compare(model.transactionDetailValue.raw.payloadSentinel,
+                "transactions-page")
+        compare(model.transactionDetailError, "")
+        compare(fakeHost.callCount, callsBefore)
+    }
+
+    function test_dashboard_rejects_older_transaction_page_rows() {
+        const currentTransactionHash = ZoneFixtureData.identity("b")
+        const historicalTransactionHash = ZoneFixtureData.identity("d")
+        model.dashboardNode = nodeWithSlots(6001, 6000)
+        model.blocksPageSlotTo = 6001
+        model.blocksPageRows = [{
+            header: {
+                slot: 6001,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: currentTransactionHash,
+                    ops: []
+                }
+            }]
+        }]
+        model.transactionsPageBeforeBlock = 5999
+        model.transactionsPageAtLatest = false
+        model.transactionsPageRows = [{
+            slot: 5999,
+            hash: historicalTransactionHash,
+            block: ZoneFixtureData.identity("c"),
+            ops: 1,
+            operations: []
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction "
+                    + currentTransactionHash) !== null
+        })
+        compare(findAccessibleByName(
+            page, "Open Mantle transaction "
+                + historicalTransactionHash), null)
+    }
+
+    function test_dashboard_accepts_latest_transaction_page_without_dashboard_node() {
+        const transactionHash = ZoneFixtureData.identity("a")
+        model.transactionsPageBeforeBlock = 7000
+        model.transactionsPageAtLatest = true
+        model.transactionsPageRows = [{
+            slot: 7000,
+            hash: transactionHash,
+            block: ZoneFixtureData.identity("c"),
+            ops: 1,
+            operations: []
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction " + transactionHash) !== null
+        })
+    }
+
+    function test_dashboard_keeps_latest_snapshot_after_lib_advances() {
+        const transactionHash = ZoneFixtureData.identity("a")
+        model.dashboardNode = nodeWithSlots(6001, 6000)
+        model.transactionsPageBeforeBlock = 5999
+        model.transactionsPageAtLatest = true
+        model.transactionsPageRows = [{
+            slot: 5999,
+            hash: transactionHash,
+            block: ZoneFixtureData.identity("c"),
+            ops: 1,
+            operations: []
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction " + transactionHash) !== null
+        })
+    }
+
+    function test_dashboard_accepts_block_fallback_without_dashboard_node() {
+        const transactionHash = ZoneFixtureData.identity("f")
+        model.blocksPageRows = [{
+            header: {
+                slot: 7000,
+                id: ZoneFixtureData.identity("e")
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: transactionHash,
+                    ops: []
+                }
+            }]
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open Mantle transaction " + transactionHash) !== null
+        })
     }
 
     function test_dashboard_live_block_links_open_exact_payload_data() {

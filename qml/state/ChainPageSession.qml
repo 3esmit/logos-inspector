@@ -51,6 +51,7 @@ QtObject {
     property var transactionsPageRows: []
     property int transactionsPageBeforeBlock: 0
     property int transactionsPageNextBeforeBlock: 0
+    property bool transactionsPageAtLatest: false
     property int transactionsPageBlockBatch: 1000
     property int transactionsPageLimit: 20
     property string transactionsPageError: ""
