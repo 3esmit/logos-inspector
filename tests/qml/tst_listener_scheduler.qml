@@ -159,6 +159,7 @@ TestCase {
     }
 
     function init() {
+        scheduler.liveBlocksPollInterval = 5000
         fakeModel.metrics.blockchainRefreshRate = 30
         fakeModel.metrics.messagingRefreshRate = 0
         fakeModel.metrics.storageRefreshRate = 0
@@ -234,6 +235,28 @@ TestCase {
         verify(!scheduler.enabled("dashboard"))
         fakeModel.blocksLiveEnabled = true
         verify(scheduler.enabled("liveBlocks"))
+    }
+
+    function test_live_blocks_poll_on_dedicated_cadence() {
+        fakeModel.metrics.blockchainRefreshRate = 3600
+
+        compare(scheduler.intervalFor("liveBlocks"), 5000)
+
+        fakeModel.metrics.blockchainRefreshRate = 0
+        compare(scheduler.intervalFor("liveBlocks"), 5000)
+    }
+
+    function test_live_blocks_timer_repeats_until_mode_stops() {
+        scheduler.liveBlocksPollInterval = 10
+        fakeModel.shell.currentView = "blocks"
+        fakeModel.blocksLiveEnabled = true
+
+        tryVerify(function () { return fakeModel.liveCalls >= 2 }, 200)
+        const callsBeforeStop = fakeModel.liveCalls
+
+        fakeModel.blocksLiveEnabled = false
+        wait(40)
+        compare(fakeModel.liveCalls, callsBeforeStop)
     }
 
     function test_network_polling_pauses_while_shell_busy() {
