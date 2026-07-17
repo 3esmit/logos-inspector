@@ -30,8 +30,11 @@ function liveSlotWindow(tipSlot, existingSlotTo, windowSize) {
         ? Number(tipSlot || 0)
         : Math.max(0, Number(existingSlotTo || 0))
     const existingTo = Math.max(0, Number(existingSlotTo || 0))
+    const windowFrom = Math.max(0, slotTo - Math.max(0, Number(windowSize || 0)))
     return {
-        slotFrom: existingTo > 0 ? Math.min(existingTo, slotTo) : Math.max(0, slotTo - Math.max(0, Number(windowSize || 0))),
+        slotFrom: existingTo > 0
+            ? Math.max(windowFrom, Math.min(existingTo, slotTo))
+            : windowFrom,
         slotTo: slotTo
     }
 }

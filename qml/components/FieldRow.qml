@@ -12,6 +12,8 @@ ColumnLayout {
     property alias text: field.text
     property string sourceText: ""
     property bool syncSourceText: false
+    property string errorMessage: ""
+    readonly property bool invalid: errorMessage.length > 0
     property alias placeholderText: field.placeholderText
     signal textEdited(string text)
 
@@ -38,6 +40,8 @@ ColumnLayout {
 
     TextField {
         id: field
+
+        objectName: root.objectName.length > 0 ? root.objectName + "Input" : ""
         color: root.theme.text
         placeholderTextColor: root.theme.textDim
         selectionColor: root.theme.accent
@@ -62,10 +66,13 @@ ColumnLayout {
         background: Rectangle {
             radius: root.theme.radius
             color: field.hovered || field.activeFocus ? root.theme.surfaceRaised : root.theme.field
-            border.width: field.activeFocus ? 2 : 1
-            border.color: field.activeFocus ? root.theme.accent : root.theme.outlineMuted
+            border.width: root.invalid || field.activeFocus ? 2 : 1
+            border.color: root.invalid ? root.theme.error
+                : field.activeFocus ? root.theme.accent : root.theme.outlineMuted
         }
 
         Accessible.name: root.label.length > 0 ? root.label : root.placeholderText
+        Accessible.description: root.invalid
+            ? qsTr("Error: %1").arg(root.errorMessage) : ""
     }
 }

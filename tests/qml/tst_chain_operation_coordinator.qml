@@ -428,6 +428,59 @@ TestCase {
         compare(coordinator.pendingCount, 0)
     }
 
+    function test_block_range_rejects_non_decimal_reversed_and_oversized_values() {
+        const cases = [
+            ["1e3", "1000", "Slots must use unsigned decimal integers without signs, spaces, or leading zeros."],
+            ["1.0", "2", "Slots must use unsigned decimal integers without signs, spaces, or leading zeros."],
+            ["0x10", "17", "Slots must use unsigned decimal integers without signs, spaces, or leading zeros."],
+            ["+1", "2", "Slots must use unsigned decimal integers without signs, spaces, or leading zeros."],
+            ["01", "2", "Slots must use unsigned decimal integers without signs, spaces, or leading zeros."],
+            [" 1", "2", "Slots must use unsigned decimal integers without signs, spaces, or leading zeros."],
+            ["20", "10", "Slot from must be less than or equal to Slot to."],
+            ["0", "2001", "Slot range cannot contain more than 2,001 slots."]
+        ]
+
+        for (let index = 0; index < cases.length; ++index) {
+            let rejected = null
+            const ticket = coordinator.start(
+                "invalid-range-" + String(index),
+                command("blockchainBlocks", cases[index].slice(0, 2)),
+                function (response) {
+                    rejected = response
+                    return false
+                }
+            )
+
+            compare(ticket, null)
+            verify(rejected !== null)
+            verify(!rejected.ok)
+            compare(rejected.error, cases[index][2])
+        }
+        compare(gateway.startRequests.length, 0)
+        compare(coordinator.pendingCount, 0)
+    }
+
+    function test_maximum_block_range_is_admitted_with_exact_identity() {
+        let rejected = null
+        const ticket = coordinator.start(
+            "maximum-range",
+            command("blockchainBlocks", ["0", "2000"]),
+            function (response) {
+                rejected = response
+                return false
+            }
+        )
+
+        verify(ticket !== null)
+        compare(rejected, null)
+        compare(gateway.startRequests.length, 1)
+        compare(gateway.startRequests[0].args[1], "0")
+        compare(gateway.startRequests[0].args[2], "2000")
+        compare(coordinator.pendingOperations["maximum-range"].expected.context.slotFrom, 0)
+        compare(coordinator.pendingOperations["maximum-range"].expected.context.slotTo, 2000)
+        compare(coordinator.pendingOperations["maximum-range"].expected.context.slotRange, "0:2000")
+    }
+
     function test_poll_ignores_mismatched_operation_id_until_valid_snapshot() {
         let response = null
         coordinator.start("network.blockchain", command("blockchainNode"), function (value) {

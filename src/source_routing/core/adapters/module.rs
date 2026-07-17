@@ -58,7 +58,7 @@ pub(crate) async fn blockchain_blocks(
     slot_from: u64,
     slot_to: u64,
 ) -> Result<Value> {
-    validate_slot_range(slot_from, slot_to)?;
+    crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
     transport_call_value(
         transport,
         transport_kind,
@@ -317,13 +317,6 @@ fn required_text<'a>(value: &'a str, label: &str) -> Result<&'a str> {
         bail!("{label} cannot contain path separators or query markers");
     }
     Ok(value)
-}
-
-fn validate_slot_range(slot_from: u64, slot_to: u64) -> Result<()> {
-    if slot_from > slot_to {
-        bail!("slot_from must be less than or equal to slot_to");
-    }
-    Ok(())
 }
 
 fn sort_and_limit_blocks(value: Value, limit: u64) -> Value {

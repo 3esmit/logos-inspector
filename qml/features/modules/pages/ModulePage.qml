@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
 import "../../../state/modules/ModuleReportPresentation.js" as ModuleReportPresentation
+import "../../../state/chain/BlockchainRangeValidation.js" as BlockchainRangeValidation
 import "../../../state/source_operations/NodeOperationRequest.js" as NodeOperationRequest
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -234,6 +235,11 @@ ColumnLayout {
         id: blockchainControls
 
         ColumnLayout {
+            id: blockchainControlRoot
+
+            readonly property var slotRangeValidation: BlockchainRangeValidation.validate(
+                slotFrom.text, slotTo.text)
+
             spacing: 12
 
             GridLayout {
@@ -244,19 +250,37 @@ ColumnLayout {
 
                 FieldRow {
                     id: slotFrom
+                    objectName: "moduleSlotFrom"
                     theme: root.theme
                     label: qsTr("Slot from")
                     placeholderText: qsTr("49600")
+                    errorMessage: blockchainControlRoot.slotRangeValidation.invalidField === "from"
+                        || blockchainControlRoot.slotRangeValidation.invalidField === "both"
+                        ? blockchainControlRoot.slotRangeValidation.message : ""
                     Layout.fillWidth: true
                 }
 
                 FieldRow {
                     id: slotTo
+                    objectName: "moduleSlotTo"
                     theme: root.theme
                     label: qsTr("Slot to")
                     placeholderText: qsTr("49620")
+                    errorMessage: blockchainControlRoot.slotRangeValidation.invalidField === "to"
+                        || blockchainControlRoot.slotRangeValidation.invalidField === "both"
+                        ? blockchainControlRoot.slotRangeValidation.message : ""
                     Layout.fillWidth: true
                 }
+            }
+
+            StatusMessage {
+                objectName: "moduleBlockRangeValidation"
+                visible: blockchainControlRoot.slotRangeValidation.message.length > 0
+                theme: root.theme
+                tone: "error"
+                title: qsTr("Invalid slot range")
+                message: blockchainControlRoot.slotRangeValidation.message
+                Layout.fillWidth: true
             }
 
             FieldRow {
@@ -284,13 +308,18 @@ ColumnLayout {
                 }
 
                 ActionButton {
+                    objectName: "moduleLoadBlocks"
                     theme: root.theme
                     text: qsTr("Load blocks")
-                    enabled: !root.requestBusy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
+                    enabled: !root.requestBusy
+                        && blockchainControlRoot.slotRangeValidation.valid
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain blocks")
                     onClicked: root.model.presentBlockchainOperation("module-control.blocks",
-                        "blockchainBlocks", [slotFrom.text, slotTo.text],
+                        "blockchainBlocks", [
+                            blockchainControlRoot.slotRangeValidation.slotFrom,
+                            blockchainControlRoot.slotRangeValidation.slotTo
+                        ],
                         qsTr("Blockchain blocks"), root.moduleKind)
                 }
 

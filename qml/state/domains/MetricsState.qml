@@ -1,5 +1,7 @@
 import QtQml
 import "../../services/BridgeHelpers.js" as BridgeHelpers
+import "../chain/BlockchainRangeValidation.js" as BlockchainRangeValidation
+import "../chain/ChainPageQuery.js" as ChainPageQuery
 import "../metrics/AppModelMetrics.js" as AppModelMetrics
 import "../network/AppModelNetwork.js" as AppModelNetwork
 
@@ -1114,35 +1116,62 @@ QtObject {
             }
         }
 
+        const liveComplete = once(complete)
+        const blockchainComplete = once(function (response) {
+            complete(response)
+            if (refreshId !== root.dashboardRefreshSerial || !root.dashboardRefreshing) {
+                return
+            }
+            if (!liveBlocksSupported) {
+                return
+            }
+            if (!response || response.ok !== true) {
+                liveComplete({
+                    ok: false,
+                    text: "",
+                    error: qsTr("Latest L1 blocks require current node state.")
+                })
+                return
+            }
+            const slotTo = ChainPageQuery.slotTip(response.value, false)
+            if (!Number.isSafeInteger(slotTo) || slotTo <= 0) {
+                liveComplete({
+                    ok: false,
+                    text: "",
+                    error: qsTr("No L1 tip available for latest blocks.")
+                })
+                return
+            }
+            const liveWindow = ChainPageQuery.liveSlotWindow(
+                slotTo, 0, BlockchainRangeValidation.maximumSlotCount() - 1)
+            const liveRequest = {
+                method: "blockchainLiveBlocks",
+                args: [liveWindow.slotFrom, liveWindow.slotTo, 5],
+                label: qsTr("Latest L1 blocks")
+            }
+            const liveDispatch = gateway.startDashboardBlockchainOperation(
+                liveRequest, function (liveResponse) {
+                    if (refreshId === root.dashboardRefreshSerial
+                            && liveResponse && liveResponse.ok === true) {
+                        gateway.cacheBlockchainResult(liveRequest.method, liveResponse.value)
+                    }
+                    liveComplete(liveResponse)
+                    return false
+                })
+            if (liveDispatch === false || liveDispatch === null) {
+                liveComplete({
+                    ok: false,
+                    text: "",
+                    error: qsTr("Latest L1 block request was not admitted.")
+                })
+            }
+        })
         observeNetworkConnection(
-            "blockchain", false, false, once(complete), "dashboard")
+            "blockchain", false, false, blockchainComplete, "dashboard")
         observeNetworkConnection(
             "storage", false, false, once(complete), "dashboard")
         observeNetworkConnection(
             "messaging", false, false, once(complete), "dashboard")
-        if (!liveBlocksSupported) {
-            return true
-        }
-        const liveRequest = {
-            method: "blockchainLiveBlocks",
-            args: [0, 9007199254740991, 5],
-            label: qsTr("Latest L1 blocks")
-        }
-        const liveComplete = once(complete)
-        const liveDispatch = gateway.startDashboardBlockchainOperation(liveRequest, function (response) {
-            if (refreshId === root.dashboardRefreshSerial && response && response.ok === true) {
-                gateway.cacheBlockchainResult(liveRequest.method, response.value)
-            }
-            liveComplete(response)
-            return false
-        })
-        if (liveDispatch === false || liveDispatch === null) {
-            liveComplete({
-                ok: false,
-                text: "",
-                error: qsTr("Latest L1 block request was not admitted.")
-            })
-        }
         return true
     }
 

@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 pub(crate) struct Args {
@@ -48,15 +48,24 @@ impl Args {
         }
     }
 
-    pub(crate) fn u64(&self, index: usize, label: &str) -> Result<u64> {
+    pub(crate) fn canonical_decimal_u64(&self, index: usize, label: &str) -> Result<u64> {
         let value = self
             .value(index)
             .with_context(|| format!("{label} is required"))?;
         if let Some(value) = value.as_u64() {
             return Ok(value);
         }
-        self.string(index, label)?
-            .parse::<u64>()
+        let Some(raw) = value.as_str() else {
+            bail!("invalid {label}");
+        };
+        let canonical = raw == "0"
+            || (!raw.is_empty()
+                && !raw.starts_with('0')
+                && raw.bytes().all(|byte| byte.is_ascii_digit()));
+        if !canonical {
+            bail!("invalid {label}");
+        }
+        raw.parse::<u64>()
             .with_context(|| format!("invalid {label}"))
     }
 
