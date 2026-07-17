@@ -112,8 +112,6 @@ function loadBlockchainBlockById(root, blockId) {
             shell.setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
             return null
         }
-        const normalized = root.chainPages.normalizedHashOrValue(value)
-        const retryValue = normalized !== value ? normalized : ""
         const presentation = root.chainPages.beginPresentation(qsTr("Block"), "blockDetail")
         const acceptBlock = function (response) {
             if (response && response.ok) {
@@ -137,17 +135,6 @@ function loadBlockchainBlockById(root, blockId) {
         return root.chainPages.startOperation("detail.block", "blockchainBlock", [value],
             qsTr("Block lookup"), function (response) {
                 if (acceptBlock(response)) {
-                    return false
-                }
-                if (retryValue.length && response && !response.invalidated
-                        && response.terminalStatus === "failed") {
-                    root.chainPages.startOperation("detail.block", "blockchainBlock", [retryValue],
-                        qsTr("Block lookup"), function (retry) {
-                            if (!acceptBlock(retry)) {
-                                failBlock(retry)
-                            }
-                            return false
-                        })
                     return false
                 }
                 failBlock(response)

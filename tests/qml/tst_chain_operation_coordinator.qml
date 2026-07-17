@@ -234,7 +234,8 @@ TestCase {
 
     function test_wrong_identity_and_non_completed_terminal_never_project_result() {
         const responses = []
-        coordinator.start("detail.block", command("blockchainBlock", ["block-a"]), function (response) {
+        coordinator.start("detail.block",
+                          command("blockchainBlock", ["ab".repeat(32)]), function (response) {
             responses.push(response)
             return false
         })
@@ -377,7 +378,8 @@ TestCase {
 
     function test_poll_ignores_wrong_context_then_accepts_newer_exact_snapshot() {
         let response = null
-        coordinator.start("detail.block", command("blockchainBlock", ["block-a"]), function (value) {
+        coordinator.start("detail.block",
+                          command("blockchainBlock", ["ab".repeat(32)]), function (value) {
             response = value
             return false
         })
@@ -387,7 +389,7 @@ TestCase {
         })
         compare(coordinator.poll(), 1)
         const wrong = operation(0, "op-block", "completed", 2, { header: {} })
-        wrong.context.blockId = "block-b"
+        wrong.context.blockId = "cd".repeat(32)
         gateway.replyStatus(0, { ok: true, value: wrong })
 
         compare(response, null)
@@ -479,6 +481,57 @@ TestCase {
         compare(coordinator.pendingOperations["maximum-range"].expected.context.slotFrom, 0)
         compare(coordinator.pendingOperations["maximum-range"].expected.context.slotTo, 2000)
         compare(coordinator.pendingOperations["maximum-range"].expected.context.slotRange, "0:2000")
+    }
+
+    function test_block_id_rejects_noncanonical_values_before_dispatch() {
+        const cases = ["block/a", "block\\a", ".", "..", "%2e%2e", "a\nb",
+                       "a".repeat(63), "a".repeat(65), "g".repeat(64)]
+
+        for (let index = 0; index < cases.length; ++index) {
+            let rejected = null
+            const ticket = coordinator.start(
+                "invalid-block-" + String(index),
+                command("blockchainBlock", [cases[index]]),
+                function (response) {
+                    rejected = response
+                    return false
+                }
+            )
+
+            compare(ticket, null)
+            verify(rejected !== null)
+            verify(!rejected.ok)
+            compare(rejected.error,
+                    "Block ID must be 64 hexadecimal characters (optional 0x prefix).")
+        }
+        compare(gateway.startRequests.length, 0)
+        compare(coordinator.pendingCount, 0)
+    }
+
+    function test_block_id_is_canonicalized_before_dispatch_and_identity_capture() {
+        const canonical = "ab".repeat(32)
+        let response = null
+        const ticket = coordinator.start(
+            "trimmed-block",
+            command("blockchainBlock", ["  0x" + canonical.toUpperCase() + "  "]),
+            function (value) {
+                response = value
+                return false
+            }
+        )
+
+        verify(ticket !== null)
+        compare(gateway.startRequests.length, 1)
+        compare(gateway.startRequests[0].args[1], canonical)
+        compare(coordinator.pendingOperations["trimmed-block"].expected.context.blockId,
+                canonical)
+        gateway.replyStart(0, {
+            ok: true,
+            value: operation(0, "op-block", "completed", 1, { header: {} })
+        })
+        verify(response !== null)
+        verify(response.ok)
+        compare(coordinator.pendingCount, 0)
     }
 
     function test_poll_ignores_mismatched_operation_id_until_valid_snapshot() {

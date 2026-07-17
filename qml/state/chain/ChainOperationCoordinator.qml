@@ -1,5 +1,6 @@
 import QtQml
 import "../OperationHistoryVocabulary.js" as OperationHistoryVocabulary
+import "BlockchainBlockValidation.js" as BlockchainBlockValidation
 import "BlockchainRangeValidation.js" as BlockchainRangeValidation
 
 QtObject {
@@ -35,12 +36,15 @@ QtObject {
             callback(failure(qsTr("Unknown Blockchain operation.")), null)
             return null
         }
-        const rangeValidation = blockRangeValidation(normalized)
-        if (rangeValidation && !rangeValidation.valid) {
-            callback(failure(rangeValidation.message.length > 0
-                ? rangeValidation.message
+        const argumentValidation = commandValidation(normalized)
+        if (argumentValidation && !argumentValidation.valid) {
+            callback(failure(argumentValidation.message.length > 0
+                ? argumentValidation.message
                 : qsTr("Blockchain query arguments are invalid.")), null)
             return null
+        }
+        if (normalized.method === "blockchainBlock" && argumentValidation) {
+            normalized.args[0] = argumentValidation.blockId
         }
         if (callerPending(key)) {
             const response = failure(qsTr("A Blockchain query is already pending for this caller."))
@@ -245,10 +249,11 @@ QtObject {
             context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
             break
         case "blockchainBlock":
-            context.blockId = String(command.args[0] || "").trim()
-            if (!context.blockId.length) {
+            const blockValidation = BlockchainBlockValidation.validate(command.args[0])
+            if (!blockValidation.valid) {
                 return null
             }
+            context.blockId = blockValidation.blockId
             break
         case "blockchainTransaction":
             context.transactionId = String(command.args[0] || "").trim()
@@ -268,12 +273,15 @@ QtObject {
         }
     }
 
-    function blockRangeValidation(command) {
-        if (command.method !== "blockchainBlocks"
-                && command.method !== "blockchainLiveBlocks") {
-            return null
+    function commandValidation(command) {
+        if (command.method === "blockchainBlocks"
+                || command.method === "blockchainLiveBlocks") {
+            return BlockchainRangeValidation.validate(command.args[0], command.args[1])
         }
-        return BlockchainRangeValidation.validate(command.args[0], command.args[1])
+        if (command.method === "blockchainBlock") {
+            return BlockchainBlockValidation.validate(command.args[0])
+        }
+        return null
     }
 
     function normalizedSource(values) {

@@ -663,10 +663,10 @@ mod tests {
             ),
             (
                 "blockchainBlock",
-                json!(["module", "block-a"]),
+                json!(["module", format!("0X{}", "AB".repeat(32))]),
                 json!({
                     "source": "module",
-                    "blockId": "block-a"
+                    "blockId": "ab".repeat(32)
                 }),
             ),
             (
@@ -709,6 +709,36 @@ mod tests {
             "args": ["module", 10]
         }));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn blockchain_operation_request_rejects_noncanonical_block_id_before_admission() -> Result<()> {
+        for block_id in [
+            "block-a".to_owned(),
+            "block\\path".to_owned(),
+            "..".to_owned(),
+            "%2e%2e".to_owned(),
+            "a\nb".to_owned(),
+            "a".repeat(63),
+            "a".repeat(65),
+            "g".repeat(64),
+        ] {
+            let result = runtime_operation_request_from_value(json!({
+                "domain": "blockchain",
+                "method": "blockchainBlock",
+                "args": ["module", block_id]
+            }));
+            let Err(error) = result else {
+                bail!("noncanonical block id should fail before admission");
+            };
+            if !error
+                .to_string()
+                .contains("block ID must be 64 hexadecimal characters (optional 0x prefix)")
+            {
+                bail!("unexpected block-id error: {error:#}");
+            }
+        }
+        Ok(())
     }
 
     #[test]

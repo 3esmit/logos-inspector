@@ -180,6 +180,49 @@ TestCase {
         slotTo.text = ""
     }
 
+    function test_block_id_validation_is_actionable() {
+        const model = findChild(shell, "appModel")
+        const loader = findChild(shell, "pageLoader")
+        verify(model !== null)
+        verify(loader !== null)
+        model.shell.selectView("blockchain")
+        tryVerify(function () { return loader.item !== null })
+
+        let blockId = null
+        let blockIdInput = null
+        let loadBlock = null
+        let validation = null
+        tryVerify(function () {
+            blockId = findChild(loader.item, "moduleBlockId")
+            blockIdInput = findChild(loader.item, "moduleBlockIdInput")
+            loadBlock = findChild(loader.item, "moduleLoadBlock")
+            validation = findChild(loader.item, "moduleBlockIdValidation")
+            return blockId !== null && blockIdInput !== null && loadBlock !== null
+                && validation !== null
+        })
+
+        compare(blockIdInput.Accessible.name, "Block ID (required)")
+        compare(blockId.placeholderText, "64 hexadecimal characters")
+        verify(!loadBlock.enabled)
+        compare(blockIdInput.Accessible.description, "")
+        verify(!validation.visible)
+
+        blockId.text = "%2e%2e"
+        verify(!loadBlock.enabled)
+        verify(validation.visible)
+        compare(validation.Accessible.name,
+                "Invalid block ID. Block ID must be 64 hexadecimal characters (optional 0x prefix).")
+        compare(blockIdInput.Accessible.description,
+                "Error: Block ID must be 64 hexadecimal characters (optional 0x prefix).")
+
+        blockId.text = "ab".repeat(32)
+        verify(loadBlock.enabled)
+        verify(!validation.visible)
+        compare(blockIdInput.Accessible.description, "")
+
+        blockId.text = ""
+    }
+
     function test_dashboard_wide_layout_keeps_l1_panels_beside_zones() {
         testWindow.width = 1560
         const model = findChild(shell, "appModel")
