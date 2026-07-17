@@ -58,7 +58,8 @@ function selectedDashboardGraphItems(model) {
 
 function dashboardGraphItem(model, key) {
     const raw = model.dashboardMetricValue(key)
-    const numeric = raw === undefined || raw === null || raw === "" ? NaN : Number(raw)
+    const parsed = dashboardMetricNumber(raw)
+    const numeric = parsed === null ? NaN : parsed
     const gate = model.dashboardGate ? model.dashboardGate(key) : null
     const blocked = gate && gate.enabled === false
     return {
@@ -361,8 +362,8 @@ function dashboardMetricUsesWindow(key) {
 }
 
 function dashboardMetricWindowDelta(root, key) {
-    const current = Number(dashboardMetricRawValue(root, key))
-    if (!Number.isFinite(current)) {
+    const current = dashboardMetricNumber(dashboardMetricRawValue(root, key))
+    if (current === null) {
         return null
     }
     const timestamp = Date.now()
@@ -402,8 +403,8 @@ function recordDashboardSnapshot(root) {
     let seenChanged = false
     for (let i = 0; i < keys.length; ++i) {
         const key = keys[i]
-        const value = Number(dashboardMetricRawValue(root, key))
-        if (!Number.isFinite(value)) {
+        const value = dashboardMetricNumber(dashboardMetricRawValue(root, key))
+        if (value === null) {
             continue
         }
         const update = dashboardMetricSampleUpdate(root, next[key], nextSeen[key], now, value)
@@ -467,17 +468,31 @@ function dashboardMetricSamples(root, key) {
     if (Array.isArray(samples) && samples.length > 0) {
         return samples
     }
-    const value = Number(dashboardMetricValue(root, key))
-    return Number.isFinite(value) ? [{ timestamp: Date.now(), value: value }] : []
+    const value = dashboardMetricNumber(dashboardMetricValue(root, key))
+    return value === null ? [] : [{ timestamp: Date.now(), value: value }]
+}
+
+function dashboardMetricNumber(value) {
+    if (value === undefined || value === null || typeof value === "boolean") {
+        return null
+    }
+    if (typeof value === "string" && value.trim().length === 0) {
+        return null
+    }
+    if (typeof value !== "number" && typeof value !== "string") {
+        return null
+    }
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? numeric : null
 }
 
 function normalizedDashboardSample(sample) {
     if (!sample || typeof sample !== "object") {
         return null
     }
-    const value = Number(sample.value)
-    const timestamp = Number(sample.timestamp)
-    if (!Number.isFinite(value) || !Number.isFinite(timestamp)) {
+    const value = dashboardMetricNumber(sample.value)
+    const timestamp = dashboardMetricNumber(sample.timestamp)
+    if (value === null || timestamp === null) {
         return null
     }
     return {
@@ -491,13 +506,15 @@ function normalizedDashboardSamples(samples) {
     const raw = Array.isArray(samples) ? samples : []
     for (let i = 0; i < raw.length; ++i) {
         const sample = raw[i]
-        const value = Number(sample && typeof sample === "object" ? sample.value : sample)
-        if (!Number.isFinite(value)) {
+        const value = dashboardMetricNumber(
+            sample && typeof sample === "object" ? sample.value : sample)
+        if (value === null) {
             continue
         }
-        const timestamp = Number(sample && typeof sample === "object" ? sample.timestamp : i)
+        const timestamp = dashboardMetricNumber(
+            sample && typeof sample === "object" ? sample.timestamp : i)
         rows.push({
-            timestamp: Number.isFinite(timestamp) ? timestamp : i,
+            timestamp: timestamp === null ? i : timestamp,
             value: value
         })
     }
