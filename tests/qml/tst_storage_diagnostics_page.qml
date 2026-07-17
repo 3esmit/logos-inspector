@@ -80,6 +80,7 @@ TestCase {
         model.storageAppTab = "files"
         model.storageDiagnosticsTab = "diagnostics"
         model.storageCidProbe = "z-selected-diagnostic-cid"
+        model.metrics.storageSourceReport = null
         model.shell.currentView = "diagnosticsStorage"
         model.navigationBackStack = []
         model.navigationForwardStack = []
@@ -132,6 +133,66 @@ TestCase {
         })
     }
 
+    function test_topology_exposes_structured_network_debug_rows() {
+        const debug = {
+            id: "debug-peer-id",
+            addrs: ["/ip4/127.0.0.1/tcp/8070"],
+            announceAddresses: ["/dns4/storage.test/tcp/443/wss"],
+            libp2pPubKey: "debug-public-key",
+            mixPubKey: null,
+            providerRecord: "debug-provider-record",
+            spr: "debug-self-peer-record",
+            storage: { version: "0.1.0-test", revision: "debug-revision" },
+            table: {
+                localNode: {
+                    peerId: "debug-peer-id",
+                    address: "/ip4/127.0.0.1/tcp/8070",
+                    nodeId: "debug-local-node"
+                },
+                nodes: [{
+                    peerId: "routing-peer-1",
+                    address: "/ip4/10.0.0.1/tcp/3000",
+                    nodeId: "routing-node-1"
+                }]
+            }
+        }
+        tryVerify(function () {
+            return !model.metrics.networkConnectionIsPending("storage")
+        })
+        model.metrics.setSourceReport("storage", {
+            health: {
+                ready: true,
+                status: "healthy",
+                summary: "source ready",
+                detail: "ready"
+            },
+            probes: [{
+                probe_key: "debug",
+                label: "storage_module.debug",
+                ok: true,
+                value: debug,
+                error: null
+            }]
+        }, { origin: "test" })
+        model.storageDiagnosticsTab = "topology"
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                pageLoader.item,
+                "Copy 9 field(s); 1 routing node(s)") !== null
+        })
+        verify(findAccessibleByName(pageLoader.item, "Copy debug-peer-id") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item,
+            "Copy /ip4/127.0.0.1/tcp/8070") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item,
+            "Copy 1 node(s); showing 1") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item,
+            "Copy routing-peer-1 | /ip4/10.0.0.1/tcp/3000 | routing-node-1") !== null)
+    }
+
     function findAccessibleByName(item, expectedName) {
         if (!item) {
             return null
@@ -149,4 +210,5 @@ TestCase {
         }
         return null
     }
+
 }

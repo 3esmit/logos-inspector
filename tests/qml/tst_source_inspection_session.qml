@@ -76,6 +76,7 @@ TestCase {
     function test_family_views_expose_complete_page_contracts() {
         verify(Array.isArray(storageSession.view.healthRows))
         verify(Array.isArray(storageSession.view.activeOperationRows))
+        verify(Array.isArray(storageSession.view.networkDebugRows))
         verify(Array.isArray(storageSession.view.capacityRows))
         verify(Array.isArray(storageSession.view.cidRows))
         compare(storageSession.view.sourceShortLabel, "REST")

@@ -229,6 +229,7 @@ function storageView(page, common) {
     common.healthRows = SourceObservation.storageHealthRows(page)
     common.activeOperationRows = SourceObservation.storageActiveOperationRows(page)
     common.topologyRows = SourceObservation.storageTopologyRows(page)
+    common.networkDebugRows = SourceObservation.storageNetworkDebugRows(page, 50)
     common.capacityRows = SourceObservation.storageCapacityRows(page)
     common.repositoryRows = SourceObservation.storageRepositoryRows(page)
     common.transferRows = SourceObservation.storageTransferRows(page)

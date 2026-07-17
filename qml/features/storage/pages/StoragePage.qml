@@ -239,6 +239,13 @@ ColumnLayout {
                 rows: root.sourceView.identityRows
             }
 
+            DetailRowsPanel {
+                theme: root.theme
+                title: qsTr("Network debug details")
+                rows: root.sourceView.networkDebugRows
+                visible: root.sourceView.networkDebugRows.length > 0
+            }
+
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Peer boundaries")
