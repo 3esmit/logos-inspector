@@ -402,8 +402,11 @@ mod tests {
         if status_calls.load(Ordering::Relaxed) != 1 {
             bail!("module report bypassed injected CLI status capability");
         }
-        if module_info_calls.load(Ordering::Relaxed) != 4 {
-            bail!("module report bypassed injected CLI metadata capability");
+        let metadata_calls = module_info_calls.load(Ordering::Relaxed);
+        if metadata_calls != 2 {
+            bail!(
+                "module report made {metadata_calls} injected CLI metadata calls; expected Blockchain and Capability only"
+            );
         }
         if report
             .status
@@ -414,12 +417,7 @@ mod tests {
         {
             bail!("module report did not preserve injected CLI status: {report:?}");
         }
-        for module in [
-            report.blockchain,
-            report.storage,
-            report.delivery,
-            report.capabilities,
-        ] {
+        for module in [&report.blockchain, &report.capabilities] {
             if module
                 .module_info
                 .value
@@ -428,6 +426,18 @@ mod tests {
                 != Some(&json!("fake_cli"))
             {
                 bail!("module report did not preserve injected CLI metadata: {module:?}");
+            }
+        }
+        for module in [&report.storage, &report.delivery] {
+            let value = module.module_info.value.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("deferred module metadata is missing: {module:?}")
+            })?;
+            if value.get("supported") != Some(&json!(false))
+                || value.get("adapter") != Some(&json!("logoscore_cli"))
+                || value.get("runner").is_some()
+                || !module.probes.is_empty()
+            {
+                bail!("deferred module report invoked runtime diagnostics: {module:?}");
             }
         }
         Ok(())
