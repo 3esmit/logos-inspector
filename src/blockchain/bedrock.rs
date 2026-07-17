@@ -11,12 +11,15 @@ use crate::{
     support::json_value::value_to_string,
     support::{
         http_response::{read_response_body_bytes_bounded, response_excerpt_bytes},
-        raw_source_transport::{request_json_bounded, request_success_bounded, request_text},
+        raw_source_transport::{
+            request_bytes_bounded, request_json_bounded, request_success_bounded, rest_url,
+        },
     },
 };
 
 const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
 const BLOCK_STREAM_SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
+const BLOCK_RANGE_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_BLOCK_RANGE_SLOTS: u64 = 2_001;
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,10 +71,28 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 }
 
 pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
+    blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES).await
+}
+
+async fn blockchain_blocks_bounded(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    max_bytes: usize,
+) -> Result<Value> {
     validate_blockchain_slot_range(slot_from, slot_to)?;
-    raw_http_json(
+    let url = rest_url(
         endpoint,
-        &format!("/cryptarchia/blocks?slot_from={slot_from}&slot_to={slot_to}"),
+        &format!("cryptarchia/blocks?slot_from={slot_from}&slot_to={slot_to}"),
+    );
+    request_json_bounded(
+        reqwest::Client::new().get(&url),
+        &url,
+        "failed to read http response body",
+        "invalid JSON response",
+        false,
+        false,
+        max_bytes,
     )
     .await
 }
@@ -169,18 +190,37 @@ async fn blockchain_blocks_range_text(
     slot_to: u64,
     limit: u64,
 ) -> Result<String> {
+    blockchain_blocks_range_text_bounded(
+        endpoint,
+        slot_from,
+        slot_to,
+        limit,
+        BLOCK_RANGE_RESPONSE_MAX_BYTES,
+    )
+    .await
+}
+
+async fn blockchain_blocks_range_text_bounded(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+    max_bytes: usize,
+) -> Result<String> {
+    validate_blockchain_slot_range(slot_from, slot_to)?;
     let batch_size = limit.min(100);
     let endpoint = endpoint.trim_end_matches('/');
     let url = format!(
         "{endpoint}/cryptarchia/blocks_range?slot_from={slot_from}&slot_to={slot_to}&order=descending&blocks_limit={limit}&server_batch_size={batch_size}&block_filter=mutable_and_immutable"
     );
-    request_text(
+    let bytes = request_bytes_bounded(
         reqwest::Client::new().get(&url),
         &url,
         "failed to read http response body",
-        false,
+        max_bytes,
     )
-    .await
+    .await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 pub(crate) async fn blockchain_finalized_blocks_response(
@@ -742,6 +782,12 @@ fn mode_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread::{self, JoinHandle},
+    };
+
     use super::*;
 
     #[test]
@@ -786,6 +832,79 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_blocks_reject_declared_body_over_limit() -> Result<()> {
+        let (endpoint, server) = serve_http_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9\r\nConnection: close\r\n\r\n",
+        )?;
+
+        let error = blockchain_blocks_bounded(&endpoint, 10, 10, 8)
+            .await
+            .err()
+            .context("oversized declared block body should fail")?;
+        join_http_server(server, "declared block body")?;
+
+        if !error
+            .to_string()
+            .contains("http response body exceeded 8 byte limit")
+        {
+            bail!("unexpected declared block body error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_blocks_range_rejects_chunked_body_over_limit() -> Result<()> {
+        let (endpoint, server) = serve_http_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\n12345\r\n4\r\n6789\r\n0\r\n\r\n",
+        )?;
+
+        let error = blockchain_blocks_range_text_bounded(&endpoint, 10, 10, 1, 8)
+            .await
+            .err()
+            .context("oversized chunked block-range body should fail")?;
+        join_http_server(server, "chunked block-range body")?;
+
+        if !error
+            .to_string()
+            .contains("http response body exceeded 8 byte limit")
+        {
+            bail!("unexpected chunked block-range body error: {error:#}");
+        }
+        Ok(())
+    }
+
+    fn serve_http_once(response: &'static [u8]) -> Result<(String, JoinHandle<Result<()>>)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let bytes = stream.read(&mut buffer)?;
+                if bytes == 0 {
+                    bail!("HTTP request headers were incomplete");
+                }
+                request.extend_from_slice(
+                    buffer
+                        .get(..bytes)
+                        .context("HTTP request header chunk was invalid")?,
+                );
+            }
+            stream.write_all(response)?;
+            Ok(())
+        });
+        Ok((endpoint, server))
+    }
+
+    fn join_http_server(server: JoinHandle<Result<()>>, label: &str) -> Result<()> {
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("{label} server panicked"))?
     }
 
     #[test]
