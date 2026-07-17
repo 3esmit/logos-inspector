@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -26,8 +27,29 @@ use crate::{
 const CATALOG_DIRECTORY: &str = "zone-catalogs";
 const CATALOG_FILE_EXTENSION: &str = "redb";
 const CATALOG_RANGE_BLOCK_LIMIT: usize = MAX_CATALOG_L1_RANGE_BLOCKS;
+const CATALOG_CATCH_UP_PAGE_INTERVAL: Duration = Duration::from_millis(500);
 const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CATALOG_REPAIR_INTERVAL_SECONDS: u64 = 30;
+
+trait CatalogPagePacer {
+    fn wait<'a>(
+        &'a self,
+        context: &'a ZoneCatalogRunContext,
+    ) -> impl Future<Output = ZoneCatalogServiceResult<()>> + Send + 'a;
+}
+
+struct IntervalCatalogPagePacer {
+    interval: Duration,
+}
+
+impl CatalogPagePacer for IntervalCatalogPagePacer {
+    fn wait<'a>(
+        &'a self,
+        context: &'a ZoneCatalogRunContext,
+    ) -> impl Future<Output = ZoneCatalogServiceResult<()>> + Send + 'a {
+        wait_for_retry(context, self.interval)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DirectZoneCatalogWorker {
@@ -193,6 +215,18 @@ async fn run_catalog_scan(
     source: Arc<dyn CatalogL1Source>,
     context: &ZoneCatalogRunContext,
 ) -> ZoneCatalogServiceResult<()> {
+    let pacer = IntervalCatalogPagePacer {
+        interval: CATALOG_CATCH_UP_PAGE_INTERVAL,
+    };
+    run_catalog_scan_with_pacer(catalog, source, context, &pacer).await
+}
+
+async fn run_catalog_scan_with_pacer(
+    catalog: Arc<ZoneCatalog>,
+    source: Arc<dyn CatalogL1Source>,
+    context: &ZoneCatalogRunContext,
+    pacer: &impl CatalogPagePacer,
+) -> ZoneCatalogServiceResult<()> {
     let mut next_repair_at_unix = 0;
     let mut no_progress_round = 0_u32;
     loop {
@@ -238,6 +272,14 @@ async fn run_catalog_scan(
                     .await?;
             made_progress |= snapshot.metadata.catalog_revision != previous_revision;
             publish_verified(context, snapshot.clone());
+            let reached_target = snapshot
+                .traversal
+                .as_ref()
+                .and_then(|traversal| traversal.ingestion_cursor.as_ref())
+                .is_some_and(|cursor| cursor == &target);
+            if !reached_target {
+                pacer.wait(context).await?;
+            }
         }
 
         let now = now_unix();
@@ -621,7 +663,10 @@ fn map_engine_error(_error: super::CatalogEngineError) -> ZoneCatalogServiceErro
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Result, bail};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use anyhow::{Result, bail, ensure};
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -629,6 +674,85 @@ mod tests {
         status: super::super::CatalogL1ChainStatus,
         time: super::super::CatalogL1TimeStatus,
         anchor: super::super::CatalogL1Block,
+    }
+
+    struct PagingSource {
+        status: super::super::CatalogL1ChainStatus,
+        calls: AtomicUsize,
+        call_events: mpsc::UnboundedSender<usize>,
+    }
+
+    struct BlockingPacer {
+        wait_events: mpsc::UnboundedSender<()>,
+    }
+
+    impl CatalogPagePacer for BlockingPacer {
+        fn wait<'a>(
+            &'a self,
+            context: &'a ZoneCatalogRunContext,
+        ) -> impl Future<Output = ZoneCatalogServiceResult<()>> + Send + 'a {
+            wait_for_blocking_pacer(&self.wait_events, context)
+        }
+    }
+
+    async fn wait_for_blocking_pacer(
+        wait_events: &mpsc::UnboundedSender<()>,
+        context: &ZoneCatalogRunContext,
+    ) -> ZoneCatalogServiceResult<()> {
+        let _sent = wait_events.send(());
+        context.cancellation().cancelled().await;
+        Err(ZoneCatalogServiceError::Cancelled)
+    }
+
+    impl CatalogL1Source for PagingSource {
+        fn chain_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1ChainStatus> {
+            Box::pin(async { Ok(self.status.clone()) })
+        }
+
+        fn time_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1TimeStatus> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "paging test does not use time status".to_owned(),
+                ))
+            })
+        }
+
+        fn finalized_range(
+            &self,
+            request: CatalogL1RangeRequest,
+        ) -> super::super::CatalogL1SourceFuture<'_, CatalogL1RangePage> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let _sent = self.call_events.send(call);
+            let snapshot = self.status.snapshot.clone();
+            Box::pin(async move {
+                let block = match request.slot_from() {
+                    0 => test_block(0, '0', '0'),
+                    1 => test_block(1, 'a', '0'),
+                    2 => test_block(2, 'b', 'a'),
+                    _ => {
+                        return Ok(CatalogL1RangePage { events: Vec::new() });
+                    }
+                };
+                Ok(CatalogL1RangePage {
+                    events: vec![super::super::CatalogL1BlockEvent { block, snapshot }],
+                })
+            })
+        }
+
+        fn block(
+            &self,
+            _block_id: String,
+        ) -> super::super::CatalogL1SourceFuture<'_, Option<super::super::CatalogL1Block>> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "paging test does not repair ancestry".to_owned(),
+                ))
+            })
+        }
     }
 
     impl CatalogL1Source for FallbackIdentitySource {
@@ -714,6 +838,24 @@ mod tests {
         value.to_string().repeat(64)
     }
 
+    fn test_block(slot: u64, block_id: char, parent_id: char) -> super::super::CatalogL1Block {
+        super::super::CatalogL1Block {
+            checkpoint: super::super::CatalogBlockCheckpoint {
+                slot,
+                block_id: id(block_id),
+                parent_id: id(parent_id),
+            },
+            payload: serde_json::json!({
+                "header": {
+                    "slot": slot,
+                    "id": id(block_id),
+                    "parent_block": id(parent_id),
+                },
+                "transactions": []
+            }),
+        }
+    }
+
     #[test]
     fn source_namespace_and_worker_errors_do_not_expose_endpoint_text() -> Result<()> {
         let descriptor =
@@ -742,6 +884,72 @@ mod tests {
         };
 
         CatalogL1RangeRequest::new(0, target, CATALOG_RANGE_BLOCK_LIMIT)?;
+        Ok(())
+    }
+
+    #[test]
+    fn catch_up_pages_use_a_bounded_nonzero_pacing_interval() -> Result<()> {
+        if CATALOG_CATCH_UP_PAGE_INTERVAL.is_zero()
+            || CATALOG_CATCH_UP_PAGE_INTERVAL >= CATALOG_POLL_INTERVAL
+        {
+            bail!("catalog catch-up page pacing is disabled or exceeds foreground polling");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catch_up_waits_between_range_pages_and_remains_cancellable() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let catalog = Arc::new(ZoneCatalog::create(
+            directory.path().join("catalog.redb"),
+            CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+        )?);
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        let status = super::super::CatalogL1ChainStatus {
+            snapshot: super::super::CatalogL1ChainSnapshot {
+                tip: target.clone(),
+                lib: target,
+            },
+            genesis_id: Some(id('0')),
+        };
+        let (call_events, mut calls) = mpsc::unbounded_channel();
+        let source = Arc::new(PagingSource {
+            status,
+            calls: AtomicUsize::new(0),
+            call_events,
+        });
+        let context = ZoneCatalogRunContext::test_context(1);
+        let (wait_events, mut waits) = mpsc::unbounded_channel();
+        let pacer = BlockingPacer { wait_events };
+        let task_context = context.clone();
+        let task = tokio::spawn(async move {
+            run_catalog_scan_with_pacer(catalog, source, &task_context, &pacer).await
+        });
+
+        ensure!(
+            calls.recv().await == Some(1),
+            "first range page was not requested"
+        );
+        if waits.recv().await.is_none() {
+            bail!("catch-up pacer was not entered: {:?}", task.await?);
+        }
+        ensure!(
+            calls.try_recv().is_err(),
+            "second range page bypassed catch-up pacing"
+        );
+        context.cancellation().cancel();
+        ensure!(
+            matches!(task.await?, Err(ZoneCatalogServiceError::Cancelled)),
+            "catalog scan did not stop through the paced cancellation boundary"
+        );
         Ok(())
     }
 

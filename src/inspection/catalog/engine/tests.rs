@@ -14,6 +14,49 @@ use crate::inspection::catalog::{
 const TESTNET_SEQUENCER_BLOCK: &str = "0gQAAAAAAADgBr/57T2VP8TvanoE/U28V0Cdzfe66q1YCY203VHHaPZH+D0d+RhX4Qtz8m7atlbEG6J5XguGFqEPUWLQ8+1kb3u3+Z4BAADGt772EW9LB3inITN2BUfOdP8fHmTlcvpFP45NvGI01KYmibPzb/BkLygy6fTsHB4Oc4XoVVMp+k7Rp8xdjpgGAQAAAADiMVjm57Su7ujTA26v18dZ5R2KCU2Ce5JXELoh3v+PRgMAAAAvTEVaL0Nsb2NrUHJvZ3JhbUFjY291bnQvMDAwMDAwMS9MRVovQ2xvY2tQcm9ncmFtQWNjb3VudC8wMDAwMDEwL0xFWi9DbG9ja1Byb2dyYW1BY2NvdW50LzAwMDAwNTAAAAAAAgAAAG97t/meAQAAAAAAAAI=";
 
 #[test]
+fn latest_evidence_cache_preserves_evidence_id_tie_break() -> Result<()> {
+    let (_directory, catalog) = test_catalog(100)?;
+    let lower = tied_evidence("evidence-a");
+    let higher = tied_evidence("evidence-z");
+    let evidence = BTreeMap::from([
+        (lower.evidence_id.clone(), lower.clone()),
+        (higher.evidence_id.clone(), higher.clone()),
+    ]);
+    let (primary, configuration) = latest_evidence_ids(&evidence);
+    ensure!(
+        primary.get(&lower.channel_id) == Some(&higher.evidence_id)
+            && configuration.get(&lower.channel_id) == Some(&higher.evidence_id),
+        "snapshot cache did not preserve BTreeMap evidence-id tie-break"
+    );
+
+    let mut working = WorkingCatalog::from_snapshot(&catalog.snapshot()?);
+    insert_evidence(&mut working, higher.clone())?;
+    insert_evidence(&mut working, lower.clone())?;
+    ensure!(
+        working.latest_primary_evidence.get(&lower.channel_id) == Some(&higher.evidence_id)
+            && working.latest_configuration_evidence.get(&lower.channel_id)
+                == Some(&higher.evidence_id),
+        "incremental cache replaced a higher evidence-id tie"
+    );
+    Ok(())
+}
+
+fn tied_evidence(evidence_id: &str) -> ZoneEvidenceReference {
+    ZoneEvidenceReference {
+        evidence_id: evidence_id.to_owned(),
+        channel_id: id('8'),
+        coverage_segment_id: "segment-test".to_owned(),
+        l1_slot: 5,
+        block_id: id('5'),
+        transaction_hash: Some(id('a')),
+        operation_index: 0,
+        message_id: None,
+        evidence_kind: ZoneEvidenceKind::ChannelConfiguration,
+        evidence_use: CatalogEvidenceUse::PointSnapshot,
+    }
+}
+
+#[test]
 fn connected_page_commits_complete_catalog_and_channel_evidence() -> Result<()> {
     let (_directory, catalog) = test_catalog(100)?;
     let target = reference(10, 'a');
