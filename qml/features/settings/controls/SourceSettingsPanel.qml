@@ -34,6 +34,9 @@ Panel {
             theme: root.theme
             text: root.statusText
             colorToken: root.statusColor
+            accessibleName: qsTr("%1 status: %2").arg(root.title).arg(
+                root.statusText.length ? root.statusText : qsTr("Unknown"))
+            accessibleDescription: root.statusDetail
         }
     }
 

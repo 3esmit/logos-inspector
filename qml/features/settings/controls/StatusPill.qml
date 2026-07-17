@@ -9,6 +9,8 @@ Rectangle {
     required property Theme theme
     property string text: ""
     property color colorToken: theme.textMuted
+    property string accessibleName: root.text.length ? root.text : qsTr("Unknown")
+    property string accessibleDescription: ""
 
     radius: root.theme.radius
     color: root.fillColor()
@@ -16,6 +18,9 @@ Rectangle {
     border.color: root.colorToken
     implicitWidth: pillText.implicitWidth + 18
     implicitHeight: 26
+    Accessible.role: Accessible.StaticText
+    Accessible.name: root.accessibleName
+    Accessible.description: root.accessibleDescription
 
     Text {
         id: pillText
