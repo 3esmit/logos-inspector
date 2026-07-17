@@ -8,6 +8,8 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use crate::modules::logos_core::{LogoscoreCliRuntime, normalize_module_call_value};
 use crate::support::{
@@ -26,10 +28,15 @@ use super::model::{
     LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord, LocalNodeDeployment,
     LocalNodeOperationReport, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
 };
+use super::package::{
+    canonical_modules_dir, download_official_indexer_module, install_official_indexer_module,
+    installed_package_modules_dir, local_node_package_catalog, package_path_modules_dir,
+};
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::process::{find_command, process_group_has_live_members, spawn_detached, stop_process};
 use super::runtime::LogoscoreRuntimeProfile;
 use super::workflow::node_set_for_profile;
+use super::{INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit};
 
 const MANIFEST_FILE: &str = "local-network.json";
 const TESTNET_ID: &str = "logos-testnet";
@@ -50,11 +57,17 @@ pub(super) struct LocalNodeActionResult {
     pub(super) interruption: Option<anyhow::Error>,
 }
 
+pub(super) struct LocalNodeActionControls<'a> {
+    pub(super) command: Option<&'a CommandControl>,
+    pub(super) package_commit: Option<&'a mut LocalNodePackageCommit>,
+}
+
 impl LocalNodeActionWorkspace {
     pub(super) fn system() -> Self {
         Self
     }
 
+    #[cfg(test)]
     pub(super) fn apply(
         self,
         state: &mut LocalNodesState,
@@ -63,6 +76,28 @@ impl LocalNodeActionWorkspace {
         normalized_profile: &str,
         request: &LocalNodeActionRequest,
         control: Option<&CommandControl>,
+    ) -> LocalNodeActionResult {
+        self.apply_with_package_commit(
+            state,
+            runtime,
+            runtime_config_root,
+            normalized_profile,
+            request,
+            LocalNodeActionControls {
+                command: control,
+                package_commit: None,
+            },
+        )
+    }
+
+    pub(super) fn apply_with_package_commit(
+        self,
+        state: &mut LocalNodesState,
+        runtime: &mut Option<LogoscoreRuntimeProfile>,
+        runtime_config_root: &Path,
+        normalized_profile: &str,
+        request: &LocalNodeActionRequest,
+        controls: LocalNodeActionControls<'_>,
     ) -> LocalNodeActionResult {
         let target_network_id = request
             .action
@@ -80,7 +115,8 @@ impl LocalNodeActionWorkspace {
             runtime_config_root,
             normalized_profile,
             request,
-            control,
+            controls.command,
+            controls.package_commit,
         );
         update_module_context_binding(
             state,
@@ -108,6 +144,9 @@ fn update_module_context_binding(
             {
                 state.set_module_context_topology_for_profile(kind, profile);
             }
+        }
+        NodeAction::Start if status == "starting" && request.node == Some(NodeKind::Indexer) => {
+            state.set_module_context_topology_for_profile(NodeKind::Indexer, profile);
         }
         NodeAction::Uninstall if status == "uninstalled" => {
             if let Some(kind) = request.node
@@ -144,6 +183,7 @@ fn dispatch_action(
     normalized_profile: &str,
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
+    package_commit: Option<&mut LocalNodePackageCommit>,
 ) -> LocalNodeActionResult {
     if let Some(control) = control
         && let Err(error) = control.check_active()
@@ -159,7 +199,14 @@ fn dispatch_action(
         NodeAction::LoadNetwork => load_network(state, runtime.as_ref(), request),
         NodeAction::DeleteNetwork => delete_network(state, runtime.as_ref(), request),
         NodeAction::ResetNetwork => reset_network(state, runtime.as_ref(), request),
-        NodeAction::Install => node_install(state, normalized_profile, request),
+        NodeAction::Install => node_install(
+            state,
+            runtime.as_ref(),
+            normalized_profile,
+            request,
+            control,
+            package_commit,
+        ),
         NodeAction::Initialize => {
             node_initialize(state, runtime, normalized_profile, request, control)
         }
@@ -259,7 +306,9 @@ fn load_network(
             .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
         record.workspace = Path::new(workspace).display().to_string();
         record.manifest_path = manifest_path.display().to_string();
+        super::action_engine::normalize_indexer_module_record(&mut record);
         record.updated_at = now_millis();
+        write_devnet_manifest(&record)?;
         if let Some(existing) = state.devnet_mut(&record.id) {
             *existing = record.clone();
         } else {
@@ -363,6 +412,7 @@ fn runtime_start(
             request.runtime_binary_path.as_deref(),
             request.runtime_modules_dir.as_deref(),
         )?;
+        reconcile_indexer_runtime_modules_dir(state, &profile)?;
         let command = profile.daemon_command()?;
         let display = command_display(&command);
         let process_id =
@@ -529,8 +579,11 @@ fn wait_for_runtime_process_group_exit(
 
 fn node_install(
     state: &mut LocalNodesState,
+    runtime: Option<&LogoscoreRuntimeProfile>,
     profile: &str,
     request: &LocalNodeActionRequest,
+    control: Option<&CommandControl>,
+    package_commit: Option<&mut LocalNodePackageCommit>,
 ) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
@@ -539,6 +592,16 @@ fn node_install(
         let policy = adapter.action_policy(NodeAction::Install);
         if let Some(reason) = policy.blocked_reason() {
             return Ok(needs_configuration(reason));
+        }
+        if policy == NodeActionPolicy::InstallPackage {
+            return install_indexer_package(
+                state,
+                runtime,
+                profile,
+                request,
+                control,
+                package_commit,
+            );
         }
         let NodeActionPolicy::RegisterExecutable {
             program: executable,
@@ -564,6 +627,223 @@ fn node_install(
             command: None,
         })
     })
+}
+
+fn install_indexer_package(
+    state: &mut LocalNodesState,
+    runtime: Option<&LogoscoreRuntimeProfile>,
+    profile: &str,
+    request: &LocalNodeActionRequest,
+    control: Option<&CommandControl>,
+    package_commit: Option<&mut LocalNodePackageCommit>,
+) -> Result<OperationOutcome> {
+    if request.node != Some(NodeKind::Indexer) {
+        bail!("package installation is only implemented for Indexer");
+    }
+    require_runtime_stopped(runtime)?;
+    let version = required_trimmed_request_value(
+        request.package_version.as_deref(),
+        "Indexer package version",
+    )?;
+    let root_hash = required_trimmed_request_value(
+        request.package_root_hash.as_deref(),
+        "Indexer package root hash",
+    )?;
+    let catalog = local_node_package_catalog(request.runtime_modules_dir.as_deref())?;
+    validate_runtime_modules_dir(runtime, &catalog.modules_dir)?;
+    let release = catalog
+        .package
+        .versions
+        .iter()
+        .find(|release| release.version == version && release.root_hash == root_hash)
+        .with_context(|| {
+            format!(
+                "official lez_indexer_module release `{version}` with root hash `{root_hash}` is unavailable"
+            )
+        })?;
+
+    if let Some(installed) = catalog.installed.as_ref()
+        && installed.version == release.version
+        && installed.root_hash == release.root_hash
+    {
+        record_indexer_package(state, profile, installed)?;
+        return Ok(OperationOutcome {
+            status: "installed".to_owned(),
+            detail: format!(
+                "lez_indexer_module {} is already installed in {}",
+                installed.version, catalog.modules_dir
+            ),
+            command: None,
+        });
+    }
+
+    let temporary = tempfile::Builder::new()
+        .prefix("logos-inspector-indexer-package-")
+        .tempdir()
+        .context("failed to create Indexer package download directory")?;
+    let package_control = control.cloned().unwrap_or_else(|| {
+        CommandControl::new(
+            CancellationToken::new(),
+            Instant::now() + INDEXER_PACKAGE_INSTALL_TIMEOUT,
+        )
+    });
+    let downloaded =
+        download_official_indexer_module(release, temporary.path(), package_control.clone())?;
+    if let Some(control) = control {
+        control.check_active()?;
+    }
+    let install_control = match package_commit {
+        Some(package_commit) => package_commit.begin()?,
+        None => package_control,
+    };
+    let installed = install_official_indexer_module(
+        &downloaded,
+        Path::new(&catalog.modules_dir),
+        install_control,
+    )?;
+    record_indexer_package(state, profile, &installed)?;
+    Ok(OperationOutcome {
+        status: "installed".to_owned(),
+        detail: format!(
+            "installed lez_indexer_module {} in {}; start or restart the managed LogosCore runtime before using it",
+            installed.version, catalog.modules_dir
+        ),
+        command: Some(
+            "lgpd download lez_indexer_module && lgpm install lez_indexer_module".to_owned(),
+        ),
+    })
+}
+
+fn record_indexer_package(
+    state: &mut LocalNodesState,
+    profile: &str,
+    installed: &super::package::LocalNodeInstalledPackageReport,
+) -> Result<()> {
+    let active_topology_id = state
+        .active_topology(profile)
+        .map(|record| record.id.clone())
+        .context("active local node topology is required")?;
+    let modules_dir = installed_package_modules_dir(installed)?;
+    let mut reconciled = state.clone();
+    let mut changed_records = Vec::new();
+    let mut active_updated = false;
+    for record in reconciled
+        .testnet
+        .iter_mut()
+        .chain(reconciled.devnets.iter_mut())
+    {
+        let is_active = record.id == active_topology_id;
+        let Some(config) = node_config_mut(record, NodeKind::Indexer) else {
+            continue;
+        };
+        let recorded_modules_dir = config
+            .package_path
+            .as_deref()
+            .and_then(package_path_modules_dir);
+        if !is_active
+            && recorded_modules_dir
+                .as_ref()
+                .is_some_and(|recorded| recorded != &modules_dir)
+        {
+            continue;
+        }
+        config.package_path = Some(installed.main_file_path.clone());
+        config.package_version = Some(installed.version.clone());
+        config.package_root_hash = Some(installed.root_hash.clone());
+        config.module_path = Some("lez_indexer_module".to_owned());
+        config.indexer_state = None;
+        config.indexer_head = None;
+        config.indexer_error = None;
+        config.process_id = None;
+        config.installed = true;
+        config.lifecycle_state = NodeLifecycleState::Stopped;
+        config.pending_lifecycle_action = None;
+        record.updated_at = now_millis();
+        active_updated |= is_active;
+        changed_records.push(record.clone());
+    }
+    if !active_updated {
+        bail!("active local node topology has no Indexer config");
+    }
+    for record in &changed_records {
+        write_devnet_manifest(record)?;
+    }
+    *state = reconciled;
+    Ok(())
+}
+
+fn reconcile_indexer_runtime_modules_dir(
+    state: &mut LocalNodesState,
+    runtime: &LogoscoreRuntimeProfile,
+) -> Result<()> {
+    let runtime_modules_dir = runtime
+        .modules_dir
+        .as_deref()
+        .context("managed LogosCore runtime has no modules directory")?;
+    let runtime_modules_dir = canonical_modules_dir(Path::new(runtime_modules_dir))?;
+    let mut reconciled = state.clone();
+    let mut changed_records = Vec::new();
+    for record in reconciled
+        .testnet
+        .iter_mut()
+        .chain(reconciled.devnets.iter_mut())
+    {
+        let Some(config) = node_config_mut(record, NodeKind::Indexer) else {
+            continue;
+        };
+        let has_package_identity = config.installed
+            || config.package_path.is_some()
+            || config.package_version.is_some()
+            || config.package_root_hash.is_some();
+        if !has_package_identity {
+            continue;
+        }
+        let matches_runtime = config
+            .package_path
+            .as_deref()
+            .and_then(package_path_modules_dir)
+            .is_some_and(|modules_dir| modules_dir == runtime_modules_dir);
+        if matches_runtime {
+            continue;
+        }
+        clear_module_context(config);
+        record.updated_at = now_millis();
+        changed_records.push(record.clone());
+    }
+    for record in &changed_records {
+        write_devnet_manifest(record)?;
+    }
+    *state = reconciled;
+    Ok(())
+}
+
+fn validate_runtime_modules_dir(
+    runtime: Option<&LogoscoreRuntimeProfile>,
+    requested_modules_dir: &str,
+) -> Result<()> {
+    let Some(configured) = runtime
+        .and_then(|profile| profile.modules_dir.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let configured_modules_dir = canonical_modules_dir(Path::new(configured))?;
+    let requested_modules_dir = canonical_modules_dir(Path::new(requested_modules_dir))?;
+    if configured_modules_dir != requested_modules_dir {
+        bail!(
+            "selected modules directory `{}` differs from the managed LogosCore runtime directory `{configured}`",
+            requested_modules_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn required_trimmed_request_value<'a>(value: Option<&'a str>, label: &str) -> Result<&'a str> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{label} is required"))
 }
 
 fn node_initialize(
@@ -1041,8 +1321,13 @@ fn node_start(
                     "start an Inspector-managed logoscore runtime before starting a module node",
                 ));
             }
-            if let Some(detail) = managed_context_binding_problem(state, profile, kind) {
+            if let Some(detail) = managed_start_context_binding_problem(state, profile, kind) {
                 return Ok(needs_configuration(&detail));
+            }
+            if kind == NodeKind::Indexer
+                && let Some(problem) = prepare_indexer_start_config(state, profile, request)?
+            {
+                return Ok(needs_configuration(&problem));
             }
         }
         let record = active_topology_mut(state, profile)?;
@@ -1138,6 +1423,11 @@ fn node_start(
         match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
                 config.installed = true;
+                if kind == NodeKind::Indexer {
+                    config.indexer_state = None;
+                    config.indexer_head = None;
+                    config.indexer_error = None;
+                }
                 config.lifecycle_state = NodeLifecycleState::Starting;
                 config.pending_lifecycle_action = Some(NodeAction::Start);
                 record.updated_at = now_millis();
@@ -1190,6 +1480,11 @@ fn node_stop(
                 return Ok(needs_configuration(
                     "start an Inspector-managed logoscore runtime before stopping a module node",
                 ));
+            }
+            if kind == NodeKind::Indexer
+                && let Some(problem) = indexer_stop_configuration_problem(state, profile, request)?
+            {
+                return Ok(needs_configuration(&problem));
             }
             if let Some(detail) = managed_context_binding_problem(state, profile, kind) {
                 return Ok(needs_configuration(&detail));
@@ -1295,6 +1590,134 @@ fn node_stop(
             }),
         }
     })
+}
+
+fn prepare_indexer_start_config(
+    state: &mut LocalNodesState,
+    profile: &str,
+    request: &LocalNodeActionRequest,
+) -> Result<Option<String>> {
+    let channel_id =
+        required_trimmed_request_value(request.channel_id.as_deref(), "Indexer Channel ID")?;
+    validate_channel_id(channel_id)?;
+    let bedrock_endpoint = normalized_bedrock_endpoint(required_trimmed_request_value(
+        request.bedrock_endpoint.as_deref(),
+        "Indexer Bedrock endpoint",
+    )?)?;
+    let record = active_topology_mut(state, profile)?;
+    let config = required_node_config(record, NodeKind::Indexer)?;
+    if !config.installed {
+        return Ok(Some(
+            "install lez_indexer_module before starting a Channel Indexer".to_owned(),
+        ));
+    }
+    let configured_channel = indexer_channel_from_config(&config.config_path)?;
+    if !matches!(
+        config.lifecycle_state,
+        NodeLifecycleState::Stopped | NodeLifecycleState::NotInitialized
+    ) {
+        if let Some(configured_channel) = configured_channel
+            && configured_channel != channel_id
+        {
+            return Ok(Some(format!(
+                "Indexer is bound to Channel `{configured_channel}`; stop it before starting Channel `{channel_id}`"
+            )));
+        }
+        return Ok(Some(
+            "Indexer must be stopped before it can be started".to_owned(),
+        ));
+    }
+    config.indexer_state = None;
+    config.indexer_head = None;
+    config.indexer_error = None;
+    let config_value = crate::source_routing::execution_zone_layer::managed_indexer_channel_config(
+        channel_id,
+        &bedrock_endpoint,
+    );
+    let config_text = serde_json::to_string_pretty(&config_value)
+        .context("failed to serialize Channel Indexer config")?;
+    let config_path = Path::new(&config.config_path);
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(config_path, config_text)
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
+    record.updated_at = now_millis();
+    write_devnet_manifest(record)?;
+    Ok(None)
+}
+
+fn indexer_stop_configuration_problem(
+    state: &LocalNodesState,
+    profile: &str,
+    request: &LocalNodeActionRequest,
+) -> Result<Option<String>> {
+    let requested_channel =
+        required_trimmed_request_value(request.channel_id.as_deref(), "Indexer Channel ID")?;
+    validate_channel_id(requested_channel)?;
+    let configured = state
+        .active_topology(profile)
+        .and_then(|record| {
+            record
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Indexer)
+        })
+        .context("Indexer config is not available")?;
+    let Some(configured_channel) = indexer_channel_from_config(&configured.config_path)? else {
+        return Ok(Some("Indexer has no configured Channel".to_owned()));
+    };
+    if configured_channel != requested_channel {
+        return Ok(Some(format!(
+            "Indexer is bound to Channel `{configured_channel}`, not `{requested_channel}`"
+        )));
+    }
+    Ok(None)
+}
+
+pub(super) fn indexer_channel_from_config(path: &str) -> Result<Option<String>> {
+    let path = Path::new(path);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(
+        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(value
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned))
+}
+
+fn validate_channel_id(channel_id: &str) -> Result<()> {
+    // `ChannelId` is serialized as a 32-byte hex value. The module's storage
+    // reset contract enforces the same representation before deriving its path.
+    anyhow::ensure!(
+        channel_id.len() == 64 && channel_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Indexer Channel ID must be exactly 64 hexadecimal characters"
+    );
+    Ok(())
+}
+
+fn normalized_bedrock_endpoint(endpoint: &str) -> Result<String> {
+    let parsed = Url::parse(endpoint).context("Indexer Bedrock endpoint is invalid")?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!(
+            "Indexer Bedrock endpoint must be an HTTP(S) origin without credentials, query, or fragment"
+        );
+    }
+    Ok(endpoint.trim_end_matches('/').to_owned())
 }
 
 fn unload_messaging_context(
@@ -1430,17 +1853,70 @@ fn managed_context_binding_problem(
     let topology = state.active_topology(profile)?;
     match state.module_context_topology_id(kind) {
         Some(topology_id) if topology_id == topology.id => None,
+        Some(topology_id) if kind == NodeKind::Indexer => Some(format!(
+            "Indexer module context is bound to `{topology_id}`; select that topology and stop its Channel Indexer before controlling `{}`",
+            topology.id,
+        )),
         Some(topology_id) => Some(format!(
             "{} module context is bound to `{topology_id}`; initialize it for `{}` before controlling it",
             adapter_for(kind).label(),
             topology.id,
         )),
+        None if kind == NodeKind::Indexer => None,
         None => Some(format!(
             "initialize {} to bind its LogosCore module context to `{}` before controlling it",
             adapter_for(kind).label(),
             topology.id,
         )),
     }
+}
+
+fn managed_start_context_binding_problem(
+    state: &LocalNodesState,
+    profile: &str,
+    kind: NodeKind,
+) -> Option<String> {
+    let problem = managed_context_binding_problem(state, profile, kind);
+    if problem.is_some()
+        && kind == NodeKind::Indexer
+        && stopped_indexer_context_can_rebind(state, profile)
+    {
+        return None;
+    }
+    problem
+}
+
+fn stopped_indexer_context_can_rebind(state: &LocalNodesState, profile: &str) -> bool {
+    let Some(active_topology_id) = state
+        .active_topology(profile)
+        .map(|record| record.id.as_str())
+    else {
+        return false;
+    };
+    let Some(bound_topology_id) = state.module_context_topology_id(NodeKind::Indexer) else {
+        return false;
+    };
+    if bound_topology_id == active_topology_id {
+        return false;
+    }
+    state
+        .testnet
+        .iter()
+        .chain(state.devnets.iter())
+        .find(|record| record.id == bound_topology_id)
+        .and_then(|record| {
+            record
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Indexer)
+        })
+        .is_some_and(|config| {
+            config.pending_lifecycle_action.is_none()
+                && matches!(
+                    config.lifecycle_state,
+                    NodeLifecycleState::Stopped | NodeLifecycleState::NotInitialized
+                )
+        })
 }
 
 fn managed_context_initialization_problem(
@@ -1524,6 +2000,11 @@ fn required_node_config(
 fn clear_module_context(config: &mut LocalNodeConfigRecord) {
     config.installed = false;
     config.package_path = None;
+    config.package_version = None;
+    config.package_root_hash = None;
+    config.indexer_state = None;
+    config.indexer_head = None;
+    config.indexer_error = None;
     config.module_path = None;
     config.process_id = None;
     config.lifecycle_state = NodeLifecycleState::NotInitialized;
@@ -1649,6 +2130,11 @@ fn default_node_config(workspace: &Path, kind: NodeKind) -> LocalNodeConfigRecor
         endpoint: adapter.endpoint(port),
         port,
         package_path: None,
+        package_version: None,
+        package_root_hash: None,
+        indexer_state: None,
+        indexer_head: None,
+        indexer_error: None,
         module_path: None,
         process_id: None,
         installed: false,
@@ -1723,7 +2209,7 @@ pub(super) fn ensure_testnet_topology(state: &mut LocalNodesState) -> Result<boo
     generate_topology_files(&record, false)?;
     write_devnet_manifest(&record)?;
     state.testnet = Some(record);
-    state.version = 3;
+    state.version = super::model::LOCAL_NODES_STATE_VERSION;
     Ok(true)
 }
 
@@ -1833,6 +2319,419 @@ mod tests {
         let detail = operation_error_detail(&error);
         if !detail.contains("outer operation failure") || !detail.contains("inner CLI failure") {
             bail!("operation error detail lost a cause: {detail}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn loading_legacy_manifest_cannot_restore_process_era_indexer() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("legacy-network");
+        let manifest_path = workspace.join(MANIFEST_FILE);
+        let mut indexer = default_node_config(&workspace, NodeKind::Indexer);
+        indexer.endpoint = Some("http://127.0.0.1:8779/".to_owned());
+        indexer.port = Some(8779);
+        indexer.package_path = Some("/usr/local/bin/indexer_service".to_owned());
+        indexer.process_id = Some(4242);
+        indexer.installed = true;
+        indexer.lifecycle_state = NodeLifecycleState::Running;
+        let record = LocalDevnetRecord {
+            deployment: LocalNodeDeployment::LocalDevnet,
+            id: "legacy-network".to_owned(),
+            label: "Legacy network".to_owned(),
+            workspace: workspace.display().to_string(),
+            manifest_path: manifest_path.display().to_string(),
+            created_at: 1,
+            updated_at: 2,
+            nodes: vec![indexer],
+        };
+        write_devnet_manifest(&record)?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        let request = LocalNodeActionRequest {
+            action: NodeAction::LoadNetwork,
+            node: None,
+            network_id: None,
+            workspace_path: Some(workspace.display().to_string()),
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
+            label: None,
+        };
+
+        let result = load_network(&mut state, None, &request);
+
+        anyhow::ensure!(result.report.status == "loaded");
+        let loaded = state
+            .devnets
+            .first()
+            .and_then(|record| record.nodes.first())
+            .context("missing loaded Indexer")?;
+        anyhow::ensure!(
+            loaded.endpoint.is_none()
+                && loaded.port.is_none()
+                && loaded.process_id.is_none()
+                && loaded.package_path.is_none()
+                && !loaded.installed
+                && loaded.lifecycle_state == NodeLifecycleState::NotInitialized
+        );
+        let persisted: LocalDevnetRecord =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
+        let persisted_indexer = persisted
+            .nodes
+            .first()
+            .context("missing persisted Indexer")?;
+        anyhow::ensure!(
+            persisted_indexer.endpoint.is_none()
+                && persisted_indexer.port.is_none()
+                && persisted_indexer.process_id.is_none()
+                && persisted_indexer.package_path.is_none()
+                && !persisted_indexer.installed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_start_config_uses_selected_channel_and_bedrock_origin() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let indexer = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+            .context("missing Indexer node")?;
+        indexer.installed = true;
+        indexer.lifecycle_state = NodeLifecycleState::Stopped;
+        let config_path = indexer.config_path.clone();
+        let channel_a = "01".repeat(32);
+        let channel_b = "02".repeat(32);
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Start,
+            node: Some(NodeKind::Indexer),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: Some(channel_a.clone()),
+            bedrock_endpoint: Some("http://127.0.0.1:8080/".to_owned()),
+            label: None,
+        };
+
+        anyhow::ensure!(prepare_indexer_start_config(&mut state, "default", &request)?.is_none());
+        let config: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        anyhow::ensure!(
+            config.get("channel_id").and_then(Value::as_str) == Some(channel_a.as_str())
+                && config
+                    .pointer("/bedrock_config/addr")
+                    .and_then(Value::as_str)
+                    == Some("http://127.0.0.1:8080")
+                && config
+                    .get("consensus_info_polling_interval")
+                    .and_then(Value::as_str)
+                    == Some("1s"),
+            "unexpected managed Indexer config: {config}"
+        );
+
+        let indexer = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+            .context("missing Indexer node")?;
+        indexer.lifecycle_state = NodeLifecycleState::Running;
+        let other_channel = LocalNodeActionRequest {
+            channel_id: Some(channel_b.clone()),
+            ..request
+        };
+        let problem = prepare_indexer_start_config(&mut state, "default", &other_channel)?
+            .context("active Indexer Channel switch was not blocked")?;
+        anyhow::ensure!(
+            problem.contains(&format!("stop it before starting Channel `{channel_b}`"))
+                && indexer_channel_from_config(&config_path)?.as_deref()
+                    == Some(channel_a.as_str()),
+            "unexpected Channel switch result: {problem}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_start_preflight_does_not_mutate_non_stopped_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let channel = "01".repeat(32);
+        let config_path = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+            .map(|indexer| {
+                indexer.installed = true;
+                indexer.config_path.clone()
+            })
+            .context("missing Indexer node")?;
+        let config = crate::source_routing::execution_zone_layer::managed_indexer_channel_config(
+            &channel,
+            "http://127.0.0.1:8080",
+        );
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Start,
+            node: Some(NodeKind::Indexer),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: Some(channel),
+            bedrock_endpoint: Some("http://127.0.0.1:18080".to_owned()),
+            label: None,
+        };
+
+        for (lifecycle_state, pending_lifecycle_action) in [
+            (NodeLifecycleState::Running, None),
+            (NodeLifecycleState::Starting, Some(NodeAction::Start)),
+        ] {
+            let record = state.testnet.as_mut().context("missing testnet")?;
+            let indexer = node_config_mut(record, NodeKind::Indexer).context("missing Indexer")?;
+            indexer.lifecycle_state = lifecycle_state;
+            indexer.pending_lifecycle_action = pending_lifecycle_action;
+            indexer.indexer_state = Some("caught_up".to_owned());
+            indexer.indexer_head = Some("42".to_owned());
+            let before_node = indexer.clone();
+            let before_updated_at = record.updated_at;
+            let before_config = fs::read(&config_path)?;
+
+            let problem = prepare_indexer_start_config(&mut state, "default", &request)?
+                .context("non-stopped Indexer start was accepted")?;
+
+            let record = state.testnet.as_ref().context("missing testnet")?;
+            let indexer = record
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Indexer)
+                .context("missing Indexer")?;
+            anyhow::ensure!(problem.contains("must be stopped"));
+            anyhow::ensure!(indexer == &before_node);
+            anyhow::ensure!(record.updated_at == before_updated_at);
+            anyhow::ensure!(fs::read(&config_path)? == before_config);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopped_indexer_context_rebinds_when_another_topology_starts() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"lez_indexer_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        printf '%s\n' '{"name":"lez_indexer_module","methods":[{"isInvokable":true,"name":"start_indexer","signature":"start_indexer(QString)"}]}'
+        ;;
+    call)
+        printf '%s\n' "$3" >> "$config_dir/calls"
+        printf '%s\n' '{"status":"ok","module":"lez_indexer_module","method":"start_indexer","result":0}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+        let modules_dir = directory.path().join("modules");
+        fs::create_dir_all(&modules_dir)?;
+        let mut runtime = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            cli.to_str(),
+            modules_dir.to_str(),
+        )?;
+        fs::create_dir_all(&runtime.config_dir)?;
+        runtime.daemon_process_id = Some(process::id());
+        let mut runtime = Some(runtime);
+
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let create = LocalNodeActionRequest {
+            action: NodeAction::NewNetwork,
+            node: None,
+            network_id: Some("second-zone".to_owned()),
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
+            label: None,
+        };
+        anyhow::ensure!(new_network(&mut state, None, &create).report.status == "created");
+        let bound = state.testnet.as_mut().context("missing testnet")?;
+        let bound_indexer =
+            node_config_mut(bound, NodeKind::Indexer).context("missing bound Indexer")?;
+        bound_indexer.installed = true;
+        bound_indexer.lifecycle_state = NodeLifecycleState::Stopped;
+        state
+            .module_context_topology_by_kind
+            .insert(NodeKind::Indexer, TESTNET_ID.to_owned());
+        let active = state.active_devnet_mut().context("missing active devnet")?;
+        let active_id = active.id.clone();
+        let active_indexer =
+            node_config_mut(active, NodeKind::Indexer).context("missing active Indexer")?;
+        active_indexer.installed = true;
+        active_indexer.lifecycle_state = NodeLifecycleState::Stopped;
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Start,
+            node: Some(NodeKind::Indexer),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: Some("01".repeat(32)),
+            bedrock_endpoint: Some("http://127.0.0.1:8080".to_owned()),
+            label: None,
+        };
+
+        let result = LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            directory.path(),
+            "local",
+            &request,
+            None,
+        );
+
+        anyhow::ensure!(
+            result.report.status == "starting",
+            "{}",
+            result.report.detail
+        );
+        anyhow::ensure!(
+            state.module_context_topology_id(NodeKind::Indexer) == Some(active_id.as_str())
+        );
+        let active_indexer = state
+            .active_devnet()
+            .and_then(|record| {
+                record
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Indexer)
+            })
+            .context("missing started Indexer")?;
+        anyhow::ensure!(
+            active_indexer.lifecycle_state == NodeLifecycleState::Starting
+                && active_indexer.pending_lifecycle_action == Some(NodeAction::Start)
+        );
+        let calls = fs::read_to_string(
+            Path::new(&runtime.as_ref().context("runtime disappeared")?.config_dir).join("calls"),
+        )?;
+        anyhow::ensure!(calls.lines().eq(["start_indexer"]));
+        Ok(())
+    }
+
+    #[test]
+    fn running_indexer_foreign_binding_requires_stopping_bound_channel() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let create = LocalNodeActionRequest {
+            action: NodeAction::NewNetwork,
+            node: None,
+            network_id: Some("second-zone".to_owned()),
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
+            label: None,
+        };
+        anyhow::ensure!(new_network(&mut state, None, &create).report.status == "created");
+        let bound = state.testnet.as_mut().context("missing testnet")?;
+        let bound_indexer =
+            node_config_mut(bound, NodeKind::Indexer).context("missing bound Indexer")?;
+        bound_indexer.installed = true;
+        bound_indexer.lifecycle_state = NodeLifecycleState::Running;
+        state
+            .module_context_topology_by_kind
+            .insert(NodeKind::Indexer, TESTNET_ID.to_owned());
+        let active_id = state
+            .active_devnet()
+            .map(|record| record.id.clone())
+            .context("missing active devnet")?;
+
+        let problem = managed_start_context_binding_problem(&state, "local", NodeKind::Indexer)
+            .context("foreign running Indexer binding was accepted")?;
+
+        anyhow::ensure!(
+            problem
+                == format!(
+                    "Indexer module context is bound to `{TESTNET_ID}`; select that topology and stop its Channel Indexer before controlling `{active_id}`"
+                ),
+            "unexpected foreign Indexer binding guidance: {problem}"
+        );
+        anyhow::ensure!(
+            !problem.contains("initialize"),
+            "Indexer guidance exposed an unavailable Initialize action: {problem}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_channel_id_requires_exact_32_byte_hex_serialization() -> Result<()> {
+        validate_channel_id(&"ab".repeat(32))?;
+        validate_channel_id(&"AB".repeat(32))?;
+
+        for invalid in [
+            String::new(),
+            "ab".repeat(31),
+            format!("{}a", "ab".repeat(32)),
+            format!("{}g", "ab".repeat(31)) + "0",
+        ] {
+            let Err(error) = validate_channel_id(&invalid) else {
+                anyhow::bail!("invalid Channel ID was accepted: {invalid}");
+            };
+            anyhow::ensure!(
+                error
+                    .to_string()
+                    .contains("exactly 64 hexadecimal characters")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_bedrock_endpoint_requires_http_origin() -> Result<()> {
+        anyhow::ensure!(
+            normalized_bedrock_endpoint("http://127.0.0.1:8080/")? == "http://127.0.0.1:8080"
+        );
+        for endpoint in [
+            "http://user@127.0.0.1:8080",
+            "http://127.0.0.1:8080?token=secret",
+            "http://127.0.0.1:8080/api",
+            "file:///tmp/bedrock.sock",
+        ] {
+            anyhow::ensure!(
+                normalized_bedrock_endpoint(endpoint).is_err(),
+                "unsafe Bedrock endpoint was accepted: {endpoint}"
+            );
         }
         Ok(())
     }
@@ -1960,6 +2859,10 @@ esac
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
         let mut runtime = Some(profile);
@@ -2030,52 +2933,68 @@ esac
     fn detached_lifecycle_actions_wait_for_watcher_confirmation() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mut state = LocalNodesState::default_for_config_dir(directory.path());
-        ensure_testnet_topology(&mut state)?;
-        let indexer = state
-            .testnet
-            .as_mut()
-            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
-            .context("missing Indexer node")?;
-        indexer.installed = true;
-        indexer.process_id = Some(u32::MAX);
-        indexer.lifecycle_state = NodeLifecycleState::Running;
+        let create = LocalNodeActionRequest {
+            action: NodeAction::NewNetwork,
+            node: None,
+            network_id: Some("detached-lifecycle".to_owned()),
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
+            label: None,
+        };
+        let created = new_network(&mut state, None, &create);
+        anyhow::ensure!(created.report.status == "created");
+        let sequencer = state
+            .active_devnet_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Sequencer))
+            .context("missing Sequencer node")?;
+        sequencer.installed = true;
+        sequencer.process_id = Some(u32::MAX);
+        sequencer.lifecycle_state = NodeLifecycleState::Running;
 
         let stop = LocalNodeActionRequest {
             action: NodeAction::Stop,
-            node: Some(NodeKind::Indexer),
+            node: Some(NodeKind::Sequencer),
             network_id: None,
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
-        let stopped = node_stop(&mut state, None, "default", &stop, None);
+        let stopped = node_stop(&mut state, None, "local", &stop, None);
 
         anyhow::ensure!(stopped.report.status == "stopping");
-        let indexer = state
-            .testnet
-            .as_ref()
+        let sequencer = state
+            .active_devnet()
             .and_then(|record| {
                 record
                     .nodes
                     .iter()
-                    .find(|node| node.kind == NodeKind::Indexer)
+                    .find(|node| node.kind == NodeKind::Sequencer)
             })
-            .context("missing Indexer node after stop")?;
+            .context("missing Sequencer node after stop")?;
         anyhow::ensure!(
-            indexer.lifecycle_state == NodeLifecycleState::Stopping
-                && indexer.pending_lifecycle_action == Some(NodeAction::Stop)
-                && indexer.process_id == Some(u32::MAX)
+            sequencer.lifecycle_state == NodeLifecycleState::Stopping
+                && sequencer.pending_lifecycle_action == Some(NodeAction::Stop)
+                && sequencer.process_id == Some(u32::MAX)
         );
 
-        let repeated_stop = node_stop(&mut state, None, "default", &stop, None);
+        let repeated_stop = node_stop(&mut state, None, "local", &stop, None);
         anyhow::ensure!(repeated_stop.report.status == "needs_configuration");
 
         let start = LocalNodeActionRequest {
             action: NodeAction::Start,
             ..stop
         };
-        let repeated_start = node_start(&mut state, None, "default", &start, None);
+        let repeated_start = node_start(&mut state, None, "local", &start, None);
         anyhow::ensure!(repeated_start.report.status == "needs_configuration");
         Ok(())
     }
@@ -2179,6 +3098,10 @@ esac
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
 
@@ -2295,6 +3218,10 @@ fi
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
 
@@ -2642,6 +3569,10 @@ esac
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
         let control = CommandControl::new(
@@ -2800,6 +3731,10 @@ esac
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
 
@@ -2833,6 +3768,254 @@ esac
     }
 
     #[cfg(unix)]
+    #[test]
+    fn runtime_modules_dir_validation_uses_canonical_identity() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        let modules_alias = directory.path().join("modules-alias");
+        let other_modules_dir = directory.path().join("other-modules");
+        fs::create_dir_all(&modules_dir)?;
+        fs::create_dir_all(&other_modules_dir)?;
+        symlink(&modules_dir, &modules_alias)?;
+        let runtime = LogoscoreRuntimeProfile {
+            id: "test-runtime".to_owned(),
+            binary_path: "/usr/bin/logoscore".to_owned(),
+            config_dir: directory.path().join("runtime").display().to_string(),
+            modules_dir: Some(modules_alias.display().to_string()),
+            persistence_path: Some(directory.path().join("data").display().to_string()),
+            ownership: super::super::runtime::LogoscoreRuntimeOwnership::InspectorManaged,
+            timeout_profile: super::super::runtime::LogoscoreTimeoutProfile::Lifecycle,
+            daemon_process_id: None,
+        };
+
+        validate_runtime_modules_dir(Some(&runtime), modules_dir.to_string_lossy().as_ref())?;
+        anyhow::ensure!(
+            validate_runtime_modules_dir(
+                Some(&runtime),
+                other_modules_dir.to_string_lossy().as_ref()
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_package_install_reconciles_every_topology_for_canonical_modules_dir() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_a = directory.path().join("modules-a");
+        let modules_b = directory.path().join("modules-b");
+        let package_a = create_indexer_package_file(&modules_a)?;
+        let package_b = create_indexer_package_file(&modules_b)?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        state.testnet = Some(indexer_topology(
+            directory.path(),
+            "logos-testnet",
+            LocalNodeDeployment::PublicTestnet,
+        )?);
+        state.devnets = vec![
+            indexer_topology(
+                directory.path(),
+                "same-directory",
+                LocalNodeDeployment::LocalDevnet,
+            )?,
+            indexer_topology(
+                directory.path(),
+                "other-directory",
+                LocalNodeDeployment::LocalDevnet,
+            )?,
+        ];
+        let same_directory = state
+            .devnets
+            .first_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+            .context("missing same-directory Indexer")?;
+        set_test_indexer_package(same_directory, &package_a, "0.9.0", "a");
+        let other_directory = state
+            .devnets
+            .get_mut(1)
+            .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+            .context("missing other-directory Indexer")?;
+        set_test_indexer_package(other_directory, &package_b, "2.0.0", "b");
+        let installed = test_installed_package(&modules_a, &package_a, "1.0.0", "c");
+
+        record_indexer_package(&mut state, "default", &installed)?;
+
+        let testnet = testnet_node(&state, NodeKind::Indexer)?;
+        let same_directory = state
+            .devnets
+            .first()
+            .and_then(|record| record.nodes.first())
+            .context("missing reconciled same-directory Indexer")?;
+        let other_directory = state
+            .devnets
+            .get(1)
+            .and_then(|record| record.nodes.first())
+            .context("missing preserved other-directory Indexer")?;
+        anyhow::ensure!(
+            testnet.package_version.as_deref() == Some("1.0.0")
+                && same_directory.package_version.as_deref() == Some("1.0.0")
+                && testnet.package_path.as_deref() == Some(installed.main_file_path.as_str())
+                && same_directory.package_path.as_deref()
+                    == Some(installed.main_file_path.as_str())
+        );
+        anyhow::ensure!(
+            other_directory.package_version.as_deref() == Some("2.0.0")
+                && other_directory.package_path.as_deref() == package_b.to_str()
+        );
+        let same_manifest: LocalDevnetRecord = serde_json::from_str(&fs::read_to_string(
+            &state
+                .devnets
+                .first()
+                .context("missing same topology")?
+                .manifest_path,
+        )?)?;
+        anyhow::ensure!(
+            same_manifest
+                .nodes
+                .first()
+                .and_then(|node| node.package_version.as_deref())
+                == Some("1.0.0")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_modules_dir_reconciliation_clears_only_mismatched_indexer_packages() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_a = directory.path().join("modules-a");
+        let modules_b = directory.path().join("modules-b");
+        let package_a = create_indexer_package_file(&modules_a)?;
+        let package_b = create_indexer_package_file(&modules_b)?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        state.testnet = Some(indexer_topology(
+            directory.path(),
+            "logos-testnet",
+            LocalNodeDeployment::PublicTestnet,
+        )?);
+        state.devnets = vec![indexer_topology(
+            directory.path(),
+            "matching",
+            LocalNodeDeployment::LocalDevnet,
+        )?];
+        set_test_indexer_package(
+            state
+                .testnet
+                .as_mut()
+                .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+                .context("missing mismatched Testnet Indexer")?,
+            &package_a,
+            "1.0.0",
+            "a",
+        );
+        set_test_indexer_package(
+            state
+                .devnets
+                .first_mut()
+                .and_then(|record| node_config_mut(record, NodeKind::Indexer))
+                .context("missing matching local Indexer")?,
+            &package_b,
+            "2.0.0",
+            "b",
+        );
+        let runtime = LogoscoreRuntimeProfile {
+            id: "test-runtime".to_owned(),
+            binary_path: "/usr/bin/logoscore".to_owned(),
+            config_dir: directory.path().join("runtime").display().to_string(),
+            modules_dir: Some(modules_b.display().to_string()),
+            persistence_path: Some(directory.path().join("data").display().to_string()),
+            ownership: super::super::runtime::LogoscoreRuntimeOwnership::InspectorManaged,
+            timeout_profile: super::super::runtime::LogoscoreTimeoutProfile::Lifecycle,
+            daemon_process_id: None,
+        };
+
+        reconcile_indexer_runtime_modules_dir(&mut state, &runtime)?;
+
+        let mismatched = testnet_node(&state, NodeKind::Indexer)?;
+        let matching = state
+            .devnets
+            .first()
+            .and_then(|record| record.nodes.first())
+            .context("missing matching local Indexer")?;
+        anyhow::ensure!(
+            !mismatched.installed
+                && mismatched.package_path.is_none()
+                && mismatched.package_version.is_none()
+                && mismatched.package_root_hash.is_none()
+                && mismatched.lifecycle_state == NodeLifecycleState::NotInitialized
+        );
+        anyhow::ensure!(
+            matching.installed
+                && matching.package_path.as_deref() == package_b.to_str()
+                && matching.package_version.as_deref() == Some("2.0.0")
+        );
+        Ok(())
+    }
+
+    fn indexer_topology(
+        root: &Path,
+        id: &str,
+        deployment: LocalNodeDeployment,
+    ) -> Result<LocalDevnetRecord> {
+        let workspace = root.join(id);
+        let record = LocalDevnetRecord {
+            deployment,
+            id: id.to_owned(),
+            label: id.to_owned(),
+            workspace: workspace.display().to_string(),
+            manifest_path: workspace.join(MANIFEST_FILE).display().to_string(),
+            created_at: 1,
+            updated_at: 1,
+            nodes: vec![default_node_config(&workspace, NodeKind::Indexer)],
+        };
+        generate_topology_files(&record, false)?;
+        write_devnet_manifest(&record)?;
+        Ok(record)
+    }
+
+    fn create_indexer_package_file(modules_dir: &Path) -> Result<PathBuf> {
+        let package_dir = modules_dir.join("lez_indexer_module");
+        let package_path = package_dir.join("lez_indexer_module_plugin.so");
+        fs::create_dir_all(&package_dir)?;
+        fs::write(&package_path, b"module")?;
+        Ok(package_path)
+    }
+
+    fn set_test_indexer_package(
+        config: &mut LocalNodeConfigRecord,
+        package_path: &Path,
+        version: &str,
+        root_hash_marker: &str,
+    ) {
+        config.package_path = Some(package_path.display().to_string());
+        config.package_version = Some(version.to_owned());
+        config.package_root_hash = Some(root_hash_marker.repeat(64));
+        config.module_path = Some("lez_indexer_module".to_owned());
+        config.installed = true;
+        config.lifecycle_state = NodeLifecycleState::Stopped;
+    }
+
+    fn test_installed_package(
+        modules_dir: &Path,
+        package_path: &Path,
+        version: &str,
+        root_hash_marker: &str,
+    ) -> super::super::package::LocalNodeInstalledPackageReport {
+        super::super::package::LocalNodeInstalledPackageReport {
+            name: "lez_indexer_module".to_owned(),
+            version: version.to_owned(),
+            description: "Indexer".to_owned(),
+            package_type: "core".to_owned(),
+            category: "blockchain".to_owned(),
+            author: String::new(),
+            install_type: "user".to_owned(),
+            install_dir: modules_dir.join("lez_indexer_module").display().to_string(),
+            main_file_path: package_path.display().to_string(),
+            root_hash: root_hash_marker.repeat(64),
+        }
+    }
+
     fn testnet_node(state: &LocalNodesState, kind: NodeKind) -> Result<&LocalNodeConfigRecord> {
         state
             .testnet

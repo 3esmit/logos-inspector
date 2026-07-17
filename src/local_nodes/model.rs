@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use serde::{Deserialize, Serialize};
 
 const HISTORY_LIMIT: usize = 100;
+pub(super) const LOCAL_NODES_STATE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,6 +115,14 @@ pub struct LocalNodeActionRequest {
     #[serde(default)]
     pub runtime_binary_path: Option<String>,
     #[serde(default)]
+    pub package_version: Option<String>,
+    #[serde(default)]
+    pub package_root_hash: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub bedrock_endpoint: Option<String>,
+    #[serde(default)]
     pub label: Option<String>,
 }
 
@@ -158,6 +167,16 @@ pub struct LocalNodeStatus {
     pub config_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexer_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexer_head: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexer_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,6 +233,7 @@ pub struct LocalDevnetListReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalNodeTools {
     pub logoscore: ToolStatus,
+    pub lgpd: ToolStatus,
     pub lgpm: ToolStatus,
 }
 
@@ -238,6 +258,16 @@ pub struct LocalNodeConfigRecord {
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_root_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -313,7 +343,7 @@ pub(super) struct LocalNodesState {
 impl LocalNodesState {
     pub(super) fn default_for_config_dir(config: &Path) -> Self {
         Self {
-            version: 3,
+            version: LOCAL_NODES_STATE_VERSION,
             active_devnet: None,
             module_context_topology_by_kind: BTreeMap::new(),
             testnet: None,

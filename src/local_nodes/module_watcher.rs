@@ -12,7 +12,10 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    modules::logos_core::{LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransportEvent},
+    modules::logos_core::{
+        LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransportEvent,
+        normalize_module_call_value,
+    },
     source_routing::{ManagedNodeAction, ManagedNodeContract},
     support::{command_runner::CommandControl, time::now_millis},
 };
@@ -34,13 +37,14 @@ const PENDING_LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const NODE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const MESSAGING_CONTEXT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const INDEXER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const MESSAGING_HEALTH_TIMEOUT: Duration = Duration::from_secs(1);
 const MESSAGING_HEALTH_RESPONSE_LIMIT: u64 = 64 * 1024;
 const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
 const STORAGE_LISTEN_PORT: u16 = 8091;
-const INDEXER_WATCHER_MODULE: &str = "indexer_service";
+const INDEXER_WATCHER_MODULE: &str = "lez_indexer_module";
 const SEQUENCER_WATCHER_MODULE: &str = "sequencer_service";
 
 /// Polling fallback for LogosCore installations whose CLI event stream is not
@@ -174,6 +178,7 @@ struct NodeLivenessProbe {
     alive: bool,
     liveness_known: bool,
     unavailable_detail: Option<&'static str>,
+    indexer_status: Option<IndexerStatusObservation>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +212,20 @@ enum MessagingHealth {
     EventLoopLagging,
     Unavailable,
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IndexerModuleHealth {
+    Running(IndexerStatusObservation),
+    Stopped,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexerStatusObservation {
+    state: String,
+    indexed_block_id: Option<String>,
+    last_error: Option<String>,
 }
 
 fn run_module_watcher(cancellation: CancellationToken, subscribers: Arc<Mutex<SubscriberHub>>) {
@@ -499,6 +518,7 @@ fn observe_modules(
         collect_liveness_probes(state, &loaded_modules, daemon != DaemonState::Unavailable);
     if managed_runtime.is_some() {
         reconcile_messaging_liveness(&mut probes, &runtime, cancellation);
+        reconcile_indexer_liveness(&mut probes, &runtime, cancellation);
     }
     let needs_fast_poll = probes.iter().any(|probe| probe.is_pending())
         || (daemon == DaemonState::Stopped
@@ -622,6 +642,114 @@ fn apply_messaging_health(probe: &mut NodeLivenessProbe, health: MessagingHealth
     }
 }
 
+fn reconcile_indexer_liveness(
+    probes: &mut [NodeLivenessProbe],
+    runtime: &LogoscoreCliRuntime,
+    cancellation: &CancellationToken,
+) {
+    if !probes.iter().any(|probe| {
+        probe.kind == NodeKind::Indexer && probe.module_availability == ModuleAvailability::Loaded
+    }) {
+        return;
+    }
+    let now = Instant::now();
+    let deadline = now.checked_add(INDEXER_STATUS_PROBE_TIMEOUT).unwrap_or(now);
+    let control = CommandControl::new(cancellation.clone(), deadline);
+    let module =
+        crate::source_routing::execution_zone_layer::managed_indexer_contract().module_id();
+    debug_assert_eq!(module, INDEXER_WATCHER_MODULE);
+    let health = runtime
+        .call_controlled(module, "getStatus", &[], control)
+        .and_then(|output| normalize_module_call_value(module, "getStatus", output.value))
+        .map_or(IndexerModuleHealth::Unknown, |value| {
+            indexer_module_health(&value)
+        });
+    for probe in probes.iter_mut().filter(|probe| {
+        probe.kind == NodeKind::Indexer && probe.module_availability == ModuleAvailability::Loaded
+    }) {
+        apply_indexer_module_health(probe, &health);
+    }
+}
+
+fn apply_indexer_module_health(probe: &mut NodeLivenessProbe, health: &IndexerModuleHealth) {
+    match health {
+        IndexerModuleHealth::Running(status) => {
+            probe.alive = true;
+            probe.liveness_known = true;
+            probe.unavailable_detail = None;
+            probe.indexer_status = Some(status.clone());
+        }
+        IndexerModuleHealth::Stopped => {
+            probe.alive = false;
+            probe.liveness_known = true;
+            probe.unavailable_detail = Some("Indexer module reports no running indexer");
+            probe.indexer_status = Some(IndexerStatusObservation {
+                state: "stopped".to_owned(),
+                indexed_block_id: None,
+                last_error: None,
+            });
+        }
+        IndexerModuleHealth::Unknown => {
+            probe.alive = false;
+            probe.liveness_known = false;
+            probe.unavailable_detail = Some("Indexer module status could not be verified");
+            probe.indexer_status = None;
+        }
+    }
+}
+
+fn indexer_module_health(value: &Value) -> IndexerModuleHealth {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return IndexerModuleHealth::Stopped;
+        }
+        return serde_json::from_str::<Value>(text)
+            .ok()
+            .map_or(IndexerModuleHealth::Unknown, |value| {
+                indexer_module_health(&value)
+            });
+    }
+    let Some(state) = value.get("state").and_then(Value::as_str) else {
+        return IndexerModuleHealth::Unknown;
+    };
+    let normalized = state
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    let state = match normalized.as_str() {
+        "starting" => "starting",
+        "syncing" => "syncing",
+        "caughtup" => "caught_up",
+        "error" => "error",
+        "stalled" => "stalled",
+        _ => return IndexerModuleHealth::Unknown,
+    };
+    IndexerModuleHealth::Running(IndexerStatusObservation {
+        state: state.to_owned(),
+        indexed_block_id: value
+            .get("indexedBlockId")
+            .or_else(|| value.get("indexed_block_id"))
+            .and_then(indexer_status_scalar),
+        last_error: value
+            .get("lastError")
+            .or_else(|| value.get("last_error"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn indexer_status_scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
 fn loaded_modules(value: &Value) -> BTreeSet<String> {
     value
         .get("modules")
@@ -684,6 +812,12 @@ fn liveness_probe(
             false,
             Some("Messaging lifecycle requires managed REST health verification"),
         )
+    } else if node.kind == NodeKind::Indexer {
+        (
+            false,
+            false,
+            Some("Indexer lifecycle requires managed module status verification"),
+        )
     } else {
         (tcp_port_is_open(liveness_port(node)?), true, None)
     };
@@ -709,6 +843,7 @@ fn liveness_probe(
         alive,
         liveness_known,
         unavailable_detail,
+        indexer_status: None,
     })
 }
 
@@ -729,9 +864,8 @@ fn lifecycle_event_route(kind: NodeKind) -> Option<(&'static str, LifecycleEvent
             Some((contract.module_id(), route))
         }
         NodeLifecycle::RegisteredProcess { .. } => match kind {
-            NodeKind::Indexer => Some((INDEXER_WATCHER_MODULE, LifecycleEventRoute::Synthetic)),
             NodeKind::Sequencer => Some((SEQUENCER_WATCHER_MODULE, LifecycleEventRoute::Synthetic)),
-            NodeKind::Bedrock | NodeKind::Storage | NodeKind::Messaging => None,
+            NodeKind::Bedrock | NodeKind::Indexer | NodeKind::Storage | NodeKind::Messaging => None,
         },
     }
 }
@@ -840,6 +974,7 @@ fn apply_liveness_observation(
         let Some(node) = record.nodes.iter_mut().find(|node| node.kind == probe.kind) else {
             continue;
         };
+        let indexer_status_changed = apply_indexer_status_observation(node, probe);
         let confirmation_timed_out = observed_at.saturating_sub(probe.record_updated_at)
             >= LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS;
         let event = if !probe.liveness_known {
@@ -926,7 +1061,7 @@ fn apply_liveness_observation(
                     )?)
                 }
                 (NodeLifecycleState::Stopping, Some(NodeAction::Stop), false) => {
-                    if probe.process_backed {
+                    if probe.process_backed || probe.kind == NodeKind::Indexer {
                         node.process_id = None;
                     }
                     node.lifecycle_state = NodeLifecycleState::Stopped;
@@ -965,7 +1100,7 @@ fn apply_liveness_observation(
                     )?)
                 }
                 (NodeLifecycleState::Running, None, false) => {
-                    if probe.process_backed {
+                    if probe.process_backed || probe.kind == NodeKind::Indexer {
                         node.process_id = None;
                     }
                     node.lifecycle_state = NodeLifecycleState::Unknown;
@@ -981,7 +1116,7 @@ fn apply_liveness_observation(
                     )?)
                 }
                 (NodeLifecycleState::Unknown, None, false) => {
-                    if probe.process_backed {
+                    if probe.process_backed || probe.kind == NodeKind::Indexer {
                         node.process_id = None;
                     }
                     node.lifecycle_state = NodeLifecycleState::Stopped;
@@ -992,6 +1127,24 @@ fn apply_liveness_observation(
                         "endpoint remains closed",
                     )?)
                 }
+                (NodeLifecycleState::Failed, None, false)
+                    if probe.kind == NodeKind::Indexer
+                        && probe
+                            .indexer_status
+                            .as_ref()
+                            .is_some_and(|status| status.state == "stopped") =>
+                {
+                    node.process_id = None;
+                    node.lifecycle_state = NodeLifecycleState::Stopped;
+                    Some(lifecycle_event(
+                        probe,
+                        false,
+                        true,
+                        probe
+                            .unavailable_detail
+                            .unwrap_or("Indexer module reports no running indexer"),
+                    )?)
+                }
                 (NodeLifecycleState::Stopped, None, true) => {
                     node.lifecycle_state = NodeLifecycleState::Running;
                     Some(lifecycle_event(probe, true, true, "endpoint is reachable")?)
@@ -999,19 +1152,44 @@ fn apply_liveness_observation(
                 _ => None,
             }
         };
-        if let Some(event) = event {
+        if event.is_some() || indexer_status_changed {
             record.updated_at = observed_at;
             changed_records.insert(record.id.clone());
+        }
+        if let Some(event) = event {
             events.push(event);
         }
     }
+    let changed = !changed_records.is_empty();
     for record_id in changed_records {
         let Some(record) = state.topology_mut(&record_id) else {
             continue;
         };
         write_devnet_manifest(record)?;
     }
-    Ok((!events.is_empty(), events))
+    Ok((changed, events))
+}
+
+fn apply_indexer_status_observation(
+    node: &mut LocalNodeConfigRecord,
+    probe: &NodeLivenessProbe,
+) -> bool {
+    if node.kind != NodeKind::Indexer {
+        return false;
+    }
+    let Some(status) = probe.indexer_status.as_ref() else {
+        return false;
+    };
+    if node.indexer_state.as_deref() == Some(status.state.as_str())
+        && node.indexer_head == status.indexed_block_id
+        && node.indexer_error == status.last_error
+    {
+        return false;
+    }
+    node.indexer_state = Some(status.state.clone());
+    node.indexer_head.clone_from(&status.indexed_block_id);
+    node.indexer_error.clone_from(&status.last_error);
+    true
 }
 
 fn lifecycle_event(
@@ -1180,6 +1358,11 @@ mod tests {
                     endpoint: None,
                     port: adapter_for(kind).default_port(),
                     package_path: None,
+                    package_version: None,
+                    package_root_hash: None,
+                    indexer_state: None,
+                    indexer_head: None,
+                    indexer_error: None,
                     module_path: None,
                     process_id: None,
                     installed: true,
@@ -1249,6 +1432,7 @@ mod tests {
             alive,
             liveness_known: true,
             unavailable_detail: None,
+            indexer_status: None,
         })
     }
 
@@ -1392,7 +1576,7 @@ mod tests {
     }
 
     #[test]
-    fn liveness_stop_confirms_indexer_process_group_exit() -> Result<()> {
+    fn liveness_stop_confirms_empty_indexer_status_and_clears_legacy_pid() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mut state = state_with_node(
             &directory,
@@ -1423,7 +1607,7 @@ mod tests {
     }
 
     #[test]
-    fn liveness_stop_waits_for_indexer_process_group_exit() -> Result<()> {
+    fn liveness_stop_waits_while_indexer_module_reports_running() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mut state = state_with_node(
             &directory,
@@ -1431,7 +1615,6 @@ mod tests {
             NodeLifecycleState::Stopping,
             Some(NodeAction::Stop),
         );
-        only_node_mut(&mut state)?.process_id = Some(4242);
         let updated_at = now_millis();
         first_devnet_mut(&mut state)?.updated_at = updated_at;
         let mut probe = probe_for(
@@ -1449,7 +1632,6 @@ mod tests {
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Stopping
                 && node.pending_lifecycle_action == Some(NodeAction::Stop)
-                && node.process_id == Some(4242)
         );
         Ok(())
     }
@@ -1563,6 +1745,239 @@ mod tests {
             messaging_health_from_http_response(b"HTTP/1.1 503 Service Unavailable\r\n\r\n{}"),
             MessagingHealth::Unknown
         );
+    }
+
+    #[test]
+    fn indexer_module_health_parses_running_and_stopped_states() {
+        for (state, expected) in [
+            ("Starting", "starting"),
+            ("Syncing", "syncing"),
+            ("CaughtUp", "caught_up"),
+            ("Error", "error"),
+            ("Stalled", "stalled"),
+        ] {
+            let health = indexer_module_health(&json!({
+                "state": state,
+                "indexed_block_id": 42,
+                "last_error": null,
+            }));
+            assert!(matches!(health, IndexerModuleHealth::Running(status)
+                    if status.state == expected
+                        && status.indexed_block_id.as_deref() == Some("42")
+                        && status.last_error.is_none()));
+        }
+        assert_eq!(
+            indexer_module_health(&Value::String(String::new())),
+            IndexerModuleHealth::Stopped
+        );
+        assert!(matches!(
+            indexer_module_health(&json!(
+                "{\"state\":\"caught_up\",\"indexedBlockId\":42,\"lastError\":\"lagging\"}"
+            )),
+            IndexerModuleHealth::Running(status)
+                if status.state == "caught_up"
+                    && status.indexed_block_id.as_deref() == Some("42")
+                    && status.last_error.as_deref() == Some("lagging")
+        ));
+        assert_eq!(
+            indexer_module_health(&json!({ "state": "unexpected" })),
+            IndexerModuleHealth::Unknown
+        );
+        assert_eq!(
+            indexer_module_health(&json!("not-json")),
+            IndexerModuleHealth::Unknown
+        );
+    }
+
+    #[test]
+    fn indexer_module_status_confirms_lifecycle_without_rpc_port() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        let mut probes = collect_liveness_probes(
+            &state,
+            &BTreeSet::from([INDEXER_WATCHER_MODULE.to_owned()]),
+            true,
+        );
+        let probe = probes.first_mut().context("missing Indexer module probe")?;
+        anyhow::ensure!(probe.port.is_none() && !probe.liveness_known);
+        apply_indexer_module_health(
+            probe,
+            &IndexerModuleHealth::Running(IndexerStatusObservation {
+                state: "syncing".to_owned(),
+                indexed_block_id: Some("42".to_owned()),
+                last_error: None,
+            }),
+        );
+
+        let (changed, events) = apply_liveness_observation(&mut state, &probes)?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == INDEXER_WATCHER_MODULE && event.event() == "nodeStarted");
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Running
+                && node.indexer_state.as_deref() == Some("syncing")
+                && node.indexer_head.as_deref() == Some("42")
+                && node.indexer_error.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_status_updates_only_the_bound_topology() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Running,
+            None,
+        );
+        let mut testnet = first_devnet(&state)?.clone();
+        testnet.id = "logos-testnet".to_owned();
+        state.testnet = Some(testnet);
+        state
+            .module_context_topology_by_kind
+            .insert(NodeKind::Indexer, "logos-testnet".to_owned());
+        let mut probes = collect_liveness_probes(
+            &state,
+            &BTreeSet::from([INDEXER_WATCHER_MODULE.to_owned()]),
+            true,
+        );
+        anyhow::ensure!(probes.len() == 1);
+        let probe = probes.first_mut().context("missing bound Indexer probe")?;
+        anyhow::ensure!(probe.topology_id == "logos-testnet");
+        apply_indexer_module_health(
+            probe,
+            &IndexerModuleHealth::Running(IndexerStatusObservation {
+                state: "syncing".to_owned(),
+                indexed_block_id: Some("42".to_owned()),
+                last_error: None,
+            }),
+        );
+
+        let (changed, events) = apply_liveness_observation(&mut state, &probes)?;
+
+        anyhow::ensure!(changed && events.is_empty());
+        let bound = state
+            .testnet
+            .as_ref()
+            .and_then(|record| record.nodes.first())
+            .context("missing bound Indexer")?;
+        anyhow::ensure!(
+            bound.indexer_state.as_deref() == Some("syncing")
+                && bound.indexer_head.as_deref() == Some("42")
+        );
+        let unbound = first_devnet(&state)?
+            .nodes
+            .first()
+            .context("missing unbound Indexer")?;
+        anyhow::ensure!(
+            unbound.indexer_state.is_none()
+                && unbound.indexer_head.is_none()
+                && unbound.indexer_error.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_indexer_module_status_confirms_stop_and_clears_observation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        );
+        {
+            let node = only_node_mut(&mut state)?;
+            node.indexer_state = Some("error".to_owned());
+            node.indexer_head = Some("41".to_owned());
+            node.indexer_error = Some("bedrock unavailable".to_owned());
+        }
+        let mut probe = probe_for(
+            NodeKind::Indexer,
+            NodeLifecycleState::Stopping,
+            false,
+            ModuleAvailability::Loaded,
+        )?;
+        apply_indexer_module_health(&mut probe, &IndexerModuleHealth::Stopped);
+
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Stopped
+                && node.indexer_state.as_deref() == Some("stopped")
+                && node.indexer_head.is_none()
+                && node.indexer_error.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_indexer_start_recovers_when_module_reports_stopped() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Indexer,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        let expired = now_millis().saturating_sub(LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS + 1);
+        first_devnet_mut(&mut state)?.updated_at = expired;
+        let mut unknown_probe = probe_for(
+            NodeKind::Indexer,
+            NodeLifecycleState::Starting,
+            false,
+            ModuleAvailability::Loaded,
+        )?;
+        unknown_probe.record_updated_at = expired;
+        unknown_probe.liveness_known = false;
+        unknown_probe.unavailable_detail = Some("Indexer module status could not be verified");
+
+        let (failed_changed, failed_events) =
+            apply_liveness_observation(&mut state, &[unknown_probe])?;
+
+        anyhow::ensure!(failed_changed && failed_events.len() == 1);
+        anyhow::ensure!(only_node(&state)?.lifecycle_state == NodeLifecycleState::Failed);
+
+        let mut stopped_probe = probe_for(
+            NodeKind::Indexer,
+            NodeLifecycleState::Failed,
+            false,
+            ModuleAvailability::Loaded,
+        )?;
+        stopped_probe.record_updated_at = first_devnet(&state)?.updated_at;
+        apply_indexer_module_health(&mut stopped_probe, &IndexerModuleHealth::Stopped);
+
+        let (recovered_changed, recovered_events) =
+            apply_liveness_observation(&mut state, &[stopped_probe])?;
+
+        anyhow::ensure!(recovered_changed && recovered_events.len() == 1);
+        let event = only_event(&recovered_events)?;
+        anyhow::ensure!(event.event() == "nodeStopped");
+        anyhow::ensure!(
+            event
+                .args()
+                .first()
+                .and_then(|value| value.get("success"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        );
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Stopped
+                && node.pending_lifecycle_action.is_none()
+                && node.indexer_state.as_deref() == Some("stopped")
+        );
+        Ok(())
     }
 
     #[test]
@@ -1894,25 +2309,21 @@ mod tests {
     }
 
     #[test]
-    fn detached_nodes_are_polled_without_module_context() -> Result<()> {
+    fn registered_process_nodes_are_polled_without_module_context() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mut state = state_with_node(
             &directory,
-            NodeKind::Indexer,
+            NodeKind::Sequencer,
             NodeLifecycleState::Running,
             None,
         );
         state
             .module_context_topology_by_kind
-            .remove(&NodeKind::Indexer);
-        let mut sequencer = only_node(&state)?.clone();
-        sequencer.kind = NodeKind::Sequencer;
-        sequencer.port = adapter_for(NodeKind::Sequencer).default_port();
-        first_devnet_mut(&mut state)?.nodes.push(sequencer);
+            .remove(&NodeKind::Sequencer);
 
         let probes = collect_liveness_probes(&state, &BTreeSet::new(), false);
 
-        anyhow::ensure!(probes.len() == 2);
+        anyhow::ensure!(probes.len() == 1);
         anyhow::ensure!(probes.iter().all(|probe| {
             probe.process_backed
                 && !probe.requires_module_context

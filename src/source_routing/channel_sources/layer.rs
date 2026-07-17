@@ -1,6 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::source_routing::adapter::SourceModePolicy;
+use crate::source_routing::{
+    ManagedModuleCallSpec, ManagedNodeContract, adapter::SourceModePolicy,
+};
 
 use super::{ChannelSourceRole, indexer, sequencer};
 
@@ -29,8 +31,18 @@ pub(crate) const fn managed_sequencer_program() -> &'static str {
 }
 
 #[must_use]
-pub(crate) const fn managed_indexer_program() -> &'static str {
-    indexer::MANAGED_PROGRAM
+pub(crate) const fn managed_indexer_contract() -> &'static ManagedNodeContract {
+    indexer::managed_contract()
+}
+
+#[must_use]
+pub(crate) fn managed_indexer_reset_storage_call(config_path: &str) -> ManagedModuleCallSpec {
+    indexer::managed_reset_storage_call_spec(config_path)
+}
+
+#[must_use]
+pub(crate) fn managed_indexer_channel_config(channel_id: &str, bedrock_endpoint: &str) -> Value {
+    indexer::channel_config(channel_id, bedrock_endpoint)
 }
 
 #[must_use]
@@ -46,12 +58,22 @@ pub(crate) fn managed_sequencer_config(
 #[must_use]
 pub(crate) fn managed_indexer_config(
     network_id: &str,
-    data_dir: &str,
+    _data_dir: &str,
     endpoint: Option<&str>,
-    port: Option<u16>,
+    _port: Option<u16>,
     public_testnet: bool,
 ) -> Value {
-    indexer::managed_config(network_id, data_dir, endpoint, port, public_testnet)
+    let channel_id = if public_testnet {
+        crate::testnet::LOGOS_TESTNET_CHANNEL_ID
+    } else {
+        network_id
+    };
+    let bedrock_endpoint = if public_testnet {
+        crate::testnet::LOCAL_BEDROCK_ENDPOINT
+    } else {
+        endpoint.unwrap_or(crate::testnet::LOCAL_BEDROCK_ENDPOINT)
+    };
+    managed_indexer_channel_config(channel_id, bedrock_endpoint)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

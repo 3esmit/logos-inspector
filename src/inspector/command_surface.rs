@@ -947,6 +947,9 @@ mod tests {
             "zoneL2Programs"
         ));
         assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "localNodePackageCatalog"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
             "callModule"
         ));
         assert!(!InspectorCommandSurface::allows_host_synchronous_call(

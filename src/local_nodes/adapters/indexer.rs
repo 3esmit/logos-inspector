@@ -1,24 +1,17 @@
-use std::time::Duration;
-
 use serde_json::Value;
 
 use crate::source_routing::execution_zone_layer;
 
 use super::{
-    LocalNodeAdapter, NodeAction, NodeCommandContext, NodeCommandPlan, NodeConfigContext, NodeKind,
-    NodeLifecycle, RpcStartupReadiness,
+    LocalNodeAdapter, LocalNodeConfigRecord, ManagedCommandResultContract, NodeAction,
+    NodeCommandContext, NodeCommandPlan, NodeConfigContext, NodeKind, NodeLifecycle,
+    managed_action,
 };
 
 #[derive(Debug)]
 pub(super) struct IndexerAdapter;
 
 pub(super) static INDEXER_ADAPTER: IndexerAdapter = IndexerAdapter;
-const INDEXER_RPC_READINESS: RpcStartupReadiness = RpcStartupReadiness::new(
-    "checkHealth",
-    Duration::from_secs(120),
-    Duration::from_secs(3),
-    Duration::from_secs(1),
-);
 
 impl LocalNodeAdapter for IndexerAdapter {
     fn kind(&self) -> NodeKind {
@@ -30,27 +23,63 @@ impl LocalNodeAdapter for IndexerAdapter {
     }
 
     fn default_port(&self) -> Option<u16> {
-        Some(8779)
+        None
+    }
+
+    fn endpoint(&self, _port: Option<u16>) -> Option<String> {
+        None
     }
 
     fn lifecycle(&self) -> NodeLifecycle {
-        NodeLifecycle::RegisteredProcess {
-            program: execution_zone_layer::managed_indexer_program(),
-        }
+        NodeLifecycle::InitializedModule(execution_zone_layer::managed_indexer_contract())
     }
 
     fn workflow_actions(&self) -> &'static [NodeAction] {
-        &[
-            NodeAction::Install,
-            NodeAction::Start,
-            NodeAction::Stop,
-            NodeAction::Uninstall,
-            NodeAction::Purge,
-        ]
+        &[NodeAction::Install, NodeAction::Start, NodeAction::Stop]
     }
 
-    fn startup_rpc_readiness(&self) -> Option<RpcStartupReadiness> {
-        Some(INDEXER_RPC_READINESS)
+    fn preserve_generated_config_on_runtime_reset(&self) -> bool {
+        true
+    }
+
+    fn installation_survives_runtime_reset(&self, config: &LocalNodeConfigRecord) -> bool {
+        std::path::Path::new(&config.config_path).is_file()
+            && config
+                .package_path
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path).is_file())
+    }
+
+    fn ensure_loaded_before_start(&self) -> bool {
+        true
+    }
+
+    fn package_managed(&self) -> bool {
+        true
+    }
+
+    fn package_installation_matches_runtime(
+        &self,
+        config: &LocalNodeConfigRecord,
+        runtime: Option<&super::super::runtime::LogoscoreRuntimeProfile>,
+    ) -> bool {
+        let Some(package_modules_dir) = config
+            .package_path
+            .as_deref()
+            .and_then(super::super::package::package_path_modules_dir)
+        else {
+            return false;
+        };
+        let Some(runtime_modules_dir) = runtime.and_then(|profile| profile.modules_dir.as_deref())
+        else {
+            return true;
+        };
+        let Ok(runtime_modules_dir) =
+            super::super::package::canonical_modules_dir(std::path::Path::new(runtime_modules_dir))
+        else {
+            return false;
+        };
+        package_modules_dir == runtime_modules_dir
     }
 
     fn build_config(&self, context: NodeConfigContext<'_>) -> Value {
@@ -68,15 +97,16 @@ impl LocalNodeAdapter for IndexerAdapter {
         action: NodeAction,
         context: NodeCommandContext<'_>,
     ) -> Option<NodeCommandPlan> {
-        (action == NodeAction::Start).then(|| NodeCommandPlan::DetachedProcess {
-            program: execution_zone_layer::managed_indexer_program(),
-            args: vec![
-                context.config_path.to_owned(),
-                "--port".to_owned(),
-                context.port.unwrap_or(8779).to_string(),
-                "--data-dir".to_owned(),
-                context.data_dir.to_owned(),
-            ],
+        let contract = execution_zone_layer::managed_indexer_contract();
+        let call = if action == NodeAction::Purge {
+            execution_zone_layer::managed_indexer_reset_storage_call(context.config_path)
+        } else {
+            contract.call_spec(managed_action(action)?, context.config_path)?
+        };
+        Some(NodeCommandPlan::ManagedModule {
+            contract,
+            call,
+            result_contract: ManagedCommandResultContract::OperationStatusZero,
         })
     }
 }

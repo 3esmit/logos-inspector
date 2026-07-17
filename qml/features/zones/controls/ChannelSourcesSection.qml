@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import "../../../components"
 import "../../../components/common"
 import "../../../theme"
 import "../ZonePresentation.js" as Presentation
@@ -207,6 +208,22 @@ ColumnLayout {
         onRemoveRequested: root.confirmRemove("indexer", root.config.indexer_source)
     }
 
+    ManagedIndexerControl {
+        visible: root.indexerTargetKind() === "module"
+        theme: root.theme
+        zoneState: root.zoneState
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.indexerTargetKind() === "rpc"
+        theme: root.theme
+        tone: "info"
+        title: qsTr("External Indexer RPC")
+        message: qsTr("Inspector reads this Channel through the configured RPC endpoint. Package, process, and storage lifecycle remain externally managed.")
+        Layout.fillWidth: true
+    }
+
     Loader {
         id: editorLoader
 
@@ -265,6 +282,12 @@ ColumnLayout {
         draftSource = source || null
         editorOpen = true
         Qt.callLater(root.initializeEditor)
+    }
+
+    function indexerTargetKind() {
+        return String(config.indexer_source
+            && config.indexer_source.target
+            && config.indexer_source.target.kind || "")
     }
 
     function initializeEditor() {

@@ -225,5 +225,9 @@ mod tests {
         assert!(lookup("rawRpc").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(lookup("modules").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(lookup("storageExists").is_some_and(|entry| !entry.allows_host_synchronous_call()));
+        assert!(
+            lookup("localNodePackageCatalog")
+                .is_some_and(|entry| !entry.allows_host_synchronous_call())
+        );
     }
 }
