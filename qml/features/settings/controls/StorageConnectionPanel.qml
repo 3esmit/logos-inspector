@@ -95,8 +95,8 @@ SourceSettingsPanel {
 
         SafetyToggle {
             theme: root.theme
-            text: qsTr("Privileged debug")
-            detail: qsTr("Allows future privileged debug endpoints after source-specific confirmation.")
+            text: qsTr("Include network debug details")
+            detail: qsTr("Queries peer identity, addresses, public records, and the DHT routing table during Storage status checks. Read-only; may expose network topology.")
             checked: root.modelRef.storagePrivilegedDebugEnabled
             onToggled: root.modelRef.storagePrivilegedDebugEnabled = checked
         }
