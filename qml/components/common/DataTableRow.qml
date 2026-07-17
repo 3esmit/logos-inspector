@@ -63,6 +63,10 @@ Item {
                 copyText: root.cellCopyText(cell)
                 monospace: root.cellMonospace(cell)
                 textColor: root.cellTextColor(cell)
+                accessibleName: root.cellAccessibleName(cell)
+                accessibleDescription: root.cellAccessibleDescription(cell)
+                copyAccessibleName: root.cellCopyAccessibleName(cell)
+                copyAccessibleDescription: root.cellCopyAccessibleDescription(cell)
                 Layout.preferredWidth: root.cellWidth(cell)
                 Layout.fillWidth: root.cellFill(cell)
                 onActivated: root.cellActivated(index, cell)
@@ -123,6 +127,29 @@ Item {
             return root.theme.accent
         }
         return root.theme.text
+    }
+
+    function cellAccessibleName(cell) {
+        const configured = cell && cell.accessibleName !== undefined
+            ? String(cell.accessibleName || "") : ""
+        return configured.length > 0 ? configured : root.cellText(cell)
+    }
+
+    function cellAccessibleDescription(cell) {
+        return cell && cell.accessibleDescription !== undefined
+            ? String(cell.accessibleDescription || "") : ""
+    }
+
+    function cellCopyAccessibleName(cell) {
+        const configured = cell && cell.copyAccessibleName !== undefined
+            ? String(cell.copyAccessibleName || "") : ""
+        return configured.length > 0
+            ? configured : qsTr("Copy %1").arg(root.cellText(cell))
+    }
+
+    function cellCopyAccessibleDescription(cell) {
+        return cell && cell.copyAccessibleDescription !== undefined
+            ? String(cell.copyAccessibleDescription || "") : ""
     }
 
     function cellWidth(cell) {

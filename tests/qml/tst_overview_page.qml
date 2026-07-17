@@ -65,6 +65,8 @@ TestCase {
         model.metrics.dashboardMetricLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision = 0
         model.dashboardNode = null
+        model.dashboardL1Blocks = []
+        model.blocksPageRows = []
         model.dashboardLezBlockRows = []
         model.capabilityRegistryLoaded = true
         model.capabilityRegistryReport = ({
@@ -182,6 +184,103 @@ TestCase {
 
         mouseClick(transactions)
         compare(model.shell.currentView, "transactions")
+    }
+
+    function test_dashboard_row_actions_expose_entity_and_full_copy_semantics() {
+        const blockHash = ZoneFixtureData.identity("a")
+        const transactionBlockHash = ZoneFixtureData.identity("c")
+        const transactionHash = ZoneFixtureData.identity("b")
+        const channelId = ZoneFixtureData.identity("1")
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 123456,
+                id: blockHash
+            },
+            transactions: []
+        }]
+        model.blocksPageRows = [{
+            header: {
+                slot: 123455,
+                id: transactionBlockHash
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: transactionHash,
+                    ops: []
+                }
+            }]
+        }]
+
+        tryVerify(function () {
+            return findAccessibleByName(
+                page, "Open L1 block at slot 123456") !== null
+                && findAccessibleByName(
+                    page, "Open Mantle transaction " + transactionHash) !== null
+        })
+
+        const slotLink = findAccessibleByName(
+            page, "Open L1 block at slot 123456")
+        const slotCopy = findAccessibleByName(
+            page, "Copy L1 block slot 123456")
+        verifyAccessibleControl(slotLink, Accessible.Link)
+        verifyAccessibleControl(slotCopy, Accessible.Button)
+        compare(slotLink.copyText, "123456")
+
+        const blockLink = findAccessibleByName(
+            page, "Open L1 block " + blockHash)
+        const blockCopy = findAccessibleByName(
+            page, "Copy full L1 block hash " + blockHash)
+        verifyAccessibleControl(blockLink, Accessible.Link)
+        verifyAccessibleControl(blockCopy, Accessible.Button)
+        compare(blockLink.copyText, blockHash)
+
+        const zoneLink = findAccessibleByName(
+            page, "Open Zone " + channelId)
+        const zoneCopy = findAccessibleByName(
+            page, "Copy Zone channel ID " + channelId)
+        verifyAccessibleControl(zoneLink, Accessible.Link)
+        verifyAccessibleControl(zoneCopy, Accessible.Button)
+        compare(zoneLink.copyText, channelId)
+
+        const transactionLink = findAccessibleByName(
+            page, "Open Mantle transaction " + transactionHash)
+        const transactionCopy = findAccessibleByName(
+            page, "Copy full Mantle transaction hash " + transactionHash)
+        verifyAccessibleControl(transactionLink, Accessible.Link)
+        verifyAccessibleControl(transactionCopy, Accessible.Button)
+        compare(transactionLink.copyText, transactionHash)
+
+        const transactionBlockLink = findAccessibleByName(
+            page, "Open L1 block " + transactionBlockHash)
+        const transactionBlockCopy = findAccessibleByName(
+            page, "Copy full L1 block hash " + transactionBlockHash)
+        verifyAccessibleControl(transactionBlockLink, Accessible.Link)
+        verifyAccessibleControl(transactionBlockCopy, Accessible.Button)
+        compare(transactionBlockLink.copyText, transactionBlockHash)
+    }
+
+    function test_stale_dashboard_zone_is_static_and_not_copyable() {
+        const channelId = ZoneFixtureData.identity("1")
+        const label = "Devnet Settlement / 11111111...111111"
+        const row = findChild(page, "dashboardZoneRow_" + channelId)
+        verify(row !== null)
+
+        model.zoneInspection.summaryStale = true
+        tryVerify(function () {
+            return !row.cells[0].link
+                && findAccessibleByName(page, label) !== null
+        })
+
+        const cell = findAccessibleByName(row, label)
+        const hiddenCopy = findAccessibleByName(
+            row, "Copy Zone channel ID " + channelId)
+        verifyAccessibleControl(cell, Accessible.StaticText)
+        compare(cell.copyText, channelId)
+        verify(!row.cellCopyable(row.cells[0]))
+        verify(hiddenCopy !== null)
+        verify(!hiddenCopy.visible)
+        compare(findAccessibleByName(
+            row, "Open Zone " + channelId), null)
     }
 
     function test_narrow_dashboard_layout_stacks_activity_panels() {
@@ -313,5 +412,29 @@ TestCase {
             }
         }
         return false
+    }
+
+    function findAccessibleByName(item, expected) {
+        if (!item) {
+            return null
+        }
+        if (item.Accessible && String(item.Accessible.name) === expected) {
+            return item
+        }
+        const children = item.children || []
+        for (let index = 0; index < children.length; ++index) {
+            const match = findAccessibleByName(children[index], expected)
+            if (match) {
+                return match
+            }
+        }
+        return null
+    }
+
+    function verifyAccessibleControl(item, role) {
+        verify(item !== null)
+        verify(item.visible)
+        verify(item.enabled)
+        compare(item.Accessible.role, role)
     }
 }

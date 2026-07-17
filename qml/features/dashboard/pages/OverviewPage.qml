@@ -119,6 +119,26 @@ ColumnLayout {
                         columnWidths: [86, -1, 58, 86]
                         linkKinds: ["block", "block", "", ""]
                         linkValues: [modelData.slotRaw, modelData.blockHash, "", ""]
+                        cellAccessibleNames: [
+                            String(modelData.slotRaw || "").length > 0
+                                ? qsTr("Open L1 block at slot %1").arg(modelData.slotRaw)
+                                : String(modelData.slot || ""),
+                            String(modelData.blockHash || "").length > 0
+                                ? qsTr("Open L1 block %1").arg(modelData.blockHash)
+                                : String(modelData.header || ""),
+                            "",
+                            ""
+                        ]
+                        cellCopyAccessibleNames: [
+                            String(modelData.slotRaw || "").length > 0
+                                ? qsTr("Copy L1 block slot %1").arg(modelData.slotRaw)
+                                : "",
+                            String(modelData.blockHash || "").length > 0
+                                ? qsTr("Copy full L1 block hash %1").arg(modelData.blockHash)
+                                : "",
+                            "",
+                            ""
+                        ]
                         onCellActivated: function (column) {
                             if (column === 0 || column === 1) {
                                 root.model.entityNavigation.openReference("block", column === 0 ? modelData.slotRaw : modelData.blockHash)
@@ -189,6 +209,26 @@ ColumnLayout {
                         columnWidths: [86, -1, -1, 58]
                         linkKinds: ["", "mantleTransaction", "block", ""]
                         linkValues: ["", modelData.txHash, modelData.blockHash, ""]
+                        cellAccessibleNames: [
+                            "",
+                            String(modelData.txHash || "").length > 0
+                                ? qsTr("Open Mantle transaction %1").arg(modelData.txHash)
+                                : String(modelData.hash || ""),
+                            String(modelData.blockHash || "").length > 0
+                                ? qsTr("Open L1 block %1").arg(modelData.blockHash)
+                                : String(modelData.block || ""),
+                            ""
+                        ]
+                        cellCopyAccessibleNames: [
+                            "",
+                            String(modelData.txHash || "").length > 0
+                                ? qsTr("Copy full Mantle transaction hash %1").arg(modelData.txHash)
+                                : "",
+                            String(modelData.blockHash || "").length > 0
+                                ? qsTr("Copy full L1 block hash %1").arg(modelData.blockHash)
+                                : "",
+                            ""
+                        ]
                         onCellActivated: function (column) {
                             if (column === 1) {
                                 root.model.entityNavigation.openMantleTransaction(modelData.txHash)
@@ -716,6 +756,8 @@ ColumnLayout {
         property var columnWidths: [-1, -1, -1, -1]
         property var linkKinds: ["", "", "", ""]
         property var linkValues: ["", "", "", ""]
+        property var cellAccessibleNames: ["", "", "", ""]
+        property var cellCopyAccessibleNames: ["", "", "", ""]
 
         headerHeight: 34
         rowHeight: 38
@@ -730,7 +772,9 @@ ColumnLayout {
                     width: rowRoot.columnWidth(i),
                     fill: rowRoot.columnFills(i),
                     link: !rowRoot.header && i < rowRoot.linkKinds.length && String(rowRoot.linkKinds[i] || "").length > 0 && linkValue.length > 0,
-                    copyText: linkValue.length > 0 ? linkValue : String(rowRoot.columns[i] || "")
+                    copyText: linkValue.length > 0 ? linkValue : String(rowRoot.columns[i] || ""),
+                    accessibleName: rowRoot.valueAt(rowRoot.cellAccessibleNames, i),
+                    copyAccessibleName: rowRoot.valueAt(rowRoot.cellCopyAccessibleNames, i)
                 })
             }
             return result
@@ -743,6 +787,11 @@ ColumnLayout {
 
         function columnFills(index) {
             return Number(rowRoot.columnWidths[index] || -1) <= 0
+        }
+
+        function valueAt(values, index) {
+            return values && index < values.length
+                ? String(values[index] || "") : ""
         }
     }
 
