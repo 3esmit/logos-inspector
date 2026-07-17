@@ -157,8 +157,9 @@ impl DirectZoneCatalogWorker {
                         let _published = context.publish(ZoneCatalogPublication {
                             verification_state: CatalogVerificationState::SourceBehind,
                             catalog: Some(Arc::new(snapshot.clone())),
-                            current_error: Some(format!(
-                                "L1 source LIB {source_lib_slot} is behind catalog checkpoint {required_slot}"
+                            current_error: Some(source_behind_message(
+                                source_lib_slot,
+                                required_slot,
                             )),
                         });
                         wait_for_retry(context, CATALOG_POLL_INTERVAL).await?;
@@ -620,6 +621,12 @@ fn publish_verified(context: &ZoneCatalogRunContext, snapshot: CatalogSnapshot) 
     });
 }
 
+fn source_behind_message(source_lib_slot: u64, required_slot: u64) -> String {
+    format!(
+        "Bedrock is still syncing: finalized LIB {source_lib_slot} has not reached Zone Catalog checkpoint {required_slot}. Zones resume automatically when it catches up."
+    )
+}
+
 async fn wait_for_retry(
     context: &ZoneCatalogRunContext,
     duration: Duration,
@@ -894,6 +901,18 @@ mod tests {
         {
             bail!("catalog catch-up page pacing is disabled or exceeds foreground polling");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn source_behind_message_explains_sync_and_automatic_recovery() -> Result<()> {
+        let message = source_behind_message(0, 691_337);
+
+        ensure!(
+            message
+                == "Bedrock is still syncing: finalized LIB 0 has not reached Zone Catalog checkpoint 691337. Zones resume automatically when it catches up.",
+            "source-behind status did not explain recovery: {message}"
+        );
         Ok(())
     }
 
