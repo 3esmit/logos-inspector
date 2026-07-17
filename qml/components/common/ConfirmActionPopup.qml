@@ -39,12 +39,15 @@ Popup {
         spacing: root.theme.gapSmall
 
         Text {
+            objectName: "titleText"
             text: root.title
             color: root.theme.text
             textFormat: Text.PlainText
             font.pixelSize: root.theme.primaryText
             font.weight: Font.DemiBold
             Layout.fillWidth: true
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
         }
 
         Text {
@@ -55,6 +58,8 @@ Popup {
             wrapMode: Text.WrapAnywhere
             font.pixelSize: root.theme.secondaryText
             Layout.fillWidth: true
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
         }
 
         RowLayout {
