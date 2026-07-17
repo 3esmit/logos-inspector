@@ -119,15 +119,29 @@ Item {
     function accessibleName() {
         const labelText = String(root.label || "").trim()
         const status = String(root.stateText || "").trim()
+        const evidenceText = root.accessibleEvidence()
+        let summary = labelText.length > 0 ? labelText : qsTr("Status")
         if (labelText.length > 0 && status.length > 0) {
-            return qsTr("%1: %2").arg(labelText).arg(status)
+            summary = qsTr("%1: %2").arg(labelText).arg(status)
         }
-        return labelText.length > 0 ? labelText : qsTr("Status")
+        if (evidenceText.length > 0 && evidenceText !== "-") {
+            return qsTr("%1. %2").arg(summary).arg(evidenceText)
+        }
+        return summary
+    }
+
+    function accessibleEvidence() {
+        const normalized = String(root.evidence || "").replace(/\s+/g, " ").trim()
+        const limit = 240
+        if (normalized.length <= limit) {
+            return normalized
+        }
+        return normalized.slice(0, limit - 3) + "..."
     }
 
     function accessibleDescription() {
         const values = []
-        const details = [root.evidence, root.source, root.freshness]
+        const details = [root.source, root.freshness]
         for (let i = 0; i < details.length; ++i) {
             const value = String(details[i] || "").trim()
             if (value.length > 0 && value !== "-") {
