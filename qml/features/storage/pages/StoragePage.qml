@@ -331,8 +331,8 @@ ColumnLayout {
             StatusMessage {
                 theme: root.theme
                 tone: "info"
-                title: qsTr("Network diagnostics are explicit")
-                message: qsTr("CID parsing and local exists checks are passive. Manifest fetch, provider lookup, and download probes stay idle until an explicit diagnostic action exists.")
+                title: qsTr("Network actions use Storage workflows")
+                message: qsTr("Local existence is checked here. Fetch and download use the Storage workspace. Current Storage adapters do not expose provider lookup.")
                 Layout.fillWidth: true
             }
         }
@@ -365,17 +365,31 @@ ColumnLayout {
             ]
             pending: root.sourceView.pending
             statusText: root.diagnosticsStatusText("storage", root.sourceView.statusLine, qsTr("Storage diagnostics"))
-            guardedTitle: qsTr("Confirmed actions")
+            guardedTitle: qsTr("Storage workflows")
             permissionEnabled: root.diagnosticsGateEnabled("storage")
+            permissionEnabledTitle: qsTr("Storage tools available")
+            permissionEnabledTone: "success"
             permissionDisabledTitle: qsTr("Diagnostics unavailable")
-            guardedMessage: qsTr("Manifest fetch, provider lookup, download, connect, remove, upload, and lifecycle controls are not background-polled. They need backend adapters and per-action confirmation.")
+            guardedMessage: qsTr("Open the Storage workspace for validated CID fetches and confirmed downloads. Provider lookup is unavailable because current Storage adapters expose no provider query.")
             guardedActions: [
-                { text: qsTr("Manifest fetch"), width: 142 },
-                { text: qsTr("Provider lookup"), width: 148 },
-                { text: qsTr("Download probe"), width: 142 }
+                {
+                    action: "cid",
+                    text: qsTr("Open CID tools"),
+                    accessibleName: qsTr("Open Storage CID tools"),
+                    width: 142,
+                    enabled: true
+                },
+                {
+                    action: "transfer",
+                    text: qsTr("Open transfer tools"),
+                    accessibleName: qsTr("Open Storage transfer tools"),
+                    width: 172,
+                    enabled: true
+                }
             ]
             evidenceRows: root.sourceView.evidenceRows
             onRefreshRequested: root.refreshSource(true)
+            onGuardedActionRequested: action => root.openStorageWorkflow(action)
         }
     }
 
@@ -402,6 +416,13 @@ ColumnLayout {
 
     function refreshSource(showResult, includeCidProbe) {
         sourceSession.refresh(showResult, includeCidProbe)
+    }
+
+    function openStorageWorkflow(action) {
+        const tab = String(action || "") === "transfer" ? "transfer" : "cid"
+        root.model.pushNavigationHistory()
+        root.model.storageAppTab = tab
+        root.model.selectView("storage", false)
     }
 
     function diagnosticsGate(action) {
