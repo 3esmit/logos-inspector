@@ -828,7 +828,6 @@ impl Default for SettingsDocument {
             "storage_rest_url": "http://127.0.0.1:8080/api/storage/v1",
             "storage_metrics_url": "http://127.0.0.1:8008/metrics",
             "storage_network_preset": crate::testnet::LOGOS_TESTNET_PRESET,
-            "storage_data_dir": "",
             "storage_cid_probe": "",
             "storage_rolling_window": 120,
             "storage_local_diagnostics_enabled": false,

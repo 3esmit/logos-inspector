@@ -58,25 +58,6 @@ SourceSettingsPanel {
         }
 
         FieldRow {
-            visible: root.modelRef.storageLocalDiagnosticsEnabled === true
-            theme: root.theme
-            label: qsTr("Data directory")
-            sourceText: root.modelRef.storageDataDir
-            syncSourceText: true
-            placeholderText: qsTr("Optional local diagnostics path")
-            onTextEdited: text => root.modelRef.storageDataDir = String(text || "").trim()
-        }
-
-        InfoField {
-            visible: root.modelRef.storageLocalDiagnosticsEnabled !== true
-            theme: root.theme
-            label: qsTr("Data directory")
-            value: root.modelRef.storageDataDir.length
-                ? root.modelRef.storageDisplayPath(root.modelRef.storageDataDir)
-                : qsTr("Local diagnostics disabled")
-        }
-
-        FieldRow {
             visible: root.storageDataEnabled()
             theme: root.theme
             label: qsTr("CID local exists")
@@ -106,8 +87,8 @@ SourceSettingsPanel {
 
         SafetyToggle {
             theme: root.theme
-            text: qsTr("Local OS diagnostics")
-            detail: qsTr("Allows future process, disk, and port checks from the local machine.")
+            text: qsTr("Show local paths")
+            detail: qsTr("Shows full local storage paths in diagnostics and enables their Copy actions.")
             checked: root.modelRef.storageLocalDiagnosticsEnabled
             onToggled: root.modelRef.storageLocalDiagnosticsEnabled = checked
         }

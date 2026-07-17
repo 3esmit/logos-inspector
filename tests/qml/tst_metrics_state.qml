@@ -71,6 +71,7 @@ TestCase {
         property bool lastPresentationError: false
         property string lastPresentationText: ""
         property string lastPresentationOwner: ""
+        property var lastPresentationValue: null
 
         function reset() {
             requests = []
@@ -88,6 +89,7 @@ TestCase {
             lastPresentationError = false
             lastPresentationText = ""
             lastPresentationOwner = ""
+            lastPresentationValue = null
         }
 
         function appendRequest(value) {
@@ -165,6 +167,7 @@ TestCase {
             presentationCompleteCount += 1
             lastPresentationError = isError === true
             lastPresentationText = String(text || "")
+            lastPresentationValue = value === undefined ? null : value
             return true
         }
 
@@ -602,6 +605,35 @@ TestCase {
         verify(!gateway.lastPresentationError)
         compare(metrics.sourceReport("storage").marker, "stronger")
         compare(metrics.sourceObservation("storage").provenance.origin, "source-inspection")
+    }
+
+    function test_storage_interactive_presentation_uses_path_free_summary() {
+        const report = sourceReport(true, "storage-summary")
+        report.module = "storage_module"
+        report.probes = [{
+            probe_key: "dataDir",
+            label: "Data directory",
+            ok: true,
+            value: "/var/lib/logos/private-storage"
+        }, {
+            probe_key: "version",
+            label: "Version",
+            ok: true,
+            value: "0.1.0-test"
+        }]
+
+        metrics.queryNetworkConnection("storage", true, false, "manual")
+        verify(gateway.completeRequest(0, success(report)))
+
+        compare(gateway.presentationCompleteCount, 1)
+        verify(gateway.lastPresentationText.indexOf(
+            "/var/lib/logos/private-storage") < 0)
+        compare(gateway.lastPresentationValue.module, "storage_module")
+        compare(gateway.lastPresentationValue.status, "healthy")
+        compare(gateway.lastPresentationValue.probes, 2)
+        compare(gateway.lastPresentationValue.successful_probes, 2)
+        compare(gateway.lastPresentationValue.failed_probes, 0)
+        verify(gateway.lastPresentationValue.probe_facts === undefined)
     }
 
     function test_configuration_invalidation_completes_interactive_presentation() {

@@ -1,12 +1,14 @@
 import QtQuick
 import QtTest
 import "../../qml/state/source_routing/SourceObservationProjection.js" as SourceObservation
+import "../../qml/state/source_routing/SourceInspectionReadModel.js" as SourceReadModel
 
 TestCase {
     id: testRoot
 
     name: "SourceObservationProjection"
     property bool storageMetricsConfigured: false
+    property string storageDataDirProbe: ""
 
     QtObject {
         id: sourceRoutingStub
@@ -30,7 +32,8 @@ TestCase {
 
         property int storageRollingWindow: 30
         property string storageCidProbe: ""
-        property string storageDataDir: "/tmp/storage"
+        property string storageDataDir: "/tmp/stale-configured-path"
+        property bool storageLocalDiagnosticsEnabled: false
         property bool storageMutatingDiagnosticsEnabled: false
         property var sourceRouting: sourceRoutingStub
         property var metricValues: ({
@@ -42,7 +45,13 @@ TestCase {
         readonly property alias metrics: storageMetrics
 
         function valueText(value) { return String(value) }
-        function storageDisplayPath(value) { return String(value || "") }
+        function storageDisplayPath(value) {
+            const text = String(value || "")
+            if (!text.length) {
+                return ""
+            }
+            return storageLocalDiagnosticsEnabled ? text : "redacted"
+        }
     }
 
     QtObject {
@@ -60,6 +69,9 @@ TestCase {
             if (method === "space") {
                 return { usedBytes: 4096, quotaMaxBytes: 8192 }
             }
+            if (method === "dataDir" && testRoot.storageDataDirProbe.length > 0) {
+                return testRoot.storageDataDirProbe
+            }
             return null
         }
         function probeKnown(method) { return probeValue(method) !== null }
@@ -71,6 +83,7 @@ TestCase {
         function metricKnown(key) { return storageModel.metrics.dashboardMetricValue(key) !== undefined }
         function failedProbeCount() { return 0 }
         function sourceName() { return "Direct REST" }
+        function sourceLabel() { return "Direct REST" }
         function status() { return { known: true, ok: true, detail: "ok" } }
         function statusTone() { return "success" }
         function storageSourceMode() { return "rest" }
@@ -88,6 +101,12 @@ TestCase {
         function shortText(value, maxLength) { return String(value || "").slice(0, maxLength || 32) }
         function statusRow(label, state, evidence, tone) {
             return { label: label, state: state, evidence: evidence, tone: tone }
+        }
+        function detailRow(label, value) {
+            return { label: label, value: value === null ? "n/a" : String(value) }
+        }
+        function pathDetailRow(label, value) {
+            return SourceObservation.storagePathDetailRow(storagePage, label, value)
         }
         function metricRow(label, key) { return SourceObservation.storageMetricRow(storagePage, label, key) }
         function metricEvidence(key) { return SourceObservation.storageMetricEvidence(storagePage, key) }
@@ -174,6 +193,8 @@ TestCase {
 
     function init() {
         testRoot.storageMetricsConfigured = false
+        testRoot.storageDataDirProbe = ""
+        storageModel.storageLocalDiagnosticsEnabled = false
     }
 
     function test_storage_projection_extracts_identity_and_rows() {
@@ -181,6 +202,56 @@ TestCase {
         compare(SourceObservation.storageTransferSummary(storagePage), "4 upload requests / 2 download requests")
         compare(SourceObservation.storageSpaceRow(storagePage, "Quota used", ["usedBytes"]).state, "4096")
         compare(SourceObservation.storageHealthRows(storagePage).length, 8)
+    }
+
+    function test_storage_paths_require_source_evidence_and_respect_privacy() {
+        let repository = SourceObservation.storageRepositoryRows(storagePage)
+        let identity = SourceObservation.storageIdentityRows(storagePage)
+
+        compare(repository[0].state, "unknown")
+        compare(repository[0].evidence, "No path reported by current source.")
+        compare(repository[0].tone, "neutral")
+        compare(identity[2].value, "n/a")
+        compare(identity[2].copyText, "")
+
+        testRoot.storageDataDirProbe = "/var/lib/logos/storage"
+        repository = SourceObservation.storageRepositoryRows(storagePage)
+        identity = SourceObservation.storageIdentityRows(storagePage)
+
+        compare(repository[0].state, "reported")
+        compare(repository[0].evidence, "redacted")
+        compare(repository[0].tone, "success")
+        compare(identity[2].value, "redacted")
+        compare(identity[2].copyText, "")
+
+        storageModel.storageLocalDiagnosticsEnabled = true
+        repository = SourceObservation.storageRepositoryRows(storagePage)
+        identity = SourceObservation.storageIdentityRows(storagePage)
+
+        compare(repository[0].evidence, "/var/lib/logos/storage")
+        compare(identity[2].value, "/var/lib/logos/storage")
+        compare(identity[2].copyText, "/var/lib/logos/storage")
+    }
+
+    function test_storage_data_directory_probe_evidence_respects_privacy() {
+        const probe = {
+            probe_key: "dataDir",
+            label: "Data directory",
+            source: "storage_module",
+            ok: true,
+            value: "/var/lib/logos/storage"
+        }
+
+        let row = SourceReadModel.sourceProbeRow(
+            storagePage, true, probe, "Probe")
+
+        compare(row.evidence, "redacted")
+
+        storageModel.storageLocalDiagnosticsEnabled = true
+        row = SourceReadModel.sourceProbeRow(
+            storagePage, true, probe, "Probe")
+
+        compare(row.evidence, "/var/lib/logos/storage")
     }
 
     function test_delivery_projection_extracts_protocol_health_and_counts() {

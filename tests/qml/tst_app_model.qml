@@ -1918,6 +1918,69 @@ TestCase {
         verify(fakeHost.lastArgs[0].footer_fields["overall.status"])
     }
 
+    function test_storage_path_privacy_setting_ignores_legacy_configured_path() {
+        const configuredPath = "/var/lib/logos/storage"
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    storage_data_dir: configuredPath,
+                    storage_local_diagnostics_enabled: true
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        verify(model.storageLocalDiagnosticsEnabled)
+        compare(model.storageDisplayPath(configuredPath), configuredPath)
+        let payload = model.settingsStatePayload()
+        verify(payload.storage_data_dir === undefined)
+        verify(payload.storage_local_diagnostics_enabled)
+
+        model.storageLocalDiagnosticsEnabled = false
+        compare(model.storageDisplayPath(configuredPath), ".../storage")
+        payload = model.settingsStatePayload()
+        verify(!payload.storage_local_diagnostics_enabled)
+
+    }
+
+    function test_storage_path_presentation_changes_preserve_source_state() {
+        model.storageLocalDiagnosticsEnabled = false
+        wait(0)
+
+        model.metrics.storageSourceReport = {
+            marker: "retained-storage-report",
+            status: { known: true, ok: true }
+        }
+        model.storageApp.manifestRequestGeneration = 41
+        model.storageApp.diagnosticRequestGeneration = 43
+        const configurationGeneration = Number(
+            model.metrics.observationConfigurationGenerations.storage || 0)
+        const networkRevision = model.networkConfigurationRevision
+        model.settingsStateLoaded = true
+        fakeHost.calls = []
+
+        model.storageLocalDiagnosticsEnabled = true
+
+        compare(model.metrics.storageSourceReport.marker,
+                "retained-storage-report")
+        compare(model.storageApp.manifestRequestGeneration, 41)
+        compare(model.storageApp.diagnosticRequestGeneration, 43)
+        compare(
+            Number(model.metrics.observationConfigurationGenerations.storage || 0),
+            configurationGeneration)
+        compare(model.networkConfigurationRevision, networkRevision)
+        verify(fakeHost.calls.some(function (call) {
+            return call.method === "saveSettingsState"
+        }))
+
+        model.storageLocalDiagnosticsEnabled = false
+        model.settingsStateLoaded = false
+    }
+
     function test_legacy_mutating_diagnostics_settings_are_ignored() {
         fakeHost.responses = {
             loadSettingsState: {
