@@ -259,6 +259,7 @@ function navigationSnapshot(root) {
         transactionDetailValue: cloneNavigationValue(root, root.transactionDetailValue),
         transactionDetailError: String(root.transactionDetailError || ""),
         storageAppTab: String(root.storageAppTab || ""),
+        storageDiagnosticsTab: String(root.storageDiagnosticsTab || ""),
         deliveryAppTab: String(root.deliveryAppTab || ""),
         programTab: String(root.programTab || ""),
         localWalletTab: String(root.localWalletTab || ""),
@@ -347,6 +348,8 @@ function restoreNavigationSnapshot(root, snapshot) {
         root.transactionDetailValue = cloneNavigationValue(root, values.transactionDetailValue)
         root.transactionDetailError = String(values.transactionDetailError || "")
         root.storageAppTab = String(values.storageAppTab || root.storageAppTab)
+        root.storageDiagnosticsTab = String(values.storageDiagnosticsTab
+            || root.storageDiagnosticsTab)
         root.deliveryAppTab = String(values.deliveryAppTab || root.deliveryAppTab)
         root.programTab = String(values.programTab || root.programTab)
         root.localWalletTab = String(values.localWalletTab || root.localWalletTab)
