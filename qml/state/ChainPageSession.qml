@@ -52,7 +52,8 @@ QtObject {
     property int transactionsPageBeforeBlock: 0
     property int transactionsPageNextBeforeBlock: 0
     property bool transactionsPageAtLatest: false
-    property int transactionsPageBlockBatch: 1000
+    readonly property int transactionsPageBlockScanLimit: 500
+    property int transactionsPageBlockBatch: transactionsPageBlockScanLimit - 1
     property int transactionsPageLimit: 20
     property string transactionsPageError: ""
 

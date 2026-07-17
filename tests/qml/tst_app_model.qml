@@ -5089,12 +5089,66 @@ TestCase {
         model.chainPages.refreshTransactionsPage()
         tryCompare(model, "transactionsPageBeforeBlock", 5000)
         verify(model.transactionsPageAtLatest)
-        compare(model.transactionsPageNextBeforeBlock, 3999)
+        compare(model.transactionsPageNextBeforeBlock, 4500)
 
         model.chainPages.olderTransactionsPage()
-        tryCompare(model, "transactionsPageBeforeBlock", 3999)
+        tryCompare(model, "transactionsPageBeforeBlock", 4500)
         verify(!model.transactionsPageAtLatest)
-        compare(model.transactionsPageNextBeforeBlock, 2998)
+        compare(model.transactionsPageNextBeforeBlock, 4000)
+    }
+
+    function test_transaction_page_uses_bounded_scan_for_unfinalized_tip() {
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 5000,
+                                lib_slot: 0
+                            }
+                        }
+                    }
+                },
+                blockchainBlocks: function (request) {
+                    const context = chainOperationContext(request)
+                    return context.limit === 500 ? [{
+                        header: { slot: 4999, id: "mutable-block" },
+                        transactions: [{
+                            mantle_tx: { hash: "mutable-transaction", ops: [] }
+                        }]
+                    }] : []
+                }
+            })
+        }
+
+        model.chainPages.refreshTransactionsPage()
+        tryCompare(model, "transactionsPageBeforeBlock", 5000)
+
+        const call = fakeHost.calls.filter(function (candidate) {
+            const request = candidate.method === "runtimeOperationStart"
+                && candidate.args ? candidate.args[0] || null : null
+            return request && request.method === "blockchainBlocks"
+        })[0]
+        verify(call !== undefined)
+        const request = call.args[0]
+        const context = chainOperationContext(request)
+        compare(context.slotFrom, 4501)
+        compare(context.slotTo, 5000)
+        compare(context.limit, 500)
+        compare(context.slotTo - context.slotFrom + 1, context.limit)
+        tryCompare(model, "transactionsPageRows", [{
+            slot: 4999,
+            hash: "mutable-transaction",
+            block: "mutable-block",
+            index: 0,
+            ops: 0,
+            operations: [],
+            raw: {
+                mantle_tx: { hash: "mutable-transaction", ops: [] }
+            }
+        }])
+        verify(model.transactionsPageAtLatest)
     }
 
     function test_transactions_and_detail_lookups_use_runtime_operations() {

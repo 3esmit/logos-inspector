@@ -23,7 +23,8 @@ function refreshTransactionsPage(root, beforeBlock) {
                 const slotFrom = window.slotFrom
                 const slotTo = window.slotTo
                 root.startOperation("transactions.page.range", "blockchainBlocks",
-                    [slotFrom, slotTo], qsTr("Transactions"), function (blocks) {
+                    [slotFrom, slotTo, transactionsPageBlockScanLimit],
+                    qsTr("Transactions"), function (blocks) {
                         if (!blocks || !blocks.ok) {
                             transactionsPageError = String(blocks && blocks.error
                                 || qsTr("Transactions query failed."))
