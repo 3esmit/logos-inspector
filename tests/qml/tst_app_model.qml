@@ -194,6 +194,12 @@ TestCase {
         model.transactionsPageBeforeBlock = 0
         model.transactionsPageNextBeforeBlock = 0
         model.transactionsPageAtLatest = false
+        model.transactionsPageLimit = 20
+        model.chainPages.transactionsPageWindowRows = []
+        model.chainPages.transactionsPageRowOffset = 0
+        model.chainPages.transactionsPageWindowLoaded = false
+        model.chainPages.transactionsPageWindowAtLatest = false
+        model.chainPages.transactionsPageSessionTip = 0
         model.transactionsPageError = ""
         model.blockDetailValue = null
         model.blockDetailError = ""
@@ -4485,6 +4491,13 @@ TestCase {
         model.transactionsPageBeforeBlock = 9000
         model.transactionsPageNextBeforeBlock = 7999
         model.transactionsPageAtLatest = true
+        model.chainPages.transactionsPageWindowRows = [{
+            hash: "old-buffered-transaction"
+        }]
+        model.chainPages.transactionsPageRowOffset = 1
+        model.chainPages.transactionsPageWindowLoaded = true
+        model.chainPages.transactionsPageWindowAtLatest = true
+        model.chainPages.transactionsPageSessionTip = 9000
         model.transactionsPageError = "old transactions error"
         model.blockDetailValue = { hash: "old-block" }
         model.blockDetailError = "old block detail error"
@@ -4508,6 +4521,11 @@ TestCase {
         compare(model.transactionsPageBeforeBlock, 0)
         compare(model.transactionsPageNextBeforeBlock, 0)
         verify(!model.transactionsPageAtLatest)
+        compare(model.chainPages.transactionsPageWindowRows.length, 0)
+        compare(model.chainPages.transactionsPageRowOffset, 0)
+        verify(!model.chainPages.transactionsPageWindowLoaded)
+        verify(!model.chainPages.transactionsPageWindowAtLatest)
+        compare(model.chainPages.transactionsPageSessionTip, 0)
         compare(model.transactionsPageError, "")
         compare(model.blockDetailValue, null)
         compare(model.blockDetailError, "")
@@ -5095,6 +5113,239 @@ TestCase {
         tryCompare(model, "transactionsPageBeforeBlock", 4500)
         verify(!model.transactionsPageAtLatest)
         compare(model.transactionsPageNextBeforeBlock, 4000)
+    }
+
+    function test_transaction_page_preserves_dense_window_rows_across_navigation() {
+        function transaction(hash) {
+            return { mantle_tx: { hash: hash, ops: [] } }
+        }
+        function rowHashes() {
+            return model.transactionsPageRows.map(function (row) {
+                return row.hash
+            }).join(",")
+        }
+
+        model.transactionsPageLimit = 2
+        let nodeTip = 5000
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: function () {
+                    return {
+                        cryptarchia_info: {
+                            value: {
+                                cryptarchia_info: {
+                                    slot: nodeTip,
+                                    lib_slot: 0
+                                }
+                            }
+                        }
+                    }
+                },
+                blockchainBlocks: function (request) {
+                    const context = chainOperationContext(request)
+                    if (context.slotTo === 5200) {
+                        return [{
+                            header: { slot: 5199, id: "latest-block" },
+                            transactions: [transaction("tx-new")]
+                        }]
+                    }
+                    if (context.slotTo === 5000) {
+                        return [{
+                            header: { slot: 4999, id: "newer-block" },
+                            transactions: [
+                                transaction("tx-0"),
+                                transaction("tx-1"),
+                                transaction("tx-2"),
+                                transaction("tx-3"),
+                                transaction("tx-4")
+                            ]
+                        }]
+                    }
+                    return [{
+                        header: { slot: 4499, id: "older-block" },
+                        transactions: [
+                            transaction("tx-5"),
+                            transaction("tx-6")
+                        ]
+                    }]
+                }
+            })
+        }
+
+        model.chainPages.refreshTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-0,tx-1" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        verify(model.transactionsPageAtLatest)
+        verify(model.chainPages.transactionsPageCanGoOlder)
+        verify(!model.chainPages.transactionsPageCanGoNewer)
+
+        model.chainPages.setTransactionsPageLimit(3)
+        compare(rowHashes(), "tx-0,tx-1,tx-2")
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        model.chainPages.setTransactionsPageLimit(2)
+        compare(rowHashes(), "tx-0,tx-1")
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+
+        model.chainPages.olderTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-2,tx-3" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        verify(!model.transactionsPageAtLatest)
+        verify(model.chainPages.transactionsPageCanGoOlder)
+        verify(model.chainPages.transactionsPageCanGoNewer)
+
+        model.chainPages.olderTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-4" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        verify(model.chainPages.transactionsPageCanGoOlder)
+        verify(model.chainPages.transactionsPageCanGoNewer)
+
+        model.chainPages.olderTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-5,tx-6" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 2)
+        compare(model.transactionsPageBeforeBlock, 4500)
+        verify(model.chainPages.transactionsPageCanGoNewer)
+
+        nodeTip = 5200
+        model.chainPages.newerTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-4" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 3)
+        let blockCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationStart"
+                && call.args[0].method === "blockchainBlocks"
+        })
+        let context = chainOperationContext(
+            blockCalls[blockCalls.length - 1].args[0])
+        compare(context.slotFrom, 4501)
+        compare(context.slotTo, 5000)
+
+        model.chainPages.newerTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-2,tx-3" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 3)
+
+        model.chainPages.newerTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-0,tx-1" })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 3)
+        verify(model.transactionsPageAtLatest)
+        verify(!model.chainPages.transactionsPageCanGoNewer)
+
+        model.chainPages.refreshTransactionsPage()
+        tryVerify(function () { return rowHashes() === "tx-new" })
+        compare(model.chainPages.transactionsPageSessionTip, 5200)
+        compare(model.transactionsPageBeforeBlock, 5200)
+        blockCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationStart"
+                && call.args[0].method === "blockchainBlocks"
+        })
+        context = chainOperationContext(blockCalls[blockCalls.length - 1].args[0])
+        compare(context.slotFrom, 4701)
+        compare(context.slotTo, 5200)
+    }
+
+    function test_transaction_page_failed_latest_preserves_pinned_window() {
+        const buffered = [
+            { hash: "tx-0", slot: 4999 },
+            { hash: "tx-1", slot: 4998 },
+            { hash: "tx-2", slot: 4997 }
+        ]
+        model.transactionsPageLimit = 2
+        model.chainPages.transactionsPageWindowRows = buffered
+        model.chainPages.transactionsPageRowOffset = 2
+        model.chainPages.transactionsPageWindowLoaded = true
+        model.chainPages.transactionsPageWindowAtLatest = true
+        model.chainPages.transactionsPageSessionTip = 5000
+        model.transactionsPageRows = [buffered[2]]
+        model.transactionsPageBeforeBlock = 5000
+        model.transactionsPageNextBeforeBlock = 4500
+        model.transactionsPageAtLatest = false
+        const successfulStart = chainRuntimeStart({
+            blockchainNode: {
+                cryptarchia_info: {
+                    value: {
+                        cryptarchia_info: { slot: 5200, lib_slot: 0 }
+                    }
+                }
+            }
+        })
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                if (request.method !== "blockchainBlocks") {
+                    return successfulStart(args)
+                }
+                const context = chainOperationContext(request)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "failed-" + request.clientRequestId,
+                        clientRequestId: request.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: request.method,
+                        label: request.label,
+                        status: "failed",
+                        eventCursor: 1,
+                        context: context,
+                        result: null,
+                        error: "range failed"
+                    },
+                    text: "",
+                    error: ""
+                }
+            }
+        }
+
+        model.chainPages.refreshTransactionsPage()
+        tryCompare(model, "transactionsPageError", "range failed")
+
+        compare(JSON.stringify(model.chainPages.transactionsPageWindowRows),
+                JSON.stringify(buffered))
+        compare(model.chainPages.transactionsPageRowOffset, 2)
+        verify(model.chainPages.transactionsPageWindowLoaded)
+        verify(model.chainPages.transactionsPageWindowAtLatest)
+        compare(model.chainPages.transactionsPageSessionTip, 5000)
+        compare(model.transactionsPageRows.length, 1)
+        compare(model.transactionsPageRows[0].hash, "tx-2")
+        compare(model.transactionsPageBeforeBlock, 5000)
+        compare(model.transactionsPageNextBeforeBlock, 4500)
+        verify(!model.transactionsPageAtLatest)
+    }
+
+    function test_transaction_page_limit_change_realigns_nonzero_offset() {
+        const buffered = [
+            { hash: "tx-0" },
+            { hash: "tx-1" },
+            { hash: "tx-2" },
+            { hash: "tx-3" },
+            { hash: "tx-4" }
+        ]
+        model.transactionsPageLimit = 2
+        model.chainPages.transactionsPageWindowRows = buffered
+        model.chainPages.transactionsPageRowOffset = 4
+        model.chainPages.transactionsPageWindowLoaded = true
+        model.chainPages.transactionsPageWindowAtLatest = true
+        model.chainPages.transactionsPageSessionTip = 5000
+        model.transactionsPageRows = [buffered[4]]
+        model.transactionsPageBeforeBlock = 5000
+        model.transactionsPageNextBeforeBlock = 4500
+        model.transactionsPageAtLatest = false
+
+        model.chainPages.setTransactionsPageLimit(3)
+
+        compare(model.chainPages.transactionsPageRowOffset, 3)
+        compare(model.transactionsPageRows.map(function (row) {
+            return row.hash
+        }).join(","), "tx-3,tx-4")
+        verify(!model.transactionsPageAtLatest)
+        verify(model.chainPages.transactionsPageCanGoNewer)
+
+        model.chainPages.newerTransactionsPage()
+
+        compare(model.chainPages.transactionsPageRowOffset, 0)
+        compare(model.transactionsPageRows.map(function (row) {
+            return row.hash
+        }).join(","), "tx-0,tx-1,tx-2")
+        verify(model.transactionsPageAtLatest)
+        verify(!model.chainPages.transactionsPageCanGoNewer)
     }
 
     function test_transaction_page_uses_bounded_scan_for_unfinalized_tip() {

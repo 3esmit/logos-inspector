@@ -26,8 +26,8 @@ ColumnLayout {
         theme: root.theme
         loadCount: root.model.transactionsPageLimit
         rangeText: root.transactionRangeText()
-        canGoNewer: root.canLoadNewer()
-        canGoOlder: root.model.transactionsPageNextBeforeBlock > 0
+        canGoNewer: root.model.chainPages.transactionsPageCanGoNewer
+        canGoOlder: root.model.chainPages.transactionsPageCanGoOlder
         busy: root.model.shell.busy || root.model.chainPages.transactionsWorkflowRunning
         Layout.fillWidth: true
         headerCells: [
@@ -100,19 +100,6 @@ ColumnLayout {
             return qsTr("No range loaded")
         }
         return qsTr("Before L1 slot %1").arg(root.numberText(root.model.transactionsPageBeforeBlock))
-    }
-
-    function canLoadNewer() {
-        const current = root.chainSlot("lib_slot")
-        return root.model.transactionsPageBeforeBlock > 0 && current > 0 && root.model.transactionsPageBeforeBlock < current
-    }
-
-    function chainSlot(field) {
-        const info = root.model.chainPages.blockchainInfo()
-        if (!info || info[field] === undefined || info[field] === null) {
-            return 0
-        }
-        return Number(info[field] || 0)
     }
 
 }
