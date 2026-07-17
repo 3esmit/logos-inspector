@@ -6,7 +6,15 @@ mod transport;
 
 use anyhow::{Result, bail};
 
-const BACKUP_CID_MAX_BYTES: usize = 256;
+const STORAGE_CID_MAX_BYTES: usize = 256;
+#[cfg(test)]
+const BACKUP_CID_MAX_BYTES: usize = STORAGE_CID_MAX_BYTES;
+
+fn parse_storage_cid(value: String) -> Result<String> {
+    let value = value.trim();
+    validate_storage_cid(value)?;
+    Ok(value.to_owned())
+}
 
 fn parse_backup_cid(value: String) -> Result<String> {
     let value = value.trim();
@@ -14,18 +22,26 @@ fn parse_backup_cid(value: String) -> Result<String> {
     Ok(value.to_owned())
 }
 
+fn validate_storage_cid(value: &str) -> Result<()> {
+    validate_cid(value, "storage CID")
+}
+
 fn validate_backup_cid(value: &str) -> Result<()> {
+    validate_cid(value, "backup CID")
+}
+
+fn validate_cid(value: &str, label: &str) -> Result<()> {
     if value.is_empty() {
-        bail!("backup CID is required");
+        bail!("{label} is required");
     }
-    if value.len() > BACKUP_CID_MAX_BYTES {
-        bail!("backup CID exceeds {BACKUP_CID_MAX_BYTES} byte limit");
+    if value.len() > STORAGE_CID_MAX_BYTES {
+        bail!("{label} exceeds {STORAGE_CID_MAX_BYTES} byte limit");
     }
     if !value
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        bail!("backup CID must contain only ASCII letters, digits, `-`, or `_`");
+        bail!("{label} must contain only ASCII letters, digits, `-`, or `_`");
     }
     Ok(())
 }
@@ -37,8 +53,8 @@ pub(crate) use layer::{
 pub(crate) use operations::{
     StorageBackupDownloadRequest, StorageBackupUploadRequest, StorageClient,
     StorageDownloadRequest, StorageExistsRequest, StorageOperation, StorageOperationOutput,
-    StorageOperationRequest, StoragePayloadUploadRequest, StorageUploadSettlementUnconfirmed,
-    download_response, execute_operation,
+    StorageOperationRequest, StoragePayloadUploadRequest, StorageRemoveSettlementUnconfirmed,
+    StorageUploadSettlementUnconfirmed, download_response, execute_operation,
 };
 pub(crate) use plan::storage_module_probe_plan;
 pub(crate) use transport::BackupDownloadCleanupUnconfirmed;

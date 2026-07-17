@@ -88,7 +88,7 @@ impl RuntimeOperationRequest {
 
     pub(crate) fn exclusive_group(&self) -> Option<OperationExclusiveGroup> {
         match self.definition.exclusive_group() {
-            Some(OperationExclusiveGroup::StorageUpload)
+            Some(group @ (OperationExclusiveGroup::Remove | OperationExclusiveGroup::Upload))
                 if matches!(
                     self.node_request
                         .as_ref()
@@ -96,9 +96,9 @@ impl RuntimeOperationRequest {
                     Some(StorageSourceMode::LogoscoreCli)
                 ) =>
             {
-                Some(OperationExclusiveGroup::StorageUpload)
+                Some(group)
             }
-            Some(OperationExclusiveGroup::StorageUpload) => None,
+            Some(OperationExclusiveGroup::Remove | OperationExclusiveGroup::Upload) => None,
             group => group,
         }
     }
@@ -590,14 +590,8 @@ mod tests {
         let cases = [
             ("module", None),
             ("basecamp-module", None),
-            (
-                "logoscore_cli",
-                Some(OperationExclusiveGroup::StorageUpload),
-            ),
-            (
-                "logoscore-cli",
-                Some(OperationExclusiveGroup::StorageUpload),
-            ),
+            ("logoscore_cli", Some(OperationExclusiveGroup::Upload)),
+            ("logoscore-cli", Some(OperationExclusiveGroup::Upload)),
             ("rest", None),
         ];
 
@@ -617,6 +611,37 @@ mod tests {
 
             if request.exclusive_group() != expected {
                 bail!("storage upload source `{source_mode}` has wrong exclusivity");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_remove_exclusivity_applies_only_to_logoscore_cli() -> Result<()> {
+        let cases = [
+            ("module", None),
+            ("basecamp-module", None),
+            ("logoscore_cli", Some(OperationExclusiveGroup::Remove)),
+            ("logoscore-cli", Some(OperationExclusiveGroup::Remove)),
+            ("rest", None),
+        ];
+
+        for (source_mode, expected) in cases {
+            let inputs = if source_mode == "rest" {
+                json!({ "rest_endpoint": "http://storage.local/api" })
+            } else {
+                json!({})
+            };
+            let request = runtime_operation_request_from_value(json!({
+                "domain": "storage",
+                "method": "storageRemove",
+                "adapter": { "source_mode": source_mode, "inputs": inputs },
+                "mutating_enabled": true,
+                "payload": { "cid": "cid-remove-exclusive-test" }
+            }))?;
+
+            if request.exclusive_group() != expected {
+                bail!("storage remove source `{source_mode}` has wrong exclusivity");
             }
         }
         Ok(())

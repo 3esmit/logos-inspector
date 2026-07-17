@@ -30,12 +30,14 @@ use crate::support::{
 };
 
 #[cfg(test)]
-use super::BACKUP_CID_MAX_BYTES;
-use super::{layer::STORAGE_SOURCE_MODES, parse_backup_cid, transport};
+use super::{BACKUP_CID_MAX_BYTES, STORAGE_CID_MAX_BYTES};
+use super::{layer::STORAGE_SOURCE_MODES, parse_backup_cid, parse_storage_cid, transport};
 
 const DEFAULT_BLOCK_SIZE: u64 = 65_536;
 const MANIFEST_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const STORAGE_REMOVE_DONE_EVENT: &str = "storageRemoveDone";
 const STORAGE_UPLOAD_DONE_EVENT: &str = "storageUploadDone";
+const MAX_UNRELATED_REMOVE_EVENTS: usize = 64;
 const MAX_UNRELATED_UPLOAD_EVENTS: usize = 64;
 
 #[derive(Debug)]
@@ -58,6 +60,27 @@ impl fmt::Display for StorageUploadSettlementUnconfirmed {
 }
 
 impl std::error::Error for StorageUploadSettlementUnconfirmed {}
+
+#[derive(Debug)]
+pub(crate) struct StorageRemoveSettlementUnconfirmed {
+    message: String,
+}
+
+impl StorageRemoveSettlementUnconfirmed {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for StorageRemoveSettlementUnconfirmed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StorageRemoveSettlementUnconfirmed {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageOperation {
@@ -517,7 +540,7 @@ fn operation_plan(
         }
         StorageOperation::Remove => {
             let payload: CidPayload = request.payload("storage remove")?;
-            let cid = required_text(payload.cid, "CID")?;
+            let cid = parse_storage_cid(payload.cid)?;
             plan_for_client(client, "remove", vec![json!(cid)], vec![("cid", cid)], true)
         }
     }
@@ -617,6 +640,16 @@ async fn execute_plan(
                 .await?;
                 return Ok(StorageOperationOutput::Outcome(outcome));
             }
+            if method == "remove" && transport_kind == ModuleTransportKind::LogoscoreCli {
+                let outcome = logoscore_cli_remove_by_terminal_event(
+                    &module_transport,
+                    args,
+                    &context,
+                    &control,
+                )
+                .await?;
+                return Ok(StorageOperationOutput::Outcome(outcome));
+            }
             if dispatch {
                 let identity_role = match method {
                     "uploadUrl" => ModuleDispatchIdentityRole::Session,
@@ -675,6 +708,269 @@ async fn execute_plan(
     Ok(StorageOperationOutput::Outcome(
         NodeOperationOutcome::Completed(value),
     ))
+}
+
+async fn logoscore_cli_remove_by_terminal_event(
+    module_transport: &SharedModuleTransport,
+    dispatch_args: Vec<Value>,
+    context: &[(&'static str, String)],
+    control: &ModuleCallControl,
+) -> Result<NodeOperationOutcome> {
+    ensure_manifest_poll_active(control, false)?;
+    let cid = context
+        .iter()
+        .find_map(|(key, value)| (*key == "cid").then_some(value.as_str()))
+        .context("storage remove has no CID context")?;
+    let dispatch_cid = dispatch_args
+        .first()
+        .and_then(Value::as_str)
+        .context("storage remove has no CID argument")?;
+    anyhow::ensure!(
+        dispatch_cid == cid,
+        "storage remove CID argument does not match operation context"
+    );
+    let runtime = module_transport
+        .logoscore_cli_transport()
+        .context("active LogosCore CLI transport does not expose its runtime")?
+        .runtime()?;
+    let command_control = control.command_control();
+    let worker_guard = control.blocking_worker_guard()?;
+    let cid = cid.to_owned();
+    let effect_may_have_started = Arc::new(AtomicBool::new(false));
+    let worker_effect_may_have_started = Arc::clone(&effect_may_have_started);
+    let result = tokio::task::spawn_blocking(move || {
+        let _worker_guard = worker_guard;
+        logoscore_cli_remove_by_terminal_event_blocking(
+            &runtime,
+            &cid,
+            command_control,
+            &worker_effect_may_have_started,
+        )
+    })
+    .await;
+    match result {
+        Ok(Err(error)) if error.downcast_ref::<CommandTerminated>().is_some() => {
+            Err(normalize_cli_mutation_predispatch_stop(error, control))
+        }
+        Ok(result) => result,
+        Err(error) if effect_may_have_started.load(Ordering::Acquire) => {
+            Err(StorageRemoveSettlementUnconfirmed::new(format!(
+                "Storage remove worker ended after dispatch may have started and before authoritative settlement: {error}"
+            ))
+            .into())
+        }
+        Err(error) => Err(anyhow::anyhow!(
+            "Storage remove worker failed before dispatch: {error}"
+        )),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RemoveTerminalEvent {
+    Unrelated,
+    Succeeded,
+    Failed { error: String },
+}
+
+fn logoscore_cli_remove_by_terminal_event_blocking(
+    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
+    cid: &str,
+    control: CommandControl,
+    effect_may_have_started: &AtomicBool,
+) -> Result<NodeOperationOutcome> {
+    let mut watch = runtime
+        .start_event_watch(
+            super::layer::module_id(),
+            STORAGE_REMOVE_DONE_EVENT,
+            &control,
+        )
+        .context("failed to start authoritative Storage remove event watch")?;
+    if let Err(error) = watch.wait_ready(&control) {
+        return cleanup_remove_watch_before_dispatch(error, &mut watch);
+    }
+
+    if let Err(error) = transport::logoscore_cli_call_value_controlled_with_runtime(
+        runtime,
+        super::layer::module_id(),
+        "manifests",
+        &[],
+        control.clone(),
+    ) {
+        return cleanup_remove_watch_before_dispatch(
+            error.context("failed Storage remove subscription ordering barrier"),
+            &mut watch,
+        );
+    }
+
+    effect_may_have_started.store(true, Ordering::Release);
+    let dispatch = transport::logoscore_cli_call_value_controlled_with_runtime(
+        runtime,
+        super::layer::module_id(),
+        "remove",
+        &[cid.to_owned()],
+        control.clone(),
+    );
+    match dispatch {
+        Ok(_) => {}
+        Err(error)
+            if error
+                .downcast_ref::<CommandTerminated>()
+                .is_some_and(|terminated| {
+                    terminated.scope() == CommandTerminationScope::NoProcess
+                }) =>
+        {
+            return cleanup_remove_watch_before_dispatch(error, &mut watch);
+        }
+        Err(error) => {
+            return remove_settlement_unconfirmed(
+                error.context("Storage remove dispatch settlement is unknown"),
+                &mut watch,
+            );
+        }
+    }
+
+    let terminal = match wait_for_remove_terminal(&mut watch, cid, &control) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            return remove_settlement_unconfirmed(
+                error.context(format!(
+                    "Storage remove for CID `{cid}` lost authoritative settlement"
+                )),
+                &mut watch,
+            );
+        }
+    };
+    let result = match terminal {
+        RemoveTerminalEvent::Succeeded => Ok(NodeOperationOutcome::Completed(json!({
+            "success": true,
+            "cid": cid,
+            "completion": STORAGE_REMOVE_DONE_EVENT,
+        }))),
+        RemoveTerminalEvent::Failed { error } => Err(anyhow::anyhow!(
+            "storage_module remove for CID `{cid}` failed: {error}"
+        )),
+        RemoveTerminalEvent::Unrelated => Err(anyhow::anyhow!(
+            "Storage remove terminal wait returned an unrelated event"
+        )),
+    };
+    complete_remove_watch(&mut watch, result)
+}
+
+fn wait_for_remove_terminal(
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+    cid: &str,
+    control: &CommandControl,
+) -> Result<RemoveTerminalEvent> {
+    let mut unrelated = 0_usize;
+    loop {
+        let Some(value) = watch.next_value_within(control, Duration::from_millis(100))? else {
+            continue;
+        };
+        match decode_remove_terminal_event(&value, cid)? {
+            RemoveTerminalEvent::Unrelated => {
+                unrelated = unrelated.saturating_add(1);
+                if unrelated > MAX_UNRELATED_REMOVE_EVENTS {
+                    bail!(
+                        "Storage remove received more than {MAX_UNRELATED_REMOVE_EVENTS} unrelated terminal events"
+                    );
+                }
+            }
+            terminal => return Ok(terminal),
+        }
+    }
+}
+
+fn decode_remove_terminal_event(value: &Value, expected_cid: &str) -> Result<RemoveTerminalEvent> {
+    anyhow::ensure!(
+        value.get("module").and_then(Value::as_str) == Some(super::layer::module_id()),
+        "logoscore remove watcher returned an event for the wrong module"
+    );
+    anyhow::ensure!(
+        value.get("event").and_then(Value::as_str) == Some(STORAGE_REMOVE_DONE_EVENT),
+        "logoscore remove watcher returned the wrong event type"
+    );
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .context("logoscore remove terminal event has no data object")?;
+    anyhow::ensure!(
+        data.len() == 1 && data.contains_key("arg0"),
+        "logoscore remove terminal event must contain exactly one payload argument"
+    );
+    let payload = match data.get("arg0") {
+        Some(Value::String(payload)) => serde_json::from_str::<Value>(payload)
+            .context("logoscore remove terminal payload is not valid JSON")?,
+        Some(Value::Object(payload)) => Value::Object(payload.clone()),
+        _ => bail!("logoscore remove terminal payload must be a JSON object or string"),
+    };
+    let payload = payload
+        .as_object()
+        .context("logoscore remove terminal payload is not an object")?;
+    let cid = payload
+        .get("cid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("logoscore remove terminal payload has no CID")?;
+    if cid != expected_cid {
+        return Ok(RemoveTerminalEvent::Unrelated);
+    }
+    let success = payload
+        .get("success")
+        .and_then(Value::as_bool)
+        .context("logoscore remove terminal payload has no success flag")?;
+    if success {
+        return Ok(RemoveTerminalEvent::Succeeded);
+    }
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("storage remove failed without an error message");
+    Ok(RemoveTerminalEvent::Failed {
+        error: error.to_owned(),
+    })
+}
+
+fn cleanup_remove_watch_before_dispatch<T>(
+    primary: anyhow::Error,
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+) -> Result<T> {
+    match watch.stop() {
+        Ok(()) => Err(primary),
+        Err(cleanup) => Err(anyhow::anyhow!(
+            "{primary:#}; pre-dispatch Storage remove watch cleanup failed: {cleanup:#}"
+        )),
+    }
+}
+
+fn remove_settlement_unconfirmed<T>(
+    primary: anyhow::Error,
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+) -> Result<T> {
+    let message = match watch.stop() {
+        Ok(()) => format!("{primary:#}"),
+        Err(cleanup) => {
+            format!("{primary:#}; Storage remove watch cleanup failed: {cleanup:#}")
+        }
+    };
+    Err(StorageRemoveSettlementUnconfirmed::new(message).into())
+}
+
+fn complete_remove_watch<T>(
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+    terminal_result: Result<T>,
+) -> Result<T> {
+    match (terminal_result, watch.stop()) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(anyhow::anyhow!(
+            "Storage remove settled successfully but event-watch cleanup failed: {cleanup:#}"
+        )),
+        (Err(primary), Err(cleanup)) => Err(anyhow::anyhow!(
+            "{primary:#}; Storage remove terminal watch cleanup failed: {cleanup:#}"
+        )),
+    }
 }
 
 async fn logoscore_cli_upload_by_terminal_event(
@@ -739,7 +1035,7 @@ async fn logoscore_cli_upload_by_terminal_event(
     .await;
     match result {
         Ok(Err(error)) if error.downcast_ref::<CommandTerminated>().is_some() => {
-            Err(normalize_upload_predispatch_stop(error, control))
+            Err(normalize_cli_mutation_predispatch_stop(error, control))
         }
         Ok(result) => result,
         Err(error) if effect_may_have_started.load(Ordering::Acquire) => {
@@ -861,7 +1157,7 @@ fn logoscore_cli_upload_by_terminal_event_blocking(
     complete_upload_watch(&mut watch, result)
 }
 
-fn normalize_upload_predispatch_stop(
+fn normalize_cli_mutation_predispatch_stop(
     error: anyhow::Error,
     control: &ModuleCallControl,
 ) -> anyhow::Error {
@@ -1476,6 +1772,7 @@ mod tests {
         _directory: tempfile::TempDir,
         transport: SharedModuleTransport,
         calls_path: std::path::PathBuf,
+        remove_count_path: std::path::PathBuf,
         upload_count_path: std::path::PathBuf,
         upload_path: std::path::PathBuf,
     }
@@ -1500,17 +1797,24 @@ shift 2
 mode="$(cat "$state/mode")"
 case "$1" in
   watch)
-    if [ "$mode" = "watch_failure" ]; then
-      printf '%s\n' 'watch protocol unsupported' >&2
-      exit 2
-    fi
-    if [ "$mode" = "watch_hang" ]; then
-      while :; do sleep 1; done
-    fi
-    printf '%s\n' '{"type":"subscription_ready","protocol":"logoscore.watch","version":1,"module":"storage_module","event":"storageUploadDone"}'
+    case "$mode" in
+      watch_failure|remove_watch_failure)
+        printf '%s\n' 'watch protocol unsupported' >&2
+        exit 2
+        ;;
+      watch_hang|remove_watch_hang)
+        while :; do sleep 1; done
+        ;;
+    esac
+    event="storageUploadDone"
+    case "$mode" in remove_*) event="storageRemoveDone" ;; esac
+    printf '{"type":"subscription_ready","protocol":"logoscore.watch","version":1,"module":"storage_module","event":"%s"}\n' "$event"
     while [ ! -f "$state/dispatched" ]; do sleep 0.01; done
     if [ "$mode" = "foreign_success" ]; then
       printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:00Z","module":"storage_module","event":"storageUploadDone","data":{"arg0":"{\"success\":true,\"sessionId\":\"session-foreign\",\"cid\":\"cid-foreign\"}"}}'
+    fi
+    if [ "$mode" = "remove_foreign_success" ]; then
+      printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:00Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":true,\"cid\":\"cid-foreign\"}"}}'
     fi
     case "$mode" in
       success|foreign_success)
@@ -1522,6 +1826,15 @@ case "$1" in
       malformed_terminal)
         printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageUploadDone","data":{"arg0":"{\"success\":true,\"sessionId\":\"session-upload-1\"}"}}'
         ;;
+      remove_success|remove_foreign_success)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":true,\"cid\":\"cid-remove-1\"}"}}'
+        ;;
+      remove_terminal_failure)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":false,\"cid\":\"cid-remove-1\",\"error\":\"fixture remove failed\"}"}}'
+        ;;
+      remove_malformed_terminal)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":true}"}}'
+        ;;
     esac
     while :; do sleep 1; done
     ;;
@@ -1529,10 +1842,10 @@ case "$1" in
     printf '%s\n' "$3" >> "$state/calls"
     case "$3" in
       manifests)
-        if [ "$mode" = "barrier_failure" ]; then exit 7; fi
-        if [ "$mode" = "barrier_hang" ]; then
-          while :; do sleep 1; done
-        fi
+        case "$mode" in
+          barrier_failure|remove_barrier_failure) exit 7 ;;
+          barrier_hang|remove_barrier_hang) while :; do sleep 1; done ;;
+        esac
         printf '%s\n' '{"status":"ok","result":{"success":true,"value":[],"error":null}}'
         ;;
       uploadUrl)
@@ -1540,6 +1853,12 @@ case "$1" in
         touch "$state/dispatched"
         if [ "$mode" = "dispatch_failure" ]; then exit 8; fi
         printf '%s\n' '{"status":"ok","result":{"success":true,"value":"session-upload-1","error":null}}'
+        ;;
+      remove)
+        printf x >> "$state/remove-count"
+        touch "$state/dispatched"
+        if [ "$mode" = "remove_dispatch_failure" ]; then exit 8; fi
+        printf '%s\n' '{"status":"ok","result":{"success":true,"value":null,"error":null}}'
         ;;
       *) exit 91 ;;
     esac
@@ -1562,6 +1881,7 @@ esac
                 _directory: directory,
                 transport,
                 calls_path: config_dir.join("calls"),
+                remove_count_path: config_dir.join("remove-count"),
                 upload_count_path: config_dir.join("upload-count"),
                 upload_path,
             })
@@ -1584,6 +1904,15 @@ esac
             self.transport.clone()
         }
 
+        fn remove_request(&self) -> Result<StorageOperationRequest> {
+            let request = request(json!({
+                "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+                "mutating_enabled": true,
+                "payload": { "cid": "cid-remove-1" }
+            }))?;
+            StorageOperationRequest::parse(&request, StorageOperation::Remove)
+        }
+
         fn calls(&self) -> Result<Vec<String>> {
             match fs::read_to_string(&self.calls_path) {
                 Ok(calls) => Ok(calls.lines().map(ToOwned::to_owned).collect()),
@@ -1594,6 +1923,14 @@ esac
 
         fn upload_count(&self) -> Result<usize> {
             match fs::read(&self.upload_count_path) {
+                Ok(count) => Ok(count.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error.into()),
+            }
+        }
+
+        fn remove_count(&self) -> Result<usize> {
+            match fs::read(&self.remove_count_path) {
                 Ok(count) => Ok(count.len()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
                 Err(error) => Err(error.into()),
@@ -2091,6 +2428,225 @@ esac
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn logoscore_cli_remove_completes_from_exact_terminal_cid() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("remove_success")?;
+        let output = execute_operation(
+            fake.remove_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+
+        anyhow::ensure!(
+            matches!(
+                output,
+                StorageOperationOutput::Outcome(NodeOperationOutcome::Completed(value))
+                    if value == json!({
+                        "success": true,
+                        "cid": "cid-remove-1",
+                        "completion": "storageRemoveDone"
+                    })
+            ),
+            "CLI remove did not return its exact terminal event"
+        );
+        anyhow::ensure!(
+            fake.calls()? == ["manifests", "remove"] && fake.remove_count()? == 1,
+            "CLI remove lost source barrier or exactly-once dispatch"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_remove_ignores_foreign_terminal_cid() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("remove_foreign_success")?;
+        let output = execute_operation(
+            fake.remove_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+
+        anyhow::ensure!(
+            matches!(
+                output,
+                StorageOperationOutput::Outcome(NodeOperationOutcome::Completed(value))
+                    if value.get("cid") == Some(&json!("cid-remove-1"))
+            ),
+            "foreign remove terminal event captured the active operation"
+        );
+        anyhow::ensure!(fake.remove_count()? == 1, "CLI remove was retried");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_remove_exact_failure_is_terminal() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("remove_terminal_failure")?;
+        let error = execute_operation(
+            fake.remove_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await
+        .err()
+        .context("failed remove terminal event should fail the operation")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("fixture remove failed")
+                && error
+                    .downcast_ref::<StorageRemoveSettlementUnconfirmed>()
+                    .is_none(),
+            "authoritative remove failure was treated as unsettled: {error:#}"
+        );
+        anyhow::ensure!(fake.remove_count()? == 1, "failed CLI remove was retried");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_remove_preflight_failures_never_dispatch() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        for (mode, expected_calls) in [
+            ("remove_watch_failure", Vec::<String>::new()),
+            ("remove_barrier_failure", vec!["manifests".to_owned()]),
+        ] {
+            let fake = FakeUploadRuntime::new(mode)?;
+            let error = execute_operation(
+                fake.remove_request()?,
+                fake.transport(),
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{mode} should fail before remove dispatch"))?;
+            anyhow::ensure!(
+                error
+                    .downcast_ref::<StorageRemoveSettlementUnconfirmed>()
+                    .is_none(),
+                "pre-dispatch {mode} failure retained the remove lease: {error:#}"
+            );
+            anyhow::ensure!(
+                fake.calls()? == expected_calls && fake.remove_count()? == 0,
+                "pre-dispatch {mode} failure reached remove"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_remove_predispatch_stops_are_confirmed_not_started() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let watch = FakeUploadRuntime::new("remove_watch_hang")?;
+        let watch_error = execute_operation(
+            watch.remove_request()?,
+            watch.transport(),
+            module_call_control(Duration::from_millis(100)),
+        )
+        .await
+        .err()
+        .context("remove_watch_hang should stop before remove dispatch")?;
+        let watch_terminated = watch_error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("remove_watch_hang did not preserve module stop evidence")?;
+        anyhow::ensure!(
+            watch_terminated.reason() == ModuleCallStopReason::DeadlineExceeded
+                && watch_terminated.evidence() == ModuleCallTerminationEvidence::NotStarted,
+            "remove_watch_hang stop evidence drifted: {watch_terminated}"
+        );
+        anyhow::ensure!(
+            watch.calls()?.is_empty() && watch.remove_count()? == 0,
+            "remove_watch_hang reached a Storage call"
+        );
+
+        let barrier = FakeUploadRuntime::new("remove_barrier_hang")?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = ModuleCallControl::new(
+            cancellation.clone(),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(3)),
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancellation.cancel();
+        });
+        let barrier_error =
+            execute_operation(barrier.remove_request()?, barrier.transport(), control)
+                .await
+                .err()
+                .context("remove_barrier_hang should stop before remove dispatch")?;
+        let barrier_terminated = barrier_error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("remove_barrier_hang did not preserve module stop evidence")?;
+        anyhow::ensure!(
+            barrier_terminated.reason() == ModuleCallStopReason::Shutdown
+                && barrier_terminated.evidence() == ModuleCallTerminationEvidence::NotStarted,
+            "remove_barrier_hang stop evidence drifted: {barrier_terminated}"
+        );
+        anyhow::ensure!(
+            barrier.calls()? == ["manifests".to_owned()] && barrier.remove_count()? == 0,
+            "remove_barrier_hang did not stop inside the ordering barrier"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_remove_dispatch_failure_retains_uncertain_settlement() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("remove_dispatch_failure")?;
+        let error = execute_operation(
+            fake.remove_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await
+        .err()
+        .context("failed remove dispatch should preserve uncertainty")?;
+
+        anyhow::ensure!(
+            error
+                .downcast_ref::<StorageRemoveSettlementUnconfirmed>()
+                .is_some(),
+            "post-spawn remove failure released uncertain settlement: {error:#}"
+        );
+        anyhow::ensure!(fake.remove_count()? == 1, "failed dispatch retried remove");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_remove_missing_or_malformed_terminal_retains_uncertainty() -> Result<()>
+    {
+        let _test_permit = serialize_cli_upload_test().await;
+        for mode in ["remove_no_terminal", "remove_malformed_terminal"] {
+            let fake = FakeUploadRuntime::new(mode)?;
+            let error = execute_operation(
+                fake.remove_request()?,
+                fake.transport(),
+                module_call_control(Duration::from_millis(250)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{mode} should retain remove uncertainty"))?;
+
+            anyhow::ensure!(
+                error
+                    .downcast_ref::<StorageRemoveSettlementUnconfirmed>()
+                    .is_some(),
+                "{mode} released uncertain remove settlement: {error:#}"
+            );
+            anyhow::ensure!(fake.remove_count()? == 1, "{mode} retried remove");
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn logoscore_cli_upload_ignores_foreign_terminal_session() -> Result<()> {
         let _test_permit = serialize_cli_upload_test().await;
         let fake = FakeUploadRuntime::new("foreign_success")?;
@@ -2331,6 +2887,72 @@ esac
             decode_upload_terminal_event(&malformed, "session-upload-1")
                 .is_err_and(|error| error.to_string().contains("has no CID")),
             "successful upload terminal without CID was accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn remove_terminal_decoder_correlates_exact_cid_and_rejects_malformed_payload() -> Result<()> {
+        let success = json!({
+            "module": "storage_module",
+            "event": "storageRemoveDone",
+            "data": {
+                "arg0": {
+                    "success": true,
+                    "cid": "cid-remove-1"
+                }
+            }
+        });
+        anyhow::ensure!(
+            decode_remove_terminal_event(&success, "cid-remove-1")?
+                == RemoveTerminalEvent::Succeeded,
+            "object remove terminal payload was not decoded"
+        );
+        anyhow::ensure!(
+            decode_remove_terminal_event(&success, "cid-other")? == RemoveTerminalEvent::Unrelated,
+            "foreign remove CID was accepted"
+        );
+        let failure = json!({
+            "module": "storage_module",
+            "event": "storageRemoveDone",
+            "data": {
+                "arg0": "{\"success\":false,\"cid\":\"cid-remove-1\",\"error\":\"denied\"}"
+            }
+        });
+        anyhow::ensure!(
+            decode_remove_terminal_event(&failure, "cid-remove-1")?
+                == RemoveTerminalEvent::Failed {
+                    error: "denied".to_owned()
+                },
+            "remove terminal failure payload was not decoded"
+        );
+        let failure_without_error = json!({
+            "module": "storage_module",
+            "event": "storageRemoveDone",
+            "data": {
+                "arg0": {
+                    "success": false,
+                    "cid": "cid-remove-1",
+                    "error": ""
+                }
+            }
+        });
+        anyhow::ensure!(
+            decode_remove_terminal_event(&failure_without_error, "cid-remove-1")?
+                == RemoveTerminalEvent::Failed {
+                    error: "storage remove failed without an error message".to_owned()
+                },
+            "remove failure without detail lost authoritative settlement"
+        );
+        let malformed = json!({
+            "module": "storage_module",
+            "event": "storageRemoveDone",
+            "data": { "arg0": "{\"success\":true}" }
+        });
+        anyhow::ensure!(
+            decode_remove_terminal_event(&malformed, "cid-remove-1")
+                .is_err_and(|error| error.to_string().contains("has no CID")),
+            "remove terminal without CID was accepted"
         );
         Ok(())
     }
@@ -2677,6 +3299,57 @@ esac
         anyhow::ensure!(
             parsed.context().get("cid") == Some(&json!("cid-a")),
             "legacy mutation flag prevented Storage removal planning"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_remove_rejects_route_breaking_cid_before_transport() -> Result<()> {
+        for cid in [
+            ".",
+            "..",
+            "cid/child",
+            "cid\\child",
+            "cid?query",
+            "cid#fragment",
+            "cid%2fchild",
+            "cid%00tail",
+            "cid\ncontrol",
+            "cid with space",
+        ] {
+            let request = request(json!({
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://storage" }
+                },
+                "mutating_enabled": true,
+                "payload": { "cid": cid }
+            }))?;
+            let error = StorageOperationRequest::parse(&request, StorageOperation::Remove)
+                .err()
+                .with_context(|| format!("route-breaking storage CID `{cid:?}` was accepted"))?;
+            anyhow::ensure!(
+                error.to_string().contains("storage CID"),
+                "route-breaking storage CID returned unrelated error: {error:#}"
+            );
+        }
+
+        let request = request(json!({
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": true,
+            "payload": { "cid": "a".repeat(STORAGE_CID_MAX_BYTES + 1) }
+        }))?;
+        let error = StorageOperationRequest::parse(&request, StorageOperation::Remove)
+            .err()
+            .context("oversized storage CID was accepted")?;
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("storage CID exceeds 256 byte limit"),
+            "oversized storage CID returned unexpected error: {error:#}"
         );
         Ok(())
     }

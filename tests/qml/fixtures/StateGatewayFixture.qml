@@ -34,6 +34,8 @@ QtObject {
     property string openedSection: ""
     property string openedSubSection: ""
     property int storageObservationCount: 0
+    property int storageRefreshCount: 0
+    property var storageRefreshCallback: null
     property bool deferStorageObservations: false
     property var storageObservationResponse: ({
         ok: true,
@@ -71,6 +73,8 @@ QtObject {
         openedSection = ""
         openedSubSection = ""
         storageObservationCount = 0
+        storageRefreshCount = 0
+        storageRefreshCallback = null
         deferStorageObservations = false
         storageObservationResponse = ({
             ok: true,
@@ -220,6 +224,13 @@ QtObject {
             callback(storageObservationResponse)
         }
         return storageObservationResponse
+    }
+
+    function refreshStorageObservations() {
+        storageRefreshCount += 1
+        return typeof storageRefreshCallback === "function"
+            ? storageRefreshCallback()
+            : null
     }
 
     function completeStorageObservationAt(index, response) {
