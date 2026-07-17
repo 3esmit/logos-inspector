@@ -421,15 +421,20 @@ function blockStatus(root, block) {
         if (chainStatus === "finalized") {
             return qsTr("finalized")
         }
-        if (chainStatus === "pending") {
-            return qsTr("pending")
-        }
         if (chainStatus === "orphaned") {
             return qsTr("orphaned")
         }
 
         const slot = blockSlot(block)
         const info = blockchainInfo()
+        if (chainStatus === "pending") {
+            const currentLibSlot = info && info.lib_slot !== undefined
+                ? Number(info.lib_slot) : Number.NaN
+            if (slot && Number.isFinite(currentLibSlot) && slot <= currentLibSlot) {
+                return qsTr("finalized")
+            }
+            return qsTr("pending")
+        }
         if (!slot || !info) {
             return "-"
         }

@@ -4250,6 +4250,28 @@ TestCase {
         compare(model.chainPages.blockStatus(model.blocksPageRows[1]), "finalized")
     }
 
+    function test_pending_block_status_advances_with_newer_lib() {
+        const block = {
+            header: { slot: 30, id: "retained-pending" },
+            transactions: [],
+            _chain: { status: "pending", lib_slot: 20, tip_slot: 30 }
+        }
+        model.dashboardNode = {
+            cryptarchia_info: {
+                value: { cryptarchia_info: { slot: 40, lib_slot: 20 } }
+            }
+        }
+
+        compare(model.chainPages.blockStatus(block), "pending")
+
+        model.dashboardNode = {
+            cryptarchia_info: {
+                value: { cryptarchia_info: { slot: 45, lib_slot: 30 } }
+            }
+        }
+        compare(model.chainPages.blockStatus(block), "finalized")
+    }
+
     function test_chain_workflow_flags_cover_delayed_page_operations() {
         fakeHost.responses = {
             runtimeOperationStart: function (args) {
