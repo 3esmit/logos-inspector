@@ -617,6 +617,11 @@ QtObject {
                 return root.storageApp.refreshManifests(false)
             }
 
+            function observeStorage(callback) {
+                return metricsState.observeNetworkConnection(
+                    "storage", false, false, callback, "source-inspection")
+            }
+
             function setResult(title, text, isError, value) {
                 return appShellState.setResult(title, text, isError, value)
             }

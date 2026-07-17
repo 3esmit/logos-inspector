@@ -17,6 +17,8 @@ TestCase {
         id: gate
 
         property var blocked: ({})
+        property bool manifestsLoading: false
+        property int revision: 0
 
         function storageGate(action, options) {
             const inputs = options && Array.isArray(options.required_inputs) ? options.required_inputs : []
@@ -31,6 +33,15 @@ TestCase {
                         warnings: [],
                         provenance: ["input"]
                     }
+                }
+            }
+            if (String(action || "") === "manifests" && manifestsLoading) {
+                return {
+                    enabled: false,
+                    status: "loading",
+                    missing: [{ dependency: "storage.manifests.read", label: "Storage manifests", status: "loading", capability: "storage", provenance: "test" }],
+                    warnings: [],
+                    provenance: ["test"]
                 }
             }
             const dependency = String(blocked[String(action || "")] || "")
@@ -93,8 +104,11 @@ TestCase {
     function init() {
         gateway.reset()
         gate.blocked = ({})
+        gate.manifestsLoading = false
+        gate.revision = 0
 
         state.busy = false
+        state.currentView = ""
         state.effectiveSourceMode = "rest"
         state.sourceLabel = "Direct REST"
         state.sourceTarget = "http://storage"
@@ -114,11 +128,19 @@ TestCase {
         state.sourceReport = null
         state.manifests = []
         state.manifestRequestGeneration = 0
+        state.manifestBootstrapGeneration = 0
+        state.manifestRefreshDeferred = false
+        state.manifestObservationPending = false
+        state.manifestDeferredShowLog = false
+        state.manifestBusyDeferred = false
+        state.manifestBusyShowLog = false
         state.diagnosticRequestGeneration = 0
         state.manifestRefreshContext = null
         state.operationSession.reset()
+        state.currentView = "storage"
 
         stateWithoutGate.busy = false
+        stateWithoutGate.currentView = ""
         stateWithoutGate.effectiveSourceMode = "rest"
         stateWithoutGate.sourceTargetKind = "rest_endpoint"
         stateWithoutGate.usesRestEndpoint = true
@@ -126,6 +148,12 @@ TestCase {
         stateWithoutGate.mutatingDiagnosticsEnabled = true
         stateWithoutGate.manifests = []
         stateWithoutGate.manifestRequestGeneration = 0
+        stateWithoutGate.manifestBootstrapGeneration = 0
+        stateWithoutGate.manifestRefreshDeferred = false
+        stateWithoutGate.manifestObservationPending = false
+        stateWithoutGate.manifestDeferredShowLog = false
+        stateWithoutGate.manifestBusyDeferred = false
+        stateWithoutGate.manifestBusyShowLog = false
         stateWithoutGate.diagnosticRequestGeneration = 0
         stateWithoutGate.manifestRefreshContext = null
         stateWithoutGate.operationSession.reset()
@@ -166,6 +194,194 @@ TestCase {
         compare(state.manifestRows()[0].cid, "z-cid")
         compare(state.lastOperation, "List")
         compare(state.operation.rows.length, 2)
+    }
+
+    function test_loading_manifest_gate_observes_source_then_retries_once() {
+        gate.manifestsLoading = true
+        gateway.deferStorageObservations = true
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-bootstrap-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [{ cid: "z-bootstrap", filename: "bootstrap.bin", datasetSize: 13 }],
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(false)
+        state.refreshManifests(false)
+
+        compare(gateway.storageObservationCount, 1)
+        compare(gateway.requestCount, 0)
+        compare(state.lastOperation, "Loading")
+
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: true,
+            value: { health: { ready: true } },
+            text: "OK",
+            error: ""
+        }))
+
+        compare(gateway.requestCount, 0)
+        verify(state.manifestRefreshDeferred)
+        verify(!state.manifestObservationPending)
+
+        gate.manifestsLoading = false
+        gate.revision += 1
+
+        compare(gateway.requestCount, 1)
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(state.manifestRows()[0].cid, "z-bootstrap")
+        compare(state.lastOperation, "List")
+    }
+
+    function test_busy_initial_manifest_refresh_retries_when_idle() {
+        state.busy = true
+        gate.manifestsLoading = true
+        gateway.deferStorageObservations = true
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-after-busy-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [{ cid: "z-after-busy", filename: "after-busy.bin", datasetSize: 19 }],
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(false)
+
+        verify(state.manifestBusyDeferred)
+        compare(state.lastOperation, "Waiting")
+        compare(gateway.storageObservationCount, 0)
+        compare(gateway.requestCount, 0)
+
+        state.busy = false
+
+        verify(!state.manifestBusyDeferred)
+        compare(gateway.storageObservationCount, 1)
+        compare(state.lastOperation, "Loading")
+
+        gate.manifestsLoading = false
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: true,
+            value: { health: { ready: true } },
+            text: "OK",
+            error: ""
+        }))
+
+        compare(gateway.requestCount, 1)
+        compare(state.manifestRows()[0].cid, "z-after-busy")
+        compare(state.lastOperation, "List")
+    }
+
+    function test_manifest_bootstrap_replaces_observation_after_source_change() {
+        gate.manifestsLoading = true
+        gateway.deferStorageObservations = true
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-new-source-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [{ cid: "z-new-source", filename: "new-source.bin", datasetSize: 23 }],
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(false)
+
+        compare(gateway.storageObservationCount, 1)
+        verify(state.manifestObservationPending)
+
+        state.restEndpoint = "http://storage-new"
+        wait(0)
+
+        compare(gateway.storageObservationCount, 2)
+        verify(state.manifestObservationPending)
+
+        gate.manifestsLoading = false
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: true,
+            value: { health: { ready: true } },
+            text: "OK",
+            error: ""
+        }))
+
+        compare(gateway.requestCount, 0)
+        verify(state.manifestRefreshDeferred)
+        verify(state.manifestObservationPending)
+
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: true,
+            value: { health: { ready: true } },
+            text: "OK",
+            error: ""
+        }))
+
+        compare(gateway.requestCount, 1)
+        compare(state.manifestRows()[0].cid, "z-new-source")
+        compare(state.lastOperation, "List")
+    }
+
+    function test_silent_manifest_refresh_rechecks_disabled_configured_source() {
+        gate.blocked = ({ manifests: "storage.manifests.read" })
+        gateway.deferStorageObservations = true
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-recheck-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [{ cid: "z-rechecked", filename: "rechecked.bin", datasetSize: 17 }],
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(false)
+
+        compare(gateway.storageObservationCount, 1)
+        compare(gateway.requestCount, 0)
+        compare(state.lastOperation, "Loading")
+
+        gate.blocked = ({})
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: true,
+            value: { health: { ready: true } },
+            text: "OK",
+            error: ""
+        }))
+
+        compare(gateway.requestCount, 1)
+        compare(state.manifestRows()[0].cid, "z-rechecked")
+        compare(state.lastOperation, "List")
     }
 
     function test_operation_status_text_keeps_reconciled_terminal_state() {
