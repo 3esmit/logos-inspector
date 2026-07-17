@@ -197,6 +197,13 @@ TestCase {
         const messageText = findChild(confirmPopup.contentItem, "messageText")
         verify(messageText !== null)
         compare(messageText.wrapMode, Text.WrapAnywhere)
+        compare(messageText.Accessible.role, Accessible.StaticText)
+        compare(messageText.Accessible.name, "Deploy selected binary")
+
+        const titleText = findChild(confirmPopup.contentItem, "titleText")
+        verify(titleText !== null)
+        compare(titleText.Accessible.role, Accessible.StaticText)
+        compare(titleText.Accessible.name, "Deploy")
 
         const confirmButton = findChild(confirmPopup.contentItem, "confirmButton")
         verify(confirmButton !== null)
