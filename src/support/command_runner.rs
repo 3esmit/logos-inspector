@@ -42,6 +42,7 @@ pub(crate) struct CommandControl {
     cancellation: CancellationToken,
     deadline: Instant,
     blocking_work: Option<BlockingWorkTracker>,
+    command_budget: Option<CommandBudget>,
 }
 
 impl CommandControl {
@@ -50,6 +51,7 @@ impl CommandControl {
             cancellation,
             deadline,
             blocking_work: None,
+            command_budget: None,
         }
     }
 
@@ -69,6 +71,7 @@ impl CommandControl {
             cancellation: self.cancellation.clone(),
             deadline: self.deadline.min(deadline),
             blocking_work: self.blocking_work.clone(),
+            command_budget: self.command_budget.clone(),
         }
     }
 
@@ -76,6 +79,32 @@ impl CommandControl {
     pub(crate) fn with_blocking_work_tracker(mut self, tracker: BlockingWorkTracker) -> Self {
         self.blocking_work = Some(tracker);
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_command_budget(mut self, budget: CommandBudget) -> Self {
+        self.command_budget = Some(budget);
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_isolated_test_budget(self) -> Self {
+        self.with_command_budget(CommandBudget::new(MAX_CONCURRENT_COMMANDS))
+    }
+
+    #[must_use]
+    pub(crate) fn command_budget(&self) -> Option<CommandBudget> {
+        self.command_budget.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_command_budget_with(&self, other: &Self) -> bool {
+        match (&self.command_budget, &other.command_budget) {
+            (Some(left), Some(right)) => Arc::ptr_eq(&left.inner, &right.inner),
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        }
     }
 
     pub(crate) fn blocking_worker_guard(&self) -> Result<Option<BlockingWorkGuard>> {
@@ -201,7 +230,8 @@ impl std::fmt::Display for CommandCleanupUnconfirmed {
 
 impl std::error::Error for CommandCleanupUnconfirmed {}
 
-struct CommandBudget {
+#[derive(Clone)]
+pub(crate) struct CommandBudget {
     inner: Arc<CommandBudgetInner>,
 }
 
@@ -234,7 +264,8 @@ pub(crate) fn acquire_streaming_command_permit(
         redactions: &[],
         output_limit: 0,
     };
-    let permit = COMMAND_BUDGET.acquire(&policy, Some(control), None)?;
+    let budget = control.command_budget.as_ref().unwrap_or(&COMMAND_BUDGET);
+    let permit = budget.acquire(&policy, Some(control), None)?;
     Ok(StreamingCommandPermit { _permit: permit })
 }
 
@@ -346,7 +377,11 @@ fn run_command_inner(
     policy: CommandRunPolicy<'_>,
     control: Option<CommandControl>,
 ) -> Result<Output> {
-    run_command_inner_with(command, policy, control, &COMMAND_BUDGET, Child::try_wait)
+    let budget = control
+        .as_ref()
+        .and_then(CommandControl::command_budget)
+        .unwrap_or_else(|| COMMAND_BUDGET.clone());
+    run_command_inner_with(command, policy, control, &budget, Child::try_wait)
 }
 
 fn run_command_inner_with<P>(
@@ -1764,6 +1799,72 @@ mod tests {
         if control.blocking_worker_guard().is_ok() {
             bail!("parent control did not share the closed work tracker");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_command_honors_derived_private_budget_before_spawn() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let marker = directory.path().join("spawned");
+        let parent = CommandControl::new(
+            CancellationToken::new(),
+            Instant::now()
+                .checked_add(TEST_TIMEOUT)
+                .context("private-budget parent deadline overflow")?,
+        )
+        .with_isolated_test_budget();
+        let holders = (0..MAX_CONCURRENT_COMMANDS)
+            .map(|_| acquire_streaming_command_permit("private-budget holder", &parent))
+            .collect::<Result<Vec<_>>>()?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .context("private-budget test deadline overflow")?;
+        let control = parent.with_deadline(deadline);
+        anyhow::ensure!(
+            parent.shares_command_budget_with(&control),
+            "derived control did not preserve budget identity"
+        );
+        control.check_active()?;
+
+        let result = run_command_controlled(
+            shell_command("printf spawned > \"$1\"", &[&marker]),
+            test_policy(Duration::from_millis(1)),
+            control,
+        );
+        let error = command_error(result, "private-budget command unexpectedly completed")?;
+
+        let Some(terminated) = error.downcast_ref::<CommandTerminated>() else {
+            bail!("private-budget command lost typed termination: {error:#}");
+        };
+        if terminated.reason() != CommandStopReason::DeadlineExceeded
+            || terminated.scope() != CommandTerminationScope::NoProcess
+        {
+            bail!("private-budget command did not stop before spawn: {error:#}");
+        }
+        if marker.exists() {
+            bail!("private-budget command spawned while its budget was saturated");
+        }
+        let independent = CommandControl::new(
+            CancellationToken::new(),
+            Instant::now()
+                .checked_add(TEST_TIMEOUT)
+                .context("independent private-budget deadline overflow")?,
+        )
+        .with_isolated_test_budget();
+        anyhow::ensure!(
+            !parent.shares_command_budget_with(&independent),
+            "independent control reused the saturated private budget"
+        );
+        let output = run_command_controlled(
+            shell_command("printf independent", &[]),
+            test_policy(Duration::from_millis(1)),
+            independent,
+        )?;
+        anyhow::ensure!(
+            output.stdout == b"independent",
+            "independent private budget was blocked by another control"
+        );
+        drop(holders);
         Ok(())
     }
 

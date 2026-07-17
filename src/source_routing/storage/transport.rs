@@ -61,6 +61,17 @@ const _: () = assert!(
 
 static CLI_BACKUP_DOWNLOAD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[cfg(all(test, unix))]
+static TEST_CLI_BACKUP_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(all(test, unix))]
+pub(crate) fn serialize_cli_backup_test() -> MutexGuard<'static, ()> {
+    match TEST_CLI_BACKUP_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum DownloadTerminalEvent {
     Unrelated,
@@ -1095,6 +1106,7 @@ where
                 DownloadCancelExpectation::EffectUnknown,
                 error,
                 &mut watch,
+                control,
             );
         }
     };
@@ -1108,6 +1120,7 @@ where
             DownloadCancelExpectation::EffectUnknown,
             error,
             &mut watch,
+            control,
         );
     }
 
@@ -1128,6 +1141,7 @@ where
                 DownloadCancelExpectation::Accepted,
                 error,
                 &mut watch,
+                control,
             );
         }
     };
@@ -1413,8 +1427,9 @@ fn cleanup_active_download_error<T>(
     expectation: DownloadCancelExpectation,
     primary: anyhow::Error,
     watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+    parent_control: &CommandControl,
 ) -> Result<T> {
-    let cancel = cancel_module_download(runtime, operation_id, cid, expectation);
+    let cancel = cancel_module_download(runtime, operation_id, cid, expectation, parent_control);
     let stop = watch.stop();
     match (cancel, stop) {
         (Ok(()), Ok(())) => Err(primary),
@@ -1435,16 +1450,29 @@ fn cancel_module_download(
     operation_id: &str,
     expected_cid: &str,
     expectation: DownloadCancelExpectation,
+    parent_control: &CommandControl,
 ) -> Result<()> {
-    cancel_module_download_with_timeout(
-        runtime,
-        operation_id,
-        expected_cid,
-        expectation,
-        BACKUP_DOWNLOAD_CANCEL_COMMAND_TIMEOUT,
-    )
+    let control =
+        backup_download_cleanup_control(parent_control, BACKUP_DOWNLOAD_CANCEL_COMMAND_TIMEOUT)?;
+    cancel_module_download_controlled(runtime, operation_id, expected_cid, expectation, control)
 }
 
+fn backup_download_cleanup_control(
+    parent_control: &CommandControl,
+    timeout: Duration,
+) -> Result<CommandControl> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .context("storage download cleanup deadline overflow")?;
+    let control = CommandControl::new(CancellationToken::new(), deadline);
+    Ok(if let Some(budget) = parent_control.command_budget() {
+        control.with_command_budget(budget)
+    } else {
+        control
+    })
+}
+
+#[cfg(test)]
 fn cancel_module_download_with_timeout(
     runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
     operation_id: &str,
@@ -2352,20 +2380,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    static TEST_CLI_BACKUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[cfg(unix)]
     const SUCCEEDED_TERMINAL: &str = r#"{"protocol":"logos.storage.download","version":2,"moduleOperationId":"__OPERATION_ID__","cid":"__CID__","outcome":"succeeded"}"#;
 
     #[cfg(unix)]
     const FAILED_TERMINAL: &str = r#"{"protocol":"logos.storage.download","version":2,"moduleOperationId":"__OPERATION_ID__","cid":"__CID__","outcome":"failed","error":"not found"}"#;
-
-    #[cfg(unix)]
-    fn serialize_cli_backup_test() -> Result<std::sync::MutexGuard<'static, ()>> {
-        TEST_CLI_BACKUP_LOCK
-            .lock()
-            .map_err(|_| anyhow::anyhow!("CLI backup test lock is poisoned"))
-    }
 
     #[cfg(unix)]
     struct FakeDownloadRuntime {
@@ -2701,6 +2719,32 @@ mod tests {
     }
 
     #[test]
+    fn backup_download_cleanup_control_keeps_budget_but_uses_fresh_lifecycle() -> Result<()> {
+        let parent_cancellation = CancellationToken::new();
+        let parent = CommandControl::new(parent_cancellation.clone(), Instant::now())
+            .with_isolated_test_budget();
+        let cleanup = backup_download_cleanup_control(&parent, Duration::from_secs(30))?;
+
+        anyhow::ensure!(
+            parent.shares_command_budget_with(&cleanup),
+            "backup cleanup did not retain its parent command budget"
+        );
+        parent_cancellation.cancel();
+        cleanup.check_active()?;
+
+        let ordinary = CommandControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(30),
+        );
+        let ordinary_cleanup = backup_download_cleanup_control(&ordinary, Duration::from_secs(30))?;
+        anyhow::ensure!(
+            ordinary.shares_command_budget_with(&ordinary_cleanup),
+            "ordinary backup cleanup left the production command budget"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn backup_cleanup_preserves_unconfirmed_command_stop_reason() -> Result<()> {
         let primary: anyhow::Error = CommandCleanupUnconfirmed::new(
             Some(CommandStopReason::CancelRequested),
@@ -2802,7 +2846,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn effect_unknown_cancel_never_settles_on_persistent_not_found() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::new(b"{}", None, &download_module_info(true))?;
         fake.always_return_cancel_not_found("cid-late")?;
 
@@ -2834,7 +2878,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cancel_command_bound_allows_protocol_settlement_margin() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::new(b"{}", None, &download_module_info(true))?;
         let protocol_allowance = Duration::from_millis(80);
         let command_bound = Duration::from_millis(700);
@@ -2864,7 +2908,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_waits_for_ready_correlated_terminal_and_cleans_staging() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let payload = br#"{"kind":"logos-inspector-settings-backup","version":1}"#;
         let fake = FakeDownloadRuntime::new(
             payload,
@@ -2897,7 +2941,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_wrong_operation_times_out_cancels_and_cleans() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::new(
             b"{}",
             Some(
@@ -2934,7 +2978,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_cancellation_uses_fresh_cleanup_control() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::new(b"{}", None, &download_module_info(true))?;
         let cancellation = CancellationToken::new();
         let cancel_request = cancellation.clone();
@@ -2985,7 +3029,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_cancels_effect_when_dispatch_reply_is_interrupted() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::with_call_behavior(
             b"{}",
             None,
@@ -3049,7 +3093,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_pre_spawn_dispatch_interruption_skips_remote_cancel_and_cleans() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::new(b"{}", None, &download_module_info(true))?;
         let cancellation = CancellationToken::new();
         let cancel_request = cancellation.clone();
@@ -3098,7 +3142,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_cancels_malformed_dispatch_acknowledgement() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::with_call_behavior(
             b"{}",
             None,
@@ -3132,7 +3176,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn malformed_dispatch_with_failed_cancel_is_cleanup_unknown() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let fake = FakeDownloadRuntime::with_call_behavior(
             b"{}",
             None,
@@ -3172,7 +3216,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_rejects_malformed_and_failed_terminals() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         for (label, terminal, expected, canceled) in [
             (
                 "malformed",
@@ -3212,7 +3256,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_download_gates_runtime_event_and_bounds_staged_bytes() -> Result<()> {
-        let _test_permit = serialize_cli_backup_test()?;
+        let _test_permit = serialize_cli_backup_test();
         let unsupported = FakeDownloadRuntime::new(b"{}", None, &download_module_info(false))?;
         let unsupported_error = module_download_backup_bytes_blocking_controlled(
             &unsupported.runtime,

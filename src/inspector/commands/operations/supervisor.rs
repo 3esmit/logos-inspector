@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     modules::logos_core::{ModuleCallControl, SharedModuleTransport},
     support::{
-        command_runner::CommandControl,
+        command_runner::{CommandBudget, CommandControl},
         work_tracker::{BlockingWorkGuard, BlockingWorkTracker},
     },
 };
@@ -161,6 +161,7 @@ pub(super) struct OperationControl {
     commit_active: Arc<AtomicBool>,
     execution_state: Arc<AtomicU8>,
     termination_handshake_grace: Duration,
+    command_budget: Option<CommandBudget>,
 }
 
 pub(super) struct OperationCommitGuard {
@@ -189,11 +190,21 @@ impl OperationControl {
             commit_active: Arc::new(AtomicBool::new(false)),
             execution_state: Arc::new(AtomicU8::new(EXECUTION_QUEUED)),
             termination_handshake_grace: DEFAULT_TERMINATION_HANDSHAKE_GRACE,
+            command_budget: None,
         }
     }
 
     fn with_termination_handshake_grace(mut self, grace: Duration) -> Self {
         self.termination_handshake_grace = grace;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_isolated_test_command_budget(mut self) -> Self {
+        let deadline = self.deadline.into_std();
+        self.command_budget = CommandControl::new(self.cancellation.clone(), deadline)
+            .with_isolated_test_budget()
+            .command_budget();
         self
     }
 
@@ -224,8 +235,13 @@ impl OperationControl {
     }
 
     pub(super) fn command_control(&self) -> CommandControl {
-        CommandControl::new(self.cancellation.clone(), self.deadline.into_std())
-            .with_blocking_work_tracker(self.blocking_work.clone())
+        let control = CommandControl::new(self.cancellation.clone(), self.deadline.into_std())
+            .with_blocking_work_tracker(self.blocking_work.clone());
+        if let Some(budget) = self.command_budget.clone() {
+            control.with_command_budget(budget)
+        } else {
+            control
+        }
     }
 
     pub(super) fn blocking_worker_guard(&self) -> Result<BlockingWorkGuard> {
@@ -361,6 +377,7 @@ impl OperationControl {
 pub(super) fn test_operation_control(deadline: std::time::Duration) -> OperationControl {
     let root = CancellationToken::new();
     OperationControl::new(&root, Instant::now() + deadline, None)
+        .with_isolated_test_command_budget()
 }
 
 pub(super) struct OperationAdmission {
@@ -1795,6 +1812,27 @@ mod tests {
             }
             self.dropped.store(true, Ordering::Release);
         }
+    }
+
+    #[test]
+    fn test_operation_command_controls_share_one_isolated_budget() -> Result<()> {
+        let operation = test_operation_control(Duration::from_secs(30));
+        let first = operation.command_control();
+        let second = operation.command_control();
+        let ordinary = CommandControl::new(
+            CancellationToken::new(),
+            std::time::Instant::now() + Duration::from_secs(30),
+        );
+
+        anyhow::ensure!(
+            first.shares_command_budget_with(&second),
+            "operation command controls did not share their test budget"
+        );
+        anyhow::ensure!(
+            !first.shares_command_budget_with(&ordinary),
+            "test operation reused the production command budget"
+        );
+        Ok(())
     }
 
     struct DropSignal(Option<sync_mpsc::Sender<()>>);
