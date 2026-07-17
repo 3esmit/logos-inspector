@@ -20,6 +20,7 @@ use crate::{
 const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
 const BLOCK_STREAM_SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
 const BLOCK_RANGE_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const BLOCK_DETAIL_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_BLOCK_RANGE_SLOTS: u64 = 2_001;
 
 #[derive(Debug, Clone, Serialize)]
@@ -531,12 +532,30 @@ fn block_dedupe_keys(block: &Value) -> Vec<String> {
 }
 
 pub async fn blockchain_block(endpoint: &str, block_id: &str) -> Result<Value> {
+    blockchain_block_value_bounded(endpoint, block_id, BLOCK_DETAIL_RESPONSE_MAX_BYTES).await
+}
+
+async fn blockchain_block_value_bounded(
+    endpoint: &str,
+    block_id: &str,
+    max_bytes: usize,
+) -> Result<Value> {
     let block_id = block_id.trim();
     if block_id.is_empty() {
         bail!("block id is required");
     }
     reject_path_markers(block_id, "block id")?;
-    raw_http_json(endpoint, &format!("/cryptarchia/blocks/{block_id}")).await
+    let url = rest_url(endpoint, &format!("cryptarchia/blocks/{block_id}"));
+    request_json_bounded(
+        reqwest::Client::new().get(&url),
+        &url,
+        "failed to read http response body",
+        "invalid JSON response",
+        false,
+        false,
+        max_bytes,
+    )
+    .await
 }
 
 pub async fn blockchain_transaction(endpoint: &str, transaction_id: &str) -> Result<Value> {
@@ -912,6 +931,48 @@ mod tests {
             .contains("http response body exceeded 8 byte limit")
         {
             bail!("unexpected chunked block-range body error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_block_rejects_declared_body_over_limit() -> Result<()> {
+        let (endpoint, server) = serve_http_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9\r\nConnection: close\r\n\r\n",
+        )?;
+
+        let error = blockchain_block_value_bounded(&endpoint, "block-a", 8)
+            .await
+            .err()
+            .context("oversized declared block-detail body should fail")?;
+        join_http_server(server, "declared block-detail body")?;
+
+        if !error
+            .to_string()
+            .contains("http response body exceeded 8 byte limit")
+        {
+            bail!("unexpected declared block-detail body error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_block_rejects_chunked_body_over_limit() -> Result<()> {
+        let (endpoint, server) = serve_http_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\n12345\r\n4\r\n6789\r\n0\r\n\r\n",
+        )?;
+
+        let error = blockchain_block_value_bounded(&endpoint, "block-a", 8)
+            .await
+            .err()
+            .context("oversized chunked block-detail body should fail")?;
+        join_http_server(server, "chunked block-detail body")?;
+
+        if !error
+            .to_string()
+            .contains("http response body exceeded 8 byte limit")
+        {
+            bail!("unexpected chunked block-detail body error: {error:#}");
         }
         Ok(())
     }
