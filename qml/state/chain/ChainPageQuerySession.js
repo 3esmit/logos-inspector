@@ -17,7 +17,7 @@ function refreshTransactionsPage(root, beforeBlock, pagePosition) {
                         transactionsPageError, true, null)
                     return false
                 }
-                const observedTipSlot = ChainPageQuery.slotTip(node.value, true)
+                const observedTipSlot = ChainPageQuery.slotTip(node.value, false)
                 const latestRequest = beforeBlock === undefined
                     || beforeBlock === null
                 const candidateSessionTip = latestRequest
