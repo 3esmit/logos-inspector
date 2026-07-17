@@ -107,13 +107,14 @@ TestCase {
             property int blockchainRefreshRate: 30
             property int messagingRefreshRate: 0
             property int storageRefreshRate: 0
+            property int dashboardInterval: 15000
 
             function refreshInterval(seconds) {
                 return Math.max(5, Number(seconds || 0)) * 1000
             }
 
             function dashboardRefreshInterval() {
-                return 15000
+                return dashboardInterval
             }
 
             function queryNetworkConnection(kind, showResult) {
@@ -161,6 +162,7 @@ TestCase {
         fakeModel.metrics.blockchainRefreshRate = 30
         fakeModel.metrics.messagingRefreshRate = 0
         fakeModel.metrics.storageRefreshRate = 0
+        fakeModel.metrics.dashboardInterval = 15000
         fakeModel.shell.currentView = "overview"
         fakeModel.shell.busy = false
         fakeModel.blocksLiveEnabled = false
@@ -255,6 +257,18 @@ TestCase {
         verify(scheduler.enabled("messaging"))
         verify(scheduler.enabled("storage"))
         verify(scheduler.enabled("dashboard"))
+    }
+
+    function test_dashboard_timer_stops_when_every_refresh_rate_is_off() {
+        fakeModel.metrics.blockchainRefreshRate = 0
+        fakeModel.metrics.messagingRefreshRate = 0
+        fakeModel.metrics.storageRefreshRate = 0
+        fakeModel.metrics.dashboardInterval = 0
+
+        compare(scheduler.intervalFor("dashboard"), 0)
+        verify(!scheduler.enabled("dashboard"))
+        wait(20)
+        compare(fakeModel.dashboardCalls, 0)
     }
 
     function test_backup_download_enables_storage_polling_and_uses_download_session() {
