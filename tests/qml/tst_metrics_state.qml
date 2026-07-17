@@ -426,6 +426,41 @@ TestCase {
         verify(!metrics.networkConnectionState("storage").known)
     }
 
+    function test_blockchain_invalidation_clears_source_scoped_metric_history() {
+        metrics.dashboardMetricHistory = {
+            "bedrock.peer_count": [{ timestamp: 1, value: 4 }],
+            "lez.blocks_produced_recent": [{ timestamp: 1, value: 3 }],
+            "indexer.indexer_lag_vs_sequencer_head": [
+                { timestamp: 1, value: 2 }
+            ],
+            "storage.peer_count": [{ timestamp: 1, value: 1 }]
+        }
+        metrics.dashboardMetricLastSeen = {
+            "bedrock.peer_count": { timestamp: 2, value: 4 },
+            "lez.blocks_produced_recent": { timestamp: 2, value: 3 },
+            "indexer.indexer_lag_vs_sequencer_head": {
+                timestamp: 2,
+                value: 2
+            },
+            "storage.peer_count": { timestamp: 2, value: 1 }
+        }
+
+        metrics.invalidateConfiguration("blockchain", "blockchain changed")
+
+        compare(metrics.dashboardMetricHistory["bedrock.peer_count"], undefined)
+        compare(metrics.dashboardMetricHistory["lez.blocks_produced_recent"], undefined)
+        compare(metrics.dashboardMetricHistory[
+            "indexer.indexer_lag_vs_sequencer_head"], undefined)
+        compare(metrics.dashboardMetricLastSeen["bedrock.peer_count"], undefined)
+        compare(metrics.dashboardMetricLastSeen[
+            "lez.blocks_produced_recent"], undefined)
+        compare(metrics.dashboardMetricLastSeen[
+            "indexer.indexer_lag_vs_sequencer_head"], undefined)
+        verify(metrics.dashboardMetricHistory["storage.peer_count"] !== undefined)
+        verify(metrics.dashboardMetricLastSeen["storage.peer_count"] !== undefined)
+        compare(metrics.dashboardMetricHistoryRevision, 1)
+    }
+
     function test_second_observer_joins_active_family_lease() {
         metrics.queryNetworkConnection(
             "messaging", false, false, "dashboard")
