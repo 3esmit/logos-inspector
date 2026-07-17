@@ -125,7 +125,8 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Source),
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::Path),
-    ]),
+    ])
+    .exclusive(OperationExclusiveGroup::StorageUpload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::UploadPayload),
         "storageUploadPayload",
@@ -136,7 +137,8 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Source),
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::Filename),
-    ]),
+    ])
+    .exclusive(OperationExclusiveGroup::StorageUpload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::UploadBackupCatalogEntry),
         "storageUploadBackupCatalogEntry",
@@ -147,7 +149,8 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Source),
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::BackupCatalogId),
-    ]),
+    ])
+    .exclusive(OperationExclusiveGroup::StorageUpload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::DownloadBackupCatalogEntry),
         "storageDownloadBackupCatalogEntry",
@@ -219,9 +222,11 @@ pub(super) async fn execute(
         .context("storage command has no standard operation")?;
     let request =
         storage_layer::StorageOperationRequest::parse(request.node_request()?, operation)?;
-    match storage_layer::execute_operation(request, module_transport, control.module_call_control())
-        .await?
-    {
+    let output =
+        storage_layer::execute_operation(request, module_transport, control.module_call_control())
+            .await
+            .map_err(map_storage_operation_error)?;
+    match output {
         storage_layer::StorageOperationOutput::Outcome(outcome) => Ok(outcome.into()),
         storage_layer::StorageOperationOutput::Download(download) => {
             let cid = download.cid().to_owned();
@@ -231,6 +236,17 @@ pub(super) async fn execute(
                 .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
                 .map(RuntimeOperationOutcome::Completed)
         }
+    }
+}
+
+fn map_storage_operation_error(error: anyhow::Error) -> anyhow::Error {
+    if error
+        .downcast_ref::<storage_layer::StorageUploadSettlementUnconfirmed>()
+        .is_some()
+    {
+        OperationCleanupUnconfirmed::new(error.to_string()).into()
+    } else {
+        error
     }
 }
 
@@ -840,6 +856,20 @@ mod tests {
 
     fn operation_control() -> OperationControl {
         test_operation_control(Duration::from_secs(30))
+    }
+
+    #[test]
+    fn unsettled_storage_upload_maps_to_nonterminal_cleanup_evidence() -> Result<()> {
+        let error = storage_layer::StorageUploadSettlementUnconfirmed::new(
+            "upload terminal event was not observed",
+        )
+        .into();
+        let mapped = map_storage_operation_error(error);
+        let cleanup = mapped
+            .downcast_ref::<OperationCleanupUnconfirmed>()
+            .context("unsettled upload did not retain its exclusive lease")?;
+        anyhow::ensure!(cleanup.to_string() == "upload terminal event was not observed");
+        Ok(())
     }
 
     struct CatalogHostSubscription {

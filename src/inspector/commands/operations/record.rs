@@ -1482,6 +1482,7 @@ fn exclusive_operation_message(group: OperationExclusiveGroup) -> &'static str {
         OperationExclusiveGroup::StorageDownload => {
             "a storage download operation is already running"
         }
+        OperationExclusiveGroup::StorageUpload => "a storage upload operation is already running",
     }
 }
 

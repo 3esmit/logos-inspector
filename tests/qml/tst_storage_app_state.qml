@@ -606,6 +606,54 @@ TestCase {
         compare(gateway.history.length, 0)
     }
 
+    function test_cli_upload_event_completion_is_terminal_once() {
+        state.effectiveSourceMode = "logoscore_cli"
+        state.sourceLabel = "LogosCore CLI"
+        state.sourceTarget = "storage_module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-upload-cli-1",
+                    domain: "storage",
+                    backend: "logoscore_cli",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    label: "Upload file",
+                    path: "/tmp/file.bin",
+                    result: {
+                        success: true,
+                        sessionId: "session-cli-1",
+                        cid: "z-uploaded",
+                        completion: "storageUploadDone"
+                    },
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
+
+        compare(gateway.requestCount, 1)
+        compare(state.operation.active.status, "completed")
+        compare(state.operation.active.result.cid, "z-uploaded")
+        compare(state.lastOperation, "Complete")
+        compare(state.currentTab, "operations")
+        verify(!state.operation.running)
+        compare(gateway.history.length, 1)
+        compare(gateway.history[0].operation.operationId, "storage-upload-cli-1")
+        compare(gateway.resultTitle, "Upload file")
+        compare(gateway.resultOwner, "storage")
+        compare(gateway.resultValue.cid, "z-uploaded")
+        compare(gateway.resultValue.sessionId, "session-cli-1")
+        compare(gateway.resultValue.completion, "storageUploadDone")
+        verify(!gateway.resultIsError)
+    }
+
     function test_module_event_projects_only_authoritative_backend_operation() {
         gateway.requestResponses = ({
             runtimeOperationStart: {
