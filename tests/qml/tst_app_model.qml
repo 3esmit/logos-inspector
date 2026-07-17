@@ -4986,6 +4986,16 @@ TestCase {
     }
 
     function test_blockchain_module_new_block_event_updates_live_rows() {
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "blockchain_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.blockchainSourceMode = "module"
+        wait(0)
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -5001,6 +5011,31 @@ TestCase {
         compare(model.blocksLiveSource, "module_event")
         compare(model.blocksPageSlotTo, 31)
         verify(model.blockchainModuleEventRevision > 0)
+    }
+
+    function test_direct_rpc_rejects_untagged_blockchain_module_event() {
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30-rpc" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        model.blocksLiveSource = "rpc"
+        model.blocksLiveError = "rpc state"
+        model.blocksLiveCheckedAt = "rpc checked"
+
+        verify(!moduleEventIntake.ingest(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "slot-31-untagged" }, transactions: [] })
+        ]))
+
+        compare(model.blocksPageRows.length, 1)
+        compare(model.blocksPageRows[0].header.id, "slot-30-rpc")
+        compare(model.blocksPageSlotFrom, 30)
+        compare(model.blocksPageSlotTo, 30)
+        compare(model.blocksLiveSource, "rpc")
+        compare(model.blocksLiveError, "rpc state")
+        compare(model.blocksLiveCheckedAt, "rpc checked")
+        compare(model.blockchainModuleEventRevision, 0)
+        compare(model.blockchainLastEventText, "")
     }
 
     function test_delivery_module_message_event_merges_social_comment() {

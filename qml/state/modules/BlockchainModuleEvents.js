@@ -2,6 +2,13 @@
 .import "ModuleEventUtils.js" as ModuleEventUtils
 
 function handleNewBlock(root, args) {
+    // The event contract has no connector identity. Only the selected host
+    // module route can make an untagged event authoritative.
+    if (!root || !root.sourceRouting
+            || typeof root.sourceRouting.acceptsUntaggedBlockchainModuleEvents !== "function"
+            || root.sourceRouting.acceptsUntaggedBlockchainModuleEvents() !== true) {
+        return false
+    }
     with (root) {
         const report = AppModelPages.normalizedLiveBlockReport(ModuleEventUtils.firstEventValue(args), "module_event")
         const block = report.blocks.length > 0 ? report.blocks[0] : null
