@@ -811,7 +811,7 @@ impl Default for SettingsDocument {
                         "provenance": "testnet_default"
                     },
                     "delivery": {
-                        "connector_id": "logoscore_cli_delivery_module",
+                        "connector_id": "direct_delivery_rest",
                         "provenance": "testnet_default"
                     },
                     "storage": {
@@ -1198,6 +1198,10 @@ mod tests {
                 .pointer("/network_connector_config/scopes/l1/connector_id")
                 .and_then(Value::as_str)
                 != Some("direct_l1_rpc")
+            || settings
+                .pointer("/network_connector_config/scopes/delivery/connector_id")
+                .and_then(Value::as_str)
+                != Some("direct_delivery_rest")
             || settings
                 .get(CHANNEL_SOURCE_CONFIGS_KEY)
                 .and_then(Value::as_array)

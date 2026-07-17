@@ -200,7 +200,7 @@ pub(super) fn default_connector(
         (_, "wallet") => "composed_wallet",
         (_, "l1") => "direct_l1_rpc",
         (_, "storage") => "logoscore_cli_storage_module",
-        (_, "delivery") => "logoscore_cli_delivery_module",
+        (_, "delivery") => "direct_delivery_rest",
         (_, "wallet.l1" | "wallet.l2") => "composed_wallet",
         (_, "local_nodes") => "local_node_control",
         (_, "diagnostics") => "module_diagnostics_metrics",

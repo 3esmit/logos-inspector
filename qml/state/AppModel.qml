@@ -1522,7 +1522,7 @@ QtObject {
                     provenance: "build_default"
                 },
                 "delivery": {
-                    connector_id: prefersBasecampModules() ? "delivery_module" : "logoscore_cli_delivery_module",
+                    connector_id: prefersBasecampModules() ? "delivery_module" : "direct_delivery_rest",
                     provenance: "build_default"
                 },
                 "storage": {
@@ -1544,7 +1544,8 @@ QtObject {
         for (let i = 0; i < keys.length; ++i) {
             const key = keys[i]
             const entry = scopes[key] && typeof scopes[key] === "object" ? scopes[key] : ({})
-            if (String(entry.provenance || "") === "testnet_default") {
+            const provenance = String(entry.provenance || "")
+            if (provenance === "testnet_default" || provenance === "build_default") {
                 normalized.scopes[key] = defaults[key]
             }
         }
