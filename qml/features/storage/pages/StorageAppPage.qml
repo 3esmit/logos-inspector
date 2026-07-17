@@ -283,7 +283,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Fetch")
-                    enabled: !root.model.busy && root.model.storageActionEnabled("read_by_cid", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
+                    enabled: !root.model.busy && !root.model.operation.busy && root.model.storageActionEnabled("read_by_cid", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
                     Layout.preferredWidth: 104
                     onClicked: root.model.runStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
                 }

@@ -624,8 +624,9 @@ QtObject {
                     "storage", false, false, callback, "source-inspection")
             }
 
-            function setResult(title, text, isError, value) {
-                return appShellState.setResult(title, text, isError, value)
+            function setResult(title, text, isError, value, owner) {
+                return appShellState.setResult(
+                    title, text, isError, value, String(owner || "storage"))
             }
 
             function clearResult() {

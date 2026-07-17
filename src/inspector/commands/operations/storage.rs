@@ -219,7 +219,9 @@ pub(super) async fn execute(
         .context("storage command has no standard operation")?;
     let request =
         storage_layer::StorageOperationRequest::parse(request.node_request()?, operation)?;
-    match storage_layer::execute_operation(request, module_transport).await? {
+    match storage_layer::execute_operation(request, module_transport, control.module_call_control())
+        .await?
+    {
         storage_layer::StorageOperationOutput::Outcome(outcome) => Ok(outcome.into()),
         storage_layer::StorageOperationOutput::Download(download) => {
             let cid = download.cid().to_owned();

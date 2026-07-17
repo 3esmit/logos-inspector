@@ -4,7 +4,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
-use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
+use crate::modules::logos_core::{
+    ModuleCallControl, ModuleCallStopReason, ModuleCallTerminated, ModuleCallTerminationEvidence,
+    ModuleTransportKind, SharedModuleTransport,
+};
 use crate::source_routing::{
     AdapterInitialization, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
     ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
@@ -19,6 +22,7 @@ use super::BACKUP_CID_MAX_BYTES;
 use super::{layer::STORAGE_SOURCE_MODES, parse_backup_cid, transport};
 
 const DEFAULT_BLOCK_SIZE: u64 = 65_536;
+const MANIFEST_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageOperation {
@@ -322,8 +326,9 @@ impl StorageOperationRequest {
 pub(crate) async fn execute_operation(
     request: StorageOperationRequest,
     module_transport: SharedModuleTransport,
+    control: ModuleCallControl,
 ) -> Result<StorageOperationOutput> {
-    execute_plan(request.plan, module_transport).await
+    execute_plan(request.plan, module_transport, control).await
 }
 
 pub(crate) async fn download_response(request: &StorageDownloadRequest) -> Result<Response> {
@@ -539,6 +544,7 @@ fn plan_for_client(
 async fn execute_plan(
     plan: StorageOperationPlan,
     module_transport: SharedModuleTransport,
+    control: ModuleCallControl,
 ) -> Result<StorageOperationOutput> {
     let value = match plan {
         StorageOperationPlan::Module {
@@ -548,6 +554,24 @@ async fn execute_plan(
             context,
             dispatch,
         } => {
+            if method == "downloadManifest" {
+                let cid = context
+                    .iter()
+                    .find_map(|(key, value)| (*key == "cid").then_some(value.as_str()))
+                    .context("storage manifest fetch has no CID context")?;
+                let value = module_manifest_by_cid(
+                    &module_transport,
+                    transport_kind,
+                    cid,
+                    args,
+                    &context,
+                    &control,
+                )
+                .await?;
+                return Ok(StorageOperationOutput::Outcome(
+                    NodeOperationOutcome::Completed(value),
+                ));
+            }
             if dispatch {
                 let identity_role = match method {
                     "uploadUrl" => ModuleDispatchIdentityRole::Session,
@@ -606,6 +630,136 @@ async fn execute_plan(
     Ok(StorageOperationOutput::Outcome(
         NodeOperationOutcome::Completed(value),
     ))
+}
+
+async fn module_manifest_by_cid(
+    module_transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    cid: &str,
+    dispatch_args: Vec<Value>,
+    context: &[(&'static str, String)],
+    control: &ModuleCallControl,
+) -> Result<Value> {
+    ensure_manifest_poll_active(control, false)?;
+    let _receipt = transport::module_dispatch(
+        module_transport,
+        transport_kind,
+        "downloadManifest",
+        dispatch_args,
+        context,
+        ModuleDispatchIdentityRole::None,
+    )
+    .await
+    .with_context(|| format!("failed to dispatch Storage manifest fetch for {cid}"))?;
+
+    loop {
+        ensure_manifest_poll_active(control, true)?;
+        let manifests =
+            transport::module_call(module_transport, transport_kind, "manifests", Vec::new())
+                .await
+                .with_context(|| format!("failed to poll Storage manifest fetch for {cid}"))?;
+        if let Some(manifest) = exact_manifest(&manifests, cid)? {
+            return Ok(manifest);
+        }
+        wait_for_manifest_poll(control).await?;
+    }
+}
+
+fn exact_manifest(manifests: &Value, cid: &str) -> Result<Option<Value>> {
+    let manifests = manifests
+        .as_array()
+        .context("storage manifests response is not an array")?;
+    let mut matches = manifests
+        .iter()
+        .filter(|manifest| manifest.get("cid").and_then(Value::as_str) == Some(cid));
+    let Some(manifest) = matches.next() else {
+        return Ok(None);
+    };
+    validate_manifest(manifest, cid)?;
+    for duplicate in matches {
+        validate_manifest(duplicate, cid)?;
+        anyhow::ensure!(
+            duplicate == manifest,
+            "storage manifests returned conflicting rows for CID `{cid}`"
+        );
+    }
+    Ok(Some(manifest.clone()))
+}
+
+fn validate_manifest(manifest: &Value, cid: &str) -> Result<()> {
+    let manifest = manifest
+        .as_object()
+        .with_context(|| format!("storage manifest for CID `{cid}` is not an object"))?;
+    for field in ["treeCid", "filename", "mimetype"] {
+        anyhow::ensure!(
+            manifest
+                .get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()),
+            "storage manifest for CID `{cid}` has no `{field}`"
+        );
+    }
+    anyhow::ensure!(
+        manifest
+            .get("datasetSize")
+            .and_then(Value::as_u64)
+            .is_some(),
+        "storage manifest for CID `{cid}` has invalid `datasetSize`"
+    );
+    anyhow::ensure!(
+        manifest
+            .get("blockSize")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0),
+        "storage manifest for CID `{cid}` has invalid `blockSize`"
+    );
+    Ok(())
+}
+
+fn ensure_manifest_poll_active(control: &ModuleCallControl, effect_started: bool) -> Result<()> {
+    let evidence = if effect_started {
+        ModuleCallTerminationEvidence::LocallyAbandoned
+    } else {
+        ModuleCallTerminationEvidence::NotStarted
+    };
+    if control.cancellation().is_cancelled() {
+        return Err(manifest_poll_interrupted(control.stop_reason(), evidence).into());
+    }
+    if tokio::time::Instant::now() >= control.deadline() {
+        return Err(
+            manifest_poll_interrupted(ModuleCallStopReason::DeadlineExceeded, evidence).into(),
+        );
+    }
+    Ok(())
+}
+
+fn manifest_poll_interrupted(
+    reason: ModuleCallStopReason,
+    evidence: ModuleCallTerminationEvidence,
+) -> ModuleCallTerminated {
+    ModuleCallTerminated::new(reason, evidence)
+}
+
+async fn wait_for_manifest_poll(control: &ModuleCallControl) -> Result<()> {
+    ensure_manifest_poll_active(control, true)?;
+    tokio::select! {
+        biased;
+        () = control.cancellation().cancelled() => {
+            Err(manifest_poll_interrupted(
+                control.stop_reason(),
+                ModuleCallTerminationEvidence::LocallyAbandoned,
+            ).into())
+        },
+        () = tokio::time::sleep_until(control.deadline()) => {
+            Err(manifest_poll_interrupted(
+                ModuleCallStopReason::DeadlineExceeded,
+                ModuleCallTerminationEvidence::LocallyAbandoned,
+            ).into())
+        },
+        () = tokio::time::sleep(MANIFEST_POLL_INTERVAL) => {
+            ensure_manifest_poll_active(control, true)
+        }
+    }
 }
 
 fn storage_module_dispatch_outcome(
@@ -813,12 +967,69 @@ const fn default_block_size() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, atomic::AtomicU8},
+    };
 
     use anyhow::Result;
     use serde_json::json;
 
     use super::*;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport,
+    };
+
+    struct ManifestPollTransport {
+        kind: ModuleTransportKind,
+        calls: Mutex<Vec<String>>,
+        manifest_replies: Mutex<VecDeque<Value>>,
+    }
+
+    impl ManifestPollTransport {
+        fn new(kind: ModuleTransportKind, manifest_replies: Vec<Value>) -> Self {
+            Self {
+                kind,
+                calls: Mutex::new(Vec::new()),
+                manifest_replies: Mutex::new(manifest_replies.into()),
+            }
+        }
+
+        fn calls(&self) -> Result<Vec<String>> {
+            self.calls
+                .lock()
+                .map(|calls| calls.clone())
+                .map_err(|_| anyhow::anyhow!("manifest poll calls lock failed"))
+        }
+    }
+
+    impl ModuleTransport for ManifestPollTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            self.kind
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let result = (|| {
+                anyhow::ensure!(call.module() == super::super::layer::module_id());
+                self.calls
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("manifest poll calls lock failed"))?
+                    .push(call.method().to_owned());
+                let value = match call.method() {
+                    "downloadManifest" => Value::Null,
+                    "manifests" => self
+                        .manifest_replies
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("manifest replies lock failed"))?
+                        .pop_front()
+                        .context("unexpected extra manifest poll")?,
+                    method => anyhow::bail!("unexpected Storage method `{method}`"),
+                };
+                Ok(ModuleCallReply::new(self.kind, value))
+            })();
+            Box::pin(async move { result })
+        }
+    }
 
     fn request(value: Value) -> Result<NodeOperationRequest> {
         NodeOperationRequest::from_value(&value)
@@ -832,6 +1043,14 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
             deadline,
         ))
+    }
+
+    fn module_call_control(duration: Duration) -> ModuleCallControl {
+        ModuleCallControl::new(
+            tokio_util::sync::CancellationToken::new(),
+            tokio::time::Instant::now() + duration,
+            Arc::new(AtomicU8::new(0)),
+        )
     }
 
     #[test]
@@ -1180,6 +1399,213 @@ mod tests {
             dispatch: false,
         };
         anyhow::ensure!(request.plan == expected, "unexpected Storage fetch plan");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_manifest_fetch_polls_until_exact_manifest_is_visible() -> Result<()> {
+        let manifest = json!({
+            "cid": "cid-a",
+            "treeCid": "tree-a",
+            "datasetSize": 42,
+            "blockSize": 65_536,
+            "filename": "a.json",
+            "mimetype": "application/json"
+        });
+        for (source_mode, kind) in [
+            ("module", ModuleTransportKind::Module),
+            ("logoscore_cli", ModuleTransportKind::LogoscoreCli),
+        ] {
+            let transport = Arc::new(ManifestPollTransport::new(
+                kind,
+                vec![
+                    json!([{ "cid": "cid-a-near-match" }]),
+                    json!([manifest.clone()]),
+                ],
+            ));
+            let shared: SharedModuleTransport = transport.clone();
+            let request = request(json!({
+                "adapter": { "source_mode": source_mode, "inputs": {} },
+                "mutating_enabled": true,
+                "payload": { "cid": "cid-a" }
+            }))?;
+            let request =
+                StorageOperationRequest::parse(&request, StorageOperation::DownloadManifest)?;
+
+            let output = execute_operation(
+                request,
+                shared,
+                module_call_control(Duration::from_secs(30)),
+            )
+            .await?;
+
+            let StorageOperationOutput::Outcome(NodeOperationOutcome::Completed(actual)) = output
+            else {
+                anyhow::bail!("Storage manifest fetch did not complete with a manifest");
+            };
+            anyhow::ensure!(actual == manifest, "fetched manifest payload drifted");
+            anyhow::ensure!(
+                transport.calls()? == ["downloadManifest", "manifests", "manifests"],
+                "manifest fetch did not poll after dispatch"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_manifest_fetch_dispatches_before_returning_exact_manifest() -> Result<()> {
+        let manifest = json!({
+            "cid": "cid-local",
+            "treeCid": "tree-local",
+            "datasetSize": 7,
+            "blockSize": 65_536,
+            "filename": "local.bin",
+            "mimetype": "application/octet-stream"
+        });
+        let transport = Arc::new(ManifestPollTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            vec![json!([manifest.clone()])],
+        ));
+        let shared: SharedModuleTransport = transport.clone();
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-local" }
+        }))?;
+        let request = StorageOperationRequest::parse(&request, StorageOperation::DownloadManifest)?;
+
+        let output = execute_operation(
+            request,
+            shared,
+            module_call_control(Duration::from_secs(30)),
+        )
+        .await?;
+
+        anyhow::ensure!(
+            matches!(
+                output,
+                StorageOperationOutput::Outcome(NodeOperationOutcome::Completed(value))
+                    if value == manifest
+            ),
+            "preexisting manifest was not returned"
+        );
+        anyhow::ensure!(
+            transport.calls()? == ["downloadManifest", "manifests"],
+            "manifest fetch did not dispatch before reading its result"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_manifest_fetch_stops_at_operation_deadline() -> Result<()> {
+        let transport = Arc::new(ManifestPollTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            vec![json!([])],
+        ));
+        let shared: SharedModuleTransport = transport.clone();
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-missing" }
+        }))?;
+        let request = StorageOperationRequest::parse(&request, StorageOperation::DownloadManifest)?;
+        let control = module_call_control(Duration::from_millis(20));
+
+        let error = execute_operation(request, shared, control)
+            .await
+            .err()
+            .context("missing manifest should reach the operation deadline")?;
+
+        let terminated = error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("manifest timeout lost module-call interruption type")?;
+        anyhow::ensure!(
+            terminated.reason() == ModuleCallStopReason::DeadlineExceeded
+                && terminated.evidence() == ModuleCallTerminationEvidence::LocallyAbandoned,
+            "manifest timeout lost local-only deadline evidence: {terminated:?}"
+        );
+        anyhow::ensure!(
+            transport.calls()? == ["downloadManifest", "manifests"],
+            "manifest deadline path issued unexpected calls"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_manifest_fetch_rejects_incomplete_exact_row() -> Result<()> {
+        let transport = Arc::new(ManifestPollTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            vec![json!([{
+                "cid": "cid-malformed",
+                "datasetSize": 1,
+                "blockSize": 65_536,
+                "filename": "bad.bin",
+                "mimetype": "application/octet-stream"
+            }])],
+        ));
+        let shared: SharedModuleTransport = transport.clone();
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-malformed" }
+        }))?;
+        let request = StorageOperationRequest::parse(&request, StorageOperation::DownloadManifest)?;
+
+        let error = execute_operation(
+            request,
+            shared,
+            module_call_control(Duration::from_secs(30)),
+        )
+        .await
+        .err()
+        .context("incomplete manifest row was accepted")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("has no `treeCid`"),
+            "incomplete manifest returned unrelated error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_manifest_fetch_rejects_conflicting_exact_rows() -> Result<()> {
+        let first = json!({
+            "cid": "cid-conflict",
+            "treeCid": "tree-a",
+            "datasetSize": 1,
+            "blockSize": 65_536,
+            "filename": "a.bin",
+            "mimetype": "application/octet-stream"
+        });
+        let mut second = first.clone();
+        *second
+            .get_mut("filename")
+            .context("test manifest has no filename")? = json!("b.bin");
+        let transport = Arc::new(ManifestPollTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            vec![json!([first, second])],
+        ));
+        let shared: SharedModuleTransport = transport;
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-conflict" }
+        }))?;
+        let request = StorageOperationRequest::parse(&request, StorageOperation::DownloadManifest)?;
+
+        let error = execute_operation(
+            request,
+            shared,
+            module_call_control(Duration::from_secs(30)),
+        )
+        .await
+        .err()
+        .context("conflicting manifest rows were accepted")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("conflicting rows"),
+            "conflicting manifests returned unrelated error: {error:#}"
+        );
         Ok(())
     }
 

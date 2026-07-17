@@ -358,11 +358,13 @@ QtObject {
         lastOperation = qsTr("Starting")
         const started = storageOperations.start(method, args, label, function (response, operation) {
             if (response && response.ok) {
-                lastOperation = operationStatusText(operation || response.value)
+                if (!storageOperations.isTerminal(operation)) {
+                    lastOperation = operationStatusText(operation || response.value)
+                }
                 currentTab = "operations"
             } else {
                 lastOperation = qsTr("Error")
-                gateway.setResult(String(label || qsTr("Storage operation")), String((response && response.error) || qsTr("Storage operation failed.")), true, null)
+                gateway.setResult(String(label || qsTr("Storage operation")), String((response && response.error) || qsTr("Storage operation failed.")), true, null, "storage")
             }
         })
         if (started && started.ok === false) {
@@ -424,9 +426,9 @@ QtObject {
         const ok = isSuccessfulTerminal(operation)
         if (ok) {
             const value = operation && operation.result !== undefined && operation.result !== null ? operation.result : operation
-            gateway.setResult(label, BridgeHelpers.formatValue(value), false, value)
+            gateway.setResult(label, BridgeHelpers.formatValue(value), false, value, "storage")
         } else {
-            gateway.setResult(label, String(operation && operation.error ? operation.error : qsTr("Storage operation failed.")), true, null)
+            gateway.setResult(label, String(operation && operation.error ? operation.error : qsTr("Storage operation failed.")), true, null, "storage")
         }
     }
 

@@ -29,6 +29,7 @@ QtObject {
     property string resultText: ""
     property bool resultIsError: false
     property var resultValue: null
+    property string resultOwner: ""
     property var history: []
     property string openedSection: ""
     property string openedSubSection: ""
@@ -65,6 +66,7 @@ QtObject {
         resultText = ""
         resultIsError = false
         resultValue = null
+        resultOwner = ""
         history = []
         openedSection = ""
         openedSubSection = ""
@@ -175,11 +177,12 @@ QtObject {
         }
     }
 
-    function setResult(title, text, isError, value) {
+    function setResult(title, text, isError, value, owner) {
         resultTitle = String(title || "")
         resultText = String(text || "")
         resultIsError = isError === true
         resultValue = value === undefined ? null : value
+        resultOwner = String(owner || "")
     }
 
     function clearResult() {
@@ -187,6 +190,7 @@ QtObject {
         resultText = ""
         resultIsError = false
         resultValue = null
+        resultOwner = ""
     }
 
     function appendOperationHistory(operation, detail) {

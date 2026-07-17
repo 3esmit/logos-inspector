@@ -715,6 +715,81 @@ TestCase {
         compare(state.lastOperation, "Complete")
     }
 
+    function test_manifest_fetch_completes_with_exact_result() {
+        const manifest = {
+            cid: "z-manifest",
+            treeCid: "z-tree",
+            datasetSize: 42,
+            blockSize: 65536,
+            filename: "manifest.json",
+            mimetype: "application/json"
+        }
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifest-1",
+                    domain: "storage",
+                    method: "storageDownloadManifest",
+                    status: "completed",
+                    label: "Fetch manifest",
+                    cid: "z-manifest",
+                    result: manifest,
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runStorage(
+            "storageDownloadManifest", ["z-manifest"], "Fetch manifest")
+
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(gateway.lastArgs[0].method, "storageDownloadManifest")
+        compare(gateway.lastArgs[0].payload.cid, "z-manifest")
+        compare(state.currentTab, "operations")
+        compare(state.lastOperation, "Complete")
+        compare(state.operation.active.status, "completed")
+        compare(state.operation.rows.length, 2)
+        compare(gateway.resultTitle, "Fetch manifest")
+        compare(gateway.resultOwner, "storage")
+        compare(gateway.resultValue.cid, "z-manifest")
+        compare(gateway.resultValue.treeCid, "z-tree")
+        verify(gateway.resultText.indexOf("manifest.json") >= 0)
+        verify(!gateway.resultIsError)
+    }
+
+    function test_failed_manifest_fetch_keeps_terminal_status_and_owner() {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifest-failed",
+                    domain: "storage",
+                    method: "storageDownloadManifest",
+                    status: "failed",
+                    label: "Fetch manifest",
+                    cid: "z-missing",
+                    error: "manifest lookup failed"
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runStorage(
+            "storageDownloadManifest", ["z-missing"], "Fetch manifest")
+
+        compare(state.currentTab, "operations")
+        compare(state.lastOperation, "Stopped")
+        compare(state.operation.active.status, "failed")
+        compare(gateway.resultTitle, "Fetch manifest")
+        compare(gateway.resultText, "manifest lookup failed")
+        compare(gateway.resultOwner, "storage")
+        verify(gateway.resultIsError)
+    }
+
     function test_busy_operation_rejects_second_start() {
         state.operationSession.acceptUpdate({
             operationId: "storage-download-1",
