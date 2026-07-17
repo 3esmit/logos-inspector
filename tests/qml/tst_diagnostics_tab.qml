@@ -40,6 +40,14 @@ TestCase {
                 action: "pending",
                 text: "Pending action"
             }]
+            evidenceRows: [{
+                label: "storage_module.dataDir",
+                state: "ok",
+                evidence: ".../storage-data",
+                source: "LogosCore CLI (Storage)",
+                freshness: "09:42:00",
+                tone: "success"
+            }]
             width: testWindow.width
         }
     }
@@ -93,6 +101,20 @@ TestCase {
         tryVerify(function () {
             return findVisibleText(tab, "Adapters pending") === null
         })
+    }
+
+    function test_evidence_row_exposes_complete_accessible_semantics() {
+        const row = findAccessibleByName(tab, "storage_module.dataDir: ok")
+
+        verify(row !== null)
+        compare(row.Accessible.role, Accessible.StaticText)
+        compare(row.Accessible.description,
+                ".../storage-data. LogosCore CLI (Storage). 09:42:00")
+        verify(findVisibleText(tab, "storage_module.dataDir").Accessible.ignored)
+        verify(findVisibleText(tab, "ok").Accessible.ignored)
+        verify(findVisibleText(tab, ".../storage-data").Accessible.ignored)
+        verify(findVisibleText(
+                tab, "LogosCore CLI (Storage) / 09:42:00").Accessible.ignored)
     }
 
     function findAccessibleByName(item, expectedName) {
