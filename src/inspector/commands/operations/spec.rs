@@ -75,6 +75,7 @@ pub(super) enum OperationCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationExclusiveGroup {
     StorageDownload,
+    StorageUpload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,11 @@ impl OperationDefinition {
 
     pub(super) const fn cancellable(mut self, exclusive_group: OperationExclusiveGroup) -> Self {
         self.cancellable = true;
+        self.exclusive_group = Some(exclusive_group);
+        self
+    }
+
+    pub(super) const fn exclusive(mut self, exclusive_group: OperationExclusiveGroup) -> Self {
         self.exclusive_group = Some(exclusive_group);
         self
     }
@@ -537,8 +543,8 @@ mod tests {
         if storage_upload.is_cancellable() {
             bail!("storageUploadUrl should not be cancellable");
         }
-        if storage_upload.exclusive_group().is_some() {
-            bail!("storageUploadUrl should not own an exclusive group");
+        if storage_upload.exclusive_group() != Some(OperationExclusiveGroup::StorageUpload) {
+            bail!("storageUploadUrl should own the storage upload exclusive group");
         }
         Ok(())
     }
@@ -713,7 +719,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
-                None,
+                Some(OperationExclusiveGroup::StorageUpload),
             ),
             (
                 OperationMethod::StorageUploadPayload,
@@ -723,7 +729,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
-                None,
+                Some(OperationExclusiveGroup::StorageUpload),
             ),
             (
                 OperationMethod::StorageUploadBackupCatalogEntry,
@@ -733,7 +739,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
-                None,
+                Some(OperationExclusiveGroup::StorageUpload),
             ),
             (
                 OperationMethod::StorageDownloadBackupCatalogEntry,

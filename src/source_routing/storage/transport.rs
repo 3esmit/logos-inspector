@@ -1569,7 +1569,7 @@ fn cleanup_result_text(result: Result<()>) -> String {
     }
 }
 
-fn logoscore_cli_call_value_controlled_with_runtime(
+pub(super) fn logoscore_cli_call_value_controlled_with_runtime(
     runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
     module: &str,
     method: &str,

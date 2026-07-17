@@ -339,6 +339,12 @@ impl ModuleCallControl {
     }
 
     #[must_use]
+    pub(crate) fn command_control(&self) -> CommandControl {
+        CommandControl::new(self.cancellation.clone(), self.deadline.into_std())
+            .with_blocking_work_tracker(self.blocking_work.clone())
+    }
+
+    #[must_use]
     pub fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
