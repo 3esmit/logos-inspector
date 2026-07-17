@@ -64,8 +64,48 @@ TestCase {
     function cleanup() {
         const model = findChild(shell, "appModel")
         if (model !== null) {
+            model.shell.clearResult()
             model.zoneInspection.zoneSummaries = []
         }
+    }
+
+    function test_blockchain_raw_response_exposes_exact_accessible_text() {
+        const model = findChild(shell, "appModel")
+        const loader = findChild(shell, "pageLoader")
+        const responseText = "{\n  \"cryptarchia_info\": {\"ok\": true}\n}"
+        verify(model !== null)
+        verify(loader !== null)
+
+        model.shell.setResult(
+            "Blockchain node",
+            responseText,
+            false,
+            ({ cryptarchia_info: { ok: true } }),
+            "blockchain"
+        )
+        model.shell.selectView("blockchain")
+        tryVerify(function () { return loader.item !== null })
+
+        let rawResponse = null
+        tryVerify(function () {
+            rawResponse = findChild(loader.item, "moduleRawResponse")
+            return rawResponse !== null
+        })
+        compare(rawResponse.Accessible.role, Accessible.StaticText)
+        compare(rawResponse.Accessible.name, "Raw module response")
+        compare(rawResponse.Accessible.description, responseText)
+
+        const errorText = "Blockchain node request failed"
+        model.shell.setResult(
+            "Blockchain node",
+            errorText,
+            true,
+            null,
+            "blockchain"
+        )
+        tryCompare(rawResponse.Accessible,
+                   "name", "Raw module error response")
+        tryCompare(rawResponse.Accessible, "description", errorText)
     }
 
     function test_dashboard_wide_layout_keeps_l1_panels_beside_zones() {

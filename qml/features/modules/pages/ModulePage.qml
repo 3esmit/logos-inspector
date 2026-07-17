@@ -186,6 +186,7 @@ ColumnLayout {
         }
 
         TextArea {
+            objectName: "moduleRawResponse"
             readOnly: true
             text: root.model.shell.resultText.length ? root.model.shell.resultText : qsTr("No response body.")
             wrapMode: TextArea.Wrap
@@ -201,6 +202,11 @@ ColumnLayout {
             bottomPadding: 10
             Layout.fillWidth: true
             Layout.preferredHeight: root.model.shell.resultIsError ? 120 : 220
+            Accessible.role: Accessible.StaticText
+            Accessible.name: root.model.shell.resultIsError
+                ? qsTr("Raw module error response")
+                : qsTr("Raw module response")
+            Accessible.description: text
 
             background: Rectangle {
                 color: root.model.shell.resultIsError ? root.theme.errorMuted : root.theme.field
