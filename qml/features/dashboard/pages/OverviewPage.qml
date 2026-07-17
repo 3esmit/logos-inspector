@@ -141,7 +141,16 @@ ColumnLayout {
                         ]
                         onCellActivated: function (column) {
                             if (column === 0 || column === 1) {
-                                root.model.entityNavigation.openReference("block", column === 0 ? modelData.slotRaw : modelData.blockHash)
+                                const target = column === 0
+                                    ? modelData.slotRaw : modelData.blockHash
+                                if (modelData.rawBlock !== null
+                                        && modelData.rawBlock !== undefined) {
+                                    root.model.entityNavigation.openReference(
+                                        "block", target, modelData.rawBlock)
+                                } else {
+                                    root.model.entityNavigation.openReference(
+                                        "block", target)
+                                }
                             }
                         }
                     }
@@ -435,7 +444,8 @@ ColumnLayout {
                     header: root.shortHash(hash),
                     tx: root.numberText(transactions.length),
                     status: root.model.chainPages.blockStatus(block),
-                    blockHash: hash
+                    blockHash: hash,
+                    rawBlock: block
                 }
             })
         }
@@ -451,7 +461,8 @@ ColumnLayout {
                     header: root.shortHash(hash),
                     tx: root.numberText(transactions.length),
                     status: root.model.chainPages.blockStatus(block),
-                    blockHash: hash
+                    blockHash: hash,
+                    rawBlock: block
                 }
             })
         }
@@ -462,7 +473,8 @@ ColumnLayout {
                 header: root.shortHash(root.cryptarchiaValue("tip")),
                 tx: "-",
                 status: qsTr("Tip"),
-                blockHash: String(root.cryptarchiaValue("tip") || "")
+                blockHash: String(root.cryptarchiaValue("tip") || ""),
+                rawBlock: null
             },
             {
                 slot: root.numberText(root.cryptarchiaValue("lib_slot")),
@@ -470,7 +482,8 @@ ColumnLayout {
                 header: root.shortHash(root.cryptarchiaValue("lib")),
                 tx: "-",
                 status: qsTr("LIB"),
-                blockHash: String(root.cryptarchiaValue("lib") || "")
+                blockHash: String(root.cryptarchiaValue("lib") || ""),
+                rawBlock: null
             }
         ]
     }

@@ -56,6 +56,8 @@ TestCase {
     }
 
     function init() {
+        model.chainPages.invalidateOperations("test reset")
+        wait(0)
         fakeHost.reset()
         testWindow.width = testRoot.width
         model.metrics.blockchainRefreshRate = 0
@@ -67,6 +69,8 @@ TestCase {
         model.dashboardNode = null
         model.dashboardL1Blocks = []
         model.blocksPageRows = []
+        model.blockDetailValue = null
+        model.blockDetailError = ""
         model.dashboardLezBlockRows = []
         model.capabilityRegistryLoaded = true
         model.capabilityRegistryReport = ({
@@ -257,6 +261,76 @@ TestCase {
         verifyAccessibleControl(transactionBlockLink, Accessible.Link)
         verifyAccessibleControl(transactionBlockCopy, Accessible.Button)
         compare(transactionBlockLink.copyText, transactionBlockHash)
+    }
+
+    function test_dashboard_live_block_links_open_exact_payload_data() {
+        const hash = ZoneFixtureData.identity("a")
+        return [
+            {
+                tag: "slot",
+                hash: hash,
+                accessibleName: "Open L1 block at slot 1439857"
+            },
+            {
+                tag: "hash",
+                hash: hash,
+                accessibleName: "Open L1 block " + hash
+            }
+        ]
+    }
+
+    function test_dashboard_live_block_links_open_exact_payload(data) {
+        const callsBefore = fakeHost.callCount
+        model.dashboardL1Blocks = [{
+            header: { slot: 1439857, id: data.hash },
+            transactions: [],
+            payloadSentinel: "dashboard-live-block"
+        }]
+        let link = null
+        tryVerify(function () {
+            link = findAccessibleByName(page, data.accessibleName)
+            return link !== null
+        })
+
+        mouseClick(link)
+
+        compare(model.shell.currentView, "blockDetail")
+        verify(model.blockDetailValue !== null)
+        compare(model.blockDetailValue.hash, data.hash)
+        compare(model.blockDetailValue.slot, 1439857)
+        compare(model.blockDetailValue.raw.payloadSentinel,
+                "dashboard-live-block")
+        compare(model.blockDetailError, "")
+        compare(fakeHost.callCount, callsBefore)
+    }
+
+    function test_dashboard_consensus_block_link_falls_back_to_lookup() {
+        const hash = ZoneFixtureData.identity("d")
+        model.dashboardNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        slot: 1439856,
+                        tip: hash,
+                        lib_slot: 1439855,
+                        lib: ZoneFixtureData.identity("e")
+                    }
+                }
+            }
+        }
+        let link = null
+        tryVerify(function () {
+            link = findAccessibleByName(
+                page, "Open L1 block at slot 1439856")
+            return link !== null
+        })
+
+        mouseClick(link)
+
+        compare(model.shell.currentView, "blockDetail")
+        tryVerify(function () { return fakeHost.callCount > 0 })
+        compare(fakeHost.lastMethod, "runtimeOperationStart")
+        compare(fakeHost.lastArgs[0].method, "blockchainBlock")
     }
 
     function test_stale_dashboard_zone_is_static_and_not_copyable() {
