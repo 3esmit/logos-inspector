@@ -15,6 +15,8 @@ TestCase {
         property int dashboardMetricHistoryRevision: 0
         property int storageRollingWindow: 60
         property int messagingRollingWindow: 60
+        property var peerMetricValue: 6
+        property var storageFailures: 7
 
         function copyMap(value) {
             const copy = {}
@@ -69,7 +71,7 @@ TestCase {
 
         function moduleMetricSum(kind, names) {
             if (kind === "storage" && names.indexOf("storage_block_exchange_requests_failed_total") >= 0) {
-                return 7
+                return storageFailures
             }
             if (kind === "messaging" && names.indexOf("waku_store_errors_total") >= 0) {
                 return 3
@@ -98,11 +100,15 @@ TestCase {
         }
 
         function networkValue(key) {
-            return key === "n_peers" ? 6 : null
+            return key === "n_peers" ? peerMetricValue : null
         }
 
         function normalizedDashboardSamples(samples) {
             return DashboardMetricCatalog.normalizedDashboardSamples(samples)
+        }
+
+        function nextDashboardSampleTimestamp(previous, now) {
+            return DashboardMetricCatalog.nextDashboardSampleTimestamp(previous, now)
         }
 
         function storageManifestCount() {
@@ -236,6 +242,68 @@ TestCase {
         compare(samples[0].timestamp, 100)
         compare(samples[1].timestamp, 200)
         compare(samples[1].value, 6)
+    }
+
+    function test_sample_normalization_rejects_missing_values_and_keeps_zero() {
+        const samples = DashboardMetricCatalog.normalizedDashboardSamples([
+            null,
+            "",
+            " ",
+            false,
+            0,
+            "0",
+            { timestamp: 6, value: null },
+            { timestamp: 0, value: 0 },
+            { timestamp: "1", value: "0" }
+        ])
+
+        compare(samples.length, 4)
+        compare(samples[0].value, 0)
+        compare(samples[1].value, 0)
+        compare(samples[2].timestamp, 0)
+        compare(samples[2].value, 0)
+        compare(samples[3].timestamp, 1)
+        compare(samples[3].value, 0)
+        compare(DashboardMetricCatalog.normalizedDashboardSample({
+            timestamp: 0,
+            value: null
+        }), null)
+    }
+
+    function test_unavailable_metric_does_not_create_zero_history() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricHistoryRevision = 0
+        model.peerMetricValue = null
+
+        DashboardMetricCatalog.recordDashboardSnapshot(model)
+
+        compare(model.dashboardMetricHistory["bedrock.peer_count"], undefined)
+        compare(model.dashboardMetricLastSeen["bedrock.peer_count"], undefined)
+        compare(DashboardMetricCatalog.dashboardMetricSamples(
+            model, "bedrock.peer_count").length, 0)
+
+        model.peerMetricValue = 0
+        DashboardMetricCatalog.recordDashboardSnapshot(model)
+        compare(model.dashboardMetricHistory["bedrock.peer_count"].length, 1)
+        compare(model.dashboardMetricHistory["bedrock.peer_count"][0].value, 0)
+
+        model.peerMetricValue = 6
+    }
+
+    function test_unavailable_window_counter_stays_unknown() {
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": [
+                { timestamp: Date.now() - 1000, value: 7 }
+            ]
+        })
+        model.dashboardMetricLastSeen = ({})
+        model.storageFailures = null
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), null)
+
+        model.storageFailures = 7
     }
 
     function test_selected_items_include_gate_state() {
