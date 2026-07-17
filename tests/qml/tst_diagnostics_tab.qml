@@ -40,14 +40,7 @@ TestCase {
                 action: "pending",
                 text: "Pending action"
             }]
-            evidenceRows: [{
-                label: "storage_module.dataDir",
-                state: "ok",
-                evidence: ".../storage-data",
-                source: "LogosCore CLI (Storage)",
-                freshness: "09:42:00",
-                tone: "success"
-            }]
+            evidenceRows: testRoot.evidenceRowsFixture()
             width: testWindow.width
         }
     }
@@ -62,6 +55,7 @@ TestCase {
     function init() {
         actionSpy.clear()
         tab.pending = false
+        tab.evidenceRows = testRoot.evidenceRowsFixture()
         tab.guardedActions = [{
             action: "live",
             text: "Live action",
@@ -104,17 +98,50 @@ TestCase {
     }
 
     function test_evidence_row_exposes_complete_accessible_semantics() {
-        const row = findAccessibleByName(tab, "storage_module.dataDir: ok")
+        const row = findAccessibleByName(
+                tab, "storage_module.dataDir: ok. .../storage-data")
 
         verify(row !== null)
         compare(row.Accessible.role, Accessible.StaticText)
         compare(row.Accessible.description,
-                ".../storage-data. LogosCore CLI (Storage). 09:42:00")
+                "LogosCore CLI (Storage). 09:42:00")
         verify(findVisibleText(tab, "storage_module.dataDir").Accessible.ignored)
         verify(findVisibleText(tab, "ok").Accessible.ignored)
         verify(findVisibleText(tab, ".../storage-data").Accessible.ignored)
         verify(findVisibleText(
                 tab, "LogosCore CLI (Storage) / 09:42:00").Accessible.ignored)
+    }
+
+    function test_long_multiline_evidence_is_normalized_and_bounded() {
+        const evidence = "first line\n" + "x".repeat(300)
+        const normalized = evidence.replace(/\s+/g, " ").trim()
+        const bounded = normalized.slice(0, 237) + "..."
+        tab.evidenceRows = [{
+            label: "storage_module.metrics",
+            state: "ok",
+            evidence: evidence,
+            source: "LogosCore CLI (Storage)",
+            freshness: "09:42:00",
+            tone: "success"
+        }]
+
+        const row = findAccessibleByName(
+                tab, "storage_module.metrics: ok. " + bounded)
+        verify(row !== null)
+        compare(row.Accessible.name.length,
+                "storage_module.metrics: ok. ".length + 240)
+        verify(String(row.Accessible.name).indexOf("\n") < 0)
+    }
+
+    function evidenceRowsFixture() {
+        return [{
+            label: "storage_module.dataDir",
+            state: "ok",
+            evidence: ".../storage-data",
+            source: "LogosCore CLI (Storage)",
+            freshness: "09:42:00",
+            tone: "success"
+        }]
     }
 
     function findAccessibleByName(item, expectedName) {
