@@ -82,7 +82,17 @@ TestCase {
                 rows: [
                     { cells: [
                         { text: "block", width: 120 },
-                        { text: "row-visible-value", width: 180, fill: true }
+                        {
+                            text: "row-visible-value",
+                            width: 180,
+                            fill: true,
+                            link: true,
+                            copyText: "complete-row-value",
+                            accessibleName: "Open exact row value",
+                            accessibleDescription: "Opens the complete row target",
+                            copyAccessibleName: "Copy complete row value",
+                            copyAccessibleDescription: "Copies the complete row target"
+                        }
                     ] }
                 ]
                 Layout.fillWidth: true
@@ -129,6 +139,22 @@ TestCase {
         verify(dataTableFrame.visible)
         verify(dataTableFrame.width > 0)
         verify(hasVisibleText(dataTableFrame, "row-visible-value"))
+    }
+
+    function test_data_table_forwards_link_and_copy_accessibility() {
+        const link = findAccessibleByName(dataTableFrame, "Open exact row value")
+        const copy = findAccessibleByName(dataTableFrame, "Copy complete row value")
+        verify(link !== null)
+        verify(copy !== null)
+        verify(link.visible)
+        verify(link.enabled)
+        verify(copy.visible)
+        verify(copy.enabled)
+        compare(link.Accessible.role, Accessible.Link)
+        compare(link.Accessible.description, "Opens the complete row target")
+        compare(link.copyText, "complete-row-value")
+        compare(copy.Accessible.role, Accessible.Button)
+        compare(copy.Accessible.description, "Copies the complete row target")
     }
 
     function test_loaded_row_count_exposes_current_value() {

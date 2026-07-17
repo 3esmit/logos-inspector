@@ -221,13 +221,18 @@ Frame {
 
     function zoneCells(zone) {
         const channelId = String(zone && zone.channel_id || "")
+        const actionable = !root.stale && channelId.length > 0
         return [
             {
                 text: root.zoneLabel(zone),
                 width: 142,
                 fill: true,
-                link: !root.stale && channelId.length > 0,
+                link: actionable,
                 copyText: channelId,
+                accessibleName: actionable
+                    ? qsTr("Open Zone %1").arg(channelId)
+                    : root.zoneLabel(zone),
+                copyAccessibleName: qsTr("Copy Zone channel ID %1").arg(channelId),
                 monospace: false
             },
             {

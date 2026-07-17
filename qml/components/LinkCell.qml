@@ -17,6 +17,10 @@ Control {
     property int minimumPixelSize: 8
     property string copyText: text
     property string tooltipText: ""
+    property string accessibleName: text
+    property string accessibleDescription: ""
+    property string copyAccessibleName: qsTr("Copy %1").arg(text)
+    property string copyAccessibleDescription: ""
     property int textPixelSize: header ? theme.labelText : theme.dataText
     property int textWeight: header ? Font.DemiBold : Font.Normal
     property color textColor: link ? theme.accent : (header ? theme.textMuted : theme.text)
@@ -136,7 +140,8 @@ Control {
             }
 
             Accessible.role: Accessible.Button
-            Accessible.name: qsTr("Copy %1").arg(root.text)
+            Accessible.name: root.copyAccessibleName
+            Accessible.description: root.copyAccessibleDescription
         }
     }
 
@@ -151,7 +156,8 @@ Control {
     ToolTip.text: root.tooltipText
 
     Accessible.role: root.link ? Accessible.Link : Accessible.StaticText
-    Accessible.name: root.text
+    Accessible.name: root.accessibleName
+    Accessible.description: root.accessibleDescription
 
     function copyToClipboard() {
         clipboardBuffer.text = root.copyText
