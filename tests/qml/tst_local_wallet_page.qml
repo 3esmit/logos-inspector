@@ -73,6 +73,10 @@ TestCase {
         model.walletSendToIdentifier = ""
         model.walletSendAmount = ""
         model.walletAdvancedCommand = ""
+        model.walletPublicKeyProbe = ""
+        model.bedrockWalletBalanceTip = ""
+        model.bedrockWalletBalanceValue = null
+        model.bedrockWalletBalanceError = ""
         model.localWalletOperations = []
         model.runtimeOperationHistory = []
         closeAllPopups()
@@ -217,6 +221,28 @@ TestCase {
                 && model.localWalletOperations[0].label === qsTr("Create account")
                 && model.localWalletOperations[0].status === "created"
         })
+    }
+
+    function test_bedrock_balance_json_exposes_exact_accessible_text() {
+        const publicKey = "26".repeat(32)
+        model.walletPublicKeyProbe = publicKey
+        model.bedrockWalletBalanceValue = {
+            address: publicKey,
+            balance: 1000,
+            notes: { "note-id": 1000 },
+            tip: "ab".repeat(32)
+        }
+        model.localWalletTab = "bedrockNotes"
+
+        const balanceText = waitForChild(page, "bedrockBalanceJson")
+        tryCompare(balanceText, "visible", true)
+        const expected = page.balanceJson()
+        compare(balanceText.text, expected)
+        compare(balanceText.Accessible.role, Accessible.StaticText)
+        compare(
+            balanceText.Accessible.name,
+            qsTr("Bedrock REST balance response: %1").arg(expected)
+        )
     }
 
     function test_parse_wallet_command_line_preserves_backslash_paths() {

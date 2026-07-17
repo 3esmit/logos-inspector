@@ -738,6 +738,7 @@ ColumnLayout {
                     }
 
                     Text {
+                        objectName: "bedrockBalanceJson"
                         text: root.balanceJson()
                         color: root.theme.text
                         textFormat: Text.PlainText
@@ -745,6 +746,9 @@ ColumnLayout {
                         font.family: "monospace"
                         font.pixelSize: root.theme.dataText
                         Layout.fillWidth: true
+
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: qsTr("Bedrock REST balance response: %1").arg(text)
                     }
                 }
             }
