@@ -174,7 +174,8 @@ QtObject {
         return {
             callback: typeof callback === "function" ? callback : null,
             presentation: presentation,
-            label: String(label || "")
+            label: String(label || ""),
+            owner: String(owner || "")
         }
     }
 
@@ -196,14 +197,45 @@ QtObject {
             return false
         }
         const ok = response && response.ok === true
+        const value = ok
+            ? observationPresentationValue(waiter, response.value) : null
         return gateway.completeObservationPresentation(
             waiter.presentation,
             waiter.label,
-            ok ? BridgeHelpers.formatValue(response.value)
+            ok ? BridgeHelpers.formatValue(value)
                : String(response && response.error || qsTr("Source observation failed.")),
             !ok,
-            ok ? response.value : null
+            value
         )
+    }
+
+    function observationPresentationValue(waiter, value) {
+        return waiter && waiter.owner === "storage"
+            ? storageObservationSummary(value) : value
+    }
+
+    function storageObservationSummary(value) {
+        const report = value && typeof value === "object" ? value : ({})
+        const health = report.health && typeof report.health === "object"
+            ? report.health : ({})
+        const probes = Array.isArray(report.probes) ? report.probes
+            : (Array.isArray(report.probe_facts) ? report.probe_facts : [])
+        let successful = 0
+        for (let i = 0; i < probes.length; ++i) {
+            if (probes[i] && probes[i].ok === true) {
+                successful += 1
+            }
+        }
+        return {
+            source: sourceRouting.storageSourceLabel(),
+            module: String(report.module || "storage"),
+            status: String(health.status || health.summary
+                || (health.ready === true ? "healthy" : "unknown")),
+            ready: health.ready === true,
+            probes: probes.length,
+            successful_probes: successful,
+            failed_probes: probes.length - successful
+        }
     }
 
     function notifyObservationWaiters(kind, response, snapshot) {

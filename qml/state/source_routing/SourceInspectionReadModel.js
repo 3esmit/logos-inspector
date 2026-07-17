@@ -79,7 +79,7 @@ function build(model, theme, family) {
         return SourceDiagnostics.statusRow(page, label, state, evidence, tone)
     }
     page.probeRow = function (probe, fallbackLabel) {
-        return SourceDiagnostics.probeRow(page, probe, fallbackLabel)
+        return sourceProbeRow(page, storage, probe, fallbackLabel)
     }
     page.detailRow = function (label, value) {
         const skips = storage ? [qsTr("Not queried"), qsTr("Not fetched"), qsTr("Idle")] : []
@@ -100,6 +100,17 @@ function build(model, theme, family) {
 
     const common = commonView(page, theme, storage, sourceMode, sourceTarget)
     return storage ? storageView(page, common) : deliveryView(page, common)
+}
+
+function sourceProbeRow(page, storage, probe, fallbackLabel) {
+    const row = SourceDiagnostics.probeRow(page, probe, fallbackLabel)
+    const probeKey = String(probe && (probe.probe_key || probe.key) || "")
+    if (storage && probeKey === "dataDir" && probe && probe.ok === true
+            && probe.value !== undefined && probe.value !== null) {
+        row.evidence = page.model.storageDisplayPath(
+            SourceDiagnostics.copyValue(probe.value))
+    }
+    return row
 }
 
 function commonView(page, theme, storage, sourceMode, sourceTarget) {

@@ -382,7 +382,6 @@ QtObject {
     property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
     property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
     property string storageNetworkPreset: "logos.test"
-    property string storageDataDir: ""
     property int storageRollingWindow: 120
     property bool storageLocalDiagnosticsEnabled: false
     property bool storagePrivilegedDebugEnabled: false
@@ -993,10 +992,9 @@ QtObject {
     onStorageRestUrlChanged: handleStorageConfigurationChanged()
     onStorageMetricsUrlChanged: handleStorageConfigurationChanged()
     onStorageNetworkPresetChanged: handleStorageConfigurationChanged()
-    onStorageDataDirChanged: handleStorageConfigurationChanged()
     onStorageCidProbeChanged: saveSettingsState()
     onStorageRollingWindowChanged: saveSettingsState()
-    onStorageLocalDiagnosticsEnabledChanged: handleStorageConfigurationChanged()
+    onStorageLocalDiagnosticsEnabledChanged: saveSettingsState()
     onStoragePrivilegedDebugEnabledChanged: handleStorageConfigurationChanged()
     onLocalNodesEnabledChanged: {
         if (!localNodesEnabled && localDevnetEnabled) {

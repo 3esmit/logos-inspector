@@ -45,7 +45,6 @@ function applySettingsState(root, value) {
         storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
         storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
         storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
-        storageDataDir = root.stringSetting(value, "storage_data_dir", storageDataDir)
         storageCidProbe = root.stringSetting(value, "storage_cid_probe", storageCidProbe)
         storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
@@ -92,7 +91,6 @@ function settingsStatePayload(root) {
             storage_rest_url: String(storageRestUrl || ""),
             storage_metrics_url: String(storageMetricsUrl || ""),
             storage_network_preset: String(storageNetworkPreset || ""),
-            storage_data_dir: String(storageDataDir || ""),
             storage_cid_probe: String(storageCidProbe || ""),
             storage_rolling_window: Number(storageRollingWindow || 0),
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,

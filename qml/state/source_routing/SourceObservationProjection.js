@@ -114,9 +114,12 @@ function storageCapacityRows(page) {
 }
 
 function storageRepositoryRows(page) {
-    const dataDir = page.probeKnown("dataDir") ? page.model.storageDisplayPath(page.valueSummary(page.probeValue("dataDir"))) : (page.model.storageDataDir.length > 0 ? page.model.storageDisplayPath(page.model.storageDataDir) : qsTr("No local path configured."))
+    const dataDirKnown = page.probeKnown("dataDir")
+    const dataDir = dataDirKnown
+        ? page.model.storageDisplayPath(page.copyValue(page.probeValue("dataDir")))
+        : qsTr("No path reported by current source.")
     return [
-        page.statusRow(qsTr("Data directory"), page.probeKnown("dataDir") || page.model.storageDataDir.length > 0 ? qsTr("configured") : qsTr("unknown"), dataDir, page.probeKnown("dataDir") || page.model.storageDataDir.length > 0 ? "success" : "neutral"),
+        page.statusRow(qsTr("Data directory"), dataDirKnown ? qsTr("reported") : qsTr("unknown"), dataDir, dataDirKnown ? "success" : "neutral"),
         page.metricRow(qsTr("Shared files"), "storage.shared_files_count"),
         page.manifestCountRow()
     ]
@@ -198,7 +201,7 @@ function storageIdentityRows(page) {
     return [
         page.detailRow(qsTr("Peer ID"), page.probeValue("peerId")),
         page.detailRow(qsTr("SPR"), page.probeValue("spr")),
-        page.pathDetailRow(qsTr("Data directory"), page.probeValue("dataDir") || page.model.storageDataDir),
+        page.pathDetailRow(qsTr("Data directory"), page.probeValue("dataDir")),
         page.detailRow(qsTr("Version"), page.probeValue("version") || page.probeValue("moduleVersion")),
         page.detailRow(qsTr("Network preset"), page.sourceNetworkPreset()),
         page.detailRow(qsTr("Source target"), page.sourceTarget())
@@ -249,7 +252,7 @@ function storageProtocolRow(label, protocolId, observed, evidence) {
 }
 
 function storagePathDetailRow(page, label, value) {
-    const raw = page.valueSummary(value)
+    const raw = page.copyValue(value)
     const text = page.model.storageDisplayPath(raw)
     return {
         label: label,
