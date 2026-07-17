@@ -25,6 +25,9 @@ RowLayout {
         elide: Text.ElideRight
         font.pixelSize: root.theme.dataText
         Layout.preferredWidth: 112
+
+        Accessible.role: Accessible.StaticText
+        Accessible.name: root.label
     }
 
     LinkCell {
