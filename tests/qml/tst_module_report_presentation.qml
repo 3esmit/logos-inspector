@@ -88,4 +88,12 @@ TestCase {
         compare(ModuleReportPresentation.blockchainPeerIdText(root), "peer-id")
         compare(ModuleReportPresentation.blockchainPeerIdCopyText(root), "peer-id")
     }
+
+    function test_blockchain_preview_matches_node_report_probe_count() {
+        root.moduleKind = "blockchain"
+        root.responseValue = null
+
+        compare(ModuleReportPresentation.expectedProbeText(root), "4")
+        compare(ModuleReportPresentation.moduleProbeText(root), "4")
+    }
 }
