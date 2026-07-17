@@ -1,7 +1,9 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::transactions::{AccountTransactionSummary, summarize_indexer_transaction};
+use super::transactions::{
+    AccountTransactionSummary, summarize_indexer_transaction, validated_compact_indexer_transaction,
+};
 use crate::value_to_string;
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,6 +95,95 @@ pub(crate) fn verified_indexer_block_report(value: &Value) -> anyhow::Result<Ind
     report.bedrock_status = Some(verified.bedrock_status);
     report.tx_count = verified.tx_count;
     Ok(report)
+}
+
+/// Validates the intentionally compact block schema exposed by the pinned
+/// local Indexer module. That schema omits transaction witnesses, proofs, and
+/// deployed bytecode, so it cannot support the full content-hash recomputation
+/// required for RPC evidence. Keep this boundary module-only; RPC responses
+/// continue through `verified_indexer_block_report` above.
+pub(crate) fn validated_indexer_module_block_report(
+    value: &Value,
+) -> anyhow::Result<IndexerBlockReport> {
+    let block_id = value_u64_any(value, &["block_id"]).ok_or_else(compact_block_error)?;
+    let timestamp = value_u64_any(value, &["timestamp"]).ok_or_else(compact_block_error)?;
+    let header_hash = value
+        .get("hash")
+        .and_then(Value::as_str)
+        .and_then(|hash| crate::parse_hash(hash, "Indexer module block hash").ok())
+        .ok_or_else(compact_block_error)?
+        .to_string();
+    let parent_hash = value
+        .get("prev_block_hash")
+        .and_then(Value::as_str)
+        .and_then(|hash| crate::parse_hash(hash, "Indexer module parent hash").ok())
+        .ok_or_else(compact_block_error)?
+        .to_string();
+    let signature_is_valid = value
+        .get("signature")
+        .and_then(Value::as_str)
+        .and_then(|signature| hex::decode(signature).ok())
+        .is_some_and(|signature| signature.len() == 64);
+    let bedrock_status = value
+        .get("bedrock_status")
+        .and_then(Value::as_str)
+        .filter(|status| matches!(*status, "Pending" | "Safe" | "Finalized"))
+        .ok_or_else(compact_block_error)?
+        .to_owned();
+    let transactions = value
+        .get("transactions")
+        .and_then(Value::as_array)
+        .ok_or_else(compact_block_error)?;
+    if !signature_is_valid {
+        return Err(compact_block_error());
+    }
+    let transaction_summaries = transactions
+        .iter()
+        .enumerate()
+        .map(|(index, transaction)| validated_compact_indexer_transaction(transaction, index))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(IndexerBlockReport {
+        block_id: Some(block_id),
+        header_hash: Some(header_hash),
+        parent_hash: Some(parent_hash),
+        timestamp: Some(timestamp),
+        bedrock_status: Some(bedrock_status),
+        tx_count: transaction_summaries.len(),
+        transactions: transaction_summaries,
+        raw: value.clone(),
+    })
+}
+
+pub(crate) fn validated_indexer_module_block_for_hash(
+    value: &Value,
+    expected_hash: &str,
+) -> anyhow::Result<IndexerBlockReport> {
+    let report = validated_indexer_module_block_report(value)?;
+    let expected_hash = crate::parse_hash(expected_hash, "block header hash")?.to_string();
+    if report.header_hash.as_deref() != Some(expected_hash.as_str()) {
+        return Err(crate::lez::evidence_protocol_error(
+            "Indexer module block hash does not match requested hash",
+        ));
+    }
+    Ok(report)
+}
+
+pub(crate) fn validated_indexer_module_block_for_id(
+    value: &Value,
+    expected_block_id: u64,
+) -> anyhow::Result<IndexerBlockReport> {
+    let report = validated_indexer_module_block_report(value)?;
+    if report.block_id != Some(expected_block_id) {
+        return Err(crate::lez::evidence_protocol_error(
+            "Indexer module block ID does not match requested ID",
+        ));
+    }
+    Ok(report)
+}
+
+fn compact_block_error() -> anyhow::Error {
+    crate::lez::evidence_protocol_error("Indexer module block has invalid compact evidence")
 }
 
 #[cfg(test)]
@@ -345,6 +436,105 @@ mod tests {
             summary.transactions.first().map(|tx| tx.hash.as_str()),
             Some("tx-public")
         );
+    }
+
+    #[test]
+    fn validates_official_module_compact_block_contract() -> anyhow::Result<()> {
+        let raw = serde_json::json!({
+            "bedrock_status": "Finalized",
+            "block_id": "2700",
+            "hash": "d6a534f93985c0de29510a3483e1153a62df4e3f18ea0d490b1e8167639006b7",
+            "prev_block_hash": "1cedbb9fa154bd92fdc1805a481d1657318666384c0ac6ac34f86aea4130624a",
+            "signature": "86b04766151e17a0fd07d6e27f28e97eb36c588a6f326865b348370bb060ecf4c94321bf3428cee964344c9cd376df21bb240495d2629d9e9c9b7a57cd786d54",
+            "timestamp": "1782986224098",
+            "transactions": [{
+                "accounts": [
+                    {"account_id": "4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU", "nonce": "0"},
+                    {"account_id": "4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWSs", "nonce": "0"},
+                    {"account_id": "4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWkX", "nonce": "0"}
+                ],
+                "hash": "e2c0e3a95fda8489754a5994d350abcb96df5f231eb11d16fb64a63f0630bdae",
+                "instruction_data": [574796258, 415],
+                "program_id": "884e693a302d57de1ac4c405ca5bea1df707d1de11d9f87de51b78845aa98e63",
+                "signature_count": 0,
+                "type": "Public"
+            }]
+        });
+
+        let report = validated_indexer_module_block_report(&raw)?;
+
+        anyhow::ensure!(report.block_id == Some(2700));
+        anyhow::ensure!(report.tx_count == 1);
+        anyhow::ensure!(
+            report
+                .transactions
+                .first()
+                .map(|transaction| transaction.hash.as_str())
+                == Some("e2c0e3a95fda8489754a5994d350abcb96df5f231eb11d16fb64a63f0630bdae")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_official_module_compact_block_evidence() -> anyhow::Result<()> {
+        let valid = serde_json::json!({
+            "bedrock_status": "Safe",
+            "block_id": "7",
+            "hash": "ab".repeat(32),
+            "prev_block_hash": "cd".repeat(32),
+            "signature": "ef".repeat(64),
+            "timestamp": "1000",
+            "transactions": [{
+                "type": "ProgramDeployment",
+                "hash": "12".repeat(32),
+                "bytecode_size": 42
+            }]
+        });
+        anyhow::ensure!(validated_indexer_module_block_report(&valid).is_ok());
+
+        for (pointer, replacement) in [
+            ("/signature", serde_json::json!("00")),
+            ("/bedrock_status", serde_json::json!("Unknown")),
+            ("/transactions/0/hash", serde_json::json!("not-a-hash")),
+            ("/transactions/0/bytecode_size", serde_json::json!(-1)),
+        ] {
+            let mut malformed = valid.clone();
+            let Some(field) = malformed.pointer_mut(pointer) else {
+                anyhow::bail!("missing compact fixture field {pointer}");
+            };
+            *field = replacement;
+            anyhow::ensure!(
+                validated_indexer_module_block_report(&malformed).is_err(),
+                "malformed compact block field {pointer} was accepted"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_compact_block_detail_that_does_not_match_request() -> anyhow::Result<()> {
+        let hash = "ab".repeat(32);
+        let raw = serde_json::json!({
+            "bedrock_status": "Safe",
+            "block_id": "7",
+            "hash": hash,
+            "prev_block_hash": "cd".repeat(32),
+            "signature": "ef".repeat(64),
+            "timestamp": "1000",
+            "transactions": []
+        });
+
+        anyhow::ensure!(validated_indexer_module_block_for_hash(&raw, &"ab".repeat(32)).is_ok());
+        anyhow::ensure!(validated_indexer_module_block_for_id(&raw, 7).is_ok());
+        anyhow::ensure!(
+            validated_indexer_module_block_for_hash(&raw, &"12".repeat(32)).is_err(),
+            "compact module block accepted a mismatched requested hash"
+        );
+        anyhow::ensure!(
+            validated_indexer_module_block_for_id(&raw, 8).is_err(),
+            "compact module block accepted a mismatched requested ID"
+        );
+        Ok(())
     }
 
     #[test]

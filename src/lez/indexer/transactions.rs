@@ -135,6 +135,133 @@ pub(crate) fn verified_indexer_transaction_summary(
     Ok(summary)
 }
 
+pub(crate) fn validated_indexer_module_transaction_summary(
+    value: &Value,
+    expected_hash: &str,
+) -> anyhow::Result<TransactionSummary> {
+    let indexed = validated_compact_indexer_transaction(value, 0)?;
+    let advertised_hash = crate::parse_hash(&indexed.hash, "indexed transaction hash")?;
+    let requested_hash = crate::parse_hash(expected_hash, "transaction hash")?;
+    if advertised_hash != requested_hash {
+        return Err(crate::lez::evidence_protocol_error(
+            "Indexer module transaction hash does not match requested hash",
+        ));
+    }
+    Ok((&indexed).into())
+}
+
+pub(super) fn validated_compact_indexer_transaction(
+    value: &Value,
+    index: usize,
+) -> anyhow::Result<AccountTransactionSummary> {
+    let Some(kind) = compact_transaction_kind(value) else {
+        return Err(compact_transaction_error());
+    };
+    let Some(hash) = value.get("hash").and_then(Value::as_str) else {
+        return Err(compact_transaction_error());
+    };
+    crate::parse_hash(hash, "indexed transaction hash").map_err(|_| compact_transaction_error())?;
+
+    match kind.as_str() {
+        "Public" => validate_compact_public_transaction(value)?,
+        "PrivacyPreserving" => validate_compact_private_transaction(value)?,
+        "ProgramDeployment" => validate_compact_program_deployment(value)?,
+        _ => return Err(compact_transaction_error()),
+    }
+    Ok(summarize_indexer_transaction(value, index))
+}
+
+fn validate_compact_public_transaction(value: &Value) -> anyhow::Result<()> {
+    let program_id = value
+        .get("program_id")
+        .and_then(Value::as_str)
+        .ok_or_else(compact_transaction_error)?;
+    normalize_program_id_hex(program_id).map_err(|_| compact_transaction_error())?;
+    validate_compact_accounts(value)?;
+    let instruction_data = value
+        .get("instruction_data")
+        .and_then(Value::as_array)
+        .ok_or_else(compact_transaction_error)?;
+    if !instruction_data.iter().all(|word| {
+        word.as_u64()
+            .and_then(|word| u32::try_from(word).ok())
+            .is_some()
+    }) || compact_u64(value.get("signature_count")).is_none()
+    {
+        return Err(compact_transaction_error());
+    }
+    Ok(())
+}
+
+fn validate_compact_private_transaction(value: &Value) -> anyhow::Result<()> {
+    validate_compact_accounts(value)?;
+    let counts_are_valid = [
+        "new_commitments_count",
+        "nullifiers_count",
+        "encrypted_states_count",
+        "signature_count",
+        "proof_size",
+    ]
+    .into_iter()
+    .all(|field| compact_u64(value.get(field)).is_some());
+    let validity_start = compact_u64(value.get("validity_window_start"));
+    let validity_end = compact_u64(value.get("validity_window_end"));
+    if !counts_are_valid
+        || validity_start.is_none()
+        || validity_end.is_none()
+        || validity_start > validity_end
+    {
+        return Err(compact_transaction_error());
+    }
+    Ok(())
+}
+
+fn validate_compact_program_deployment(value: &Value) -> anyhow::Result<()> {
+    if compact_u64(value.get("bytecode_size")).is_none() {
+        return Err(compact_transaction_error());
+    }
+    Ok(())
+}
+
+fn validate_compact_accounts(value: &Value) -> anyhow::Result<()> {
+    let accounts = value
+        .get("accounts")
+        .and_then(Value::as_array)
+        .ok_or_else(compact_transaction_error)?;
+    if accounts.iter().any(|account| {
+        account
+            .get("account_id")
+            .and_then(Value::as_str)
+            .and_then(normalize_account_id_text)
+            .is_none()
+            || compact_u128(account.get("nonce")).is_none()
+    }) {
+        return Err(compact_transaction_error());
+    }
+    Ok(())
+}
+
+fn compact_u64(value: Option<&Value>) -> Option<u64> {
+    value.and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })
+}
+
+fn compact_u128(value: Option<&Value>) -> Option<u128> {
+    value.and_then(|value| {
+        value
+            .as_u64()
+            .map(u128::from)
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })
+}
+
+fn compact_transaction_error() -> anyhow::Error {
+    crate::lez::evidence_protocol_error("Indexer module transaction has invalid compact evidence")
+}
+
 pub(crate) fn with_account_direction(
     mut summary: AccountTransactionSummary,
     account_id: &str,
@@ -414,6 +541,31 @@ mod tests {
         assert_eq!(summary.nonces, vec!["1", "2"]);
         assert_eq!(summary.instruction_data, vec![3, 4]);
         assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn validates_official_module_compact_transaction_identity() -> anyhow::Result<()> {
+        let hash = "e2c0e3a95fda8489754a5994d350abcb96df5f231eb11d16fb64a63f0630bdae";
+        let raw = serde_json::json!({
+            "accounts": [{
+                "account_id": "4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU",
+                "nonce": "0"
+            }],
+            "hash": hash,
+            "instruction_data": [574796258, 415],
+            "program_id": "884e693a302d57de1ac4c405ca5bea1df707d1de11d9f87de51b78845aa98e63",
+            "signature_count": 0,
+            "type": "Public"
+        });
+
+        let summary = validated_indexer_module_transaction_summary(&raw, hash)?;
+
+        anyhow::ensure!(summary.hash == hash);
+        anyhow::ensure!(
+            validated_indexer_module_transaction_summary(&raw, &"00".repeat(32)).is_err(),
+            "compact module transaction accepted a mismatched requested hash"
+        );
+        Ok(())
     }
 
     #[test]
