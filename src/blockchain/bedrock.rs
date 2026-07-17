@@ -347,6 +347,44 @@ fn bedrock_url(endpoint: &str, path: &str) -> Result<Url> {
         .context("invalid Bedrock endpoint URL")
 }
 
+fn append_stream_chunk_bounded(text: &mut String, chunk: &[u8], max_bytes: usize) -> bool {
+    let Some(mut remaining) = max_bytes.checked_sub(text.len()) else {
+        return false;
+    };
+    if chunk.is_empty() {
+        return true;
+    }
+    if remaining == 0 {
+        return false;
+    }
+
+    for decoded in chunk.utf8_chunks() {
+        let valid = decoded.valid();
+        let mut valid_end = valid.len().min(remaining);
+        while !valid.is_char_boundary(valid_end) {
+            valid_end = valid_end.saturating_sub(1);
+        }
+        let Some(prefix) = valid.get(..valid_end) else {
+            return false;
+        };
+        text.push_str(prefix);
+        remaining -= valid_end;
+        if valid_end != valid.len() {
+            return false;
+        }
+
+        if !decoded.invalid().is_empty() {
+            const REPLACEMENT_CHARACTER: &str = "\u{fffd}";
+            if remaining < REPLACEMENT_CHARACTER.len() {
+                return false;
+            }
+            text.push_str(REPLACEMENT_CHARACTER);
+            remaining -= REPLACEMENT_CHARACTER.len();
+        }
+    }
+    true
+}
+
 async fn blockchain_blocks_stream_text(endpoint: &str, limit: u64) -> Result<String> {
     let endpoint = endpoint.trim_end_matches('/');
     let limit = limit.min(100);
@@ -374,7 +412,9 @@ async fn blockchain_blocks_stream_text(endpoint: &str, limit: u64) -> Result<Str
         let Some(chunk) = chunk else {
             break;
         };
-        text.push_str(&String::from_utf8_lossy(&chunk));
+        if !append_stream_chunk_bounded(&mut text, &chunk, BLOCK_STREAM_SNAPSHOT_MAX_BYTES) {
+            break;
+        }
     }
 
     if text.trim().is_empty() {
@@ -872,6 +912,50 @@ mod tests {
             .contains("http response body exceeded 8 byte limit")
         {
             bail!("unexpected chunked block-range body error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stream_snapshot_append_accepts_exact_byte_limit() -> Result<()> {
+        let mut text = "ab".to_owned();
+
+        let complete = append_stream_chunk_bounded(&mut text, b"cd", 4);
+
+        if !complete || text != "abcd" || text.len() != 4 {
+            bail!("exact-limit stream chunk was not preserved: {text:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stream_snapshot_append_truncates_oversized_and_lossy_chunks() -> Result<()> {
+        let mut oversized = "ab".to_owned();
+
+        if append_stream_chunk_bounded(&mut oversized, b"cdef", 4)
+            || oversized != "abcd"
+            || oversized.len() > 4
+        {
+            bail!("oversized stream chunk escaped byte limit: {oversized:?}");
+        }
+
+        let mut lossy = "abc".to_owned();
+        if append_stream_chunk_bounded(&mut lossy, &[0xff], 4) || lossy != "abc" || lossy.len() > 4
+        {
+            bail!("lossy UTF-8 expansion escaped byte limit: {lossy:?}");
+        }
+
+        let mut exact_lossy = "a".to_owned();
+        if !append_stream_chunk_bounded(&mut exact_lossy, &[0xff], 4)
+            || exact_lossy != "a\u{fffd}"
+            || exact_lossy.len() != 4
+        {
+            bail!("exact-limit lossy chunk was not preserved: {exact_lossy:?}");
+        }
+
+        let mut unicode = String::new();
+        if append_stream_chunk_bounded(&mut unicode, "💖".as_bytes(), 3) || !unicode.is_empty() {
+            bail!("valid UTF-8 was replaced at the byte boundary: {unicode:?}");
         }
         Ok(())
     }
