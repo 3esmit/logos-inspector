@@ -5,6 +5,7 @@ QtObject {
 
     required property var model
     property int operationPollInterval: 500
+    property int liveBlocksPollInterval: 5000
 
     property list<QtObject> timers: [
         Timer {
@@ -105,8 +106,7 @@ QtObject {
         case "chainOperation":
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
-            return Math.max(1, Number(model.metrics.refreshInterval(
-                model.metrics.blockchainRefreshRate)))
+            return Math.max(1, Number(root.liveBlocksPollInterval))
         case "zonesStatus":
             return Math.max(1, Number(root.zoneState() ? root.zoneState().statusPollInterval : 0))
         default:
