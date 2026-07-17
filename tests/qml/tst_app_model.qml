@@ -5105,14 +5105,14 @@ TestCase {
         }
 
         model.chainPages.refreshTransactionsPage()
-        tryCompare(model, "transactionsPageBeforeBlock", 5000)
+        tryCompare(model, "transactionsPageBeforeBlock", 5001)
         verify(model.transactionsPageAtLatest)
-        compare(model.transactionsPageNextBeforeBlock, 4500)
+        compare(model.transactionsPageNextBeforeBlock, 4501)
 
         model.chainPages.olderTransactionsPage()
-        tryCompare(model, "transactionsPageBeforeBlock", 4500)
+        tryCompare(model, "transactionsPageBeforeBlock", 4501)
         verify(!model.transactionsPageAtLatest)
-        compare(model.transactionsPageNextBeforeBlock, 4000)
+        compare(model.transactionsPageNextBeforeBlock, 4001)
     }
 
     function test_transaction_page_preserves_dense_window_rows_across_navigation() {
@@ -5399,6 +5399,40 @@ TestCase {
                 mantle_tx: { hash: "mutable-transaction", ops: [] }
             }
         }])
+        verify(model.transactionsPageAtLatest)
+    }
+
+    function test_transaction_latest_prefers_mutable_tip_over_finalized_lib() {
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 5000,
+                                lib_slot: 4500
+                            }
+                        }
+                    }
+                },
+                blockchainBlocks: []
+            })
+        }
+
+        model.chainPages.refreshTransactionsPage()
+
+        tryCompare(model, "transactionsPageBeforeBlock", 5000)
+        compare(model.chainPages.transactionsPageSessionTip, 5000)
+        const calls = fakeHost.calls.filter(function (candidate) {
+            const request = candidate.method === "runtimeOperationStart"
+                && candidate.args ? candidate.args[0] || null : null
+            return request && request.method === "blockchainBlocks"
+        })
+        compare(calls.length, 1)
+        const context = chainOperationContext(calls[0].args[0])
+        compare(context.slotFrom, 4501)
+        compare(context.slotTo, 5000)
+        compare(context.limit, 500)
         verify(model.transactionsPageAtLatest)
     }
 
