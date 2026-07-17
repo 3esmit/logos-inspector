@@ -19,6 +19,10 @@ Item {
     Layout.fillWidth: true
     implicitHeight: Math.max(48, rowGrid.implicitHeight + root.theme.gapSmall * 2)
 
+    Accessible.role: Accessible.StaticText
+    Accessible.name: root.accessibleName()
+    Accessible.description: root.accessibleDescription()
+
     GridLayout {
         id: rowGrid
 
@@ -51,6 +55,7 @@ Item {
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+                Accessible.ignored: true
             }
         }
 
@@ -62,6 +67,7 @@ Item {
             font.weight: Font.DemiBold
             elide: Text.ElideRight
             Layout.preferredWidth: root.layoutWidth < 760 ? 110 : 118
+            Accessible.ignored: true
         }
 
         Text {
@@ -73,6 +79,7 @@ Item {
             elide: Text.ElideRight
             Layout.columnSpan: root.layoutWidth < 760 ? 2 : 1
             Layout.fillWidth: true
+            Accessible.ignored: true
         }
 
         Text {
@@ -83,6 +90,7 @@ Item {
             font.pixelSize: root.theme.dataText
             elide: Text.ElideRight
             Layout.preferredWidth: 192
+            Accessible.ignored: true
         }
     }
 
@@ -106,5 +114,26 @@ Item {
             return root.theme.error
         }
         return root.theme.textDim
+    }
+
+    function accessibleName() {
+        const labelText = String(root.label || "").trim()
+        const status = String(root.stateText || "").trim()
+        if (labelText.length > 0 && status.length > 0) {
+            return qsTr("%1: %2").arg(labelText).arg(status)
+        }
+        return labelText.length > 0 ? labelText : qsTr("Status")
+    }
+
+    function accessibleDescription() {
+        const values = []
+        const details = [root.evidence, root.source, root.freshness]
+        for (let i = 0; i < details.length; ++i) {
+            const value = String(details[i] || "").trim()
+            if (value.length > 0 && value !== "-") {
+                values.push(value)
+            }
+        }
+        return values.join(". ")
     }
 }
