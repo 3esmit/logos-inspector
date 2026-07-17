@@ -108,6 +108,78 @@ TestCase {
         tryCompare(rawResponse.Accessible, "description", errorText)
     }
 
+    function test_blockchain_range_validation_is_actionable() {
+        const model = findChild(shell, "appModel")
+        const loader = findChild(shell, "pageLoader")
+        verify(model !== null)
+        verify(loader !== null)
+        model.shell.selectView("blockchain")
+        tryVerify(function () { return loader.item !== null })
+
+        let slotFrom = null
+        let slotTo = null
+        let slotFromInput = null
+        let slotToInput = null
+        let loadBlocks = null
+        let validation = null
+        tryVerify(function () {
+            slotFrom = findChild(loader.item, "moduleSlotFrom")
+            slotTo = findChild(loader.item, "moduleSlotTo")
+            slotFromInput = findChild(loader.item, "moduleSlotFromInput")
+            slotToInput = findChild(loader.item, "moduleSlotToInput")
+            loadBlocks = findChild(loader.item, "moduleLoadBlocks")
+            validation = findChild(loader.item, "moduleBlockRangeValidation")
+            return slotFrom !== null && slotTo !== null
+                && slotFromInput !== null && slotToInput !== null
+                && loadBlocks !== null && validation !== null
+        })
+
+        slotFrom.text = "1e3"
+        slotTo.text = "1000"
+        verify(!loadBlocks.enabled)
+        verify(validation.visible)
+        compare(validation.Accessible.name,
+                "Invalid slot range. Slots must use unsigned decimal integers without signs, spaces, or leading zeros.")
+        compare(slotFromInput.Accessible.description,
+                "Error: Slots must use unsigned decimal integers without signs, spaces, or leading zeros.")
+        compare(slotToInput.Accessible.description, "")
+
+        slotTo.text = "9007199254740992"
+        compare(slotFromInput.Accessible.description,
+                "Error: Slots must use unsigned decimal integers without signs, spaces, or leading zeros.")
+        compare(slotToInput.Accessible.description, "")
+        slotFrom.text = "1"
+        compare(slotFromInput.Accessible.description, "")
+        compare(slotToInput.Accessible.description,
+                "Error: Slots exceed the supported numeric range.")
+
+        slotFrom.text = "20"
+        slotTo.text = "10"
+        verify(!loadBlocks.enabled)
+        compare(validation.Accessible.name,
+                "Invalid slot range. Slot from must be less than or equal to Slot to.")
+        compare(slotFromInput.Accessible.description, "")
+        compare(slotToInput.Accessible.description,
+                "Error: Slot from must be less than or equal to Slot to.")
+
+        slotFrom.text = "0"
+        slotTo.text = "2001"
+        verify(!loadBlocks.enabled)
+        compare(validation.Accessible.name,
+                "Invalid slot range. Slot range cannot contain more than 2,001 slots.")
+        compare(slotToInput.Accessible.description,
+                "Error: Slot range cannot contain more than 2,001 slots.")
+
+        slotTo.text = "2000"
+        verify(loadBlocks.enabled)
+        verify(!validation.visible)
+        compare(slotFromInput.Accessible.description, "")
+        compare(slotToInput.Accessible.description, "")
+
+        slotFrom.text = ""
+        slotTo.text = ""
+    }
+
     function test_dashboard_wide_layout_keeps_l1_panels_beside_zones() {
         testWindow.width = 1560
         const model = findChild(shell, "appModel")

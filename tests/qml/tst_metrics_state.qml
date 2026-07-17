@@ -59,6 +59,7 @@ TestCase {
         property var requests: []
         property int capabilityRefreshCount: 0
         property int dashboardResultCount: 0
+        property int dashboardStartCount: 0
         property bool dashboardResultOk: false
         property int projectDashboardCount: 0
         property int invalidatedDashboardCount: 0
@@ -75,6 +76,7 @@ TestCase {
             requests = []
             capabilityRefreshCount = 0
             dashboardResultCount = 0
+            dashboardStartCount = 0
             dashboardResultOk = false
             projectDashboardCount = 0
             invalidatedDashboardCount = 0
@@ -122,6 +124,7 @@ TestCase {
         }
 
         function startDashboardBlockchainOperation(request, callback) {
+            dashboardStartCount += 1
             if (synchronouslyRejectDashboard) {
                 callback({
                     ok: false,
@@ -916,9 +919,19 @@ TestCase {
         verify(metrics.networkConnectionIsPending("blockchain"))
         verify(metrics.networkConnectionIsPending("storage"))
         verify(metrics.networkConnectionIsPending("messaging"))
-        compare(gateway.requests.length, 4)
+        compare(gateway.requests.length, 3)
 
-        gateway.completeRequest(0, success({ cryptarchia_info: null }))
+        gateway.completeRequest(0, success({
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 30, lib_slot: 20 }
+                }
+            }
+        }))
+        compare(gateway.requests.length, 3)
+        compare(gateway.requests[2].method, "blockchainLiveBlocks")
+        compare(gateway.requests[2].args[0], 0)
+        compare(gateway.requests[2].args[1], 30)
         gateway.completeRequest(0, success(sourceReport(true, "storage-dashboard")))
         gateway.completeRequest(0, success(sourceReport(false, "messaging-dashboard")))
         gateway.completeRequest(0, success({ blocks: [{ id: "l1" }] }))
@@ -949,6 +962,26 @@ TestCase {
         verify(gateway.dashboardResultOk)
     }
 
+    function test_invalidated_dashboard_does_not_start_live_blocks_from_stale_node_reply() {
+        verify(metrics.refreshDashboard())
+        compare(gateway.requests.length, 3)
+
+        metrics.invalidateDashboard("test invalidation")
+        gateway.completeRequest(0, success({
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 30, lib_slot: 20 }
+                }
+            }
+        }))
+
+        verify(!metrics.dashboardRefreshing)
+        verify(!gateway.requests.some(function (request) {
+            return request.method === "blockchainLiveBlocks"
+        }))
+        compare(gateway.invalidatedDashboardCount, 1)
+    }
+
     function test_synchronous_dashboard_rejection_settles_once() {
         gateway.synchronouslyRejectDashboard = true
         verify(metrics.refreshDashboard())
@@ -957,7 +990,14 @@ TestCase {
         compare(gateway.requests.length, 3)
         compare(gateway.dashboardResultCount, 0)
 
-        gateway.completeRequest(0, success({ cryptarchia_info: null }))
+        gateway.completeRequest(0, success({
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 30, lib_slot: 20 }
+                }
+            }
+        }))
+        compare(gateway.dashboardStartCount, 1)
         gateway.completeRequest(0, success(sourceReport(true, "storage")))
         verify(metrics.dashboardRefreshing)
         compare(gateway.dashboardResultCount, 0)

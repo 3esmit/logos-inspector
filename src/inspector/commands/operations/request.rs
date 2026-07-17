@@ -712,6 +712,54 @@ mod tests {
     }
 
     #[test]
+    fn blockchain_operation_request_rejects_unsafe_range_before_admission() -> Result<()> {
+        for (slot_from, slot_to, expected) in [
+            (
+                20_u64,
+                10_u64,
+                "slot_from must be less than or equal to slot_to",
+            ),
+            (
+                0_u64,
+                2_001_u64,
+                "slot range cannot contain more than 2001 slots",
+            ),
+        ] {
+            let result = runtime_operation_request_from_value(json!({
+                "domain": "blockchain",
+                "method": "blockchainBlocks",
+                "args": ["module", slot_from, slot_to]
+            }));
+            let Err(error) = result else {
+                bail!("unsafe range {slot_from}:{slot_to} should fail");
+            };
+            if !error.to_string().contains(expected) {
+                bail!("unexpected range error: {error:#}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn blockchain_operation_request_rejects_noncanonical_slot_strings_before_admission()
+    -> Result<()> {
+        for slot_from in ["1e3", "1.0", "0x10", "+1", "-1", "01", " 1", "1 "] {
+            let result = runtime_operation_request_from_value(json!({
+                "domain": "blockchain",
+                "method": "blockchainBlocks",
+                "args": ["module", slot_from, "1000"]
+            }));
+            let Err(error) = result else {
+                bail!("noncanonical slot `{slot_from}` should fail");
+            };
+            if !error.to_string().contains("invalid slot from") {
+                bail!("unexpected slot error: {error:#}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_operation_request_rejects_unknown_method() -> Result<()> {
         let result = runtime_operation_request_from_value(json!({
             "domain": "wallet",

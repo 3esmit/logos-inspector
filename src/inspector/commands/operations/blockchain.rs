@@ -120,8 +120,9 @@ fn operation_context(
     match command {
         BlockchainCommand::Node => {}
         BlockchainCommand::Blocks => {
-            let slot_from = args.u64(source.next_index, "slot from")?;
-            let slot_to = args.u64(source.next_index + 1, "slot to")?;
+            let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
+            let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
+            crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
             context.insert("slotFrom".to_owned(), json!(slot_from));
             context.insert("slotTo".to_owned(), json!(slot_to));
             context.insert(
@@ -133,8 +134,9 @@ fn operation_context(
             }
         }
         BlockchainCommand::LiveBlocks => {
-            let slot_from = args.u64(source.next_index, "slot from")?;
-            let slot_to = args.u64(source.next_index + 1, "slot to")?;
+            let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
+            let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
+            crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
             context.insert("slotFrom".to_owned(), json!(slot_from));
             context.insert("slotTo".to_owned(), json!(slot_to));
             context.insert(
@@ -199,8 +201,8 @@ async fn execute_blockchain_blocks(
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
-    let slot_from = args.u64(source.next_index, "slot from")?;
-    let slot_to = args.u64(source.next_index + 1, "slot to")?;
+    let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
+    let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
     let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
     to_value(
         bedrock_layer::blocks(
@@ -220,8 +222,8 @@ async fn execute_blockchain_live_blocks(
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
-    let slot_from = args.u64(source.next_index, "slot from")?;
-    let slot_to = args.u64(source.next_index + 1, "slot to")?;
+    let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
+    let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
     let limit = args
         .value(source.next_index + 2)
         .and_then(Value::as_u64)

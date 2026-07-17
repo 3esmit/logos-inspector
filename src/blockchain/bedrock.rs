@@ -17,6 +17,7 @@ use crate::{
 
 const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
 const BLOCK_STREAM_SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_BLOCK_RANGE_SLOTS: u64 = 2_001;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockchainNodeReport {
@@ -67,9 +68,7 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 }
 
 pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
-    if slot_from > slot_to {
-        bail!("slot_from must be less than or equal to slot_to");
-    }
+    validate_blockchain_slot_range(slot_from, slot_to)?;
     raw_http_json(
         endpoint,
         &format!("/cryptarchia/blocks?slot_from={slot_from}&slot_to={slot_to}"),
@@ -83,9 +82,7 @@ pub async fn blockchain_recent_blocks(
     slot_to: u64,
     limit: u64,
 ) -> Result<Value> {
-    if slot_from > slot_to {
-        bail!("slot_from must be less than or equal to slot_to");
-    }
+    validate_blockchain_slot_range(slot_from, slot_to)?;
     let limit = limit.clamp(1, 500);
     match blockchain_blocks_range(endpoint, slot_from, slot_to, limit).await {
         Ok(blocks) => Ok(blocks),
@@ -103,9 +100,7 @@ pub async fn blockchain_live_blocks_snapshot(
     slot_to: u64,
     limit: u64,
 ) -> Result<BlockchainLiveBlocksReport> {
-    if slot_from > slot_to {
-        bail!("slot_from must be less than or equal to slot_to");
-    }
+    validate_blockchain_slot_range(slot_from, slot_to)?;
     let limit = limit.clamp(1, 500);
     let mut report = match blockchain_blocks_range_text(endpoint, slot_from, slot_to, limit).await {
         Ok(text) => {
@@ -145,6 +140,16 @@ pub async fn blockchain_live_blocks_snapshot(
     }
     report.blocks = dedupe_stream_blocks(report.blocks, limit);
     Ok(report)
+}
+
+pub(crate) fn validate_blockchain_slot_range(slot_from: u64, slot_to: u64) -> Result<()> {
+    if slot_from > slot_to {
+        bail!("slot_from must be less than or equal to slot_to");
+    }
+    if slot_to - slot_from >= MAX_BLOCK_RANGE_SLOTS {
+        bail!("slot range cannot contain more than {MAX_BLOCK_RANGE_SLOTS} slots");
+    }
+    Ok(())
 }
 
 async fn blockchain_blocks_range(
@@ -751,6 +756,33 @@ mod tests {
                 .contains("block id cannot contain path separators")
             {
                 bail!("unexpected error: {error:#}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_block_range_preserves_page_window_and_rejects_unsafe_bounds() -> Result<()> {
+        validate_blockchain_slot_range(0, 2_000)?;
+
+        for (slot_from, slot_to, expected) in [
+            (
+                20_u64,
+                10_u64,
+                "slot_from must be less than or equal to slot_to",
+            ),
+            (
+                0_u64,
+                2_001_u64,
+                "slot range cannot contain more than 2001 slots",
+            ),
+        ] {
+            let result = validate_blockchain_slot_range(slot_from, slot_to);
+            let Err(error) = result else {
+                bail!("unsafe range {slot_from}:{slot_to} should fail");
+            };
+            if !error.to_string().contains(expected) {
+                bail!("unexpected range error: {error:#}");
             }
         }
         Ok(())

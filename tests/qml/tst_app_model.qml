@@ -4726,6 +4726,47 @@ TestCase {
         compare(model.shell.resultValue.unknown_events.length, 1)
     }
 
+    function test_blocks_live_mode_clamps_stale_range_to_supported_window() {
+        model.shell.currentView = "blocks"
+        model.blocksPageWindow = 2000
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 5000,
+                                lib_slot: 4900
+                            }
+                        }
+                    }
+                },
+                blockchainLiveBlocks: {
+                    source: "blocks_range",
+                    blocks: [
+                        { header: { slot: 5000, id: "slot-5000" }, transactions: [] }
+                    ],
+                    unknown_events: []
+                }
+            })
+        }
+
+        model.chainPages.startBlocksLiveMode()
+
+        tryCompare(model, "blocksLiveSource", "blocks_range")
+        compare(fakeHost.lastMethod, "runtimeOperationStart")
+        compare(fakeHost.lastArgs[0].method, "blockchainLiveBlocks")
+        compare(fakeHost.lastArgs[0].args[1], 3000)
+        compare(fakeHost.lastArgs[0].args[2], 5000)
+        compare(model.blocksPageRows[0].header.id, "slot-5000")
+        compare(model.blocksLiveError, "")
+    }
+
     function test_blocks_live_mode_waits_for_initial_page_workflow() {
         model.shell.currentView = "blocks"
         const nodeResult = {

@@ -22,8 +22,8 @@ pub(super) fn channel_scan(runtime: &Runtime, args: Value) -> Result<Value> {
     require_rpc_source(&source, "channelScan")?;
     to_value(runtime.block_on(bedrock_layer::channel_scan(
         source.endpoint,
-        args.u64(source.next_index, "slot from")?,
-        args.u64(source.next_index + 1, "slot to")?,
+        args.canonical_decimal_u64(source.next_index, "slot from")?,
+        args.canonical_decimal_u64(source.next_index + 1, "slot to")?,
     ))?)
 }
 
@@ -54,4 +54,30 @@ fn require_rpc_source(source: &SourceEndpoint<'_>, method: &str) -> Result<()> {
         "`{method}` is not exposed by the selected Basecamp module source `{}`; use RPC source for this call",
         source.module
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, bail};
+    use serde_json::json;
+
+    use super::channel_scan;
+
+    #[test]
+    fn channel_scan_rejects_noncanonical_slot_strings_before_transport() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        for slot_from in ["1e3", "1.0", "0x10", "+1", "-1", "01", " 1", "1 "] {
+            let result = channel_scan(
+                &runtime,
+                json!(["rpc", "http://127.0.0.1:1", slot_from, "1000"]),
+            );
+            let Err(error) = result else {
+                bail!("noncanonical channel scan slot `{slot_from}` should fail");
+            };
+            if !error.to_string().contains("invalid slot from") {
+                bail!("unexpected channel scan slot error: {error:#}");
+            }
+        }
+        Ok(())
+    }
 }

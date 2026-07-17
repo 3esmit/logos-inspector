@@ -1,5 +1,6 @@
 import QtQml
 import "../OperationHistoryVocabulary.js" as OperationHistoryVocabulary
+import "BlockchainRangeValidation.js" as BlockchainRangeValidation
 
 QtObject {
     id: root
@@ -32,6 +33,13 @@ QtObject {
         }
         if (!knownMethod(normalized.method)) {
             callback(failure(qsTr("Unknown Blockchain operation.")), null)
+            return null
+        }
+        const rangeValidation = blockRangeValidation(normalized)
+        if (rangeValidation && !rangeValidation.valid) {
+            callback(failure(rangeValidation.message.length > 0
+                ? rangeValidation.message
+                : qsTr("Blockchain query arguments are invalid.")), null)
             return null
         }
         if (callerPending(key)) {
@@ -203,11 +211,13 @@ QtObject {
             if (command.args.length < 2) {
                 return null
             }
-            context.slotFrom = normalizedInteger(command.args[0])
-            context.slotTo = normalizedInteger(command.args[1])
-            if (context.slotFrom === null || context.slotTo === null) {
+            const blockRange = BlockchainRangeValidation.validate(
+                command.args[0], command.args[1])
+            if (!blockRange.valid) {
                 return null
             }
+            context.slotFrom = blockRange.slotFrom
+            context.slotTo = blockRange.slotTo
             context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
             if (command.args.length > 2 && typeof command.args[2] === "number") {
                 context.limit = normalizedInteger(command.args[2])
@@ -220,11 +230,16 @@ QtObject {
             if (command.args.length < 2) {
                 return null
             }
-            context.slotFrom = normalizedInteger(command.args[0])
-            context.slotTo = normalizedInteger(command.args[1])
+            const liveRange = BlockchainRangeValidation.validate(
+                command.args[0], command.args[1])
+            if (!liveRange.valid) {
+                return null
+            }
+            context.slotFrom = liveRange.slotFrom
+            context.slotTo = liveRange.slotTo
             context.limit = command.args.length > 2 && typeof command.args[2] === "number"
                 ? normalizedInteger(command.args[2]) : 50
-            if (context.slotFrom === null || context.slotTo === null || context.limit === null) {
+            if (context.limit === null) {
                 return null
             }
             context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
@@ -251,6 +266,14 @@ QtObject {
             backend: source.mode,
             context: context
         }
+    }
+
+    function blockRangeValidation(command) {
+        if (command.method !== "blockchainBlocks"
+                && command.method !== "blockchainLiveBlocks") {
+            return null
+        }
+        return BlockchainRangeValidation.validate(command.args[0], command.args[1])
     }
 
     function normalizedSource(values) {
