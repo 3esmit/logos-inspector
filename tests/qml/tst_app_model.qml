@@ -247,6 +247,9 @@ TestCase {
         model.idlInstructionPreviewValue = null
         model.idlInstructionError = ""
         model.walletPublicKeyProbe = ""
+        model.bedrockWalletBalanceTip = ""
+        model.bedrockWalletBalanceValue = null
+        model.bedrockWalletBalanceError = ""
         model.bedrockWalletModuleError = ""
         model.walletBinary = ""
         model.walletHome = ""
@@ -4345,6 +4348,133 @@ TestCase {
         compare(model.transactionsPageLimit, transactionsLimit)
 
         model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
+    function test_blockchain_configuration_change_clears_completed_bedrock_balance() {
+        const originalNodeUrl = model.nodeUrl
+        const publicKey = "aa".repeat(32)
+        const tip = "bb".repeat(32)
+        const operations = [{
+            label: "Prior wallet operation",
+            status: "completed",
+            detail: "preserve"
+        }]
+        model.walletPublicKeyProbe = publicKey
+        model.bedrockWalletBalanceTip = tip
+        model.localWalletOperations = operations
+        model.bedrockWalletBalanceValue = {
+            address: publicKey,
+            balance: 42,
+            source: originalNodeUrl
+        }
+        model.bedrockWalletBalanceError = "old balance error"
+        const revision = model.blockchainConfigurationRevision
+
+        model.nodeUrl = "http://127.0.0.1:18085/"
+
+        verify(model.blockchainConfigurationRevision > revision)
+        compare(model.bedrockWalletBalanceValue, null)
+        compare(model.bedrockWalletBalanceError, "")
+        compare(model.walletPublicKeyProbe, publicKey)
+        compare(model.bedrockWalletBalanceTip, tip)
+        compare(model.localWalletOperations.length, 1)
+        compare(model.localWalletOperations[0].detail, "preserve")
+
+        model.nodeUrl = originalNodeUrl
+    }
+
+    function test_blockchain_configuration_change_rejects_stale_bedrock_balance() {
+        const originalNodeUrl = model.nodeUrl
+        const publicKey = "cc".repeat(32)
+        model.bridge = asyncImportBridgeClient
+        asyncImportHost.deferAsyncRequests = true
+        asyncImportHost.responses = {
+            bedrockWalletBalance: {
+                ok: true,
+                value: {
+                    address: publicKey,
+                    balance: 99,
+                    source: originalNodeUrl
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+        model.walletPublicKeyProbe = publicKey
+        model.bedrockWalletBalanceTip = ""
+        const operationCount = model.localWalletOperations.length
+
+        verify(model.wallet.queryBedrockBalance() !== null)
+        compare(asyncImportHost.pendingAsyncRequests.length, 1)
+        compare(asyncImportHost.lastMethod, "bedrockWalletBalance")
+        compare(asyncImportHost.lastArgs[0], originalNodeUrl)
+        compare(asyncImportHost.lastArgs[1], publicKey)
+        verify(model.shell.busy)
+
+        model.nodeUrl = "http://127.0.0.1:18086/"
+        compare(model.bedrockWalletBalanceValue, null)
+        compare(model.bedrockWalletBalanceError, "")
+
+        verify(asyncImportHost.completeAsyncAt(0))
+        wait(0)
+        compare(model.bedrockWalletBalanceValue, null)
+        compare(model.bedrockWalletBalanceError, "")
+        compare(model.localWalletOperations.length, operationCount)
+        verify(!model.shell.busy)
+
+        model.nodeUrl = originalNodeUrl
+        model.bridge = bridgeClient
+    }
+
+    function test_bedrock_balance_rejects_stale_input_and_superseded_request() {
+        const firstPublicKey = "dd".repeat(32)
+        const secondPublicKey = "ee".repeat(32)
+        const latestPublicKey = "ff".repeat(32)
+        model.bridge = asyncImportBridgeClient
+        asyncImportHost.deferAsyncRequests = true
+        asyncImportHost.responses = {
+            bedrockWalletBalance: function (args) {
+                return {
+                    ok: true,
+                    value: {
+                        address: args[1],
+                        balance: args[1].slice(0, 2)
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+        const operationCount = model.localWalletOperations.length
+
+        model.walletPublicKeyProbe = firstPublicKey
+        verify(model.wallet.queryBedrockBalance() !== null)
+        model.walletPublicKeyProbe = secondPublicKey
+        verify(asyncImportHost.completeAsyncAt(0))
+        wait(0)
+        compare(model.bedrockWalletBalanceValue, null)
+        compare(model.localWalletOperations.length, operationCount)
+        verify(!model.shell.busy)
+
+        verify(model.wallet.queryBedrockBalance() !== null)
+        model.walletPublicKeyProbe = latestPublicKey
+        verify(model.wallet.queryBedrockBalance() !== null)
+        compare(asyncImportHost.pendingAsyncRequests.length, 2)
+        verify(asyncImportHost.completeAsyncAt(1))
+        wait(0)
+        compare(model.bedrockWalletBalanceValue.address, latestPublicKey)
+        compare(model.bedrockWalletBalanceValue.balance, "ff")
+        compare(model.localWalletOperations.length, operationCount + 1)
+        verify(!model.shell.busy)
+
+        verify(asyncImportHost.completeAsyncAt(0))
+        wait(0)
+        compare(model.bedrockWalletBalanceValue.address, latestPublicKey)
+        compare(model.bedrockWalletBalanceValue.balance, "ff")
+        compare(model.localWalletOperations.length, operationCount + 1)
+        verify(!model.shell.busy)
+
+        model.bridge = bridgeClient
     }
 
     function test_blockchain_configuration_change_sanitizes_navigation_details() {
