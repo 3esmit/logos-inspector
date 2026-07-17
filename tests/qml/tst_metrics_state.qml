@@ -69,6 +69,7 @@ TestCase {
         property int presentationCompleteCount: 0
         property bool lastPresentationError: false
         property string lastPresentationText: ""
+        property string lastPresentationOwner: ""
 
         function reset() {
             requests = []
@@ -84,6 +85,7 @@ TestCase {
             presentationCompleteCount = 0
             lastPresentationError = false
             lastPresentationText = ""
+            lastPresentationOwner = ""
         }
 
         function appendRequest(value) {
@@ -140,11 +142,16 @@ TestCase {
             })
         }
 
-        function beginObservationPresentation(label) {
+        function beginObservationPresentation(label, owner) {
             presentationSequence += 1
             activePresentationGeneration = presentationSequence
             presentationBeginCount += 1
-            return { generation: presentationSequence, label: String(label || "") }
+            lastPresentationOwner = String(owner || "")
+            return {
+                generation: presentationSequence,
+                label: String(label || ""),
+                owner: lastPresentationOwner
+            }
         }
 
         function completeObservationPresentation(lease, title, text, isError, value) {
@@ -444,6 +451,7 @@ TestCase {
 
         compare(gateway.requests.length, 2)
         compare(gateway.presentationBeginCount, 1)
+        compare(gateway.lastPresentationOwner, "messaging")
         verify(metrics.activeObservationLeases.messaging.interactive)
         verify(!gateway.completeRequest(
             0, success(sourceReport(true, "passive-stale"))))

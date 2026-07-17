@@ -142,10 +142,11 @@ QtObject {
                 )
             }
 
-            function beginObservationPresentation(label) {
+            function beginObservationPresentation(label, owner) {
                 return appRequestState.beginPresentation(
                     String(label || ""),
-                    appShellState.currentView
+                    owner === undefined
+                        ? appShellState.currentView : String(owner || "")
                 )
             }
 

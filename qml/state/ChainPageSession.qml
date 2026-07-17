@@ -149,6 +149,28 @@ QtObject {
 
     function invalidateOperations(reason) { return operationCoordinator.invalidateSource(reason) }
 
+    function resetSourceScopedState(reason) {
+        invalidateOperations(String(reason || qsTr("Blockchain source changed.")))
+        blockDetailValue = null
+        blockDetailError = ""
+        transactionDetailValue = null
+        transactionDetailError = ""
+        blocksPageRows = []
+        blocksPageSlotFrom = 0
+        blocksPageSlotTo = 0
+        blocksPageError = ""
+        blocksLiveEnabled = false
+        blocksLiveError = ""
+        blocksLiveSource = ""
+        blocksLiveUnknownEvents = 0
+        blocksLiveCheckedAt = ""
+        transactionsPageRows = []
+        transactionsPageBeforeBlock = 0
+        transactionsPageNextBeforeBlock = 0
+        transactionsPageAtLatest = false
+        transactionsPageError = ""
+    }
+
     function invalidateOperationCaller(callerKey, reason) {
         return operationCoordinator.invalidateCaller(callerKey, reason)
     }

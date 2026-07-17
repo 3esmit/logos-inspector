@@ -159,11 +159,12 @@ QtObject {
         return lease
     }
 
-    function observationWaiter(callback, showResult, label) {
+    function observationWaiter(callback, showResult, label, owner) {
         let presentation = null
         if (showResult === true && gateway
                 && typeof gateway.beginObservationPresentation === "function") {
-            presentation = gateway.beginObservationPresentation(String(label || ""))
+            presentation = gateway.beginObservationPresentation(
+                String(label || ""), String(owner || ""))
         }
         if (typeof callback !== "function" && !presentation) {
             return null
@@ -255,7 +256,8 @@ QtObject {
         const runtimeDiagnosticsReduced =
             request.runtimeDiagnosticsReduced === true
         const interactive = showResult === true
-        const waiter = observationWaiter(callback, interactive, request.label)
+        const waiter = observationWaiter(
+            callback, interactive, request.label, target)
         if (networkConnectionIsPending(target)) {
             const active = activeObservationLeases[target]
             if (observationRequestCompatible(

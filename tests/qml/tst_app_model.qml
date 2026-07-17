@@ -1142,6 +1142,41 @@ TestCase {
         compare(callCountFor("blockchainNode"), 0)
     }
 
+    function test_blockchain_settings_result_uses_source_owner_and_is_sanitized() {
+        const nodeResult = {
+            cryptarchia_info: {
+                ok: true,
+                value: { cryptarchia_info: { slot: 77, lib_slot: 70 } },
+                error: null
+            }
+        }
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({ blockchainNode: nodeResult })
+        }
+        model.openSettings("network", "blockchain")
+
+        model.metrics.queryNetworkConnection("blockchain", true)
+
+        tryVerify(function () {
+            return model.metrics.networkConnectionIsPending("blockchain") === false
+        })
+        compare(model.shell.resultOwner, "blockchain")
+        compare(model.shell.resultValue, nodeResult)
+        model.selectView("overview")
+        compare(model.navigationBackLabel(), "Settings network")
+
+        model.nodeUrl = "http://127.0.0.1:18083/"
+
+        compare(model.shell.resultOwner, "")
+        compare(model.shell.resultValue, null)
+        model.navigateBack()
+        compare(model.shell.currentView, "settings")
+        compare(model.shell.resultOwner, "")
+        compare(model.shell.resultValue, null)
+
+        model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
     function test_default_footer_storage_failure_field_is_registered_recent_key() {
         const defaults = model.metrics.defaultFooterFieldSelections()
 
@@ -4196,6 +4231,136 @@ TestCase {
             }).length === 2
         })
         model.storageRestUrl = "http://127.0.0.1:8080/api/storage/v1"
+        model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
+    function test_blockchain_configuration_change_clears_chain_page_state() {
+        const blocksWindow = model.blocksPageWindow
+        const blocksLimit = model.blocksPageLimit
+        const transactionsBatch = model.transactionsPageBlockBatch
+        const transactionsLimit = model.transactionsPageLimit
+        model.blocksPageRows = [{
+            header: { slot: 9000, id: "old-block" },
+            transactions: []
+        }]
+        model.blocksPageSlotFrom = 8000
+        model.blocksPageSlotTo = 9000
+        model.blocksPageError = "old blocks error"
+        model.blocksLiveEnabled = true
+        model.blocksLiveError = "old live error"
+        model.blocksLiveSource = "old-source"
+        model.blocksLiveUnknownEvents = 3
+        model.blocksLiveCheckedAt = "old-time"
+        model.transactionsPageRows = [{
+            slot: 8999,
+            hash: "old-transaction",
+            block: "old-block",
+            operations: []
+        }]
+        model.transactionsPageBeforeBlock = 9000
+        model.transactionsPageNextBeforeBlock = 7999
+        model.transactionsPageAtLatest = true
+        model.transactionsPageError = "old transactions error"
+        model.blockDetailValue = { hash: "old-block" }
+        model.blockDetailError = "old block detail error"
+        model.transactionDetailValue = { hash: "old-transaction" }
+        model.transactionDetailError = "old transaction detail error"
+        const revision = model.blockchainConfigurationRevision
+
+        model.nodeUrl = "http://127.0.0.1:18082/"
+
+        verify(model.blockchainConfigurationRevision > revision)
+        compare(model.blocksPageRows.length, 0)
+        compare(model.blocksPageSlotFrom, 0)
+        compare(model.blocksPageSlotTo, 0)
+        compare(model.blocksPageError, "")
+        verify(!model.blocksLiveEnabled)
+        compare(model.blocksLiveError, "")
+        compare(model.blocksLiveSource, "")
+        compare(model.blocksLiveUnknownEvents, 0)
+        compare(model.blocksLiveCheckedAt, "")
+        compare(model.transactionsPageRows.length, 0)
+        compare(model.transactionsPageBeforeBlock, 0)
+        compare(model.transactionsPageNextBeforeBlock, 0)
+        verify(!model.transactionsPageAtLatest)
+        compare(model.transactionsPageError, "")
+        compare(model.blockDetailValue, null)
+        compare(model.blockDetailError, "")
+        compare(model.transactionDetailValue, null)
+        compare(model.transactionDetailError, "")
+        compare(model.blocksPageWindow, blocksWindow)
+        compare(model.blocksPageLimit, blocksLimit)
+        compare(model.transactionsPageBlockBatch, transactionsBatch)
+        compare(model.transactionsPageLimit, transactionsLimit)
+
+        model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
+    function test_blockchain_configuration_change_sanitizes_navigation_details() {
+        model.shell.currentView = "blockDetail"
+        model.blockDetailValue = {
+            type: "blockchain_block",
+            hash: "old-block",
+            slot: 9000
+        }
+        model.blockDetailError = "old block detail error"
+        model.transactionDetailValue = {
+            type: "blockchain_transaction",
+            hash: "old-transaction"
+        }
+        model.transactionDetailError = "old transaction detail error"
+        model.shell.statusText = "Ready"
+        model.shell.resultTitle = "Block"
+        model.shell.resultText = "old result"
+        model.shell.resultValue = { hash: "old-block" }
+        model.shell.resultOwner = "blockDetail"
+        model.openSettings("network", "blockchain")
+        compare(model.navigationBackLabel(), "Block old-block")
+
+        model.nodeUrl = "http://127.0.0.1:18082/"
+
+        compare(model.shell.resultTitle, "Output")
+        compare(model.shell.resultText, "")
+        compare(model.shell.resultValue, null)
+        compare(model.shell.resultOwner, "")
+        compare(model.navigationBackLabel(), "Block")
+        model.navigateBack()
+        compare(model.shell.currentView, "blockDetail")
+        compare(model.blockDetailValue, null)
+        compare(model.blockDetailError, "")
+        compare(model.transactionDetailValue, null)
+        compare(model.transactionDetailError, "")
+        compare(model.shell.resultTitle, "Output")
+        compare(model.shell.resultText, "")
+        compare(model.shell.resultValue, null)
+        compare(model.shell.resultOwner, "")
+
+        model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
+    function test_blockchain_configuration_change_preserves_unrelated_presentation() {
+        model.shell.setResult(
+            "Blocks", "old blockchain result", false,
+            { hash: "old-block" }, "blocks")
+        const presentation = model.chainPages.gateway.beginPresentation(
+            "Storage query", "storage")
+
+        model.nodeUrl = "http://127.0.0.1:18084/"
+
+        compare(model.shell.resultOwner, "")
+        compare(model.shell.resultValue, null)
+        compare(model.shell.statusText, "Storage query")
+        verify(model.chainPages.gateway.completePresentation(
+            presentation,
+            "Storage query",
+            "fresh storage result",
+            false,
+            { marker: "fresh-storage" }
+        ))
+        compare(model.shell.resultOwner, "storage")
+        compare(model.shell.resultText, "fresh storage result")
+        compare(model.shell.resultValue.marker, "fresh-storage")
+
         model.nodeUrl = "http://127.0.0.1:8080/"
     }
 
