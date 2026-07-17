@@ -7,7 +7,8 @@ use crate::{
     blockchain::BlockchainNodeReport,
     lez::{
         indexer_account_report, summarize_account_transaction, summarize_indexer_status_response,
-        verified_indexer_block_report, verified_indexer_transaction_summary,
+        validated_indexer_module_block_for_hash, validated_indexer_module_block_for_id,
+        validated_indexer_module_block_report, validated_indexer_module_transaction_summary,
     },
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::entity_id::normalize_block_id_text,
@@ -191,7 +192,10 @@ pub(crate) async fn indexer_blocks(
     let blocks = value
         .as_array()
         .context("getBlocks result was not an array")?;
-    blocks.iter().map(verified_indexer_block_report).collect()
+    blocks
+        .iter()
+        .map(validated_indexer_module_block_report)
+        .collect()
 }
 
 pub(crate) async fn indexer_block_by_hash(
@@ -200,6 +204,7 @@ pub(crate) async fn indexer_block_by_hash(
     header_hash: &str,
 ) -> Result<Option<IndexerBlockReport>> {
     let header_hash = required_text(header_hash, "block header hash")?;
+    let header_hash = crate::parse_hash(header_hash, "block header hash")?.to_string();
     let value = transport_call_value(
         transport,
         transport_kind,
@@ -211,7 +216,10 @@ pub(crate) async fn indexer_block_by_hash(
     if empty_module_lookup(&value) {
         return Ok(None);
     }
-    Ok(Some(verified_indexer_block_report(&value)?))
+    Ok(Some(validated_indexer_module_block_for_hash(
+        &value,
+        &header_hash,
+    )?))
 }
 
 pub(crate) async fn indexer_block_by_id(
@@ -230,7 +238,9 @@ pub(crate) async fn indexer_block_by_id(
     if empty_module_lookup(&value) {
         return Ok(None);
     }
-    Ok(Some(verified_indexer_block_report(&value)?))
+    Ok(Some(validated_indexer_module_block_for_id(
+        &value, block_id,
+    )?))
 }
 
 pub(crate) async fn indexer_transaction(
@@ -250,7 +260,7 @@ pub(crate) async fn indexer_transaction(
     if empty_module_lookup(&value) {
         return Ok(None);
     }
-    Ok(Some(verified_indexer_transaction_summary(
+    Ok(Some(validated_indexer_module_transaction_summary(
         &value,
         transaction_hash,
     )?))

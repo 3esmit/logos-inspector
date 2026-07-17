@@ -61,8 +61,9 @@ pub use indexer::{
     indexer_transaction,
 };
 pub(crate) use indexer::{
-    summarize_indexer_status_response, verified_indexer_block_report,
-    verified_indexer_transaction_summary,
+    summarize_indexer_status_response, validated_indexer_module_block_for_hash,
+    validated_indexer_module_block_for_id, validated_indexer_module_block_report,
+    validated_indexer_module_transaction_summary,
 };
 pub use programs::{
     ProgramFileInfo, ProgramIdEntry, program_file_info, program_id_base58, program_id_hex,

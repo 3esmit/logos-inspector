@@ -5,11 +5,16 @@ mod normalizer;
 mod transactions;
 
 pub use normalizer::{IndexerBlockReport, IndexerStatusReport};
-pub(crate) use normalizer::{summarize_indexer_status_response, verified_indexer_block_report};
+pub(crate) use normalizer::{
+    summarize_indexer_status_response, validated_indexer_module_block_for_hash,
+    validated_indexer_module_block_for_id, validated_indexer_module_block_report,
+    verified_indexer_block_report,
+};
 pub use transactions::{AccountTransactionSummary, TransactionTransferOutputSummary};
 pub(crate) use transactions::{
     summarize_indexer_transaction, summarize_transfer_outputs,
-    verified_indexer_transaction_summary, with_account_direction,
+    validated_indexer_module_transaction_summary, verified_indexer_transaction_summary,
+    with_account_direction,
 };
 
 use crate::{
