@@ -553,6 +553,7 @@ ColumnLayout {
                 text: qsTr("Auto-share verified local IDLs")
                 checked: root.model.social.sharedIdlAutoShare
                 palette.text: root.theme.text
+                palette.windowText: enabled ? root.theme.text : root.theme.textDim
                 onToggled: root.model.social.setSharedIdlAutoShare(checked)
                 Layout.fillWidth: true
             }

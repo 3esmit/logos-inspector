@@ -197,6 +197,25 @@ TestCase {
         tryVerify(function () { return !fetchButton.enabled })
     }
 
+    function test_local_only_checkbox_uses_readable_theme_text() {
+        gate.allowActions = true
+        gate.revision += 1
+        storageState.currentTab = "cid"
+
+        let localOnly = null
+        tryVerify(function () {
+            localOnly = findChild(page, "storageLocalOnlyCheckBox")
+            return localOnly !== null
+        })
+
+        compare(localOnly.palette.windowText, theme.text)
+
+        gate.allowActions = false
+        gate.revision += 1
+        tryVerify(function () { return !localOnly.enabled })
+        compare(localOnly.palette.windowText, theme.textDim)
+    }
+
     function test_remove_confirmation_names_exact_destructive_cid() {
         const cid = "zDvZRwzkwaQvT7sHw7HfZR1pmHFDCaBDcEwGjuGQuuhzB11wmAEq"
         gate.allowActions = true
