@@ -27,7 +27,7 @@ TestCase {
 
         visible: true
         width: 640
-        height: 480
+        height: 720
         color: theme.background
 
         ColumnLayout {
@@ -69,6 +69,16 @@ TestCase {
                 theme: theme
                 label: qsTr("Endpoint")
                 value: "http://127.0.0.1:3040/"
+            }
+
+            SourceSettingsPanel {
+                id: sourceSettingsPanel
+
+                theme: theme
+                title: qsTr("Bedrock Blockchain")
+                statusText: qsTr("Checking")
+                statusDetail: ""
+                Layout.fillWidth: true
             }
 
             DataTableFrame {
@@ -165,6 +175,19 @@ TestCase {
         listToolbar.loadCount = 50
 
         tryCompare(combo.Accessible, "description", "50")
+    }
+
+    function test_source_status_exposes_context_and_detail() {
+        const status = findAccessibleByName(
+            sourceSettingsPanel, "Bedrock Blockchain status: Checking")
+        verify(status !== null)
+        compare(status.Accessible.role, Accessible.StaticText)
+
+        sourceSettingsPanel.statusText = qsTr("OK")
+        sourceSettingsPanel.statusDetail = qsTr("slot 77 at now")
+
+        tryCompare(status.Accessible, "name", "Bedrock Blockchain status: OK")
+        tryCompare(status.Accessible, "description", "slot 77 at now")
     }
 
     function test_confirm_popup_accept_action() {
