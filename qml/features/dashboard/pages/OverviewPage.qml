@@ -506,10 +506,13 @@ ColumnLayout {
 
     function l1TransactionRows() {
         const loadedTransactions = root.model.chainPages.transactionsPageRows || []
+        const dashboardTransactions = root.model.chainPages.transactionRowsFromBlocks(
+            root.model.metrics.dashboardL1Blocks || [])
         let transactions = []
-        if (loadedTransactions.length > 0
-                && root.transactionsPageRowsAreCurrent()) {
+        if (root.transactionsPageRowsAreCurrent()) {
             transactions = loadedTransactions
+        } else if (root.dashboardL1BlocksAreCurrent()) {
+            transactions = dashboardTransactions
         } else {
             transactions = root.model.chainPages.transactionRowsFromBlocks(
                 root.model.chainPages.blocksPageRows || [])
@@ -547,18 +550,28 @@ ColumnLayout {
         if (root.model.chainPages.transactionsPageAtLatest !== true) {
             return false
         }
-        const libSlot = Number(root.cryptarchiaValue("lib_slot"))
+        const tipSlot = Number(root.cryptarchiaValue("slot"))
         const slotTo = Number(
             root.model.chainPages.transactionsPageBeforeBlock)
         if (!Number.isFinite(slotTo) || slotTo <= 0) {
             return false
         }
-        if (!Number.isFinite(libSlot) || libSlot <= 0) {
+        if (!Number.isFinite(tipSlot) || tipSlot <= 0) {
             return true
         }
-        const batch = Math.max(0, Number(
-            root.model.chainPages.transactionsPageBlockBatch || 0))
-        return Number.isFinite(batch) && slotTo + batch >= libSlot
+        return slotTo >= tipSlot
+    }
+
+    function dashboardL1BlocksAreCurrent() {
+        const tipSlot = Number(root.cryptarchiaValue("slot"))
+        const slotTo = Number(root.model.metrics.dashboardL1BlocksSlotTo)
+        if (!Number.isSafeInteger(slotTo) || slotTo <= 0) {
+            return false
+        }
+        if (!Number.isFinite(tipSlot) || tipSlot <= 0) {
+            return true
+        }
+        return slotTo >= tipSlot
     }
 
     component GraphTile: Frame {

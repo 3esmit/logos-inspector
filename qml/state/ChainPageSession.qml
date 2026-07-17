@@ -27,6 +27,7 @@ QtObject {
     property var dashboardOverview: null
     property var dashboardNode: null
     property var dashboardL1Blocks: []
+    property int dashboardL1BlocksSlotTo: 0
     property var dashboardBlocks: []
     property var dashboardProvisionalBlocks: []
     property var dashboardLezBlockRows: []
