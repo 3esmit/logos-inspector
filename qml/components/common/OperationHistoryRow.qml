@@ -12,6 +12,9 @@ Rectangle {
     property string labelText: ""
     property string statusText: ""
     property string detailText: ""
+    readonly property color statusColor: root.statusText === "error"
+        ? root.theme.error
+        : (root.statusText === "canceled" ? root.theme.textMuted : root.theme.success)
 
     radius: root.theme.radius
     color: root.theme.field
@@ -51,7 +54,7 @@ Rectangle {
 
         Text {
             text: root.statusText
-            color: root.statusText === "error" ? root.theme.error : root.theme.success
+            color: root.statusColor
             textFormat: Text.PlainText
             font.pixelSize: root.theme.secondaryText
             font.weight: Font.DemiBold

@@ -25,6 +25,8 @@ QtObject {
     property int nextPollToken: 0
     property int activePollToken: 0
     property string activePollOperationId: ""
+    property bool cancelPending: false
+    property string pendingCancelOperationId: ""
     property var pendingStartOperations: ({})
     property var activeOperation: null
     property int activeOperationRevision: 0
@@ -187,14 +189,19 @@ QtObject {
 
     function cancel(onResponse) {
         const operationId = String(activeOperation && activeOperation.operationId || "")
-        if (!operationId.length) {
+        if (!operationId.length || !canCancelActiveOperation()) {
             return null
         }
         const requestEpoch = callbackEpoch
+        cancelPending = true
+        pendingCancelOperationId = operationId
         const callback = function (response) {
-            if (requestEpoch !== callbackEpoch) {
+            if (requestEpoch !== callbackEpoch
+                    || pendingCancelOperationId !== operationId) {
                 return
             }
+            cancelPending = false
+            pendingCancelOperationId = ""
             if (response && response.ok && isCurrentOperationId(operationId)
                     && matchesOperationId(response.value, operationId)) {
                 if (acceptUpdate(response.value) && isTerminal(response.value)) {
@@ -207,15 +214,23 @@ QtObject {
             }
         }
 
-        if (gateway && typeof gateway.runtimeOperationCancel === "function") {
-            return gateway.runtimeOperationCancel(operationId, false, callback)
+        try {
+            if (gateway && typeof gateway.runtimeOperationCancel === "function") {
+                return gateway.runtimeOperationCancel(operationId, false, callback)
+            }
+            if (gateway && typeof gateway.nodeOperationCancel === "function") {
+                return gateway.nodeOperationCancel(operationId, false, callback)
+            }
+            if (gateway && typeof gateway.request === "function") {
+                return gateway.request("runtimeOperationCancel", [operationId], qsTr("Cancel operation"), false, callback)
+            }
+        } catch (error) {
+            cancelPending = false
+            pendingCancelOperationId = ""
+            throw error
         }
-        if (gateway && typeof gateway.nodeOperationCancel === "function") {
-            return gateway.nodeOperationCancel(operationId, false, callback)
-        }
-        if (gateway && typeof gateway.request === "function") {
-            return gateway.request("runtimeOperationCancel", [operationId], qsTr("Cancel operation"), false, callback)
-        }
+        cancelPending = false
+        pendingCancelOperationId = ""
         return null
     }
 
@@ -310,6 +325,8 @@ QtObject {
         pollPending = false
         activePollToken = 0
         activePollOperationId = ""
+        cancelPending = false
+        pendingCancelOperationId = ""
         pendingStartOperations = ({})
     }
 
@@ -372,10 +389,13 @@ QtObject {
 
     function appendResult(label, response) {
         const rows = Array.isArray(operationLog) ? operationLog.slice(0) : []
+        const explicitStatus = String(response && response.status || "").trim()
         rows.unshift({
             time: timeText(),
             label: String(label || ""),
-            status: response && response.ok ? qsTr("ok") : qsTr("error"),
+            status: explicitStatus.length > 0
+                ? explicitStatus
+                : (response && response.ok ? qsTr("ok") : qsTr("error")),
             detail: response && response.ok ? summary(response.value) : String(response && response.error || "")
         })
         operationLog = rows.slice(0, 20)
@@ -389,8 +409,10 @@ QtObject {
         }
         terminalOperationId = operationId
         const ok = OperationHistoryVocabulary.isRuntimeSuccessfulTerminalStatus(operation.status)
+        const canceled = String(operation.status || "") === "canceled"
         appendResult(String(operation.label || defaultLabel), {
             ok: ok,
+            status: canceled ? qsTr("canceled") : "",
             value: operation.result || operation,
             error: String(operation.error || "")
         })
@@ -416,7 +438,7 @@ QtObject {
             known: operation !== null && String(operation.operationId || "").length > 0,
             running: running,
             busy: startPending || running,
-            cancelable: running && operation && operation.cancellable === true,
+            cancelable: canCancelActiveOperation(),
             terminal: isTerminal(operation),
             statusText: OperationHistoryVocabulary.runtimeStatusText(operation, defaultLabel),
             tone: OperationHistoryVocabulary.runtimeTone(operation),
@@ -426,6 +448,16 @@ QtObject {
 
     function isTerminal(operation) {
         return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
+    }
+
+    function canCancelActiveOperation() {
+        const operation = activeOperation || null
+        const status = String(operation && operation.status || "")
+        return operation !== null
+            && !cancelPending
+            && status !== "canceling"
+            && OperationHistoryVocabulary.isRuntimeActiveStatus(status)
+            && operation.cancellable === true
     }
 
     function matchesOperationId(operation, expectedOperationId) {

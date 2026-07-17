@@ -435,6 +435,7 @@ QtObject {
 
     function setStorageOperationResult(operation) {
         const label = String(operation && operation.label ? operation.label : qsTr("Storage operation"))
+        const status = String(operation && operation.status || "")
         const ok = isSuccessfulTerminal(operation)
         if (ok) {
             const value = operation && operation.result !== undefined && operation.result !== null
@@ -443,6 +444,17 @@ QtObject {
                     && operation.acknowledgement !== null
                     ? operation.acknowledgement : operation)
             gateway.setResult(label, BridgeHelpers.formatValue(value), false, value, "storage")
+        } else if (status === "canceled") {
+            const detail = String(operation && operation.error
+                ? operation.error : qsTr("Storage operation cancellation confirmed."))
+            const value = {
+                status: "canceled",
+                cid: String(operation && operation.cid || ""),
+                path: String(operation && operation.path || ""),
+                detail: detail
+            }
+            gateway.setResult(
+                label, qsTr("Canceled.\n%1").arg(detail), false, value, "storage")
         } else {
             gateway.setResult(label, String(operation && operation.error ? operation.error : qsTr("Storage operation failed.")), true, null, "storage")
         }

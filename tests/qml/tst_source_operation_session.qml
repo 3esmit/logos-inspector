@@ -21,6 +21,8 @@ TestCase {
         property var startCallbacks: []
         property bool holdModuleEventCallbacks: false
         property var moduleEventCallbacks: []
+        property bool holdCancelCallbacks: false
+        property var cancelCallbacks: []
 
         function reset() {
             requestCount = 0
@@ -34,6 +36,8 @@ TestCase {
             startCallbacks = []
             holdModuleEventCallbacks = false
             moduleEventCallbacks = []
+            holdCancelCallbacks = false
+            cancelCallbacks = []
         }
 
         function request(method, args, label, showResult, callback) {
@@ -51,6 +55,10 @@ TestCase {
             }
             if (lastMethod === "runtimeOperationModuleEvent" && holdModuleEventCallbacks) {
                 moduleEventCallbacks = moduleEventCallbacks.concat([callback])
+                return response
+            }
+            if (lastMethod === "runtimeOperationCancel" && holdCancelCallbacks) {
+                cancelCallbacks = cancelCallbacks.concat([callback])
                 return response
             }
             if (callback) {
@@ -89,6 +97,18 @@ TestCase {
             }
             const callback = moduleEventCallbacks[0]
             moduleEventCallbacks = moduleEventCallbacks.slice(1)
+            if (callback) {
+                callback(response)
+            }
+            return true
+        }
+
+        function completeCancelResponse(response) {
+            if (cancelCallbacks.length === 0) {
+                return false
+            }
+            const callback = cancelCallbacks[0]
+            cancelCallbacks = cancelCallbacks.slice(1)
             if (callback) {
                 callback(response)
             }
@@ -158,7 +178,7 @@ TestCase {
                     method: method,
                     status: "canceling",
                     label: "Run operation",
-                    cancellable: false
+                    cancellable: true
                 },
                 text: "OK",
                 error: ""
@@ -203,6 +223,11 @@ TestCase {
         compare(gateway.lastMethod, "runtimeOperationCancel")
         compare(gateway.lastArgs[0], operationId)
         compare(session.view.active.status, "canceling")
+        verify(!session.view.cancelable)
+
+        const cancelCount = gateway.requestCount
+        verify(session.cancel() === null)
+        compare(gateway.requestCount, cancelCount)
 
         session.poll(false)
         compare(gateway.lastMethod, "runtimeOperationStatus")
@@ -233,6 +258,41 @@ TestCase {
             ["/logos/1/chat/proto", "hello"],
             { topic: "/logos/1/chat/proto", payload: "hello" }
         )
+    }
+
+    function test_cancel_is_single_flight_before_async_response() {
+        storageSession.acceptUpdate({
+            operationId: "async-cancel-operation",
+            domain: "storage",
+            method: "storageDownloadToUrl",
+            status: "running",
+            cancellable: true
+        })
+        gateway.holdCancelCallbacks = true
+        gateway.responses = ({
+            runtimeOperationCancel: {
+                ok: true,
+                value: {
+                    operationId: "async-cancel-operation",
+                    domain: "storage",
+                    method: "storageDownloadToUrl",
+                    status: "canceling",
+                    cancellable: true
+                }
+            }
+        })
+
+        storageSession.cancel()
+        verify(!storageSession.view.cancelable)
+        const requestCount = gateway.requestCount
+
+        verify(storageSession.cancel() === null)
+        compare(gateway.requestCount, requestCount)
+
+        verify(gateway.completeCancelResponse(
+            gateway.responses.runtimeOperationCancel))
+        compare(storageSession.activeOperation.status, "canceling")
+        verify(!storageSession.view.cancelable)
     }
 
     function test_awaiting_external_is_active_and_dispatched_is_successful_terminal() {
