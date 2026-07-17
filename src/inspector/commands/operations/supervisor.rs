@@ -476,6 +476,13 @@ impl Drop for OperationTaskCompletion {
     }
 }
 
+#[cfg_attr(
+    test,
+    expect(
+        clippy::large_enum_variant,
+        reason = "zero-sized fault-injection variants exist only in test builds"
+    )
+)]
 enum SupervisorCommand {
     Admit {
         admission: OperationAdmission,
