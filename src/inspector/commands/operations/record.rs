@@ -1479,10 +1479,9 @@ fn terminal_event_contract_value(contract: &ModuleTerminalEventContract) -> Valu
 
 fn exclusive_operation_message(group: OperationExclusiveGroup) -> &'static str {
     match group {
-        OperationExclusiveGroup::StorageDownload => {
-            "a storage download operation is already running"
-        }
-        OperationExclusiveGroup::StorageUpload => "a storage upload operation is already running",
+        OperationExclusiveGroup::Download => "a storage download operation is already running",
+        OperationExclusiveGroup::Remove => "a storage remove operation is already running",
+        OperationExclusiveGroup::Upload => "a storage upload operation is already running",
     }
 }
 
@@ -1615,7 +1614,7 @@ mod tests {
                     "path": "/tmp/cid-a.bin"
                 })
             || !record.operation.cancellable
-            || record.operation.exclusive_group != Some(OperationExclusiveGroup::StorageDownload)
+            || record.operation.exclusive_group != Some(OperationExclusiveGroup::Download)
         {
             bail!("node record facts did not originate from typed request");
         }

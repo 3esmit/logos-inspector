@@ -66,6 +66,10 @@ QtObject {
         onTerminalOperation: function (operation) {
             root.completeTerminalStorageOperation(operation)
         }
+
+        onStartFailed: function () {
+            root.retryBusyManifestRefresh()
+        }
     }
 
     property Connections capabilityGateConnections: Connections {
@@ -99,12 +103,7 @@ QtObject {
 
     onBusyChanged: {
         if (!busy) {
-            if (manifestBusyDeferred) {
-                const showBusyLog = manifestBusyShowLog
-                manifestBusyDeferred = false
-                manifestBusyShowLog = false
-                refreshManifests(showBusyLog)
-            } else {
+            if (!retryBusyManifestRefresh()) {
                 retryDeferredManifestRefresh()
             }
         }
@@ -185,7 +184,7 @@ QtObject {
     }
 
     function refreshManifests(showLog) {
-        if (busy) {
+        if (busy || (storageOperations.view.busy && showLog !== true)) {
             manifestBusyDeferred = true
             manifestBusyShowLog = manifestBusyShowLog || showLog === true
             lastOperation = qsTr("Waiting")
@@ -243,6 +242,17 @@ QtObject {
             return started
         }
         return null
+    }
+
+    function retryBusyManifestRefresh() {
+        if (!manifestBusyDeferred || busy || storageOperations.view.busy) {
+            return null
+        }
+        const showBusyLog = manifestBusyShowLog
+        manifestBusyDeferred = false
+        manifestBusyShowLog = false
+        refreshManifests(showBusyLog)
+        return true
     }
 
     function deferManifestRefresh(showLog) {
@@ -389,6 +399,7 @@ QtObject {
     function completeTerminalStorageOperation(operation) {
         if (String(operation && operation.method || "") === "storageManifests") {
             completeManifestRefresh(operation)
+            retryBusyManifestRefresh()
             return
         }
         const ok = isSuccessfulTerminal(operation)
@@ -400,6 +411,7 @@ QtObject {
         lastOperation = String(operation && operation.status || "") === "dispatched"
             ? qsTr("Dispatched")
             : (ok ? qsTr("Complete") : qsTr("Stopped"))
+        retryBusyManifestRefresh()
     }
 
     function completeManifestRefresh(operation) {
@@ -597,8 +609,11 @@ QtObject {
     }
 
     function terminalRefreshesStorageObservations(operation) {
-        return String(operation && operation.status || "") === "completed"
-            && String(operation && operation.method || "") === "storageUploadUrl"
+        if (String(operation && operation.status || "") !== "completed") {
+            return false
+        }
+        const method = String(operation && operation.method || "")
+        return method === "storageRemove" || method === "storageUploadUrl"
     }
 
     function operationStatusText(operation) {

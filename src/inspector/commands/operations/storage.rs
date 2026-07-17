@@ -126,7 +126,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::Path),
     ])
-    .exclusive(OperationExclusiveGroup::StorageUpload),
+    .exclusive(OperationExclusiveGroup::Upload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::UploadPayload),
         "storageUploadPayload",
@@ -138,7 +138,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::Filename),
     ])
-    .exclusive(OperationExclusiveGroup::StorageUpload),
+    .exclusive(OperationExclusiveGroup::Upload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::UploadBackupCatalogEntry),
         "storageUploadBackupCatalogEntry",
@@ -150,7 +150,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::BackupCatalogId),
     ])
-    .exclusive(OperationExclusiveGroup::StorageUpload),
+    .exclusive(OperationExclusiveGroup::Upload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::DownloadBackupCatalogEntry),
         "storageDownloadBackupCatalogEntry",
@@ -163,7 +163,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Cid),
         AffectedContextField::required(AffectedContextKey::DownloadScope),
     ])
-    .cancellable(OperationExclusiveGroup::StorageDownload),
+    .cancellable(OperationExclusiveGroup::Download),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::DownloadToUrl),
         "storageDownloadToUrl",
@@ -176,7 +176,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Cid),
         AffectedContextField::required(AffectedContextKey::Path),
     ])
-    .cancellable(OperationExclusiveGroup::StorageDownload),
+    .cancellable(OperationExclusiveGroup::Download),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::Remove),
         "storageRemove",
@@ -187,7 +187,8 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Source),
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::Cid),
-    ]),
+    ])
+    .exclusive(OperationExclusiveGroup::Remove),
 ];
 
 pub(super) async fn execute(
@@ -243,6 +244,9 @@ fn map_storage_operation_error(error: anyhow::Error) -> anyhow::Error {
     if error
         .downcast_ref::<storage_layer::StorageUploadSettlementUnconfirmed>()
         .is_some()
+        || error
+            .downcast_ref::<storage_layer::StorageRemoveSettlementUnconfirmed>()
+            .is_some()
     {
         OperationCleanupUnconfirmed::new(error.to_string()).into()
     } else {
@@ -869,6 +873,20 @@ mod tests {
             .downcast_ref::<OperationCleanupUnconfirmed>()
             .context("unsettled upload did not retain its exclusive lease")?;
         anyhow::ensure!(cleanup.to_string() == "upload terminal event was not observed");
+        Ok(())
+    }
+
+    #[test]
+    fn unsettled_storage_remove_maps_to_nonterminal_cleanup_evidence() -> Result<()> {
+        let error = storage_layer::StorageRemoveSettlementUnconfirmed::new(
+            "remove terminal event was not observed",
+        )
+        .into();
+        let mapped = map_storage_operation_error(error);
+        let cleanup = mapped
+            .downcast_ref::<OperationCleanupUnconfirmed>()
+            .context("unsettled remove did not retain its exclusive lease")?;
+        anyhow::ensure!(cleanup.to_string() == "remove terminal event was not observed");
         Ok(())
     }
 

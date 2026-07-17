@@ -52,7 +52,7 @@ Popup {
             text: root.message
             color: root.theme.textMuted
             textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: Text.WrapAnywhere
             font.pixelSize: root.theme.secondaryText
             Layout.fillWidth: true
         }

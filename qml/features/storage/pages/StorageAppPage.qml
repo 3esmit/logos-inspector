@@ -511,10 +511,20 @@ ColumnLayout {
 
         theme: root.theme
         title: root.model.pendingOperation.label
-        message: qsTr("This will call the configured Storage source and may change local node state or local files.")
+        message: root.storageConfirmationMessage()
         confirmText: root.model.pendingOperation.label
         confirmEnabled: root.model.pendingOperation.method.length > 0
         onAccepted: root.model.runPendingStorage()
+    }
+
+    function storageConfirmationMessage() {
+        const pending = root.model.pendingOperation || ({})
+        const args = Array.isArray(pending.args) ? pending.args : []
+        if (String(pending.method || "") === "storageRemove" && args.length > 0) {
+            return qsTr("Remove this CID from the local Storage node?\n%1")
+                .arg(String(args[0] || ""))
+        }
+        return qsTr("This will call the configured Storage source and may change local node state or local files.")
     }
 
     function tabComponent(tab) {

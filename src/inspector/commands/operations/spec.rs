@@ -74,8 +74,9 @@ pub(super) enum OperationCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationExclusiveGroup {
-    StorageDownload,
-    StorageUpload,
+    Download,
+    Remove,
+    Upload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -534,7 +535,7 @@ mod tests {
         if !storage_download.is_cancellable() {
             bail!("storageDownloadToUrl should be cancellable");
         }
-        if storage_download.exclusive_group() != Some(OperationExclusiveGroup::StorageDownload) {
+        if storage_download.exclusive_group() != Some(OperationExclusiveGroup::Download) {
             bail!("storageDownloadToUrl should own the storage download exclusive group");
         }
         let storage_upload = OperationMethod::from_str("storageUploadUrl")
@@ -543,8 +544,17 @@ mod tests {
         if storage_upload.is_cancellable() {
             bail!("storageUploadUrl should not be cancellable");
         }
-        if storage_upload.exclusive_group() != Some(OperationExclusiveGroup::StorageUpload) {
+        if storage_upload.exclusive_group() != Some(OperationExclusiveGroup::Upload) {
             bail!("storageUploadUrl should own the storage upload exclusive group");
+        }
+        let storage_remove = OperationMethod::from_str("storageRemove")
+            .and_then(operation_definition)
+            .context("storageRemove should exist")?;
+        if storage_remove.is_cancellable() {
+            bail!("storageRemove should not be cancellable");
+        }
+        if storage_remove.exclusive_group() != Some(OperationExclusiveGroup::Remove) {
+            bail!("storageRemove should own the storage remove exclusive group");
         }
         Ok(())
     }
@@ -719,7 +729,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
-                Some(OperationExclusiveGroup::StorageUpload),
+                Some(OperationExclusiveGroup::Upload),
             ),
             (
                 OperationMethod::StorageUploadPayload,
@@ -729,7 +739,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
-                Some(OperationExclusiveGroup::StorageUpload),
+                Some(OperationExclusiveGroup::Upload),
             ),
             (
                 OperationMethod::StorageUploadBackupCatalogEntry,
@@ -739,7 +749,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
-                Some(OperationExclusiveGroup::StorageUpload),
+                Some(OperationExclusiveGroup::Upload),
             ),
             (
                 OperationMethod::StorageDownloadBackupCatalogEntry,
@@ -749,7 +759,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 true,
-                Some(OperationExclusiveGroup::StorageDownload),
+                Some(OperationExclusiveGroup::Download),
             ),
             (
                 OperationMethod::StorageDownloadToUrl,
@@ -759,7 +769,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 true,
-                Some(OperationExclusiveGroup::StorageDownload),
+                Some(OperationExclusiveGroup::Download),
             ),
             (
                 OperationMethod::StorageRemove,
@@ -769,7 +779,7 @@ mod tests {
                 OperationDomain::Storage,
                 OperationClass::Destructive,
                 false,
-                None,
+                Some(OperationExclusiveGroup::Remove),
             ),
             (
                 OperationMethod::DeliverySubscribe,

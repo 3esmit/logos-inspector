@@ -196,7 +196,7 @@ TestCase {
 
         const messageText = findChild(confirmPopup.contentItem, "messageText")
         verify(messageText !== null)
-        compare(messageText.wrapMode, Text.Wrap)
+        compare(messageText.wrapMode, Text.WrapAnywhere)
 
         const confirmButton = findChild(confirmPopup.contentItem, "confirmButton")
         verify(confirmButton !== null)

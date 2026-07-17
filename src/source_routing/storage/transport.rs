@@ -1627,6 +1627,7 @@ pub(super) async fn download_response(
 }
 
 pub(super) async fn remove(endpoint: &str, cid: &str) -> Result<Value> {
+    super::validate_storage_cid(cid)?;
     http::rest_empty_request(Method::DELETE, endpoint, &format!("/data/{cid}"), None).await?;
     Ok(json!({
         "removed": true,

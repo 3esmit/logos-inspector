@@ -197,6 +197,28 @@ TestCase {
         tryVerify(function () { return !fetchButton.enabled })
     }
 
+    function test_remove_confirmation_names_exact_destructive_cid() {
+        const cid = "zDvZRwzkwaQvT7sHw7HfZR1pmHFDCaBDcEwGjuGQuuhzB11wmAEq"
+        gate.allowActions = true
+        gate.revision += 1
+        storageState.activeCid = cid
+        storageState.cidProbe = cid
+        storageState.currentTab = "transfer"
+
+        let removeButton = null
+        tryVerify(function () {
+            removeButton = findAccessibleByName(page, "Remove", Accessible.Button)
+            return removeButton !== null && removeButton.enabled
+        })
+        removeButton.clicked()
+        tryCompare(storageState.operationSession, "pendingMethod", "storageRemove")
+
+        compare(
+            page.storageConfirmationMessage(),
+            "Remove this CID from the local Storage node?\n" + cid)
+        keyClick(Qt.Key_Escape)
+    }
+
     function findAccessibleByName(item, expectedName, expectedRole) {
         if (!item) {
             return null

@@ -392,6 +392,10 @@ TestCase {
             method: "storageUploadUrl",
             status: "completed"
         }))
+        verify(state.terminalRefreshesStorageObservations({
+            method: "storageRemove",
+            status: "completed"
+        }))
         verify(!state.terminalRefreshesStorageObservations({
             method: "storageRemove",
             status: "dispatched"
@@ -399,6 +403,65 @@ TestCase {
         verify(StorageModuleEvents.rawEventInvalidatesStorageObservations("storageDownloadDone"))
         verify(StorageModuleEvents.rawEventInvalidatesStorageObservations("storageRemoveDone"))
         verify(!StorageModuleEvents.rawEventInvalidatesStorageObservations("storageUploadDone"))
+    }
+
+    function test_remove_event_defers_manifest_refresh_until_terminal() {
+        state.effectiveSourceMode = "logoscore_cli"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+        state.operationSession.acceptUpdate({
+            operationId: "storage-remove-race-1",
+            domain: "storage",
+            method: "storageRemove",
+            status: "running",
+            label: "Remove CID",
+            cid: "cid-remove-race"
+        })
+
+        compare(state.refreshManifests(false), null)
+        verify(state.manifestBusyDeferred)
+        compare(gateway.requestCount, 0)
+        compare(state.operationSession.operationLog.length, 0)
+
+        gateway.storageRefreshCallback = function () {
+            return state.refreshManifests(false)
+        }
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-after-remove-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [],
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+        verify(state.operationSession.acceptUpdate({
+            operationId: "storage-remove-race-1",
+            domain: "storage",
+            method: "storageRemove",
+            status: "completed",
+            label: "Remove CID",
+            cid: "cid-remove-race",
+            result: {
+                success: true,
+                cid: "cid-remove-race",
+                completion: "storageRemoveDone"
+            }
+        }))
+        verify(state.appendTerminalStorageOperation(state.operation.active))
+
+        compare(gateway.storageRefreshCount, 1)
+        compare(gateway.requestCount, 1)
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(gateway.lastArgs[0].method, "storageManifests")
+        verify(!state.manifestBusyDeferred)
     }
 
     function test_manifest_refresh_projects_terminal_poll_result() {
