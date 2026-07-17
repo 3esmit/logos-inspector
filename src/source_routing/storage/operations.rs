@@ -2476,6 +2476,9 @@ state="$2"
 shift 2
 mode="$(cat "$state/mode")"
 case "$1" in
+  list-modules)
+    printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+    ;;
   watch)
     case "$mode" in
       watch_failure|remove_watch_failure|download_watch_failure)
@@ -2754,6 +2757,38 @@ esac
                     if tokio::time::Instant::now() >= deadline {
                         cancellation.cancel();
                         return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        }
+
+        fn cancel_after_recorded_call(
+            &self,
+            expected: &'static str,
+            cancellation: tokio_util::sync::CancellationToken,
+        ) -> tokio::task::JoinHandle<Result<()>> {
+            let calls_path = self.calls_path.clone();
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    match fs::read_to_string(&calls_path) {
+                        Ok(calls) if calls.lines().any(|call| call == expected) => {
+                            cancellation.cancel();
+                            return Ok(());
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            cancellation.cancel();
+                            return Err(error).with_context(|| {
+                                format!("failed to inspect fake logoscore calls for `{expected}`")
+                            });
+                        }
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        cancellation.cancel();
+                        bail!("timed out waiting for fake logoscore `{expected}` call");
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -3502,15 +3537,15 @@ esac
             tokio::time::Instant::now() + Duration::from_secs(5),
             Arc::new(AtomicU8::new(3)),
         );
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            cancellation.cancel();
-        });
-        let barrier_error =
-            execute_operation(barrier.download_request()?, barrier.transport(), control)
-                .await
-                .err()
-                .context("download_barrier_hang should stop before download dispatch")?;
+        let cancellation_task = barrier.cancel_after_recorded_call("manifests", cancellation);
+        let barrier_result =
+            execute_operation(barrier.download_request()?, barrier.transport(), control).await;
+        cancellation_task
+            .await
+            .context("download barrier cancellation trigger task failed")??;
+        let barrier_error = barrier_result
+            .err()
+            .context("download_barrier_hang should stop before download dispatch")?;
         let barrier_terminated = barrier_error
             .downcast_ref::<ModuleCallTerminated>()
             .context("download_barrier_hang did not preserve module stop evidence")?;
@@ -3951,15 +3986,15 @@ esac
             tokio::time::Instant::now() + Duration::from_secs(5),
             Arc::new(AtomicU8::new(3)),
         );
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            cancellation.cancel();
-        });
-        let barrier_error =
-            execute_operation(barrier.remove_request()?, barrier.transport(), control)
-                .await
-                .err()
-                .context("remove_barrier_hang should stop before remove dispatch")?;
+        let cancellation_task = barrier.cancel_after_recorded_call("manifests", cancellation);
+        let barrier_result =
+            execute_operation(barrier.remove_request()?, barrier.transport(), control).await;
+        cancellation_task
+            .await
+            .context("remove barrier cancellation trigger task failed")??;
+        let barrier_error = barrier_result
+            .err()
+            .context("remove_barrier_hang should stop before remove dispatch")?;
         let barrier_terminated = barrier_error
             .downcast_ref::<ModuleCallTerminated>()
             .context("remove_barrier_hang did not preserve module stop evidence")?;
@@ -4140,12 +4175,13 @@ esac
             tokio::time::Instant::now() + Duration::from_secs(5),
             Arc::new(AtomicU8::new(3)),
         );
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            cancellation.cancel();
-        });
-        let barrier_error = execute_operation(barrier.request()?, barrier.transport(), control)
+        let cancellation_task = barrier.cancel_after_recorded_call("manifests", cancellation);
+        let barrier_result =
+            execute_operation(barrier.request()?, barrier.transport(), control).await;
+        cancellation_task
             .await
+            .context("upload barrier cancellation trigger task failed")??;
+        let barrier_error = barrier_result
             .err()
             .context("barrier_hang should stop before upload dispatch")?;
         let barrier_terminated = barrier_error

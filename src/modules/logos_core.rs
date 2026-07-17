@@ -1290,18 +1290,12 @@ impl LogoscoreCliRuntime {
         if module.trim().is_empty() {
             bail!("module name is required");
         }
-        self.run_json(["module-info", module, "--json"], command_timeout())
-    }
-
-    pub(crate) fn module_info_controlled(
-        &self,
-        module: &str,
-        control: CommandControl,
-    ) -> Result<LogosCoreOutput> {
-        if module.trim().is_empty() {
-            bail!("module name is required");
-        }
-        self.run_json_controlled(["module-info", module, "--json"], control)
+        self.with_command_gate(compound_command_timeout(), |runner, deadline| {
+            let modules = run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+                .context("failed to list logoscore modules")?;
+            require_listed_module_loaded(module, &modules.value)?;
+            run_json_before_deadline(runner, ["module-info", module, "--json"], deadline)
+        })
     }
 
     pub(crate) fn require_module_method(
@@ -1310,14 +1304,20 @@ impl LogoscoreCliRuntime {
         method: &str,
         signature: &str,
     ) -> Result<()> {
-        let modules = self
-            .list_modules()
-            .context("failed to list logoscore modules")?;
-        let module_info = self
-            .module_info(module)
-            .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
-        module_discovery(module, &modules.value, &module_info.value)?
+        self.discover_module(module)?
             .require_method(method, signature)
+    }
+
+    fn discover_module(&self, module: &str) -> Result<LogoscoreModuleDiscovery> {
+        self.with_command_gate(compound_command_timeout(), |runner, deadline| {
+            let modules = run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+                .context("failed to list logoscore modules")?;
+            require_listed_module_loaded(module, &modules.value)?;
+            let module_info =
+                run_json_before_deadline(runner, ["module-info", module, "--json"], deadline)
+                    .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
+            module_discovery(module, &modules.value, &module_info.value)
+        })
     }
 
     pub(crate) fn require_module_method_controlled(
@@ -1419,15 +1419,22 @@ impl LogoscoreCliRuntime {
                 .checked_add(attempt_timeout)
                 .unwrap_or(control.deadline());
             let attempt_control = control.with_deadline(attempt_deadline);
-            let result = (|| {
-                let modules = self
-                    .list_modules_controlled(attempt_control.clone())
-                    .context("failed to list logoscore modules")?;
-                let module_info = self
-                    .module_info_controlled(module, attempt_control)
-                    .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
+            let result = self.with_controlled_command_gate(&attempt_control, |runner| {
+                let modules = run_json_with_controlled(
+                    runner,
+                    ["list-modules", "--json"],
+                    attempt_control.clone(),
+                )
+                .context("failed to list logoscore modules")?;
+                require_listed_module_loaded(module, &modules.value)?;
+                let module_info = run_json_with_controlled(
+                    runner,
+                    ["module-info", module, "--json"],
+                    attempt_control.clone(),
+                )
+                .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
                 module_discovery(module, &modules.value, &module_info.value)
-            })();
+            });
             match result {
                 Ok(discovery) => return Ok(discovery),
                 Err(error)
@@ -1456,14 +1463,7 @@ impl LogoscoreCliRuntime {
         let modules = self
             .list_modules()
             .context("failed to list logoscore modules")?;
-        let rows = module_rows(&modules.value)?;
-        let Some(row) = rows
-            .iter()
-            .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
-        else {
-            bail!("logoscore module `{module}` is not listed");
-        };
-        if row.get("status").and_then(Value::as_str) == Some("loaded") {
+        if listed_module_status(module, &modules.value)? == "loaded" {
             return Ok(());
         }
 
@@ -1480,14 +1480,7 @@ impl LogoscoreCliRuntime {
         let modules = self
             .list_modules_controlled(control.clone())
             .context("failed to list logoscore modules")?;
-        let rows = module_rows(&modules.value)?;
-        let Some(row) = rows
-            .iter()
-            .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
-        else {
-            bail!("logoscore module `{module}` is not listed");
-        };
-        if row.get("status").and_then(Value::as_str) == Some("loaded") {
+        if listed_module_status(module, &modules.value)? == "loaded" {
             return Ok(());
         }
 
@@ -1521,7 +1514,14 @@ impl LogoscoreCliRuntime {
         args: &[String],
     ) -> Result<LogosCoreOutput> {
         let command_args = call_arguments(module, method, args)?;
-        let mut output = self.run_json(command_args, command_timeout())?;
+        let mut output =
+            self.with_command_gate(compound_command_timeout(), |runner, deadline| {
+                let modules =
+                    run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+                        .context("failed to list logoscore modules")?;
+                require_listed_module_loaded(module, &modules.value)?;
+                run_json_before_deadline(runner, command_args, deadline)
+            })?;
         normalize_call_value(&mut output.value);
         Ok(output)
     }
@@ -1534,7 +1534,14 @@ impl LogoscoreCliRuntime {
         control: CommandControl,
     ) -> Result<LogosCoreOutput> {
         let command_args = call_arguments(module, method, args)?;
-        let mut output = self.run_json_controlled(command_args, control)?;
+        let gate_control = control.clone();
+        let mut output = self.with_controlled_command_gate(&gate_control, |runner| {
+            let modules =
+                run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
+                    .context("failed to list logoscore modules")?;
+            require_listed_module_loaded(module, &modules.value)?;
+            run_json_with_controlled(runner, command_args, control)
+        })?;
         normalize_call_value(&mut output.value);
         Ok(output)
     }
@@ -1856,20 +1863,9 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let started_at = StdInstant::now();
-        let deadline = started_at.checked_add(timeout);
-        let gate = logoscore_cli_command_gate(&self.runner)?;
-        let _permit = acquire_logoscore_cli_command_gate(&gate, None, deadline)?;
-        let remaining_timeout = deadline
-            .map(|deadline| deadline.saturating_duration_since(StdInstant::now()))
-            .unwrap_or(timeout);
-        if remaining_timeout == Duration::ZERO {
-            bail!(
-                "{} request timed out waiting for another LogosCore CLI request",
-                self.runner.label
-            );
-        }
-        run_json_with(&self.runner, args, remaining_timeout)
+        self.with_command_gate(timeout, move |runner, deadline| {
+            run_json_before_deadline(runner, args, deadline)
+        })
     }
 
     fn run_json_controlled<I, S>(&self, args: I, control: CommandControl) -> Result<LogosCoreOutput>
@@ -1877,9 +1873,33 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let gate_control = control.clone();
+        self.with_controlled_command_gate(&gate_control, move |runner| {
+            run_json_with_controlled(runner, args, control)
+        })
+    }
+
+    fn with_command_gate<T>(
+        &self,
+        timeout: Duration,
+        operation: impl FnOnce(&LogosCoreRunner, StdInstant) -> Result<T>,
+    ) -> Result<T> {
+        let deadline = StdInstant::now()
+            .checked_add(timeout)
+            .context("LogosCore CLI command deadline overflowed")?;
         let gate = logoscore_cli_command_gate(&self.runner)?;
-        let _permit = acquire_logoscore_cli_command_gate(&gate, Some(&control), None)?;
-        run_json_with_controlled(&self.runner, args, control)
+        let _permit = acquire_logoscore_cli_command_gate(&gate, None, Some(deadline))?;
+        operation(&self.runner, deadline)
+    }
+
+    fn with_controlled_command_gate<T>(
+        &self,
+        control: &CommandControl,
+        operation: impl FnOnce(&LogosCoreRunner) -> Result<T>,
+    ) -> Result<T> {
+        let gate = logoscore_cli_command_gate(&self.runner)?;
+        let _permit = acquire_logoscore_cli_command_gate(&gate, Some(control), None)?;
+        operation(&self.runner)
     }
 }
 
@@ -1959,7 +1979,9 @@ fn acquire_logoscore_cli_command_gate<'gate>(
 fn is_transient_module_discovery_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let detail = cause.to_string();
-        detail.contains("RPC_FAILED") || detail.contains("command stopped after deadline exceeded")
+        detail.contains("RPC_FAILED")
+            || detail.contains("command stopped after deadline exceeded")
+            || detail.contains("not loaded")
     })
 }
 
@@ -2227,6 +2249,28 @@ fn module_rows(modules_value: &Value) -> Result<&Vec<Value>> {
         .context("logoscore list-modules response does not contain a modules array")
 }
 
+fn listed_module_status<'value>(module: &str, modules_value: &'value Value) -> Result<&'value str> {
+    if module.trim().is_empty() {
+        bail!("module name is required");
+    }
+    let rows = module_rows(modules_value)?;
+    let row = rows
+        .iter()
+        .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
+        .with_context(|| format!("logoscore module `{module}` is not listed"))?;
+    row.get("status")
+        .and_then(Value::as_str)
+        .with_context(|| format!("logoscore module `{module}` listing has no status"))
+}
+
+fn require_listed_module_loaded(module: &str, modules_value: &Value) -> Result<()> {
+    let status = listed_module_status(module, modules_value)?;
+    if status != "loaded" {
+        bail!("logoscore module `{module}` is not loaded (status `{status}`)");
+    }
+    Ok(())
+}
+
 pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutput> {
     configured_runtime().call(module, method, args)
 }
@@ -2276,6 +2320,25 @@ where
         value,
         stderr,
     })
+}
+
+fn run_json_before_deadline<I, S>(
+    runner: &LogosCoreRunner,
+    args: I,
+    deadline: StdInstant,
+) -> Result<LogosCoreOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let remaining_timeout = deadline.saturating_duration_since(StdInstant::now());
+    if remaining_timeout == Duration::ZERO {
+        bail!(
+            "{} request timed out waiting for another LogosCore CLI request",
+            runner.label
+        );
+    }
+    run_json_with(runner, args, remaining_timeout)
 }
 
 fn run_json_with_controlled<I, S>(
@@ -2345,6 +2408,10 @@ fn command_timeout() -> Duration {
         .filter(|value| *value > 0)
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_secs(5))
+}
+
+fn compound_command_timeout() -> Duration {
+    command_timeout().saturating_mul(2)
 }
 
 fn command_for_runner<I, S>(runner: &LogosCoreRunner, args: I) -> Command
@@ -3735,7 +3802,17 @@ mod tests {
         let pid_path = directory.path().join("logoscore-test.pid");
         fs::write(
             &program,
-            "#!/bin/sh\nprintf '%s' \"$$\" > \"${0}.pid\"\nwhile :; do :; done\n",
+            r#"#!/bin/sh
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    call)
+        printf '%s' "$$" > "${0}.pid"
+        while :; do :; done
+        ;;
+esac
+"#,
         )?;
         let mut permissions = fs::metadata(&program)?.permissions();
         permissions.set_mode(0o700);
@@ -3949,6 +4026,64 @@ esac
 
     #[cfg(unix)]
     #[test]
+    fn controlled_discovery_never_queries_unloaded_module_metadata() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-unloaded-metadata");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"lez_indexer_module","status":"not_loaded"}]}'
+        ;;
+    module-info)
+        touch "$config_dir/unsafe-module-info"
+        printf '%s\n' '{"name":"lez_indexer_module","methods":[{"isInvokable":true,"name":"getStatus","signature":"getStatus()"}]}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(5),
+        );
+
+        let error = runtime
+            .require_module_method_controlled_once(
+                "lez_indexer_module",
+                "getStatus",
+                "getStatus()",
+                control,
+            )
+            .err()
+            .context("unloaded module discovery unexpectedly succeeded")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("not loaded"),
+            "unloaded module failure lost status: {error:#}"
+        );
+        anyhow::ensure!(
+            !directory.path().join("unsafe-module-info").exists(),
+            "discovery queried metadata from an unloaded module"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cli_requests_for_one_runtime_do_not_overlap() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -4015,6 +4150,92 @@ fi
         anyhow::ensure!(
             !directory.path().join("concurrent").exists(),
             "same-runtime CLI requests overlapped"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loaded_preflight_and_call_hold_one_runtime_gate() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-atomic-loaded-call");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' list-modules >> "$config_dir/sequence"
+        touch "$config_dir/listed"
+        while [ ! -f "$config_dir/release-list" ]; do sleep 0.01; done
+        printf '%s\n' '{"modules":[{"name":"lez_indexer_module","status":"loaded"}]}'
+        ;;
+    call)
+        printf '%s\n' call >> "$config_dir/sequence"
+        if [ -f "$config_dir/unloaded" ]; then touch "$config_dir/unsafe-call"; fi
+        printf '%s\n' '{"method":"getStatus","module":"lez_indexer_module","result":"{\"state\":\"stopped\"}","status":"ok"}'
+        ;;
+    unload-module)
+        printf '%s\n' unload-module >> "$config_dir/sequence"
+        touch "$config_dir/unloaded"
+        printf '%s\n' '{"module":"lez_indexer_module","status":"ok"}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let call_runtime = runtime.clone();
+        let call = thread::spawn(move || call_runtime.call("lez_indexer_module", "getStatus", &[]));
+
+        let listed = directory.path().join("listed");
+        let listed_deadline = StdInstant::now() + Duration::from_secs(2);
+        while !listed.exists() {
+            anyhow::ensure!(
+                StdInstant::now() < listed_deadline,
+                "loaded-state preflight did not start"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let unload_runtime = runtime.clone();
+        let unload = thread::spawn(move || {
+            let control = CommandControl::new(
+                CancellationToken::new(),
+                StdInstant::now() + Duration::from_secs(5),
+            );
+            unload_runtime.unload_module_controlled("lez_indexer_module", control)
+        });
+        thread::sleep(Duration::from_millis(100));
+        anyhow::ensure!(
+            !directory.path().join("unloaded").exists(),
+            "unload interleaved while loaded-state call gate was held"
+        );
+        fs::write(directory.path().join("release-list"), "release")?;
+
+        call.join()
+            .map_err(|_| anyhow::anyhow!("loaded module call thread panicked"))??;
+        unload
+            .join()
+            .map_err(|_| anyhow::anyhow!("module unload thread panicked"))??;
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("sequence"))?
+                .lines()
+                .eq(["list-modules", "call", "unload-module"]),
+            "module unload interleaved between loaded preflight and call"
+        );
+        anyhow::ensure!(
+            !directory.path().join("unsafe-call").exists(),
+            "module call ran after the checked module was unloaded"
         );
         Ok(())
     }
@@ -4575,6 +4796,144 @@ esac
                 "--json"
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_transport_refuses_unloaded_module_before_call() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-load-before-call");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+printf '%s\n' "$1" >> "$config_dir/sequence"
+case "$1" in
+    list-modules)
+        status="$(cat "$config_dir/status")"
+        printf '{"modules":[{"name":"lez_indexer_module","status":"%s"}]}\n' "$status"
+        ;;
+    call)
+        if [ "$(cat "$config_dir/status")" != "loaded" ]; then
+            touch "$config_dir/unsafe-call"
+            exit 91
+        fi
+        printf '%s\n' '{"method":"getStatus","module":"lez_indexer_module","result":"{\"state\":\"stopped\"}","status":"ok"}'
+        ;;
+    module-info)
+        if [ "$(cat "$config_dir/status")" != "loaded" ]; then
+            touch "$config_dir/unsafe-module-info"
+            exit 92
+        fi
+        printf '%s\n' '{"name":"lez_indexer_module","methods":[]}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        fs::write(directory.path().join("status"), "not_loaded")?;
+        let transport = LogoscoreCliTransport::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "lez_indexer_module",
+            "getStatus",
+            vec![],
+        )?;
+
+        let error = transport
+            .call(call.clone())
+            .await
+            .err()
+            .context("unloaded module call unexpectedly succeeded")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("not loaded"),
+            "unloaded module call lost status: {error:#}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("sequence"))?
+                .lines()
+                .eq(["list-modules"]),
+            "unloaded module call continued past its listing"
+        );
+        anyhow::ensure!(
+            !directory.path().join("unsafe-call").exists(),
+            "transport invoked an unloaded module"
+        );
+
+        fs::write(directory.path().join("sequence"), "")?;
+        fs::write(directory.path().join("status"), "loading")?;
+        let control = ModuleCallControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        );
+        let controlled_error = transport
+            .call_controlled(call.clone(), control)
+            .await
+            .err()
+            .context("controlled unloaded module call unexpectedly succeeded")?;
+        anyhow::ensure!(
+            controlled_error.to_string().contains("not loaded"),
+            "controlled unloaded call lost status: {controlled_error:#}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("sequence"))?
+                .lines()
+                .eq(["list-modules"]),
+            "controlled unloaded module call continued past its listing"
+        );
+        anyhow::ensure!(
+            !directory.path().join("unsafe-call").exists(),
+            "controlled transport invoked an unloaded module"
+        );
+
+        fs::write(directory.path().join("sequence"), "")?;
+        fs::write(directory.path().join("status"), "crashed")?;
+        let metadata_error = transport
+            .module_info("lez_indexer_module".to_owned())
+            .await
+            .err()
+            .context("crashed module metadata unexpectedly succeeded")?;
+        anyhow::ensure!(
+            metadata_error.to_string().contains("not loaded"),
+            "crashed module metadata lost status: {metadata_error:#}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("sequence"))?
+                .lines()
+                .eq(["list-modules"]),
+            "crashed module metadata continued past its listing"
+        );
+        anyhow::ensure!(
+            !directory.path().join("unsafe-module-info").exists(),
+            "diagnostics queried metadata from a crashed module"
+        );
+
+        fs::write(directory.path().join("sequence"), "")?;
+        fs::write(directory.path().join("status"), "loaded")?;
+        let loaded = transport.call(call).await?.into_value();
+        anyhow::ensure!(
+            loaded.get("state").and_then(Value::as_str) == Some("stopped"),
+            "loaded module call returned unexpected value: {loaded}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("sequence"))?
+                .lines()
+                .eq(["list-modules", "call"]),
+            "loaded module call did not execute exactly once"
+        );
+        Ok(())
     }
 
     #[test]
