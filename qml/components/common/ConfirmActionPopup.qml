@@ -16,6 +16,16 @@ Popup {
     property string cancelText: qsTr("Cancel")
     property bool confirmEnabled: true
     property int maximumWidth: 460
+    readonly property real availableOverlayHeight: parent
+        ? Math.max(0, parent.height - 2 * root.theme.gapLarge)
+        : 480
+    readonly property real maximumMessageHeight: Math.max(
+        root.theme.controlHeight,
+        root.availableOverlayHeight
+            - root.theme.controlHeight
+            - root.theme.primaryText
+            - 2 * root.padding
+            - 2 * root.theme.gapSmall)
 
     signal accepted()
 
@@ -24,8 +34,9 @@ Popup {
     focus: true
     padding: root.theme.gap
     width: Math.min(root.maximumWidth, parent ? Math.max(0, parent.width - 24) : root.maximumWidth)
+    height: Math.min(implicitHeight, root.availableOverlayHeight)
     x: parent ? Math.max(0, (parent.width - width) / 2) : 0
-    y: 96
+    y: parent ? Math.max(0, (parent.height - height) / 2) : 0
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     background: Rectangle {
@@ -50,16 +61,41 @@ Popup {
             Accessible.name: text
         }
 
-        Text {
-            objectName: "messageText"
-            text: root.message
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
-            font.pixelSize: root.theme.secondaryText
+        Flickable {
+            id: messageViewport
+
+            objectName: "messageViewport"
             Layout.fillWidth: true
-            Accessible.role: Accessible.StaticText
-            Accessible.name: text
+            Layout.preferredHeight: Math.min(
+                messageText.implicitHeight,
+                root.maximumMessageHeight)
+            Layout.maximumHeight: root.maximumMessageHeight
+            contentWidth: width
+            contentHeight: messageText.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            interactive: contentHeight > height
+            clip: true
+
+            ScrollBar.vertical: ScrollBar {
+                policy: messageViewport.contentHeight > messageViewport.height
+                    ? ScrollBar.AlwaysOn
+                    : ScrollBar.AlwaysOff
+            }
+
+            Text {
+                id: messageText
+
+                objectName: "messageText"
+                width: messageViewport.width
+                text: root.message
+                color: root.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.WrapAnywhere
+                font.pixelSize: root.theme.secondaryText
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+            }
         }
 
         RowLayout {

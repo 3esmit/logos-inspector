@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     env, fs,
     future::Future,
-    io::{ErrorKind, Read as _},
+    io::{ErrorKind, Read as _, Write as _},
     path::{Path, PathBuf},
     pin::Pin,
     process::{Child, Command, Stdio},
@@ -18,7 +18,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -889,6 +889,89 @@ impl LogoscoreSharedDownload {
         if bytes.len() > max_bytes {
             bail!("logoscore download exceeded {max_bytes} byte limit");
         }
+        Ok(bytes)
+    }
+
+    pub(crate) fn copy_to_new(&self, target: &Path) -> Result<u64> {
+        let metadata = fs::symlink_metadata(&self.path).with_context(|| {
+            format!(
+                "failed to inspect logoscore download staging file `{}`",
+                self.path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("logoscore download staging path is not a regular file");
+        }
+        let parent = target.parent().with_context(|| {
+            format!(
+                "storage download target has no parent: `{}`",
+                target.display()
+            )
+        })?;
+        anyhow::ensure!(
+            fs::metadata(parent)
+                .with_context(|| {
+                    format!(
+                        "failed to inspect storage download target directory `{}`",
+                        parent.display()
+                    )
+                })?
+                .is_dir(),
+            "storage download target parent is not a directory: `{}`",
+            parent.display()
+        );
+        anyhow::ensure!(
+            !target.exists(),
+            "storage download target already exists: `{}`",
+            target.display()
+        );
+
+        let mut source = fs::File::open(&self.path).with_context(|| {
+            format!(
+                "failed to open logoscore download staging file `{}`",
+                self.path.display()
+            )
+        })?;
+        let mut pending = NamedTempFile::new_in(parent).with_context(|| {
+            format!(
+                "failed to create storage download commit file in `{}`",
+                parent.display()
+            )
+        })?;
+        let bytes = std::io::copy(&mut source, pending.as_file_mut()).with_context(|| {
+            format!(
+                "failed to copy logoscore download into `{}`",
+                parent.display()
+            )
+        })?;
+        anyhow::ensure!(
+            bytes == metadata.len(),
+            "logoscore download staging file changed while it was copied"
+        );
+        pending
+            .as_file_mut()
+            .flush()
+            .context("failed to flush storage download commit file")?;
+        pending
+            .as_file()
+            .sync_all()
+            .context("failed to sync storage download commit file")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            pending
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o640))
+                .context("failed to secure storage download commit file")?;
+        }
+        pending.persist_noclobber(target).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to commit storage download to `{}`: {}",
+                target.display(),
+                error.error
+            )
+        })?;
         Ok(bytes)
     }
 

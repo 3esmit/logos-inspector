@@ -219,6 +219,19 @@ TestCase {
         keyClick(Qt.Key_Escape)
     }
 
+    function test_download_confirmation_names_exact_cid_and_path() {
+        const cid = "zDvZRwzm8gn7SQbZnz5ewFW8KdrthVVXjFRtSZDVgewk2CDq87Aw"
+        const path = "/home/user/Downloads/storage-fixture.bin"
+
+        storageState.confirmStorage(
+            "storageDownloadToUrl", [cid, path, false], "Download file")
+
+        compare(
+            page.storageConfirmationMessage(),
+            "Download this CID to the local path?\n" + cid + "\n" + path)
+        storageState.clearPendingStorage()
+    }
+
     function findAccessibleByName(item, expectedName, expectedRole) {
         if (!item) {
             return null

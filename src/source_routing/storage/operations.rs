@@ -35,8 +35,15 @@ use super::{layer::STORAGE_SOURCE_MODES, parse_backup_cid, parse_storage_cid, tr
 
 const DEFAULT_BLOCK_SIZE: u64 = 65_536;
 const MANIFEST_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const STORAGE_DOWNLOAD_CANCEL_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const STORAGE_DOWNLOAD_CANCEL_TIMEOUT: Duration = Duration::from_secs(6);
+const STORAGE_DOWNLOAD_DONE_EVENT: &str = "storageDownloadDone";
+const STORAGE_DOWNLOAD_INITIALIZATION_CLEANUP_PENDING: &str =
+    "Download initialization cleanup is still pending.";
+const STORAGE_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE: Duration = Duration::from_secs(8);
 const STORAGE_REMOVE_DONE_EVENT: &str = "storageRemoveDone";
 const STORAGE_UPLOAD_DONE_EVENT: &str = "storageUploadDone";
+const MAX_UNRELATED_DOWNLOAD_EVENTS: usize = 64;
 const MAX_UNRELATED_REMOVE_EVENTS: usize = 64;
 const MAX_UNRELATED_UPLOAD_EVENTS: usize = 64;
 
@@ -82,6 +89,27 @@ impl fmt::Display for StorageRemoveSettlementUnconfirmed {
 
 impl std::error::Error for StorageRemoveSettlementUnconfirmed {}
 
+#[derive(Debug)]
+pub(crate) struct StorageDownloadSettlementUnconfirmed {
+    message: String,
+}
+
+impl StorageDownloadSettlementUnconfirmed {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for StorageDownloadSettlementUnconfirmed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StorageDownloadSettlementUnconfirmed {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageOperation {
     Manifests,
@@ -95,6 +123,59 @@ pub(crate) enum StorageOperation {
 pub(crate) enum StorageOperationOutput {
     Outcome(NodeOperationOutcome),
     Download(StorageDownloadRequest),
+    ModuleDownload(StorageModuleDownload),
+}
+
+pub(crate) struct StorageModuleDownload {
+    staged: crate::modules::logos_core::LogoscoreSharedDownload,
+    cid: String,
+    path: String,
+    session_id: String,
+    local_only: bool,
+}
+
+impl StorageModuleDownload {
+    pub(crate) fn cid(&self) -> &str {
+        &self.cid
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub(crate) fn commit(self) -> Result<Value> {
+        let Self {
+            staged,
+            cid,
+            path,
+            session_id,
+            local_only,
+        } = self;
+        let copied = staged.copy_to_new(Path::new(&path));
+        let cleanup = staged.close();
+        match (copied, cleanup) {
+            (Ok(bytes), Ok(())) => Ok(json!({
+                "success": true,
+                "sessionId": session_id,
+                "cid": cid,
+                "path": path,
+                "bytes": bytes,
+                "source": if local_only { "local" } else { "network" },
+                "completion": STORAGE_DOWNLOAD_DONE_EVENT,
+            })),
+            (Ok(_), Err(cleanup)) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
+                "storage download target was committed but logoscore staging cleanup failed: {cleanup:#}"
+            ))
+            .into()),
+            (Err(primary), Ok(())) => Err(primary),
+            (Err(primary), Err(cleanup)) => {
+                Err(StorageDownloadSettlementUnconfirmed::new(format!(
+                    "{primary:#}; logoscore download staging cleanup failed: {cleanup:#}"
+                ))
+                .into())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +460,17 @@ impl StorageOperationRequest {
     pub(crate) fn context(&self) -> &Map<String, Value> {
         &self.context
     }
+
+    pub(crate) fn termination_handshake_grace(&self) -> Option<Duration> {
+        match &self.plan {
+            StorageOperationPlan::Module {
+                transport: ModuleTransportKind::LogoscoreCli,
+                method: "downloadToUrl",
+                ..
+            } => Some(STORAGE_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) async fn execute_operation(
@@ -498,8 +590,8 @@ fn operation_plan(
         }
         StorageOperation::Download => {
             let payload: DownloadPayload = request.payload("storage download")?;
-            let cid = required_text(payload.cid, "CID")?;
-            let path = required_text(payload.path, "download path")?;
+            let cid = parse_storage_cid(payload.cid)?;
+            let path = parse_download_path(payload.path)?;
             let mut context = context_map(&[("cid", cid.clone()), ("path", path.clone())]);
             context.insert(
                 "source".to_owned(),
@@ -650,6 +742,16 @@ async fn execute_plan(
                 .await?;
                 return Ok(StorageOperationOutput::Outcome(outcome));
             }
+            if method == "downloadToUrl" && transport_kind == ModuleTransportKind::LogoscoreCli {
+                let download = logoscore_cli_download_by_terminal_event(
+                    &module_transport,
+                    args,
+                    &context,
+                    &control,
+                )
+                .await?;
+                return Ok(StorageOperationOutput::ModuleDownload(download));
+            }
             if dispatch {
                 let identity_role = match method {
                     "uploadUrl" => ModuleDispatchIdentityRole::Session,
@@ -708,6 +810,548 @@ async fn execute_plan(
     Ok(StorageOperationOutput::Outcome(
         NodeOperationOutcome::Completed(value),
     ))
+}
+
+async fn logoscore_cli_download_by_terminal_event(
+    module_transport: &SharedModuleTransport,
+    dispatch_args: Vec<Value>,
+    context: &[(&'static str, String)],
+    control: &ModuleCallControl,
+) -> Result<StorageModuleDownload> {
+    ensure_manifest_poll_active(control, false)?;
+    let cid = context
+        .iter()
+        .find_map(|(key, value)| (*key == "cid").then_some(value.as_str()))
+        .context("storage download has no CID context")?;
+    let path = context
+        .iter()
+        .find_map(|(key, value)| (*key == "path").then_some(value.as_str()))
+        .context("storage download has no path context")?;
+    let dispatch_cid = dispatch_args
+        .first()
+        .and_then(Value::as_str)
+        .context("storage download has no CID argument")?;
+    let dispatch_path = dispatch_args
+        .get(1)
+        .and_then(Value::as_str)
+        .context("storage download has no path argument")?;
+    anyhow::ensure!(
+        dispatch_cid == cid && dispatch_path == path,
+        "storage download arguments do not match operation context"
+    );
+    let local_only = dispatch_args
+        .get(2)
+        .and_then(Value::as_bool)
+        .context("storage download has no local-only argument")?;
+    let block_size = dispatch_args
+        .get(3)
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .context("storage download has no valid block size")?;
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .context("storage download path has no UTF-8 filename")?
+        .to_owned();
+    let runtime = module_transport
+        .logoscore_cli_transport()
+        .context("active LogosCore CLI transport does not expose its runtime")?
+        .runtime()?;
+    let command_control = control.command_control();
+    let worker_guard = control.blocking_worker_guard()?;
+    let cid = cid.to_owned();
+    let path = path.to_owned();
+    let effect_may_have_started = Arc::new(AtomicBool::new(false));
+    let worker_effect_may_have_started = Arc::clone(&effect_may_have_started);
+    let worker_cid = cid.clone();
+    let worker_path = path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _worker_guard = worker_guard;
+        let staged = runtime.stage_shared_download(&filename)?;
+        let terminal = logoscore_cli_download_by_terminal_event_blocking(
+            &runtime,
+            &worker_cid,
+            local_only,
+            block_size,
+            &staged,
+            command_control,
+            &worker_effect_may_have_started,
+        );
+        match terminal {
+            Ok(session_id) => Ok(StorageModuleDownload {
+                staged,
+                cid: worker_cid,
+                path: worker_path,
+                session_id,
+                local_only,
+            }),
+            Err(primary) => match staged.close() {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
+                    "{primary:#}; logoscore download staging cleanup failed: {cleanup:#}"
+                ))
+                .into()),
+            },
+        }
+    })
+    .await;
+    match result {
+        Ok(Err(error)) if error.downcast_ref::<CommandTerminated>().is_some() => {
+            Err(normalize_cli_mutation_predispatch_stop(error, control))
+        }
+        Ok(Err(error))
+            if error
+                .downcast_ref::<ModuleCallTerminated>()
+                .is_some_and(|terminated| {
+                    terminated.reason() == ModuleCallStopReason::CancelRequested
+                }) =>
+        {
+            let terminated = error
+                .downcast_ref::<ModuleCallTerminated>()
+                .context("Storage download lost termination evidence")?;
+            Err(ModuleCallTerminated::new(control.stop_reason(), terminated.evidence()).into())
+        }
+        Ok(result) => result,
+        Err(error) if effect_may_have_started.load(Ordering::Acquire) => {
+            Err(StorageDownloadSettlementUnconfirmed::new(format!(
+                "Storage download worker ended after dispatch may have started and before authoritative settlement: {error}"
+            ))
+            .into())
+        }
+        Err(error) => Err(anyhow::anyhow!(
+            "Storage download worker failed before dispatch: {error}"
+        )),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DownloadTerminalEvent {
+    Unrelated,
+    Succeeded,
+    Failed { error: String },
+}
+
+fn logoscore_cli_download_by_terminal_event_blocking(
+    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
+    cid: &str,
+    local_only: bool,
+    block_size: u64,
+    staged: &crate::modules::logos_core::LogoscoreSharedDownload,
+    control: CommandControl,
+    effect_may_have_started: &AtomicBool,
+) -> Result<String> {
+    let mut watch = runtime
+        .start_event_watch(
+            super::layer::module_id(),
+            STORAGE_DOWNLOAD_DONE_EVENT,
+            &control,
+        )
+        .context("failed to start authoritative Storage download event watch")?;
+    if let Err(error) = watch.wait_ready(&control) {
+        return cleanup_download_watch_before_dispatch(error, &mut watch);
+    }
+
+    let manifests = match transport::logoscore_cli_call_value_controlled_with_runtime(
+        runtime,
+        super::layer::module_id(),
+        "manifests",
+        &[],
+        control.clone(),
+    ) {
+        Ok(manifests) => manifests,
+        Err(error) => {
+            return cleanup_download_watch_before_dispatch(
+                error.context("failed Storage download subscription ordering barrier"),
+                &mut watch,
+            );
+        }
+    };
+    let expected_bytes = match exact_manifest(&manifests, cid) {
+        Ok(Some(manifest)) => match manifest.get("datasetSize").and_then(Value::as_u64) {
+            Some(expected_bytes) => expected_bytes,
+            None => {
+                return cleanup_download_watch_before_dispatch(
+                    anyhow::anyhow!(
+                        "Storage manifest for CID `{cid}` lost its validated dataset size"
+                    ),
+                    &mut watch,
+                );
+            }
+        },
+        Ok(None) => match fetch_download_manifest_size(runtime, cid, &control) {
+            Ok(expected_bytes) => expected_bytes,
+            Err(error) => {
+                return cleanup_download_watch_before_dispatch(
+                    error.context("failed to resolve Storage download size before dispatch"),
+                    &mut watch,
+                );
+            }
+        },
+        Err(error) => {
+            return cleanup_download_watch_before_dispatch(error, &mut watch);
+        }
+    };
+    let staged_path = staged
+        .path()
+        .to_str()
+        .context("temporary storage download path is not UTF-8")?
+        .to_owned();
+
+    effect_may_have_started.store(true, Ordering::Release);
+    let dispatch = transport::logoscore_cli_call_value_controlled_with_runtime(
+        runtime,
+        super::layer::module_id(),
+        "downloadToUrl",
+        &[
+            cid.to_owned(),
+            staged_path,
+            local_only.to_string(),
+            block_size.to_string(),
+        ],
+        control.clone(),
+    );
+    let acknowledgement = match dispatch {
+        Ok(value) => value,
+        Err(error)
+            if error
+                .downcast_ref::<CommandTerminated>()
+                .is_some_and(|terminated| {
+                    terminated.scope() == CommandTerminationScope::NoProcess
+                }) =>
+        {
+            return cleanup_download_watch_before_dispatch(error, &mut watch);
+        }
+        Err(error) => {
+            return cleanup_active_download_error(
+                runtime,
+                cid,
+                error.context("Storage download dispatch settlement is unknown"),
+                &mut watch,
+                &control,
+            );
+        }
+    };
+    let Some(session_id) = upload_session_id(&acknowledgement) else {
+        return cleanup_active_download_error(
+            runtime,
+            cid,
+            anyhow::anyhow!("storage_module.downloadToUrl returned no session ID"),
+            &mut watch,
+            &control,
+        );
+    };
+    if session_id != cid {
+        return cleanup_active_download_error(
+            runtime,
+            cid,
+            anyhow::anyhow!(
+                "storage_module.downloadToUrl returned session `{session_id}` for CID `{cid}`"
+            ),
+            &mut watch,
+            &control,
+        );
+    }
+
+    let terminal = match wait_for_download_terminal(&mut watch, cid, &control) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            return cleanup_active_download_error(
+                runtime,
+                cid,
+                error.context(format!(
+                    "Storage download session `{session_id}` lost authoritative settlement"
+                )),
+                &mut watch,
+                &control,
+            );
+        }
+    };
+    match terminal {
+        DownloadTerminalEvent::Succeeded => {
+            if let Err(error) = validate_completed_download(staged.path(), expected_bytes) {
+                return cleanup_active_download_error(
+                    runtime,
+                    cid,
+                    error.context(format!(
+                        "Storage download session `{session_id}` received ambiguous terminal success"
+                    )),
+                    &mut watch,
+                    &control,
+                );
+            }
+            complete_download_watch(&mut watch, Ok(session_id))
+        }
+        DownloadTerminalEvent::Failed { error } => cleanup_active_download_error(
+            runtime,
+            cid,
+            anyhow::anyhow!("storage_module download session `{session_id}` failed: {error}"),
+            &mut watch,
+            &control,
+        ),
+        DownloadTerminalEvent::Unrelated => cleanup_active_download_error(
+            runtime,
+            cid,
+            anyhow::anyhow!("Storage download terminal wait returned an unrelated event"),
+            &mut watch,
+            &control,
+        ),
+    }
+}
+
+fn fetch_download_manifest_size(
+    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
+    cid: &str,
+    control: &CommandControl,
+) -> Result<u64> {
+    transport::logoscore_cli_call_value_controlled_with_runtime(
+        runtime,
+        super::layer::module_id(),
+        "downloadManifest",
+        &[cid.to_owned()],
+        control.clone(),
+    )?;
+    loop {
+        controlled_download_sleep(control, MANIFEST_POLL_INTERVAL)?;
+        let manifests = transport::logoscore_cli_call_value_controlled_with_runtime(
+            runtime,
+            super::layer::module_id(),
+            "manifests",
+            &[],
+            control.clone(),
+        )?;
+        let Some(manifest) = exact_manifest(&manifests, cid)? else {
+            continue;
+        };
+        return manifest
+            .get("datasetSize")
+            .and_then(Value::as_u64)
+            .context("validated Storage manifest lost its dataset size");
+    }
+}
+
+fn validate_completed_download(path: &Path, expected_bytes: u64) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "failed to inspect completed Storage download `{}`",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_file(),
+        "completed Storage download staging path is not a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() == expected_bytes,
+        "completed Storage download size mismatch: expected {expected_bytes}, found {}",
+        metadata.len()
+    );
+    Ok(())
+}
+
+fn wait_for_download_terminal(
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+    session_id: &str,
+    control: &CommandControl,
+) -> Result<DownloadTerminalEvent> {
+    let mut unrelated = 0_usize;
+    loop {
+        let Some(value) = watch.next_value_within(control, Duration::from_millis(100))? else {
+            continue;
+        };
+        match decode_download_terminal_event(&value, session_id)? {
+            DownloadTerminalEvent::Unrelated => {
+                unrelated = unrelated.saturating_add(1);
+                if unrelated > MAX_UNRELATED_DOWNLOAD_EVENTS {
+                    bail!(
+                        "Storage download received more than {MAX_UNRELATED_DOWNLOAD_EVENTS} unrelated terminal events"
+                    );
+                }
+            }
+            terminal => return Ok(terminal),
+        }
+    }
+}
+
+fn decode_download_terminal_event(
+    value: &Value,
+    expected_session_id: &str,
+) -> Result<DownloadTerminalEvent> {
+    anyhow::ensure!(
+        value.get("module").and_then(Value::as_str) == Some(super::layer::module_id()),
+        "logoscore download watcher returned an event for the wrong module"
+    );
+    anyhow::ensure!(
+        value.get("event").and_then(Value::as_str) == Some(STORAGE_DOWNLOAD_DONE_EVENT),
+        "logoscore download watcher returned the wrong event type"
+    );
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .context("logoscore download terminal event has no data object")?;
+    anyhow::ensure!(
+        data.len() == 1 && data.contains_key("arg0"),
+        "logoscore download terminal event must contain exactly one payload argument"
+    );
+    let payload = match data.get("arg0") {
+        Some(Value::String(payload)) => serde_json::from_str::<Value>(payload)
+            .context("logoscore download terminal payload is not valid JSON")?,
+        Some(Value::Object(payload)) => Value::Object(payload.clone()),
+        _ => bail!("logoscore download terminal payload must be a JSON object or string"),
+    };
+    let payload = payload
+        .as_object()
+        .context("logoscore download terminal payload is not an object")?;
+    let session_id = payload
+        .get("sessionId")
+        .or_else(|| payload.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("logoscore download terminal payload has no session ID")?;
+    if session_id != expected_session_id {
+        return Ok(DownloadTerminalEvent::Unrelated);
+    }
+    let success = payload
+        .get("success")
+        .and_then(Value::as_bool)
+        .context("logoscore download terminal payload has no success flag")?;
+    if success {
+        anyhow::ensure!(
+            payload
+                .get("error")
+                .and_then(Value::as_str)
+                .is_none_or(|error| error.trim().is_empty()),
+            "successful logoscore download terminal payload contains an error"
+        );
+        return Ok(DownloadTerminalEvent::Succeeded);
+    }
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("storage download failed without an error message");
+    Ok(DownloadTerminalEvent::Failed {
+        error: error.to_owned(),
+    })
+}
+
+fn cleanup_download_watch_before_dispatch<T>(
+    primary: anyhow::Error,
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+) -> Result<T> {
+    match watch.stop() {
+        Ok(()) => Err(primary),
+        Err(cleanup) => Err(anyhow::anyhow!(
+            "{primary:#}; pre-dispatch Storage download watch cleanup failed: {cleanup:#}"
+        )),
+    }
+}
+
+fn cleanup_active_download_error<T>(
+    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
+    cid: &str,
+    primary: anyhow::Error,
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+    parent_control: &CommandControl,
+) -> Result<T> {
+    let cancel = cancel_legacy_download(runtime, cid, parent_control);
+    let stop = watch.stop();
+    match (cancel, stop) {
+        (Ok(()), Ok(())) => {
+            if let Some(terminated) = primary.downcast_ref::<CommandTerminated>() {
+                let reason = match terminated.reason() {
+                    CommandStopReason::CancelRequested => ModuleCallStopReason::CancelRequested,
+                    CommandStopReason::DeadlineExceeded => ModuleCallStopReason::DeadlineExceeded,
+                };
+                return Err(ModuleCallTerminated::new(
+                    reason,
+                    ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed,
+                )
+                .into());
+            }
+            Err(primary)
+        }
+        (cancel, stop) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
+            "{primary:#}; Storage download cleanup was not confirmed: cancel={}, watch={}",
+            download_cleanup_result_text(cancel),
+            download_cleanup_result_text(stop)
+        ))
+        .into()),
+    }
+}
+
+fn cancel_legacy_download(
+    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
+    cid: &str,
+    parent_control: &CommandControl,
+) -> Result<()> {
+    let deadline = std::time::Instant::now()
+        .checked_add(STORAGE_DOWNLOAD_CANCEL_TIMEOUT)
+        .context("Storage download cancellation deadline overflow")?;
+    let control = CommandControl::new(tokio_util::sync::CancellationToken::new(), deadline);
+    let control = if let Some(budget) = parent_control.command_budget() {
+        control.with_command_budget(budget)
+    } else {
+        control
+    };
+    loop {
+        match transport::logoscore_cli_call_value_controlled_with_runtime(
+            runtime,
+            super::layer::module_id(),
+            "downloadCancel",
+            &[cid.to_owned()],
+            control.clone(),
+        ) {
+            Ok(_) => return Ok(()),
+            Err(error) if download_initialization_cleanup_is_pending(&error) => {
+                controlled_download_sleep(&control, STORAGE_DOWNLOAD_CANCEL_RETRY_INTERVAL)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn download_initialization_cleanup_is_pending(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .ends_with(STORAGE_DOWNLOAD_INITIALIZATION_CLEANUP_PENDING)
+    })
+}
+
+fn controlled_download_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
+    control.check_active()?;
+    let remaining = control
+        .deadline()
+        .saturating_duration_since(std::time::Instant::now());
+    std::thread::sleep(duration.min(remaining));
+    control.check_active().map_err(Into::into)
+}
+
+fn download_cleanup_result_text(result: Result<()>) -> String {
+    match result {
+        Ok(()) => "confirmed".to_owned(),
+        Err(error) => format!("unconfirmed ({error:#})"),
+    }
+}
+
+fn complete_download_watch<T>(
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+    terminal_result: Result<T>,
+) -> Result<T> {
+    match (terminal_result, watch.stop()) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
+            "Storage download settled successfully but event-watch cleanup failed: {cleanup:#}"
+        ))
+        .into()),
+        (Err(primary), Err(cleanup)) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
+            "{primary:#}; Storage download terminal watch cleanup failed: {cleanup:#}"
+        ))
+        .into()),
+    }
 }
 
 async fn logoscore_cli_remove_by_terminal_event(
@@ -1628,6 +2272,37 @@ fn required_text(value: String, label: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
+fn parse_download_path(value: String) -> Result<String> {
+    let value = required_text(value, "download path")?;
+    let path = Path::new(&value);
+    anyhow::ensure!(path.is_absolute(), "storage download path must be absolute");
+    anyhow::ensure!(
+        path.file_name().is_some(),
+        "storage download path must name a file"
+    );
+    let parent = path
+        .parent()
+        .context("storage download path has no parent directory")?;
+    anyhow::ensure!(
+        fs::metadata(parent)
+            .with_context(|| {
+                format!(
+                    "failed to inspect storage download target directory `{}`",
+                    parent.display()
+                )
+            })?
+            .is_dir(),
+        "storage download target parent is not a directory: `{}`",
+        parent.display()
+    );
+    anyhow::ensure!(
+        !path.exists(),
+        "storage download target already exists: `{}`",
+        path.display()
+    );
+    Ok(value)
+}
+
 fn context_map(values: &[(&'static str, String)]) -> Map<String, Value> {
     values
         .iter()
@@ -1770,8 +2445,13 @@ mod tests {
     #[cfg(unix)]
     struct FakeUploadRuntime {
         _directory: tempfile::TempDir,
+        _socket: std::path::PathBuf,
         transport: SharedModuleTransport,
         calls_path: std::path::PathBuf,
+        dispatched_path: std::path::PathBuf,
+        download_cancel_count_path: std::path::PathBuf,
+        download_count_path: std::path::PathBuf,
+        download_path: std::path::PathBuf,
         remove_count_path: std::path::PathBuf,
         upload_count_path: std::path::PathBuf,
         upload_path: std::path::PathBuf,
@@ -1798,16 +2478,17 @@ mode="$(cat "$state/mode")"
 case "$1" in
   watch)
     case "$mode" in
-      watch_failure|remove_watch_failure)
+      watch_failure|remove_watch_failure|download_watch_failure)
         printf '%s\n' 'watch protocol unsupported' >&2
         exit 2
         ;;
-      watch_hang|remove_watch_hang)
+      watch_hang|remove_watch_hang|download_watch_hang)
         while :; do sleep 1; done
         ;;
     esac
     event="storageUploadDone"
     case "$mode" in remove_*) event="storageRemoveDone" ;; esac
+    case "$mode" in download_*) event="storageDownloadDone" ;; esac
     printf '{"type":"subscription_ready","protocol":"logoscore.watch","version":1,"module":"storage_module","event":"%s"}\n' "$event"
     while [ ! -f "$state/dispatched" ]; do sleep 0.01; done
     if [ "$mode" = "foreign_success" ]; then
@@ -1815,6 +2496,9 @@ case "$1" in
     fi
     if [ "$mode" = "remove_foreign_success" ]; then
       printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:00Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":true,\"cid\":\"cid-foreign\"}"}}'
+    fi
+    if [ "$mode" = "download_foreign_success" ]; then
+      printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:00Z","module":"storage_module","event":"storageDownloadDone","data":{"arg0":"{\"success\":true,\"sessionId\":\"cid-foreign\"}"}}'
     fi
     case "$mode" in
       success|foreign_success)
@@ -1835,6 +2519,18 @@ case "$1" in
       remove_malformed_terminal)
         printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":true}"}}'
         ;;
+      download_success|download_foreign_success|download_manifest_fetch|download_size_mismatch)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageDownloadDone","data":{"arg0":"{\"success\":true,\"sessionId\":\"cid-download-1\"}"}}'
+        ;;
+      download_terminal_failure)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageDownloadDone","data":{"arg0":"{\"success\":false,\"sessionId\":\"cid-download-1\",\"error\":\"fixture download failed\"}"}}'
+        ;;
+      download_terminal_empty_error)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageDownloadDone","data":{"arg0":"{\"success\":false,\"sessionId\":\"cid-download-1\",\"error\":\"\"}"}}'
+        ;;
+      download_malformed_terminal)
+        printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageDownloadDone","data":{"arg0":"{\"success\":true}"}}'
+        ;;
     esac
     while :; do sleep 1; done
     ;;
@@ -1843,10 +2539,31 @@ case "$1" in
     case "$3" in
       manifests)
         case "$mode" in
-          barrier_failure|remove_barrier_failure) exit 7 ;;
-          barrier_hang|remove_barrier_hang) while :; do sleep 1; done ;;
+          barrier_failure|remove_barrier_failure|download_barrier_failure) exit 7 ;;
+          barrier_hang|remove_barrier_hang|download_barrier_hang) while :; do sleep 1; done ;;
         esac
-        printf '%s\n' '{"status":"ok","result":{"success":true,"value":[],"error":null}}'
+        case "$mode" in
+          download_size_mismatch)
+            printf '%s\n' '{"status":"ok","result":{"success":true,"value":[{"cid":"cid-download-1","treeCid":"tree-download-1","datasetSize":99,"blockSize":65536,"filename":"download.bin","mimetype":"application/octet-stream"}],"error":null}}'
+            ;;
+          download_manifest_fetch)
+            if [ -f "$state/manifest-fetched" ]; then
+              printf '%s\n' '{"status":"ok","result":{"success":true,"value":[{"cid":"cid-download-1","treeCid":"tree-download-1","datasetSize":22,"blockSize":65536,"filename":"download.bin","mimetype":"application/octet-stream"}],"error":null}}'
+            else
+              printf '%s\n' '{"status":"ok","result":{"success":true,"value":[],"error":null}}'
+            fi
+            ;;
+          download_*)
+            printf '%s\n' '{"status":"ok","result":{"success":true,"value":[{"cid":"cid-download-1","treeCid":"tree-download-1","datasetSize":22,"blockSize":65536,"filename":"download.bin","mimetype":"application/octet-stream"}],"error":null}}'
+            ;;
+          *)
+            printf '%s\n' '{"status":"ok","result":{"success":true,"value":[],"error":null}}'
+            ;;
+        esac
+        ;;
+      downloadManifest)
+        touch "$state/manifest-fetched"
+        printf '%s\n' '{"status":"ok","result":{"success":true,"value":null,"error":null}}'
         ;;
       uploadUrl)
         printf x >> "$state/upload-count"
@@ -1860,6 +2577,35 @@ case "$1" in
         if [ "$mode" = "remove_dispatch_failure" ]; then exit 8; fi
         printf '%s\n' '{"status":"ok","result":{"success":true,"value":null,"error":null}}'
         ;;
+      downloadToUrl)
+        printf x >> "$state/download-count"
+        if [ "$mode" != "download_dispatch_failure" ]; then
+          printf '%s' 'fixture download bytes' > "$5"
+        fi
+        touch "$state/dispatched"
+        if [ "$mode" = "download_dispatch_failure" ]; then exit 8; fi
+        case "$mode" in
+          download_missing_session)
+            printf '%s\n' '{"status":"ok","result":{"success":true,"value":null,"error":null}}'
+            ;;
+          download_wrong_session)
+            printf '%s\n' '{"status":"ok","result":{"success":true,"value":"cid-wrong","error":null}}'
+            ;;
+          *)
+            printf '%s\n' '{"status":"ok","result":{"success":true,"value":"cid-download-1","error":null}}'
+            ;;
+        esac
+        ;;
+      downloadCancel)
+        printf x >> "$state/download-cancel-count"
+        if [ "$mode" = "download_cancel_failure" ]; then exit 9; fi
+        if [ "$mode" = "download_cancel_pending_then_success" ] &&
+           [ "$(wc -c < "$state/download-cancel-count")" -eq 1 ]; then
+          printf '%s\n' '{"status":"ok","result":{"success":false,"value":null,"error":"Download initialization cleanup is still pending."}}'
+          exit 0
+        fi
+        printf '%s\n' '{"status":"ok","result":{"success":true,"value":null,"error":null}}'
+        ;;
       *) exit 91 ;;
     esac
     ;;
@@ -1870,8 +2616,26 @@ esac
             let mut permissions = fs::metadata(&program)?.permissions();
             permissions.set_mode(0o700);
             fs::set_permissions(&program, permissions)?;
+            let instance_id = format!(
+                "storage-operation-test-{}-{}",
+                std::process::id(),
+                root.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("fixture")
+            );
+            fs::create_dir_all(config_dir.join("client"))?;
+            fs::write(
+                config_dir.join("client/config.json"),
+                serde_json::to_vec(&json!({
+                    "instance_id": instance_id,
+                    "daemon": { "core_service": { "transport": "local" } }
+                }))?,
+            )?;
+            let socket = std::env::temp_dir().join(format!("logos_core_service_{instance_id}"));
+            fs::write(&socket, b"test socket identity")?;
             let upload_path = root.join("upload.bin");
             fs::write(&upload_path, b"fixture upload")?;
+            let download_path = root.join("download-output.bin");
             let transport: SharedModuleTransport =
                 Arc::new(crate::modules::logos_core::LogoscoreCliTransport::managed(
                     program.display().to_string(),
@@ -1879,8 +2643,13 @@ esac
                 ));
             Ok(Self {
                 _directory: directory,
+                _socket: socket,
                 transport,
                 calls_path: config_dir.join("calls"),
+                dispatched_path: config_dir.join("dispatched"),
+                download_cancel_count_path: config_dir.join("download-cancel-count"),
+                download_count_path: config_dir.join("download-count"),
+                download_path,
                 remove_count_path: config_dir.join("remove-count"),
                 upload_count_path: config_dir.join("upload-count"),
                 upload_path,
@@ -1913,6 +2682,23 @@ esac
             StorageOperationRequest::parse(&request, StorageOperation::Remove)
         }
 
+        fn download_request(&self) -> Result<StorageOperationRequest> {
+            let path = self
+                .download_path
+                .to_str()
+                .context("fake download path is not UTF-8")?;
+            let request = request(json!({
+                "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+                "mutating_enabled": true,
+                "payload": {
+                    "cid": "cid-download-1",
+                    "path": path,
+                    "local_only": false
+                }
+            }))?;
+            StorageOperationRequest::parse(&request, StorageOperation::Download)
+        }
+
         fn calls(&self) -> Result<Vec<String>> {
             match fs::read_to_string(&self.calls_path) {
                 Ok(calls) => Ok(calls.lines().map(ToOwned::to_owned).collect()),
@@ -1935,6 +2721,50 @@ esac
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
                 Err(error) => Err(error.into()),
             }
+        }
+
+        fn download_count(&self) -> Result<usize> {
+            match fs::read(&self.download_count_path) {
+                Ok(count) => Ok(count.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error.into()),
+            }
+        }
+
+        fn download_cancel_count(&self) -> Result<usize> {
+            match fs::read(&self.download_cancel_count_path) {
+                Ok(count) => Ok(count.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error.into()),
+            }
+        }
+
+        fn cancel_after_download_dispatch(
+            &self,
+            cancellation: tokio_util::sync::CancellationToken,
+        ) -> tokio::task::JoinHandle<bool> {
+            let dispatched = self.dispatched_path.clone();
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    if dispatched.exists() {
+                        cancellation.cancel();
+                        return true;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        cancellation.cancel();
+                        return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for FakeUploadRuntime {
+        fn drop(&mut self) {
+            drop(fs::remove_file(&self._socket));
         }
     }
 
@@ -2002,6 +2832,11 @@ esac
 
     #[test]
     fn rest_download_plan_owns_transport_inputs() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("download.bin");
+        let target = target
+            .to_str()
+            .context("REST download test path is not UTF-8")?;
         let request = request(json!({
             "adapter": {
                 "source_mode": "rest",
@@ -2010,7 +2845,7 @@ esac
             "mutating_enabled": true,
             "payload": {
                 "cid": "cid-a",
-                "path": "/tmp/a",
+                "path": target,
                 "local_only": true
             }
         }))?;
@@ -2021,13 +2856,64 @@ esac
             StorageOperationPlan::Rest(StorageRestOperation::Download(StorageDownloadRequest {
                 endpoint: "http://storage".to_owned(),
                 cid: "cid-a".to_owned(),
-                path: "/tmp/a".to_owned(),
+                path: target.to_owned(),
                 local_only: true,
             }));
         anyhow::ensure!(
             request.plan == expected,
             "unexpected Storage download plan: {:?}",
             request.plan
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn download_plan_rejects_relative_or_existing_target() -> Result<()> {
+        let relative = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-a", "path": "relative.bin" }
+        }))?;
+        let relative_error = StorageOperationRequest::parse(&relative, StorageOperation::Download)
+            .err()
+            .context("relative download target was accepted")?;
+
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("existing.bin");
+        fs::write(&target, b"sentinel")?;
+        let existing = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-a", "path": target }
+        }))?;
+        let existing_error = StorageOperationRequest::parse(&existing, StorageOperation::Download)
+            .err()
+            .context("existing download target was accepted")?;
+
+        anyhow::ensure!(
+            relative_error.to_string() == "storage download path must be absolute"
+                && existing_error.to_string().contains("target already exists"),
+            "download target validation drifted: {relative_error:#} / {existing_error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cli_download_cleanup_fits_inside_termination_handshake() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("download.bin");
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-a", "path": target }
+        }))?;
+        let request = StorageOperationRequest::parse(&request, StorageOperation::Download)?;
+
+        anyhow::ensure!(
+            request.termination_handshake_grace()
+                == Some(STORAGE_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE)
+                && STORAGE_DOWNLOAD_CANCEL_TIMEOUT < STORAGE_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE,
+            "CLI download cleanup can outlive its supervisor handshake"
         );
         Ok(())
     }
@@ -2422,6 +3308,501 @@ esac
         anyhow::ensure!(
             fake.calls()? == ["manifests", "uploadUrl"] && fake.upload_count()? == 1,
             "CLI upload lost source barrier or exactly-once dispatch"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_commits_owned_output_after_exact_terminal() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_success")?;
+        let output = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+
+        let StorageOperationOutput::ModuleDownload(download) = output else {
+            anyhow::bail!("CLI download lost owned terminal staging");
+        };
+        let value = download.commit()?;
+        anyhow::ensure!(
+            value.get("success") == Some(&json!(true))
+                && value.get("sessionId") == Some(&json!("cid-download-1"))
+                && value.get("cid") == Some(&json!("cid-download-1"))
+                && value.get("completion") == Some(&json!("storageDownloadDone"))
+                && value.get("path") == fake.download_path.to_str().map(Value::from).as_ref()
+                && value.get("bytes") == Some(&json!(22)),
+            "CLI download lost exact terminal output: {value}"
+        );
+        anyhow::ensure!(
+            fs::read(&fake.download_path)? == b"fixture download bytes"
+                && fs::metadata(&fake.download_path)?.permissions().mode() & 0o777 == 0o640
+                && fake.calls()? == ["manifests", "downloadToUrl"]
+                && fake.download_count()? == 1,
+            "CLI download lost secured owned output or exactly-once dispatch"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_ignores_foreign_terminal_session() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_foreign_success")?;
+        let output = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+        let StorageOperationOutput::ModuleDownload(download) = output else {
+            anyhow::bail!("foreign download event captured active operation");
+        };
+        let value = download.commit()?;
+
+        anyhow::ensure!(
+            value.get("sessionId") == Some(&json!("cid-download-1")) && fake.download_count()? == 1,
+            "foreign download terminal event captured the active operation"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_fetches_missing_manifest_before_dispatch() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_manifest_fetch")?;
+        let output = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+        let StorageOperationOutput::ModuleDownload(download) = output else {
+            anyhow::bail!("manifest-prefetched download lost owned staging");
+        };
+        download.commit()?;
+
+        anyhow::ensure!(
+            fake.calls()?
+                == [
+                    "manifests",
+                    "downloadManifest",
+                    "manifests",
+                    "downloadToUrl",
+                ]
+                && fake.download_count()? == 1,
+            "missing manifest was not resolved before download dispatch"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_exact_failure_is_terminal() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        for (mode, expected) in [
+            ("download_terminal_failure", "fixture download failed"),
+            (
+                "download_terminal_empty_error",
+                "storage download failed without an error message",
+            ),
+        ] {
+            let fake = FakeUploadRuntime::new(mode)?;
+            let error = execute_operation(
+                fake.download_request()?,
+                fake.transport(),
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{mode} should fail the download"))?;
+
+            anyhow::ensure!(
+                error.to_string().contains(expected)
+                    && error
+                        .downcast_ref::<StorageDownloadSettlementUnconfirmed>()
+                        .is_none()
+                    && fake.download_cancel_count()? == 1
+                    && !fake.download_path.exists(),
+                "download failure did not settle the acknowledged CID: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_preflight_failures_never_dispatch() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        for (mode, expected_calls) in [
+            ("download_watch_failure", Vec::<String>::new()),
+            ("download_barrier_failure", vec!["manifests".to_owned()]),
+        ] {
+            let fake = FakeUploadRuntime::new(mode)?;
+            let error = execute_operation(
+                fake.download_request()?,
+                fake.transport(),
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{mode} should fail before download dispatch"))?;
+
+            anyhow::ensure!(
+                error
+                    .downcast_ref::<StorageDownloadSettlementUnconfirmed>()
+                    .is_none()
+                    && fake.calls()? == expected_calls
+                    && fake.download_count()? == 0
+                    && fake.download_cancel_count()? == 0,
+                "pre-dispatch {mode} reached or retained a download: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_predispatch_stops_are_confirmed_not_started() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let watch = FakeUploadRuntime::new("download_watch_hang")?;
+        let watch_error = execute_operation(
+            watch.download_request()?,
+            watch.transport(),
+            module_call_control(Duration::from_millis(100)),
+        )
+        .await
+        .err()
+        .context("download_watch_hang should stop before download dispatch")?;
+        let watch_terminated = watch_error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("download_watch_hang did not preserve module stop evidence")?;
+        anyhow::ensure!(
+            watch_terminated.reason() == ModuleCallStopReason::DeadlineExceeded
+                && watch_terminated.evidence() == ModuleCallTerminationEvidence::NotStarted,
+            "download_watch_hang stop evidence drifted: {watch_terminated}"
+        );
+        anyhow::ensure!(
+            watch.calls()?.is_empty()
+                && watch.download_count()? == 0
+                && watch.download_cancel_count()? == 0,
+            "download_watch_hang reached a Storage call"
+        );
+
+        let barrier = FakeUploadRuntime::new("download_barrier_hang")?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = ModuleCallControl::new(
+            cancellation.clone(),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(3)),
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancellation.cancel();
+        });
+        let barrier_error =
+            execute_operation(barrier.download_request()?, barrier.transport(), control)
+                .await
+                .err()
+                .context("download_barrier_hang should stop before download dispatch")?;
+        let barrier_terminated = barrier_error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("download_barrier_hang did not preserve module stop evidence")?;
+        anyhow::ensure!(
+            barrier_terminated.reason() == ModuleCallStopReason::Shutdown
+                && barrier_terminated.evidence() == ModuleCallTerminationEvidence::NotStarted,
+            "download_barrier_hang stop evidence drifted: {barrier_terminated}"
+        );
+        anyhow::ensure!(
+            barrier.calls()? == ["manifests".to_owned()]
+                && barrier.download_count()? == 0
+                && barrier.download_cancel_count()? == 0,
+            "download_barrier_hang did not stop inside the ordering barrier"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_dispatch_failure_cancels_once() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_dispatch_failure")?;
+        let error = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await
+        .err()
+        .context("failed download dispatch should trigger cancellation")?;
+
+        anyhow::ensure!(
+            error
+                .downcast_ref::<StorageDownloadSettlementUnconfirmed>()
+                .is_none()
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 1
+                && !fake.download_path.exists(),
+            "failed download dispatch did not complete bounded cleanup: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_invalid_acknowledgement_is_canceled_once() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        for mode in ["download_missing_session", "download_wrong_session"] {
+            let fake = FakeUploadRuntime::new(mode)?;
+            let error = execute_operation(
+                fake.download_request()?,
+                fake.transport(),
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{mode} should reject dispatch acknowledgement"))?;
+
+            anyhow::ensure!(
+                error.to_string().contains("session")
+                    && error
+                        .downcast_ref::<StorageDownloadSettlementUnconfirmed>()
+                        .is_none()
+                    && fake.download_count()? == 1
+                    && fake.download_cancel_count()? == 1
+                    && !fake.download_path.exists(),
+                "{mode} did not complete bounded cleanup: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_cancellation_uses_fresh_cleanup_control() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_no_terminal")?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = ModuleCallControl::new(
+            cancellation.clone(),
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            Arc::new(AtomicU8::new(3)),
+        );
+        let cancellation_task = fake.cancel_after_download_dispatch(cancellation);
+        let error = execute_operation(fake.download_request()?, fake.transport(), control)
+            .await
+            .err()
+            .context("canceled download should stop")?;
+        let dispatch_observed = cancellation_task
+            .await
+            .context("download cancellation trigger task failed")?;
+        let terminated = error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("canceled download lost remote termination evidence")?;
+
+        anyhow::ensure!(
+            dispatch_observed
+                && terminated.reason() == ModuleCallStopReason::Shutdown
+                && terminated.evidence()
+                    == ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 1
+                && !fake.download_path.exists(),
+            "canceled download cleanup drifted: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_cancel_failure_retains_uncertainty() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_cancel_failure")?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = ModuleCallControl::new(
+            cancellation.clone(),
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            Arc::new(AtomicU8::new(3)),
+        );
+        let cancellation_task = fake.cancel_after_download_dispatch(cancellation);
+        let error = execute_operation(fake.download_request()?, fake.transport(), control)
+            .await
+            .err()
+            .context("failed download cancellation should retain uncertainty")?;
+        let dispatch_observed = cancellation_task
+            .await
+            .context("failed-cancel trigger task failed")?;
+
+        anyhow::ensure!(
+            dispatch_observed
+                && error
+                    .downcast_ref::<StorageDownloadSettlementUnconfirmed>()
+                    .is_some()
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 1
+                && !fake.download_path.exists(),
+            "failed download cleanup released its lease: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_retries_pending_initialization_cleanup() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_cancel_pending_then_success")?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = ModuleCallControl::new(
+            cancellation.clone(),
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            Arc::new(AtomicU8::new(3)),
+        );
+        let cancellation_task = fake.cancel_after_download_dispatch(cancellation);
+        let error = execute_operation(fake.download_request()?, fake.transport(), control)
+            .await
+            .err()
+            .context("pending initialization cleanup should settle after retry")?;
+        let dispatch_observed = cancellation_task
+            .await
+            .context("pending-cleanup trigger task failed")?;
+        let terminated = error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("retried cancellation lost remote termination evidence")?;
+
+        anyhow::ensure!(
+            dispatch_observed
+                && terminated.reason() == ModuleCallStopReason::Shutdown
+                && terminated.evidence()
+                    == ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 2,
+            "transient initialization cleanup was not retried safely: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_malformed_terminal_is_canceled() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_malformed_terminal")?;
+        let error = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await
+        .err()
+        .context("malformed download terminal should fail")?;
+
+        anyhow::ensure!(
+            format!("{error:#}").contains("session ID")
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 1
+                && !fake.download_path.exists(),
+            "malformed download terminal did not trigger cleanup: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_rejects_terminal_size_mismatch() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_size_mismatch")?;
+        let error = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await
+        .err()
+        .context("mismatched download size should fail")?;
+
+        anyhow::ensure!(
+            format!("{error:#}").contains("size mismatch")
+                && fake.download_cancel_count()? == 1
+                && !fake.download_path.exists(),
+            "ambiguous terminal size mismatch was not canceled: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_commit_never_clobbers_racing_target() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_success")?;
+        let output = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+        let StorageOperationOutput::ModuleDownload(download) = output else {
+            anyhow::bail!("download did not retain owned staging before commit");
+        };
+        fs::write(&fake.download_path, b"sentinel")?;
+        let error = download
+            .commit()
+            .err()
+            .context("racing target should block download commit")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("already exists")
+                || error.to_string().contains("failed to commit")
+        );
+        anyhow::ensure!(
+            fs::read(&fake.download_path)? == b"sentinel",
+            "download commit clobbered racing target"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_download_commit_cleanup_failure_is_unconfirmed() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_success")?;
+        let output = execute_operation(
+            fake.download_request()?,
+            fake.transport(),
+            module_call_control(Duration::from_secs(5)),
+        )
+        .await?;
+        let StorageOperationOutput::ModuleDownload(download) = output else {
+            anyhow::bail!("download did not retain staging for cleanup test");
+        };
+        let workspace = download
+            .staged
+            .path()
+            .parent()
+            .context("download staging path has no workspace")?
+            .to_path_buf();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o500))?;
+        let result = download.commit();
+        if workspace.exists() {
+            fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))?;
+            fs::remove_dir_all(&workspace)?;
+        }
+        let error = result
+            .err()
+            .context("staging cleanup failure falsely completed the download")?;
+
+        anyhow::ensure!(
+            error
+                .downcast_ref::<StorageDownloadSettlementUnconfirmed>()
+                .is_some()
+                && fs::read(&fake.download_path)? == b"fixture download bytes",
+            "post-commit staging cleanup failure released its lease: {error:#}"
         );
         Ok(())
     }

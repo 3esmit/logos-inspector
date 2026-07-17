@@ -524,6 +524,12 @@ ColumnLayout {
             return qsTr("Remove this CID from the local Storage node?\n%1")
                 .arg(String(args[0] || ""))
         }
+        if (String(pending.method || "") === "storageDownloadToUrl"
+                && args.length > 1) {
+            return qsTr("Download this CID to the local path?\n%1\n%2")
+                .arg(String(args[0] || ""))
+                .arg(String(args[1] || ""))
+        }
         return qsTr("This will call the configured Storage source and may change local node state or local files.")
     }
 
