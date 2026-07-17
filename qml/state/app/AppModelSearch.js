@@ -2,8 +2,15 @@ function projectZoneDashboard(root) {
     with (root) {
         const state = zoneInspection
         const context = state ? state.activeZoneContext : null
+        const currentOverview = dashboardOverview
+            && typeof dashboardOverview === "object"
+            && !Array.isArray(dashboardOverview)
+            ? dashboardOverview : ({})
+        const bedrockNode = currentOverview.node
+            && typeof currentOverview.node === "object"
+            ? currentOverview.node : null
         if (!state || !context) {
-            dashboardOverview = null
+            dashboardOverview = bedrockNode ? { node: bedrockNode } : null
             dashboardProvisionalBlocks = []
             dashboardBlocks = []
             dashboardLezBlockRows = []
@@ -23,7 +30,7 @@ function projectZoneDashboard(root) {
             context.indexer_source_id, "indexer")
         const sequencerHealth = sourceHealthProjection(sequencerObservation, sourceStatus)
         const indexerHealth = sourceHealthProjection(indexerObservation, "unknown")
-        dashboardOverview = {
+        const nextOverview = {
             context_revision: Number(context.context_revision || 0),
             network_scope: context.network_scope,
             channel_id: channelId,
@@ -38,6 +45,10 @@ function projectZoneDashboard(root) {
                 head: { ok: finalizedBlock !== null, value: finalizedBlock }
             }
         }
+        if (bedrockNode) {
+            nextOverview.node = bedrockNode
+        }
+        dashboardOverview = nextOverview
         const projected = zoneDashboardRows(state)
         dashboardLezBlockRows = projected.slice(0, 5)
         dashboardProvisionalBlocks = projected.filter(function (row) {
