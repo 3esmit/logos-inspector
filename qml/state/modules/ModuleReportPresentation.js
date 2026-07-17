@@ -122,7 +122,7 @@ function expectedProbeText(root) {
     case "capabilities":
         return "1"
     default:
-        return "5"
+        return "4"
     }
 }
 
