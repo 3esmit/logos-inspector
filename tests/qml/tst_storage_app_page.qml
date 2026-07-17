@@ -28,12 +28,13 @@ TestCase {
         id: gate
 
         property int revision: 0
+        property bool allowActions: false
 
         function storageGate() {
             return {
-                enabled: false,
-                status: "disabled",
-                missing: [{
+                enabled: allowActions,
+                status: allowActions ? "enabled" : "disabled",
+                missing: allowActions ? [] : [{
                     dependency: "storage",
                     label: "Storage capability",
                     status: "unavailable",
@@ -74,6 +75,8 @@ TestCase {
 
     function init() {
         gateway.reset()
+        gate.allowActions = false
+        gate.revision += 1
         storageState.operationSession.reset()
         storageState.currentTab = "files"
         storageState.activeCid = ""
@@ -175,6 +178,23 @@ TestCase {
         })
         compare(row.Accessible.role, Accessible.StaticText)
         compare(String(row.Accessible.description), "12:34:56. 15 manifests")
+    }
+
+    function test_fetch_disables_while_storage_operation_is_busy() {
+        gate.allowActions = true
+        gate.revision += 1
+        storageState.activeCid = "z-semantic-cid-1"
+        storageState.currentTab = "cid"
+
+        let fetchButton = null
+        tryVerify(function () {
+            fetchButton = findAccessibleByName(page, "Fetch", Accessible.Button)
+            return fetchButton !== null && fetchButton.enabled
+        })
+
+        storageState.operationSession.startPending = true
+
+        tryVerify(function () { return !fetchButton.enabled })
     }
 
     function findAccessibleByName(item, expectedName, expectedRole) {

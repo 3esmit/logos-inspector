@@ -4,6 +4,7 @@ use crate::modules::logos_core::{
     BoxedModuleEventSubscription, ModuleCall, ModuleCallFuture, ModuleCallStopReason,
     ModuleCallTerminated, ModuleCallTerminationEvidence, ModuleDiagnosticFuture, ModuleTransport,
     ModuleTransportClosed, ModuleTransportKind, ModuleTransportResult, SharedModuleTransport,
+    pin_module_transport,
 };
 use crate::support::command_runner::{
     CommandCleanupUnconfirmed, CommandStopReason, CommandTerminated, CommandTerminationScope,
@@ -84,6 +85,12 @@ pub(super) async fn execute_runtime_operation(
     control: &OperationControl,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
+    let module_transport =
+        if request.requested_module_transport()? == Some(ModuleTransportKind::LogoscoreCli) {
+            pin_module_transport(module_transport)?
+        } else {
+            module_transport
+        };
     let cleanup_module_transport = Arc::clone(&module_transport);
     let module_transport: SharedModuleTransport = Arc::new(ControlledModuleTransport {
         transport: module_transport,
