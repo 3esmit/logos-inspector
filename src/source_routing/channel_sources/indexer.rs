@@ -4,10 +4,11 @@ use serde_json::{Value, json};
 
 use crate::{
     AccountReport, AccountTransactionSummary, IndexerBlockReport, TransactionSummary,
-    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
+    modules::logos_core::{LogoscoreCliRuntime, ModuleTransportKind, SharedModuleTransport},
     source_routing::{
         adapter::{
-            AdapterConnectionType, AdapterInputPolicy, SourceAdapterPolicy, SourceModePolicy,
+            AdapterConnectionType, AdapterInputPolicy, ManagedModuleCallSpec, ManagedNodeAction,
+            ManagedNodeContract, SourceAdapterPolicy, SourceModePolicy,
         },
         core::adapters::{self as module_adapters, INDEXER_MODULE},
     },
@@ -19,7 +20,62 @@ use super::{
 };
 
 pub(crate) const MODULE_ID: &str = INDEXER_MODULE;
-pub(crate) const MANAGED_PROGRAM: &str = "indexer_service";
+
+static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
+    MODULE_ID,
+    ensure_managed_module,
+    call_managed_module,
+    managed_call_spec,
+    None,
+    None,
+);
+
+#[must_use]
+pub(crate) const fn managed_contract() -> &'static ManagedNodeContract {
+    &MANAGED_CONTRACT
+}
+
+pub(crate) fn ensure_managed_module(runtime: &LogoscoreCliRuntime) -> anyhow::Result<()> {
+    runtime.ensure_module_loaded(MODULE_ID)
+}
+
+pub(crate) fn call_managed_module(
+    runtime: &LogoscoreCliRuntime,
+    method: &str,
+    signature: &str,
+    args: &[String],
+) -> anyhow::Result<Value> {
+    runtime.call_checked(MODULE_ID, method, signature, args)
+}
+
+#[must_use]
+pub(crate) fn managed_call_spec(
+    action: ManagedNodeAction,
+    config_path: &str,
+) -> Option<ManagedModuleCallSpec> {
+    match action {
+        ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
+        ManagedNodeAction::Start => Some(ManagedModuleCallSpec::new(
+            "start_indexer",
+            "start_indexer(QString)",
+            vec![config_path.to_owned()],
+        )),
+        ManagedNodeAction::Stop => Some(ManagedModuleCallSpec::new(
+            "stop_indexer",
+            "stop_indexer()",
+            Vec::new(),
+        )),
+    }
+}
+
+#[must_use]
+pub(crate) fn managed_reset_storage_call_spec(config_path: &str) -> ManagedModuleCallSpec {
+    ManagedModuleCallSpec::new(
+        "reset_storage",
+        "reset_storage(QString)",
+        vec![config_path.to_owned()],
+    )
+}
 
 const RPC_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     key: "rpc_endpoint",
@@ -273,22 +329,13 @@ impl<'a> IndexerAdapter<'a> {
 }
 
 #[must_use]
-pub(crate) fn managed_config(
-    network_id: &str,
-    data_dir: &str,
-    endpoint: Option<&str>,
-    port: Option<u16>,
-    public_testnet: bool,
-) -> Value {
-    if !public_testnet {
-        return super::layer::managed_config("indexer", network_id, data_dir, endpoint, port);
-    }
+pub(crate) fn channel_config(channel_id: &str, bedrock_endpoint: &str) -> Value {
     json!({
         "consensus_info_polling_interval": "1s",
         "bedrock_config": {
-            "addr": crate::testnet::LOCAL_BEDROCK_ENDPOINT.trim_end_matches('/'),
+            "addr": bedrock_endpoint.trim_end_matches('/'),
         },
-        "channel_id": crate::testnet::LOGOS_TESTNET_CHANNEL_ID,
+        "channel_id": channel_id,
     })
 }
 
@@ -302,8 +349,42 @@ mod tests {
     use super::*;
     use crate::{
         modules::logos_core::{ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport},
-        source_routing::channel_sources::layer::ExecutionZoneReadErrorKind,
+        source_routing::{
+            adapter::contract_tests::assert_managed_module_contract,
+            channel_sources::layer::ExecutionZoneReadErrorKind,
+        },
     };
+
+    #[test]
+    fn managed_lifecycle_calls_match_indexer_module_contract() {
+        assert_managed_module_contract(
+            "execution_zone.indexer",
+            managed_contract(),
+            &[ManagedNodeAction::Start, ManagedNodeAction::Stop],
+        );
+
+        let reset = managed_reset_storage_call_spec("/tmp/channel/indexer.json");
+        assert_eq!(reset.method, "reset_storage");
+        assert_eq!(reset.signature, "reset_storage(QString)");
+        assert_eq!(reset.args, ["/tmp/channel/indexer.json"]);
+    }
+
+    #[test]
+    fn channel_config_uses_selected_channel_and_bedrock_endpoint() {
+        let config = channel_config(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "http://127.0.0.1:18080/",
+        );
+
+        assert_eq!(
+            config,
+            json!({
+                "consensus_info_polling_interval": "1s",
+                "bedrock_config": { "addr": "http://127.0.0.1:18080" },
+                "channel_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            })
+        );
+    }
 
     struct RecordingModuleTransport {
         kind: ModuleTransportKind,

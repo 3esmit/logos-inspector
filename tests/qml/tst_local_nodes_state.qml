@@ -29,8 +29,35 @@ TestCase {
         state.operations = []
         state.revision = 0
         state.devnets = []
+        state.packageCatalog = null
+        state.packageCatalogError = ""
+        state.packageCatalogLoading = false
+        state.packageCatalogGeneration = 0
         state.observedNodes = ({})
         state.clearActionDraft()
+    }
+
+    function samplePackageCatalog(installed) {
+        return {
+            modules_dir: "/tmp/modules",
+            package: {
+                name: "lez_indexer_module",
+                versions: [{
+                    version: "1.1.0",
+                    released_at: "2026-07-17T12:00:00Z",
+                    root_hash: "root-hash-1.1.0"
+                }, {
+                    version: "1.0.0",
+                    released_at: "2026-07-01T12:00:00Z",
+                    root_hash: "root-hash-1.0.0-repack"
+                }, {
+                    version: "1.0.0",
+                    released_at: "2026-06-01T12:00:00Z",
+                    root_hash: "root-hash-1.0.0"
+                }]
+            },
+            installed: installed === undefined ? null : installed
+        }
     }
 
     function sampleReport() {
@@ -250,6 +277,42 @@ TestCase {
         compare(state.operations[0].status, "failed")
         compare(gateway.history.length, 1)
         compare(gateway.history[0].operation.status, "failed")
+    }
+
+    function test_needs_configuration_action_is_not_reported_as_completed() {
+        state.networkProfile = "default"
+        const report = testnetReport()
+        report.operations = [{
+            action: "install",
+            node: "indexer",
+            status: "needs_configuration",
+            detail: "install an official Indexer package"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("install", "indexer", "", "", "Install Indexer")
+
+        compare(state.error, "")
+        compare(gateway.history.length, 1)
+        compare(gateway.history[0].operation.status, "failed")
+        compare(gateway.history[0].operation.result.status, "needs_configuration")
+        compare(gateway.history[0].operation.error, "install an official Indexer package")
+        compare(gateway.resultTitle, "Install Indexer")
+        compare(gateway.resultText, "install an official Indexer package")
+        verify(gateway.resultIsError)
     }
 
     function test_network_actions_follow_profile_mode() {
@@ -490,6 +553,23 @@ TestCase {
         compare(state.observedRunState("indexer"), "unavailable")
     }
 
+    function test_managed_indexer_projects_module_sync_states() {
+        const report = managedTestnetReport()
+        state.report = report
+
+        report.nodes[1].run_state = "syncing"
+        state.report = Object.assign({}, report)
+        compare(state.observedRunState("indexer"), "syncing")
+
+        report.nodes[1].run_state = "caught_up"
+        state.report = Object.assign({}, report)
+        compare(state.observedRunState("indexer"), "online")
+
+        report.nodes[1].run_state = "error"
+        state.report = Object.assign({}, report)
+        compare(state.observedRunState("indexer"), "unavailable")
+    }
+
     function test_external_installed_process_remains_diagnostic_driven() {
         const report = testnetReport()
         report.nodes[1].install_state = "installed"
@@ -589,5 +669,121 @@ TestCase {
         compare(gateway.calls[0].args[1].runtime_modules_dir, "/tmp/modules")
         compare(gateway.calls[0].args[1].runtime_binary_path, "/tmp/logoscore")
         compare(gateway.history[0].operation.label, "Start Local Runtime")
+    }
+
+    function test_package_catalog_loads_exact_releases_for_modules_directory() {
+        gateway.responses = ({
+            localNodePackageCatalog: {
+                ok: true,
+                value: samplePackageCatalog({
+                    version: "1.0.0",
+                    root_hash: "root-hash-1.0.0"
+                }),
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshPackageCatalog("/tmp/modules")
+
+        compare(gateway.calls.length, 1)
+        compare(gateway.calls[0].method, "localNodePackageCatalog")
+        compare(gateway.calls[0].args.length, 1)
+        compare(gateway.calls[0].args[0], "/tmp/modules")
+        verify(!state.packageCatalogLoading)
+        compare(state.packageCatalogError, "")
+        compare(state.packageName(), "lez_indexer_module")
+        compare(state.packageCatalogModulesDir(), "/tmp/modules")
+        compare(state.packageReleases().length, 3)
+        compare(
+            state.packageRelease("1.0.0", "root-hash-1.0.0-repack").released_at,
+            "2026-07-01T12:00:00Z")
+        compare(
+            state.packageRelease("1.0.0", "root-hash-1.0.0").released_at,
+            "2026-06-01T12:00:00Z")
+        compare(state.packageRelease("1.0.0"), null)
+
+        let selection = state.defaultPackageSelection()
+        compare(selection.version, "1.0.0")
+        compare(selection.root_hash, "root-hash-1.0.0")
+
+        state.packageCatalog = samplePackageCatalog(null)
+        selection = state.defaultPackageSelection()
+        compare(selection.version, "1.1.0")
+        compare(selection.root_hash, "root-hash-1.1.0")
+    }
+
+    function test_package_catalog_failure_clears_stale_package_state() {
+        state.packageCatalog = samplePackageCatalog()
+        gateway.responses = ({
+            localNodePackageCatalog: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "catalog unavailable"
+            }
+        })
+
+        state.refreshPackageCatalog("/tmp/modules")
+
+        compare(state.packageCatalog, null)
+        compare(state.packageCatalogError, "catalog unavailable")
+        verify(!state.packageCatalogLoading)
+    }
+
+    function test_indexer_install_draft_serializes_exact_package_identity() {
+        state.networkProfile = "default"
+        const report = testnetReport()
+        report.nodes[1].available_actions = ["install"]
+        state.report = report
+        state.packageCatalog = samplePackageCatalog()
+        state.beginNodeAction(
+            "install",
+            "indexer",
+            "1.0.0",
+            "root-hash-1.0.0-repack",
+            "/tmp/modules")
+
+        compare(state.actionDraftTitle(), "Install Indexer 1.0.0")
+        compare(
+            state.actionDraftMessage(),
+            "This downloads official lez_indexer_module 1.0.0, verifies root hash root-hash-1.0.0-repack, and installs it into /tmp/modules. LogosCore Runtime must be stopped. After installation, start the runtime, then use Zone Sources to start the selected Channel Indexer.")
+
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            },
+            localNodePackageCatalog: {
+                ok: true,
+                value: samplePackageCatalog({
+                    version: "1.0.0",
+                    root_hash: "root-hash-1.0.0-repack"
+                }),
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runPendingAction()
+
+        compare(gateway.calls[0].method, "localNodesAction")
+        compare(gateway.calls[0].args[1].action, "install")
+        compare(gateway.calls[0].args[1].node, "indexer")
+        compare(gateway.calls[0].args[1].runtime_modules_dir, "/tmp/modules")
+        compare(gateway.calls[0].args[1].package_version, "1.0.0")
+        compare(gateway.calls[0].args[1].package_root_hash, "root-hash-1.0.0-repack")
+        compare(gateway.calls[2].method, "localNodePackageCatalog")
+        compare(gateway.calls[2].args[0], "/tmp/modules")
+        compare(state.installedPackage().version, "1.0.0")
+        compare(state.installedPackage().root_hash, "root-hash-1.0.0-repack")
     }
 }

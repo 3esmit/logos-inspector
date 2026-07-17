@@ -31,8 +31,7 @@ fn reset_record_contexts(record: &mut super::model::LocalDevnetRecord) {
         if !adapter.resets_with_runtime() {
             continue;
         }
-        let generated_config_available = adapter.preserve_generated_config_on_runtime_reset()
-            && std::path::Path::new(&node.config_path).is_file();
+        let generated_config_available = adapter.installation_survives_runtime_reset(node);
         node.installed = generated_config_available;
         node.process_id = None;
         node.lifecycle_state = if generated_config_available {
@@ -89,6 +88,11 @@ mod tests {
                     endpoint: Some(crate::testnet::LOCAL_BEDROCK_ENDPOINT.to_owned()),
                     port: Some(8080),
                     package_path: Some("logoscore".to_owned()),
+                    package_version: None,
+                    package_root_hash: None,
+                    indexer_state: None,
+                    indexer_head: None,
+                    indexer_error: None,
                     module_path: None,
                     process_id: None,
                     installed: true,
@@ -123,6 +127,86 @@ mod tests {
         {
             bail!("Bedrock restart did not preserve generated configuration: {node:?}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_restart_requires_indexer_package_artifact_for_preserved_installation() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let config_path = directory.path().join("indexer.json");
+        let package_path = directory.path().join("lez_indexer_module.so");
+        std::fs::write(&config_path, b"{}")?;
+        let mut state = LocalNodesState {
+            version: 3,
+            active_devnet: None,
+            module_context_topology_by_kind: std::collections::BTreeMap::new(),
+            testnet: Some(super::super::model::LocalDevnetRecord {
+                deployment: super::super::model::LocalNodeDeployment::PublicTestnet,
+                id: "logos-testnet".to_owned(),
+                label: "Logos Testnet".to_owned(),
+                workspace: directory.path().display().to_string(),
+                manifest_path: directory
+                    .path()
+                    .join("local-network.json")
+                    .display()
+                    .to_string(),
+                created_at: 0,
+                updated_at: 0,
+                nodes: vec![LocalNodeConfigRecord {
+                    kind: NodeKind::Indexer,
+                    config_path: config_path.display().to_string(),
+                    initialization_config_path: None,
+                    data_dir: directory.path().join("data").display().to_string(),
+                    endpoint: None,
+                    port: None,
+                    package_path: Some(package_path.display().to_string()),
+                    package_version: Some("1.2.3".to_owned()),
+                    package_root_hash: Some("sha256:test".to_owned()),
+                    indexer_state: Some("caught_up".to_owned()),
+                    indexer_head: Some("42".to_owned()),
+                    indexer_error: None,
+                    module_path: None,
+                    process_id: None,
+                    installed: true,
+                    lifecycle_state: NodeLifecycleState::Running,
+                    pending_lifecycle_action: None,
+                }],
+            }),
+            managed_workspace_root: directory.path().display().to_string(),
+            devnets: Vec::new(),
+            operations: Vec::new(),
+        };
+
+        reset_module_contexts(&mut state);
+        let missing_package = state
+            .testnet
+            .as_ref()
+            .and_then(|record| record.nodes.first())
+            .context("missing Indexer node")?;
+        anyhow::ensure!(
+            !missing_package.installed
+                && missing_package.lifecycle_state == NodeLifecycleState::NotInitialized
+        );
+
+        std::fs::write(&package_path, b"module")?;
+        let node = state
+            .testnet
+            .as_mut()
+            .and_then(|record| record.nodes.first_mut())
+            .context("missing Indexer node")?;
+        node.installed = true;
+        node.lifecycle_state = NodeLifecycleState::Running;
+        reset_module_contexts(&mut state);
+
+        let installed = state
+            .testnet
+            .as_ref()
+            .and_then(|record| record.nodes.first())
+            .context("missing Indexer node")?;
+        anyhow::ensure!(
+            installed.installed && installed.lifecycle_state == NodeLifecycleState::Stopped
+        );
         Ok(())
     }
 }

@@ -3,13 +3,16 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use super::adapters::{NodeCommandContext, NodeCommandPlan, RpcStartupReadiness, adapter_for};
+use super::adapters::{
+    ManagedCommandResultContract, NodeCommandContext, NodeCommandPlan, RpcStartupReadiness,
+    adapter_for,
+};
 use super::{
     NodeAction, NodeKind,
     process::{spawn_detached, spawn_rpc_ready},
 };
 use crate::{
-    modules::logos_core::LogoscoreCliRuntime,
+    modules::logos_core::{LogoscoreCliRuntime, normalize_module_call_value},
     source_routing::{ManagedModuleCallSpec, ManagedNodeContract},
     support::command_runner::CommandControl,
 };
@@ -20,6 +23,7 @@ pub(super) struct LocalNodeCommandSpec {
     pub args: Vec<String>,
     pub display: String,
     backend: CommandBackend,
+    result_contract: ManagedCommandResultContract,
 }
 
 #[derive(Debug, Clone)]
@@ -36,16 +40,16 @@ pub(super) fn command_spec_for(
     kind: NodeKind,
     action: NodeAction,
     config_path: &str,
-    data_dir: &str,
-    port: Option<u16>,
+    _data_dir: &str,
+    _port: Option<u16>,
 ) -> Option<LocalNodeCommandSpec> {
-    let context = NodeCommandContext {
-        config_path,
-        data_dir,
-        port,
-    };
+    let context = NodeCommandContext { config_path };
     match adapter_for(kind).command_plan(action, context)? {
-        NodeCommandPlan::ManagedModule { contract, call } => Some(logoscore_spec(contract, call)),
+        NodeCommandPlan::ManagedModule {
+            contract,
+            call,
+            result_contract,
+        } => Some(logoscore_spec(contract, call, result_contract)),
         NodeCommandPlan::DetachedProcess { program, args } => Some(spawn_spec(program, args)),
     }
 }
@@ -79,7 +83,14 @@ pub(super) fn execute_command_spec(
     match &spec.backend {
         CommandBackend::LogosCore { contract, call } => {
             let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
-            contract.call(runtime, call)
+            let value = contract.call(runtime, call)?;
+            validate_managed_call_value(
+                spec.result_contract,
+                contract.module_id(),
+                call.method,
+                &value,
+            )?;
+            Ok(value)
         }
         CommandBackend::SpawnProcess => execute_preflighted_command_spec(spec, runtime, None),
     }
@@ -143,8 +154,30 @@ pub(super) fn execute_preflighted_command_spec(
                     &call.args,
                     control.clone(),
                 ),
-                None => return contract.call(runtime, call),
+                None => {
+                    let value = contract.call(runtime, call)?;
+                    validate_managed_call_value(
+                        spec.result_contract,
+                        contract.module_id(),
+                        call.method,
+                        &value,
+                    )?;
+                    return Ok(value);
+                }
             }?;
+            if spec.result_contract != ManagedCommandResultContract::Any {
+                let value = normalize_module_call_value(
+                    contract.module_id(),
+                    call.method,
+                    output.value.clone(),
+                )?;
+                validate_managed_result(
+                    spec.result_contract,
+                    contract.module_id(),
+                    call.method,
+                    &value,
+                )?;
+            }
             serde_json::to_value(output).context("failed to serialize logoscore call output")
         }
         CommandBackend::SpawnProcess => {
@@ -191,6 +224,7 @@ pub(super) fn execute_ready_process_spec(
 fn logoscore_spec(
     contract: &'static ManagedNodeContract,
     call: ManagedModuleCallSpec,
+    result_contract: ManagedCommandResultContract,
 ) -> LocalNodeCommandSpec {
     let module = contract.module_id();
     let mut args = vec!["call".to_owned(), module.to_owned(), call.method.to_owned()];
@@ -201,6 +235,7 @@ fn logoscore_spec(
         display: shell_display("logoscore", &args),
         args,
         backend: CommandBackend::LogosCore { contract, call },
+        result_contract,
     }
 }
 
@@ -210,7 +245,44 @@ fn spawn_spec(program: &str, args: Vec<String>) -> LocalNodeCommandSpec {
         display: shell_display(program, &args),
         args,
         backend: CommandBackend::SpawnProcess,
+        result_contract: ManagedCommandResultContract::Any,
     }
+}
+
+fn validate_managed_result(
+    result_contract: ManagedCommandResultContract,
+    module: &str,
+    method: &str,
+    value: &Value,
+) -> Result<()> {
+    if result_contract == ManagedCommandResultContract::Any {
+        return Ok(());
+    }
+    let status = value.as_i64().with_context(|| {
+        format!(
+            "{module}.{method} returned an invalid OperationStatus: {}",
+            crate::response_excerpt(&value.to_string())
+        )
+    })?;
+    anyhow::ensure!(
+        status == 0,
+        "{module}.{method} failed with OperationStatus {status}"
+    );
+    Ok(())
+}
+
+fn validate_managed_call_value(
+    result_contract: ManagedCommandResultContract,
+    module: &str,
+    method: &str,
+    value: &Value,
+) -> Result<()> {
+    if result_contract == ManagedCommandResultContract::Any {
+        return Ok(());
+    }
+    let payload = value.get("value").cloned().unwrap_or_else(|| value.clone());
+    let result = normalize_module_call_value(module, method, payload)?;
+    validate_managed_result(result_contract, module, method, &result)
 }
 
 fn shell_display(program: &str, args: &[String]) -> String {
@@ -226,4 +298,98 @@ pub(super) fn operation_detail_from_value(value: &Value) -> String {
         .and_then(|value| value.get("status").or_else(|| value.get("result")))
         .map(Value::to_string)
         .unwrap_or_else(|| "completed".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, bail};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn indexer_lifecycle_requires_zero_operation_status() -> Result<()> {
+        for action in [NodeAction::Start, NodeAction::Stop, NodeAction::Purge] {
+            let spec = command_spec_for(
+                NodeKind::Indexer,
+                action,
+                "/tmp/indexer.json",
+                "/tmp/indexer",
+                None,
+            )
+            .ok_or_else(|| anyhow::anyhow!("missing Indexer {action:?} command"))?;
+            anyhow::ensure!(
+                spec.result_contract == ManagedCommandResultContract::OperationStatusZero
+            );
+        }
+        let result_contract = ManagedCommandResultContract::OperationStatusZero;
+        let success = json!({
+            "runner": "Inspector-managed logoscore",
+            "value": {
+                "status": "ok",
+                "module": "lez_indexer_module",
+                "method": "start_indexer",
+                "result": 0,
+            }
+        });
+        validate_managed_call_value(
+            result_contract,
+            "lez_indexer_module",
+            "start_indexer",
+            &success,
+        )?;
+
+        let failure = json!({
+            "runner": "Inspector-managed logoscore",
+            "value": {
+                "status": "ok",
+                "module": "lez_indexer_module",
+                "method": "start_indexer",
+                "result": 2,
+            }
+        });
+        let Err(error) = validate_managed_call_value(
+            result_contract,
+            "lez_indexer_module",
+            "start_indexer",
+            &failure,
+        ) else {
+            bail!("nonzero Indexer OperationStatus was accepted");
+        };
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("start_indexer failed with OperationStatus 2")
+        );
+
+        let Err(error) = validate_managed_result(
+            result_contract,
+            "lez_indexer_module",
+            "start_indexer",
+            &json!("0"),
+        ) else {
+            bail!("string OperationStatus was accepted");
+        };
+        anyhow::ensure!(error.to_string().contains("invalid OperationStatus"));
+        Ok(())
+    }
+
+    #[test]
+    fn operation_status_contract_does_not_change_other_modules() -> Result<()> {
+        let spec = command_spec_for(
+            NodeKind::Storage,
+            NodeAction::Start,
+            "/tmp/storage.json",
+            "/tmp/storage",
+            None,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing Storage start command"))?;
+        anyhow::ensure!(spec.result_contract == ManagedCommandResultContract::Any);
+        validate_managed_result(
+            spec.result_contract,
+            "storage_module",
+            "start",
+            &json!({ "accepted": true }),
+        )
+    }
 }

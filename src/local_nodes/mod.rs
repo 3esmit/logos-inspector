@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::{any::Any, time::Duration};
+
+use anyhow::{Context as _, Result};
 
 use crate::modules::logos_core::LogoscoreCliRuntime;
 use crate::support::command_runner::CommandControl;
@@ -10,11 +12,62 @@ mod commands;
 mod lifecycle;
 mod model;
 mod module_watcher;
+mod package;
 mod paths;
 mod presentation;
 mod process;
 mod runtime;
 mod workflow;
+
+pub(crate) const INDEXER_PACKAGE_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+struct LocalNodePackageCommitControl {
+    command: CommandControl,
+    _lease: Box<dyn Any + Send>,
+}
+
+pub(crate) struct LocalNodePackageCommit {
+    begin: Option<Box<dyn FnOnce() -> Result<LocalNodePackageCommitControl> + Send>>,
+    active: Option<LocalNodePackageCommitControl>,
+}
+
+impl LocalNodePackageCommit {
+    pub(crate) fn new<F, L>(begin: F) -> Self
+    where
+        F: FnOnce() -> Result<(CommandControl, L)> + Send + 'static,
+        L: Any + Send,
+    {
+        Self {
+            begin: Some(Box::new(move || {
+                let (command, lease) = begin()?;
+                Ok(LocalNodePackageCommitControl {
+                    command,
+                    _lease: Box::new(lease),
+                })
+            })),
+            active: None,
+        }
+    }
+
+    fn begin(&mut self) -> Result<CommandControl> {
+        if self.active.is_none() {
+            let begin = self
+                .begin
+                .take()
+                .context("Indexer package commit control is unavailable")?;
+            self.active = Some(begin()?);
+        }
+        self.active
+            .as_ref()
+            .map(|active| active.command.clone())
+            .context("Indexer package commit did not become active")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_for_test(&mut self) -> Result<CommandControl> {
+        self.begin()
+    }
+}
 
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
@@ -23,6 +76,10 @@ pub use model::{
     ToolStatus,
 };
 pub use module_watcher::{LocalNodeModuleSubscription, LocalNodeModuleWatcher};
+pub use package::{
+    LocalNodeInstalledPackageReport, LocalNodePackageCatalogEntry, LocalNodePackageCatalogReport,
+    LocalNodePackageRelease,
+};
 pub use runtime::LogoscoreRuntimeStatus;
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
@@ -31,6 +88,12 @@ pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
 
 pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {
     action_engine::LocalNodeActionEngine::system()?.devnets(profile)
+}
+
+pub fn local_node_package_catalog(
+    modules_dir: Option<&str>,
+) -> Result<LocalNodePackageCatalogReport> {
+    package::local_node_package_catalog(modules_dir)
 }
 
 pub fn local_nodes_action(
@@ -46,12 +109,14 @@ pub(crate) fn local_nodes_action_controlled(
     request: LocalNodeActionRequest,
     confirmation: Option<&str>,
     control: CommandControl,
+    package_commit: LocalNodePackageCommit,
 ) -> Result<LocalNodeReport> {
     action_engine::LocalNodeActionEngine::system()?.apply_controlled(
         profile,
         request,
         confirmation,
         control,
+        package_commit,
     )
 }
 
@@ -67,7 +132,7 @@ pub(crate) fn running_managed_logoscore_runtime() -> Result<Option<LogoscoreCliR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::{Context as _, Result, bail};
+    use anyhow::{Result, bail};
     use serde_json::Value;
     use std::{env, fs, path::Path};
 
@@ -157,6 +222,11 @@ mod tests {
                 command: "logoscore".to_owned(),
                 path: None,
             },
+            lgpd: ToolStatus {
+                available: false,
+                command: "lgpd".to_owned(),
+                path: None,
+            },
             lgpm: ToolStatus {
                 available: false,
                 command: "lgpm".to_owned(),
@@ -168,6 +238,11 @@ mod tests {
                 available: true,
                 command: "logoscore".to_owned(),
                 path: Some("/usr/bin/logoscore".to_owned()),
+            },
+            lgpd: ToolStatus {
+                available: true,
+                command: "lgpd".to_owned(),
+                path: Some("/usr/bin/lgpd".to_owned()),
             },
             lgpm: ToolStatus {
                 available: false,
@@ -191,23 +266,20 @@ mod tests {
     }
 
     #[test]
-    fn indexer_uses_registered_process_lifecycle() -> Result<()> {
+    fn indexer_uses_package_managed_module_lifecycle() -> Result<()> {
         let adapter = super::adapters::adapter_for(NodeKind::Indexer);
-        let readiness = adapter
-            .startup_rpc_readiness()
-            .context("Indexer did not expose RPC readiness")?;
         if !matches!(
             adapter.lifecycle(),
-            super::adapters::NodeLifecycle::RegisteredProcess {
-                program: "indexer_service"
-            }
-        ) || !adapter.workflow_actions().contains(&NodeAction::Start)
-            || readiness.method != "checkHealth"
-            || readiness.startup_timeout != std::time::Duration::from_secs(120)
-            || readiness.probe_timeout != std::time::Duration::from_secs(3)
-            || readiness.retry_interval != std::time::Duration::from_secs(1)
+            super::adapters::NodeLifecycle::InitializedModule(contract)
+                if contract.module_id() == "lez_indexer_module"
+        ) || adapter.workflow_actions()
+            != [NodeAction::Install, NodeAction::Start, NodeAction::Stop]
+            || adapter.default_port().is_some()
+            || adapter.startup_rpc_readiness().is_some()
+            || !adapter.package_managed()
+            || !adapter.preserve_generated_config_on_runtime_reset()
         {
-            bail!("Indexer did not expose its registered process contract");
+            bail!("Indexer did not expose its package-managed module contract");
         }
         Ok(())
     }
@@ -224,6 +296,11 @@ mod tests {
             data_dir: None,
             config_path: None,
             package_path: None,
+            package_version: None,
+            managed_channel_id: None,
+            indexer_state: None,
+            indexer_head: None,
+            indexer_error: None,
             process_id: None,
             last_action: None,
             available_actions: Vec::new(),
@@ -258,16 +335,16 @@ mod tests {
             NodeAction::Start,
             "/tmp/indexer.json",
             "/tmp/indexer-data",
-            Some(8779),
+            None,
         )
         .context("missing indexer command")?;
         if indexer.args
             != [
+                "call",
+                "lez_indexer_module",
+                "start_indexer",
                 "/tmp/indexer.json",
-                "--port",
-                "8779",
-                "--data-dir",
-                "/tmp/indexer-data",
+                "--json",
             ]
         {
             bail!("unexpected indexer command: {:?}", indexer.args);
@@ -308,6 +385,10 @@ mod tests {
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
         let mut runtime = None;
@@ -375,6 +456,10 @@ mod tests {
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
         let cancellation = tokio_util::sync::CancellationToken::new();
@@ -501,7 +586,7 @@ mod tests {
         let text = serde_json::to_string(&state)?;
         let parsed: LocalNodesState = serde_json::from_str(&text)?;
 
-        if parsed.version != 3 {
+        if parsed.version != model::LOCAL_NODES_STATE_VERSION {
             bail!("unexpected state version");
         }
         if !parsed.managed_workspace_root.ends_with("local-nodes") {
@@ -595,105 +680,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn stopping_registered_process_without_owned_pid_is_rejected() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let record = LocalDevnetRecord {
-            deployment: LocalNodeDeployment::PublicTestnet,
-            id: "logos-testnet".to_owned(),
-            label: "Logos Testnet".to_owned(),
-            workspace: directory.path().display().to_string(),
-            manifest_path: directory
-                .path()
-                .join("local-network.json")
-                .display()
-                .to_string(),
-            created_at: 0,
-            updated_at: 0,
-            nodes: vec![LocalNodeConfigRecord {
-                kind: NodeKind::Indexer,
-                config_path: directory.path().join("indexer.json").display().to_string(),
-                initialization_config_path: None,
-                data_dir: directory.path().join("indexer").display().to_string(),
-                endpoint: Some(crate::testnet::LOCAL_INDEXER_ENDPOINT.to_owned()),
-                port: Some(8779),
-                package_path: Some("/usr/bin/indexer_service".to_owned()),
-                module_path: None,
-                process_id: None,
-                installed: true,
-                lifecycle_state: NodeLifecycleState::Stopped,
-                pending_lifecycle_action: None,
-            }],
-        };
-        let mut state = LocalNodesState {
-            version: 3,
-            active_devnet: None,
-            module_context_topology_by_kind: std::collections::BTreeMap::new(),
-            testnet: Some(record),
-            managed_workspace_root: directory.path().display().to_string(),
-            devnets: Vec::new(),
-            operations: Vec::new(),
-        };
-        let managed_report = action_engine::report_for_state("default", &state);
-        let managed_indexer = managed_report
-            .nodes
-            .iter()
-            .find(|node| node.kind == NodeKind::Indexer)
-            .context("missing managed Indexer status")?;
-        anyhow::ensure!(
-            managed_indexer.ownership == "inspector_managed",
-            "managed Indexer ownership was not projected"
-        );
-        let mut external_state = state.clone();
-        external_state
-            .testnet
-            .as_mut()
-            .and_then(|record| record.nodes.first_mut())
-            .context("missing external Indexer config")?
-            .installed = false;
-        let external_report = action_engine::report_for_state("default", &external_state);
-        let external_indexer = external_report
-            .nodes
-            .iter()
-            .find(|node| node.kind == NodeKind::Indexer)
-            .context("missing external Indexer status")?;
-        anyhow::ensure!(
-            external_indexer.ownership == "external",
-            "unregistered Indexer was claimed as Inspector-managed"
-        );
-        let request = LocalNodeActionRequest {
-            action: NodeAction::Stop,
-            node: Some(NodeKind::Indexer),
-            network_id: None,
-            workspace_path: None,
-            runtime_modules_dir: None,
-            runtime_binary_path: None,
-            label: None,
-        };
-        let mut runtime = None;
-
-        let operation = action_workspace::LocalNodeActionWorkspace::system().apply(
-            &mut state,
-            &mut runtime,
-            directory.path(),
-            "default",
-            &request,
-            None,
-        );
-
-        anyhow::ensure!(
-            operation.report.status == "needs_configuration",
-            "unexpected status: {}",
-            operation.report.status
-        );
-        anyhow::ensure!(
-            operation.report.detail.contains("Inspector-owned"),
-            "missing ownership diagnostic: {}",
-            operation.report.detail
-        );
-        Ok(())
-    }
-
     #[cfg(unix)]
     #[test]
     fn bedrock_reinitialization_reuses_generated_config_without_key_generation() -> Result<()> {
@@ -735,6 +721,11 @@ mod tests {
                 endpoint: Some(crate::testnet::LOCAL_BEDROCK_ENDPOINT.to_owned()),
                 port: Some(8080),
                 package_path: None,
+                package_version: None,
+                package_root_hash: None,
+                indexer_state: None,
+                indexer_head: None,
+                indexer_error: None,
                 module_path: None,
                 process_id: None,
                 installed: false,
@@ -768,6 +759,10 @@ mod tests {
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: None,
         };
 
@@ -820,6 +815,10 @@ mod tests {
             workspace_path: None,
             runtime_modules_dir: None,
             runtime_binary_path: None,
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
             label: Some("Demo Net".to_owned()),
         };
         let mut runtime = None;

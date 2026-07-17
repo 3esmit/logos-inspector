@@ -14,6 +14,10 @@ QtObject {
     property var operations: []
     property int revision: 0
     property var devnets: []
+    property var packageCatalog: null
+    property string packageCatalogError: ""
+    property bool packageCatalogLoading: false
+    property int packageCatalogGeneration: 0
     property var observedNodes: ({})
     property int publicTestnetFinalityWindowBlocks: 256
     readonly property string defaultRuntimeModulesDir: "/opt/logos-node/modules"
@@ -23,6 +27,8 @@ QtObject {
     property string pendingWorkspace: ""
     property string pendingRuntimeModulesDir: ""
     property string pendingRuntimeBinaryPath: ""
+    property string pendingPackageVersion: ""
+    property string pendingPackageRootHash: ""
 
     function clearStatus() {
         report = null;
@@ -30,7 +36,7 @@ QtObject {
         revision += 1;
     }
 
-    function refresh(showResult) {
+    function refresh(showResult, includePackageCatalog) {
         error = "";
         return gateway.request("localNodesStatus", [networkProfile], qsTr("Local nodes"), showResult === true, function (response) {
             if (response.ok) {
@@ -43,6 +49,9 @@ QtObject {
                 error = response.error || qsTr("Local node status failed.");
                 revision += 1;
             }
+            if (includePackageCatalog === true) {
+                refreshPackageCatalog(root.runtimeModulesDir());
+            }
         });
     }
 
@@ -51,6 +60,32 @@ QtObject {
             if (response.ok) {
                 devnets = response.value && Array.isArray(response.value.devnets) ? response.value.devnets : [];
             }
+        });
+    }
+
+    function refreshPackageCatalog(modulesDir) {
+        const requestedModulesDir = String(modulesDir || "").trim();
+        const targetModulesDir = requestedModulesDir.length
+            ? requestedModulesDir : runtimeModulesDir();
+        const generation = packageCatalogGeneration + 1;
+        packageCatalogGeneration = generation;
+        packageCatalogLoading = true;
+        packageCatalogError = "";
+        return gateway.request("localNodePackageCatalog", [targetModulesDir], qsTr("Indexer package catalog"), false, function (response) {
+            if (generation !== packageCatalogGeneration) {
+                return;
+            }
+            packageCatalogLoading = false;
+            const value = response && response.ok ? response.value || null : null;
+            const packageValue = value && value.package ? value.package : null;
+            if (packageValue && Array.isArray(packageValue.versions)) {
+                packageCatalog = value;
+                packageCatalogError = "";
+                return;
+            }
+            packageCatalog = null;
+            packageCatalogError = response && response.error
+                ? response.error : qsTr("Indexer package catalog failed.");
         });
     }
 
@@ -65,7 +100,7 @@ QtObject {
         return true
     }
 
-    function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath) {
+    function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath, packageVersion, packageRootHash) {
         if (busy) {
             gateway.setResult(qsTr("Local nodes"), qsTr("Another inspection is already running."), true, null);
             return null;
@@ -93,6 +128,14 @@ QtObject {
         if (binaryPath.length) {
             request.runtime_binary_path = binaryPath;
         }
+        const selectedPackageVersion = String(packageVersion || "").trim();
+        if (selectedPackageVersion.length) {
+            request.package_version = selectedPackageVersion;
+        }
+        const selectedPackageRootHash = String(packageRootHash || "").trim();
+        if (selectedPackageRootHash.length) {
+            request.package_root_hash = selectedPackageRootHash;
+        }
 
         const operationLabel = String(label || actionLabel(action));
         gateway.setBusy(true, operationLabel);
@@ -103,18 +146,29 @@ QtObject {
                 operations = response.value && Array.isArray(response.value.operations) ? response.value.operations : [];
                 error = "";
                 revision += 1;
+                const operation = latestActionOperation(operations);
                 const detail = actionDetail(operations, request);
+                const operationStatus = String(operation.status || "completed");
+                const historyStatus = actionHistoryStatus(operationStatus);
                 gateway.appendOperationHistory({
                     domain: "localNodes",
                     method: "localNodesAction",
-                    status: "completed",
+                    status: historyStatus,
                     label: operationLabel,
                     result: {
-                        status: "completed",
+                        status: operationStatus,
                         detail: detail
-                    }
+                    },
+                    error: historyStatus === "failed" ? detail : ""
                 }, detail);
+                if (historyStatus === "failed") {
+                    gateway.setResult(operationLabel, detail, true, operation);
+                }
                 refreshDevnets();
+                if (request.node === "indexer"
+                        && (request.action === "install" || request.action === "uninstall")) {
+                    refreshPackageCatalog(request.runtime_modules_dir || root.runtimeModulesDir());
+                }
             } else {
                 error = response.error || qsTr("Local node action failed.");
                 appendOperation(actionLabel(action), "failed", error);
@@ -149,9 +203,8 @@ QtObject {
     }
 
     function actionDetail(operationRows, request) {
-        const rows = Array.isArray(operationRows) ? operationRows : [];
-        if (rows.length > 0) {
-            const row = rows[rows.length - 1] || {};
+        const row = latestActionOperation(operationRows);
+        if (Object.keys(row).length > 0) {
             const detail = String(row.detail || "");
             if (detail.length) {
                 return detail;
@@ -170,6 +223,27 @@ QtObject {
             return network;
         }
         return "";
+    }
+
+    function latestActionOperation(operationRows) {
+        const rows = Array.isArray(operationRows) ? operationRows : [];
+        return rows.length > 0 ? rows[rows.length - 1] || {} : {};
+    }
+
+    function actionHistoryStatus(status) {
+        switch (String(status || "").toLowerCase()) {
+        case "failed":
+        case "error":
+        case "needs_configuration":
+        case "timed_out":
+        case "interrupted":
+            return "failed";
+        case "canceled":
+        case "cancelled":
+            return "canceled";
+        default:
+            return "completed";
+        }
     }
 
     function actionLabel(action) {
@@ -203,13 +277,15 @@ QtObject {
         }
     }
 
-    function beginNodeAction(action, node) {
+    function beginNodeAction(action, node, packageVersion, packageRootHash, modulesDir) {
         pendingAction = String(action || "");
         pendingNode = String(node || "");
         pendingNetworkId = "";
         pendingWorkspace = "";
-        pendingRuntimeModulesDir = "";
+        pendingRuntimeModulesDir = String(modulesDir || "").trim();
         pendingRuntimeBinaryPath = "";
+        pendingPackageVersion = String(packageVersion || "").trim();
+        pendingPackageRootHash = String(packageRootHash || "").trim();
     }
 
     function beginNetworkAction(action, networkId, workspacePath) {
@@ -219,6 +295,8 @@ QtObject {
         pendingWorkspace = String(workspacePath || "").trim();
         pendingRuntimeModulesDir = "";
         pendingRuntimeBinaryPath = "";
+        pendingPackageVersion = "";
+        pendingPackageRootHash = "";
     }
 
     function beginRuntimeAction(action, modulesDir, binaryPath) {
@@ -230,6 +308,8 @@ QtObject {
         pendingRuntimeModulesDir = requestedModulesDir.length
             ? requestedModulesDir : runtimeModulesDir();
         pendingRuntimeBinaryPath = String(binaryPath || "").trim();
+        pendingPackageVersion = "";
+        pendingPackageRootHash = "";
     }
 
     function clearActionDraft() {
@@ -239,6 +319,8 @@ QtObject {
         pendingWorkspace = "";
         pendingRuntimeModulesDir = "";
         pendingRuntimeBinaryPath = "";
+        pendingPackageVersion = "";
+        pendingPackageRootHash = "";
     }
 
     function runPendingAction() {
@@ -251,14 +333,20 @@ QtObject {
         const workspacePath = pendingWorkspace;
         const runtimeModulesDir = pendingRuntimeModulesDir;
         const runtimeBinaryPath = pendingRuntimeBinaryPath;
+        const packageVersion = pendingPackageVersion;
+        const packageRootHash = pendingPackageRootHash;
         const label = actionDraftTitle();
         clearActionDraft();
-        return runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath);
+        return runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath, packageVersion, packageRootHash);
     }
 
     function actionDraftTitle() {
         if (!pendingAction.length) {
             return qsTr("Confirm");
+        }
+        if (pendingAction === "install" && pendingNode === "indexer"
+                && pendingPackageVersion.length) {
+            return qsTr("Install Indexer %1").arg(pendingPackageVersion);
         }
         if (pendingNode.length) {
             return qsTr("%1 %2").arg(actionLabel(pendingAction)).arg(nodeLabel(pendingNode));
@@ -303,6 +391,16 @@ QtObject {
         if (action === "stop") {
             return qsTr("This stops %1 and keeps its data and config.").arg(nodeLabel(pendingNode));
         }
+        if (action === "install" && pendingNode === "indexer") {
+            const version = pendingPackageVersion.length
+                ? pendingPackageVersion : qsTr("selected release");
+            const rootHash = pendingPackageRootHash.length
+                ? pendingPackageRootHash : qsTr("catalog root hash");
+            const modulesDir = pendingRuntimeModulesDir.length
+                ? pendingRuntimeModulesDir : runtimeModulesDir();
+            return qsTr("This downloads official lez_indexer_module %1, verifies root hash %2, and installs it into %3. LogosCore Runtime must be stopped. After installation, start the runtime, then use Zone Sources to start the selected Channel Indexer.")
+                .arg(version).arg(rootHash).arg(modulesDir);
+        }
         if (action === "install") {
             return qsTr("This verifies %1 control tooling and records the resolved install path. It does not start the node.").arg(nodeLabel(pendingNode));
         }
@@ -345,10 +443,14 @@ QtObject {
         return null;
     }
 
-    function actionEnabled(kind, action) {
+    function actionAvailable(kind, action) {
         const node = nodeByKind(kind);
         const actions = node && Array.isArray(node.available_actions) ? node.available_actions : [];
-        return actions.indexOf(String(action || "")) >= 0 && busy !== true;
+        return actions.indexOf(String(action || "")) >= 0;
+    }
+
+    function actionEnabled(kind, action) {
+        return actionAvailable(kind, action) && busy !== true;
     }
 
     function networkActionEnabled(action) {
@@ -394,6 +496,77 @@ QtObject {
         const runtime = runtimeInfo();
         const configured = String(runtime && runtime.modules_dir ? runtime.modules_dir : "").trim();
         return configured.length ? configured : defaultRuntimeModulesDir;
+    }
+
+    function packageCatalogModulesDir() {
+        const value = packageCatalog || null;
+        const configured = String(value && value.modules_dir ? value.modules_dir : "").trim();
+        return configured.length ? configured : runtimeModulesDir();
+    }
+
+    function packageName() {
+        const packageValue = packageCatalog && packageCatalog.package
+            ? packageCatalog.package : null;
+        return String(packageValue && packageValue.name
+            ? packageValue.name : "lez_indexer_module");
+    }
+
+    function packageReleases() {
+        const packageValue = packageCatalog && packageCatalog.package
+            ? packageCatalog.package : null;
+        return packageValue && Array.isArray(packageValue.versions)
+            ? packageValue.versions : [];
+    }
+
+    function packageRelease(version, rootHash) {
+        const selectedVersion = String(version || "");
+        const selectedRootHash = String(rootHash || "");
+        if (!selectedVersion.length || !selectedRootHash.length) {
+            return null;
+        }
+        const releases = packageReleases();
+        for (let i = 0; i < releases.length; ++i) {
+            if (String(releases[i].version || "") === selectedVersion
+                    && String(releases[i].root_hash || "") === selectedRootHash) {
+                return releases[i];
+            }
+        }
+        return null;
+    }
+
+    function installedPackage() {
+        const value = packageCatalog || null;
+        return value && value.installed ? value.installed : null;
+    }
+
+    function defaultPackageSelection() {
+        const installed = installedPackage();
+        const installedVersion = String(installed && installed.version
+            ? installed.version : "");
+        const installedRootHash = String(installed && installed.root_hash
+            ? installed.root_hash : "");
+        const installedRelease = packageRelease(installedVersion, installedRootHash);
+        if (installedRelease) {
+            return {
+                version: installedVersion,
+                root_hash: installedRootHash
+            };
+        }
+        const releases = packageReleases();
+        for (let i = 0; i < releases.length; ++i) {
+            const version = String(releases[i].version || "");
+            const rootHash = String(releases[i].root_hash || "");
+            if (version.length && rootHash.length) {
+                return {
+                    version: version,
+                    root_hash: rootHash
+                };
+            }
+        }
+        return {
+            version: "",
+            root_hash: ""
+        };
     }
 
     function runtimeState() {
@@ -499,14 +672,19 @@ QtObject {
         }
         switch (String(node.run_state || "unknown")) {
         case "running":
+        case "caught_up":
             return "online"
         case "initializing":
         case "starting":
         case "stopping":
             return String(node.run_state)
+        case "syncing":
+            return "syncing"
         case "stopped":
         case "not_initialized":
         case "failed":
+        case "error":
+        case "stalled":
         case "stale_pid":
             return "unavailable"
         default:

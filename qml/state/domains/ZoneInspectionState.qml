@@ -109,6 +109,8 @@ QtObject {
     }
     readonly property ZoneSourceEditorState sourceEditor: ZoneSourceEditorState {
         gateway: root.gateway
+        appModel: root.appModel
+        sourceDescriptor: root.desiredSource
         activeZoneContext: root.activeZoneContext
         verification: root.verification
         networkScope: root.networkScope

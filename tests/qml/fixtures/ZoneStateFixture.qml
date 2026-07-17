@@ -39,6 +39,29 @@ QtObject {
     property bool summaryInFlight: false
     property bool detailInFlight: false
     property bool sourceMutationInFlight: false
+    property bool managedIndexerRefreshInFlight: false
+    property bool managedIndexerControlInFlight: false
+    property bool managedIndexerStatusStale: false
+    property string managedIndexerError: ""
+    property string managedIndexerResult: ""
+    property int managedIndexerRefreshCount: 0
+    property var managedIndexerRuntime: ({
+        ownership: "inspector_managed",
+        run_state: "running",
+        detail: "Fixture LogosCore runtime"
+    })
+    property var managedIndexerNode: ({
+        key: "indexer",
+        install_state: "installed",
+        run_state: "stopped",
+        indexer_state: "stopped",
+        indexer_head: null,
+        indexer_error: null,
+        package_version: "1.0.0",
+        managed_channel_id: null,
+        available_actions: ["start"],
+        detail: "Ready"
+    })
     property bool summaryStale: false
     property bool detailStale: false
     property var zoneSummaries: FixtureData.zones()
@@ -291,6 +314,54 @@ QtObject {
         l2TransfersLoaded = l2Applicable
         l2TransfersFinalized = l2Applicable
         l2TransfersHistory = []
+    }
+
+    function bedrockEndpoint() {
+        return "http://127.0.0.1:8080/"
+    }
+
+    function refreshManagedIndexer() {
+        managedIndexerRefreshCount += 1
+        return true
+    }
+
+    function runManagedIndexerAction(action, channelId) {
+        const actionKey = String(action || "")
+        const targetChannel = String(channelId || activeZoneId)
+        if (actionKey === "start") {
+            managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "starting",
+                indexer_state: "starting",
+                indexer_head: "0",
+                indexer_error: null,
+                package_version: "1.0.0",
+                managed_channel_id: targetChannel,
+                available_actions: [],
+                detail: "Starting"
+            }
+            managedIndexerResult = "Indexer start accepted"
+            return true
+        }
+        if (actionKey === "stop") {
+            managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopping",
+                indexer_state: "stopping",
+                indexer_head: null,
+                indexer_error: null,
+                package_version: "1.0.0",
+                managed_channel_id: targetChannel,
+                available_actions: [],
+                detail: "Stopping"
+            }
+            managedIndexerResult = "Indexer stop accepted"
+            return true
+        }
+        managedIndexerError = "Unsupported action"
+        return false
     }
 
     function refreshL2Blocks() {

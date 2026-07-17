@@ -82,6 +82,9 @@ TestCase {
         zoneState.evidenceDetail = null
         zoneState.lastMutationRequest = null
         zoneState.mutationFailure = ""
+        zoneState.managedIndexerStatusStale = false
+        zoneState.managedIndexerError = ""
+        zoneState.managedIndexerResult = ""
         appModel.selectedView = ""
         page.filter = "all"
         page.query = ""
@@ -282,6 +285,160 @@ TestCase {
         compare(zoneState.lastMutationRequest.mutation.kind, "set_indexer")
         compare(zoneState.lastMutationRequest.mutation.target.kind, "module")
         compare(zoneState.lastMutationRequest.mutation.target.module_id, "lez_indexer_module")
+    }
+
+    function test_module_indexer_exposes_per_channel_lifecycle_control() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const start = findChild(control, "startManagedIndexerButton")
+        const stop = findChild(control, "stopManagedIndexerButton")
+        verify(control.visible)
+        verify(start !== null && start.enabled)
+        verify(stop !== null && !stop.enabled)
+        verify(hasVisibleText(control,
+            "lez_indexer_module runs inside the Inspector-managed LogosCore runtime. One Channel may be active per runtime."))
+        verify(hasVisibleText(control, "1.0.0"))
+
+        compare(control.selectedChannelId, zoneState.activeZoneId)
+    }
+
+    function test_managed_indexer_actions_require_reported_availability() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const start = findChild(control, "startManagedIndexerButton")
+        const stop = findChild(control, "stopManagedIndexerButton")
+        verify(start !== null)
+        verify(stop !== null)
+        const initialNode = zoneState.managedIndexerNode
+        const initialResult = zoneState.managedIndexerResult
+        try {
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                indexer_state: "stopped",
+                indexer_head: null,
+                indexer_error: null,
+                package_version: "1.0.0",
+                managed_channel_id: null,
+                available_actions: [],
+                detail: "Ready"
+            }
+            tryVerify(function () {
+                return !start.enabled && !stop.enabled
+            })
+
+            zoneState.managedIndexerNode = initialNode
+            tryVerify(function () {
+                return start.enabled && !stop.enabled
+            })
+
+            verify(zoneState.runManagedIndexerAction("start", zoneState.activeZoneId))
+            tryCompare(control, "runState", "starting")
+            tryVerify(function () {
+                return !start.enabled && !stop.enabled
+            })
+        } finally {
+            zoneState.managedIndexerNode = initialNode
+            zoneState.managedIndexerResult = initialResult
+        }
+    }
+
+    function test_managed_indexer_stale_status_disables_lifecycle_actions() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const refresh = findChild(control, "refreshManagedIndexerButton")
+        const start = findChild(control, "startManagedIndexerButton")
+        const stop = findChild(control, "stopManagedIndexerButton")
+        const initialNode = zoneState.managedIndexerNode
+        const initialStale = zoneState.managedIndexerStatusStale
+        try {
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "running",
+                indexer_state: "caught_up",
+                managed_channel_id: zoneState.activeZoneId,
+                available_actions: ["stop"]
+            }
+            zoneState.managedIndexerStatusStale = false
+            tryVerify(function () {
+                return stop.enabled && !start.enabled
+            })
+
+            zoneState.managedIndexerStatusStale = true
+            tryVerify(function () {
+                return !start.enabled && !stop.enabled && refresh.enabled
+            })
+        } finally {
+            zoneState.managedIndexerNode = initialNode
+            zoneState.managedIndexerStatusStale = initialStale
+        }
+    }
+
+    function test_managed_indexer_stop_remains_available_when_catalog_is_unverified() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const start = findChild(control, "startManagedIndexerButton")
+        const stop = findChild(control, "stopManagedIndexerButton")
+        const initialNode = zoneState.managedIndexerNode
+        const initialStale = zoneState.managedIndexerStatusStale
+        const initialVerification = zoneState.verification
+        try {
+            zoneState.verification = "empty"
+            zoneState.managedIndexerStatusStale = false
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                indexer_state: "stopped",
+                managed_channel_id: null,
+                available_actions: ["start"]
+            }
+            tryVerify(function () {
+                return !start.enabled && !stop.enabled
+            })
+
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "running",
+                indexer_state: "caught_up",
+                managed_channel_id: zoneState.activeZoneId,
+                available_actions: ["stop"]
+            }
+            tryVerify(function () {
+                return stop.enabled && !start.enabled
+            })
+        } finally {
+            zoneState.managedIndexerNode = initialNode
+            zoneState.managedIndexerStatusStale = initialStale
+            zoneState.verification = initialVerification
+        }
     }
 
     function test_source_revision_conflict_keeps_unrebased_draft() {

@@ -130,6 +130,13 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: managedIndexerAppModel
+
+        property string networkProfile: "default"
+        property string nodeUrl: "http://127.0.0.1:8080/"
+    }
+
     Component {
         id: stateComponent
 
@@ -1120,6 +1127,227 @@ TestCase {
         compare(zoneState.contextRevision, contextAfterSuccess)
         compare(zoneState.activeZoneContext.indexer_source_id, "idx-a")
         compare(sourceEditorState.sourceMutationError, "revision conflict")
+    }
+
+    function test_managed_indexer_uses_selected_channel_and_bedrock_endpoint() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        compare(sourceEditorState.bedrockEndpoint(), "https://l1.example")
+
+        sourceEditorState.refreshManagedIndexer()
+        let request = gateway.lastRequest("localNodesStatus")
+        verify(request !== null)
+        compare(request.args, ["default"])
+        gateway.respond(request, ok({
+            profile: "default",
+            runtime: {
+                ownership: "inspector_managed",
+                run_state: "running"
+            },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                package_version: "1.0.0",
+                managed_channel_id: null,
+                available_actions: ["start"]
+            }],
+            operations: []
+        }))
+        compare(sourceEditorState.managedIndexerNode.package_version, "1.0.0")
+        compare(sourceEditorState.managedIndexerRuntime.run_state, "running")
+
+        sourceEditorState.runManagedIndexerAction("start", "zone-a")
+        request = gateway.lastRequest("localNodesAction")
+        verify(request !== null)
+        compare(request.args[0], "default")
+        compare(request.args[1].action, "start")
+        compare(request.args[1].node, "indexer")
+        compare(request.args[1].channel_id, "zone-a")
+        compare(request.args[1].bedrock_endpoint, "https://l1.example")
+        compare(request.args[2], "confirm-local-node-action")
+
+        gateway.respond(request, ok({
+            profile: "default",
+            runtime: {
+                ownership: "inspector_managed",
+                run_state: "running"
+            },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "starting",
+                package_version: "1.0.0",
+                managed_channel_id: "zone-a"
+            }],
+            operations: [{
+                action: "start",
+                node: "indexer",
+                status: "starting",
+                detail: "Indexer start accepted"
+            }]
+        }))
+        compare(sourceEditorState.managedIndexerError, "")
+        compare(sourceEditorState.managedIndexerResult, "Indexer start accepted")
+        compare(sourceEditorState.managedIndexerNode.managed_channel_id, "zone-a")
+
+        zoneState.desiredSource = null
+        compare(sourceEditorState.bedrockEndpoint(), "")
+    }
+
+    function test_managed_indexer_surfaces_needs_configuration_result() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        sourceEditorState.runManagedIndexerAction("start", "zone-a")
+        const request = gateway.lastRequest("localNodesAction")
+        gateway.respond(request, ok({
+            runtime: { run_state: "stopped" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped"
+            }],
+            operations: [{
+                action: "start",
+                node: "indexer",
+                status: "needs_configuration",
+                detail: "start an Inspector-managed logoscore runtime"
+            }]
+        }))
+
+        compare(sourceEditorState.managedIndexerResult, "")
+        compare(sourceEditorState.managedIndexerError,
+            "start an Inspector-managed logoscore runtime")
+        compare(sourceEditorState.managedIndexerStatusStale, false)
+    }
+
+    function test_managed_indexer_status_refresh_clears_stale_success() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.managedIndexerResult = "Indexer start accepted"
+
+        sourceEditorState.refreshManagedIndexer()
+        const request = gateway.lastRequest("localNodesStatus")
+        verify(request !== null)
+        gateway.respond(request, ok({
+            runtime: {
+                ownership: "inspector_managed",
+                run_state: "running"
+            },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "error",
+                indexer_state: "error",
+                indexer_error: "watcher failed",
+                package_version: "1.0.0",
+                managed_channel_id: "zone-a",
+                available_actions: ["stop"]
+            }],
+            operations: []
+        }))
+
+        compare(sourceEditorState.managedIndexerResult, "")
+        compare(sourceEditorState.managedIndexerError, "")
+        compare(sourceEditorState.managedIndexerStatusStale, false)
+        compare(sourceEditorState.managedIndexerNode.indexer_error, "watcher failed")
+    }
+
+    function test_managed_indexer_status_failure_disables_stale_actions() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+        compare(sourceEditorState.managedIndexerStatusStale, false)
+
+        sourceEditorState.refreshManagedIndexer()
+        const request = gateway.lastRequest("localNodesStatus")
+        verify(request !== null)
+        gateway.respond(request, failed("status unavailable"))
+
+        compare(sourceEditorState.managedIndexerStatusStale, true)
+        compare(sourceEditorState.managedIndexerNode.run_state, "stopped")
+        compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
+        compare(gateway.requestCount("localNodesAction"), 0)
+        compare(sourceEditorState.managedIndexerError,
+            "Refresh managed Indexer status before controlling it.")
+    }
+
+    function test_managed_indexer_stop_does_not_require_catalog_verification() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "running",
+                indexer_state: "caught_up",
+                managed_channel_id: "zone-a",
+                available_actions: ["stop"]
+            }],
+            operations: []
+        })
+        zoneState.verification = "empty"
+
+        verify(sourceEditorState.runManagedIndexerAction("stop", "zone-a"))
+        let request = gateway.lastRequest("localNodesAction")
+        verify(request !== null)
+        compare(request.args[1].action, "stop")
+        compare(request.args[1].node, "indexer")
+        compare(request.args[1].channel_id, "zone-a")
+        verify(request.args[1].bedrock_endpoint === undefined)
+        gateway.respond(request, ok({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopping",
+                managed_channel_id: "zone-a",
+                available_actions: []
+            }],
+            operations: [{
+                action: "stop",
+                node: "indexer",
+                status: "stopping",
+                detail: "Indexer stop accepted"
+            }]
+        }))
+        compare(sourceEditorState.managedIndexerError, "")
+
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+        compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
+        compare(gateway.requestCount("localNodesAction"), 1)
+        compare(sourceEditorState.managedIndexerError,
+            "A verified active Zone is required to start Indexer.")
     }
 
     function test_control_and_resume_request_immediate_status_refresh() {

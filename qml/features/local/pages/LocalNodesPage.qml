@@ -17,15 +17,28 @@ ColumnLayout {
 
     property string newNetworkId: ""
     property string loadWorkspace: ""
-    property string runtimeModulesDir: ""
+    property string runtimeModulesDir: root.model.runtimeModulesDir()
     property string runtimeBinaryPath: ""
+    property var selectedIndexerPackage: root.model.defaultPackageSelection()
 
     width: parent ? parent.width : 900
     spacing: 16
 
     Component.onCompleted: {
-        root.model.refresh(false);
+        root.model.refresh(false, true);
         root.model.refreshDevnets();
+    }
+
+    Connections {
+        target: root.model
+
+        function onPackageCatalogChanged() {
+            const selected = root.selectedIndexerPackage || {}
+            if (!root.model.packageRelease(selected.version, selected.root_hash)) {
+                root.selectedIndexerPackage = root.model.defaultPackageSelection()
+            }
+            root.syncIndexerPackageVersionIndex()
+        }
     }
 
     PageHeader {
@@ -255,9 +268,10 @@ ColumnLayout {
             Layout.fillWidth: true
 
             FieldRow {
+                objectName: "runtimeModulesDirectory"
                 theme: root.theme
                 label: qsTr("Modules directory")
-                sourceText: root.runtimeModulesDir.length ? root.runtimeModulesDir : root.model.runtimeModulesDir()
+                sourceText: root.runtimeModulesDir
                 syncSourceText: true
                 placeholderText: qsTr("/path/to/modules")
                 Layout.columnSpan: root.width < 840 ? 1 : 2
@@ -295,6 +309,178 @@ ColumnLayout {
                     Layout.preferredWidth: 96
                     onClicked: root.openRuntimeConfirm("stop_runtime")
                 }
+            }
+        }
+    }
+
+    Panel {
+        objectName: "indexerPackageConfiguration"
+        theme: root.theme
+        title: qsTr("Indexer package")
+
+        StatusMessage {
+            objectName: "indexerPackageStatus"
+            theme: root.theme
+            tone: root.packageStatusTone()
+            title: root.packageStatusTitle()
+            message: root.packageStatusMessage()
+            Layout.fillWidth: true
+        }
+
+        GridLayout {
+            columns: root.width < 840 ? 1 : 4
+            columnSpacing: root.theme.gapSmall
+            rowSpacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            ColumnLayout {
+                spacing: 6
+                Layout.columnSpan: root.width < 840 ? 1 : 2
+                Layout.fillWidth: true
+
+                Text {
+                    text: qsTr("Exact release")
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    font.pixelSize: root.theme.secondaryText
+                    font.weight: Font.Medium
+                    Layout.fillWidth: true
+                }
+
+                ComboBox {
+                    id: indexerPackageVersion
+
+                    objectName: "indexerPackageVersionSelector"
+                    model: root.packageReleaseOptions()
+                    textRole: "label"
+                    currentIndex: -1
+                    displayText: currentIndex >= 0
+                        ? String(model[currentIndex].label || "") : qsTr("No releases")
+                    hoverEnabled: true
+                    enabled: !root.model.packageCatalogLoading && count > 0 && !root.model.busy
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: root.theme.controlHeight
+                    onModelChanged: root.syncIndexerPackageVersionIndex()
+                    onActivated: index => root.selectIndexerPackage(model[index])
+
+                    delegate: ItemDelegate {
+                        id: versionDelegate
+
+                        required property int index
+                        required property var modelData
+
+                        width: indexerPackageVersion.width
+                        text: String(modelData && modelData.label || "")
+                        hoverEnabled: true
+                        highlighted: indexerPackageVersion.highlightedIndex === index
+
+                        contentItem: Text {
+                            text: versionDelegate.text
+                            color: versionDelegate.highlighted ? root.theme.selectedText : root.theme.text
+                            textFormat: Text.PlainText
+                            verticalAlignment: Text.AlignVCenter
+                            font.family: "monospace"
+                            font.pixelSize: root.theme.secondaryText
+                        }
+
+                        background: Rectangle {
+                            color: versionDelegate.highlighted
+                                ? root.theme.accent
+                                : (versionDelegate.hovered ? root.theme.hover : root.theme.surfaceRaised)
+                        }
+                    }
+
+                    contentItem: Text {
+                        text: indexerPackageVersion.displayText
+                        color: indexerPackageVersion.enabled ? root.theme.text : root.theme.textDim
+                        textFormat: Text.PlainText
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: 12
+                        rightPadding: 36
+                        font.family: "monospace"
+                        font.pixelSize: root.theme.primaryText
+                        font.weight: Font.Medium
+                    }
+
+                    indicator: Text {
+                        x: indexerPackageVersion.width - width - 14
+                        y: (indexerPackageVersion.height - height) / 2
+                        text: "\u25be"
+                        color: indexerPackageVersion.enabled ? root.theme.textMuted : root.theme.textDim
+                        textFormat: Text.PlainText
+                        font.pixelSize: root.theme.secondaryText
+                    }
+
+                    background: Rectangle {
+                        radius: root.theme.radius
+                        color: indexerPackageVersion.hovered || indexerPackageVersion.activeFocus
+                            ? root.theme.surfaceRaised : root.theme.field
+                        border.width: indexerPackageVersion.activeFocus ? 2 : 1
+                        border.color: indexerPackageVersion.activeFocus
+                            ? root.theme.accent : root.theme.outlineMuted
+                    }
+
+                    popup: Popup {
+                        y: indexerPackageVersion.height + root.theme.gapTiny
+                        width: indexerPackageVersion.width
+                        implicitHeight: Math.min(contentItem.implicitHeight + 2, 260)
+                        padding: 1
+
+                        contentItem: ListView {
+                            clip: true
+                            implicitHeight: contentHeight
+                            model: indexerPackageVersion.popup.visible
+                                ? indexerPackageVersion.delegateModel : null
+                            currentIndex: indexerPackageVersion.highlightedIndex
+                        }
+
+                        background: Rectangle {
+                            radius: root.theme.radius
+                            color: root.theme.surfaceRaised
+                            border.width: 1
+                            border.color: root.theme.outline
+                        }
+                    }
+
+                    Accessible.role: Accessible.ComboBox
+                    Accessible.name: qsTr("Indexer package exact release")
+                    Accessible.description: root.selectedPackageReleaseDetail()
+                }
+            }
+
+            ActionButton {
+                objectName: "indexerPackageReloadButton"
+                theme: root.theme
+                text: qsTr("Reload releases")
+                accessibleName: qsTr("Reload official Indexer releases")
+                enabled: !root.model.packageCatalogLoading && !root.model.busy
+                Layout.preferredWidth: 144
+                Layout.fillWidth: root.width < 840
+                onClicked: root.reloadPackageCatalog()
+            }
+
+            ActionButton {
+                objectName: "indexerPackageInstallButton"
+                theme: root.theme
+                text: qsTr("Install release")
+                accessibleName: qsTr("Install selected Indexer release")
+                primary: true
+                enabled: root.packageInstallReady()
+                Layout.preferredWidth: 132
+                Layout.fillWidth: root.width < 840
+                onClicked: root.openIndexerPackageConfirm()
+            }
+
+            Text {
+                text: root.selectedPackageReleaseDetail()
+                color: root.theme.textDim
+                textFormat: Text.PlainText
+                wrapMode: Text.WrapAnywhere
+                font.pixelSize: root.theme.dataText
+                Layout.columnSpan: root.width < 840 ? 1 : 4
+                Layout.fillWidth: true
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
             }
         }
     }
@@ -369,25 +555,35 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         visible: actionRow.modelData.setupAction.length > 0
+                            && actionRow.modelData.key !== "indexer"
                         text: root.model.actionLabel(actionRow.modelData.setupAction)
                         enabled: root.model.actionEnabled(actionRow.modelData.key, actionRow.modelData.setupAction)
+                        accessibleName: qsTr("%1 %2")
+                            .arg(root.model.actionLabel(actionRow.modelData.setupAction))
+                            .arg(actionRow.modelData.label)
                         Layout.preferredWidth: 92
                         onClicked: root.openNodeConfirm(actionRow.modelData.setupAction, actionRow.modelData.key)
                     }
 
                     ActionButton {
                         theme: root.theme
+                        visible: actionRow.modelData.key !== "indexer"
+                            && root.model.actionAvailable(actionRow.modelData.key, "start")
                         text: qsTr("Start")
                         primary: true
                         enabled: root.model.actionEnabled(actionRow.modelData.key, "start")
+                        accessibleName: qsTr("Start %1").arg(actionRow.modelData.label)
                         Layout.preferredWidth: 84
                         onClicked: root.openNodeConfirm("start", actionRow.modelData.key)
                     }
 
                     ActionButton {
                         theme: root.theme
+                        visible: actionRow.modelData.key !== "indexer"
+                            && root.model.actionAvailable(actionRow.modelData.key, "stop")
                         text: qsTr("Stop")
                         enabled: root.model.actionEnabled(actionRow.modelData.key, "stop")
+                        accessibleName: qsTr("Stop %1").arg(actionRow.modelData.label)
                         Layout.preferredWidth: 84
                         onClicked: root.openNodeConfirm("stop", actionRow.modelData.key)
                     }
@@ -447,6 +643,7 @@ ColumnLayout {
     ConfirmActionPopup {
         id: confirmPopup
 
+        objectName: "localNodesConfirmPopup"
         theme: root.theme
         title: root.confirmTitle()
         message: root.confirmMessage()
@@ -484,6 +681,169 @@ ColumnLayout {
             return "warning";
         }
         return "neutral";
+    }
+
+    function packageReleaseOptions() {
+        return root.model.packageReleases().map(function (release) {
+            const version = String(release && release.version || "")
+            const rootHash = String(release && release.root_hash || "")
+            return {
+                version: version,
+                root_hash: rootHash,
+                released_at: String(release && release.released_at || ""),
+                label: root.packageReleaseLabel(release)
+            }
+        }).filter(function (option) {
+            return option.version.length > 0 && option.root_hash.length > 0
+        })
+    }
+
+    function packageReleaseIndex(selection) {
+        const selected = selection || {}
+        const selectedVersion = String(selected.version || "")
+        const selectedRootHash = String(selected.root_hash || "")
+        const options = root.packageReleaseOptions()
+        for (let i = 0; i < options.length; ++i) {
+            if (options[i].version === selectedVersion
+                    && options[i].root_hash === selectedRootHash) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    function packageReleaseLabel(release) {
+        const version = String(release && release.version || qsTr("unknown version"))
+        const rootHash = root.shortPackageRootHash(release && release.root_hash)
+        const releasedAt = String(release && release.released_at || "")
+        const releaseDate = releasedAt.length >= 10
+            ? releasedAt.slice(0, 10) : qsTr("date unavailable")
+        return qsTr("%1 · %2 · %3").arg(version).arg(rootHash).arg(releaseDate)
+    }
+
+    function shortPackageRootHash(value) {
+        const rootHash = String(value || "")
+        if (!rootHash.length) {
+            return qsTr("hash unavailable")
+        }
+        if (rootHash.length <= 14) {
+            return rootHash
+        }
+        return qsTr("%1…%2").arg(rootHash.slice(0, 6)).arg(rootHash.slice(-6))
+    }
+
+    function selectIndexerPackage(option) {
+        const candidate = option || {}
+        const release = root.model.packageRelease(candidate.version, candidate.root_hash)
+        if (!release) {
+            return
+        }
+        root.selectedIndexerPackage = {
+            version: String(release.version || ""),
+            root_hash: String(release.root_hash || "")
+        }
+        root.syncIndexerPackageVersionIndex()
+    }
+
+    function syncIndexerPackageVersionIndex() {
+        const selectedIndex = root.packageReleaseIndex(root.selectedIndexerPackage)
+        if (indexerPackageVersion.currentIndex !== selectedIndex) {
+            indexerPackageVersion.currentIndex = selectedIndex
+        }
+    }
+
+    function selectedPackageRelease() {
+        const selected = root.selectedIndexerPackage || {}
+        return root.model.packageRelease(selected.version, selected.root_hash)
+    }
+
+    function selectedPackageReleaseDetail() {
+        const release = root.selectedPackageRelease()
+        if (!release) {
+            return root.model.packageCatalogLoading
+                ? qsTr("Loading exact releases…") : qsTr("No exact release selected.")
+        }
+        const releasedAt = String(release.released_at || qsTr("date unavailable"))
+        const rootHash = String(release.root_hash || qsTr("root hash unavailable"))
+        return qsTr("Released %1. Root hash %2.").arg(releasedAt).arg(rootHash)
+    }
+
+    function packageInstallReady() {
+        const release = root.selectedPackageRelease()
+        return !root.model.packageCatalogLoading
+            && root.packageInstallRuntimeReady()
+            && release !== null
+            && String(release.version || "").length > 0
+            && String(release.root_hash || "").length > 0
+            && root.model.actionEnabled("indexer", "install")
+    }
+
+    function packageInstallRuntimeReady() {
+        const state = root.model.runtimeState()
+        return state !== "running" && state !== "starting" && state !== "stopping"
+    }
+
+    function packageStatusTone() {
+        if (root.model.packageCatalogError.length > 0) {
+            return "error"
+        }
+        if (root.model.packageCatalogLoading) {
+            return "info"
+        }
+        if (root.model.installedPackage()) {
+            return "success"
+        }
+        return root.model.packageReleases().length > 0
+            && root.packageInstallRuntimeReady() ? "info" : "warning"
+    }
+
+    function packageStatusTitle() {
+        if (root.model.packageCatalogLoading) {
+            return qsTr("Loading official Indexer releases")
+        }
+        if (root.model.packageCatalogError.length > 0) {
+            return qsTr("Indexer package catalog unavailable")
+        }
+        const installed = root.model.installedPackage()
+        if (installed) {
+            return qsTr("%1 installed").arg(root.model.packageName())
+        }
+        return qsTr("Official Indexer package")
+    }
+
+    function packageStatusMessage() {
+        if (root.model.packageCatalogLoading) {
+            return qsTr("Querying exact releases for %1.").arg(root.runtimeModulesDir)
+        }
+        if (root.model.packageCatalogError.length > 0) {
+            return root.model.packageCatalogError
+        }
+        const installed = root.model.installedPackage()
+        if (installed) {
+            return qsTr("Version %1 is installed in %2. Stop LogosCore Runtime before changing it. Channel Indexer start and stop are in Zone Sources.")
+                .arg(String(installed.version || qsTr("unknown")))
+                .arg(root.model.packageCatalogModulesDir())
+        }
+        return qsTr("Select an exact official lez_indexer_module release. Install downloads, verifies, and installs it into %1 while LogosCore Runtime is stopped. Start the runtime to load the package; Channel Indexer start and stop are in Zone Sources.")
+            .arg(root.runtimeModulesDir)
+    }
+
+    function reloadPackageCatalog() {
+        root.model.refreshPackageCatalog(root.runtimeModulesDir.trim())
+    }
+
+    function openIndexerPackageConfirm() {
+        const release = root.selectedPackageRelease()
+        if (!release) {
+            return
+        }
+        root.model.beginNodeAction(
+            "install",
+            "indexer",
+            String(release.version || ""),
+            String(release.root_hash || ""),
+            root.runtimeModulesDir.trim())
+        confirmPopup.open()
     }
 
     function nodeTableRows() {
@@ -575,7 +935,9 @@ ColumnLayout {
     function actionRows() {
         const report = root.model.report || null;
         const nodes = report && Array.isArray(report.nodes) ? report.nodes : [];
-        return nodes.map(function (node) {
+        return nodes.filter(function (node) {
+            return String(node.key || node.kind || "") !== "indexer"
+        }).map(function (node) {
             const actions = Array.isArray(node.available_actions) ? node.available_actions : [];
             const setupAction = actions.indexOf("initialize") >= 0 ? "initialize"
                               : (actions.indexOf("install") >= 0 ? "install" : "");

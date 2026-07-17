@@ -41,6 +41,7 @@ pub(super) enum NodeActionPolicy {
     RegisterExecutable {
         program: &'static str,
     },
+    InstallPackage,
     RemoveExecutableRegistration,
     ExecuteManaged {
         ensure_loaded: bool,
@@ -61,6 +62,7 @@ impl NodeActionPolicy {
         match self {
             Self::Unsupported { reason } => Some(reason),
             Self::RegisterExecutable { .. }
+            | Self::InstallPackage
             | Self::RemoveExecutableRegistration
             | Self::ExecuteManaged { .. }
             | Self::ExecuteDetached
@@ -74,11 +76,18 @@ pub(super) enum NodeCommandPlan {
     ManagedModule {
         contract: &'static ManagedNodeContract,
         call: ManagedModuleCallSpec,
+        result_contract: ManagedCommandResultContract,
     },
     DetachedProcess {
         program: &'static str,
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ManagedCommandResultContract {
+    Any,
+    OperationStatusZero,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -94,8 +103,6 @@ pub(super) struct NodeConfigContext<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NodeCommandContext<'a> {
     pub config_path: &'a str,
-    pub data_dir: &'a str,
-    pub port: Option<u16>,
 }
 
 pub(super) struct NodeStatusContext<'a> {
@@ -116,6 +123,7 @@ pub(super) struct RpcStartupReadiness {
 }
 
 impl RpcStartupReadiness {
+    #[cfg(test)]
     pub(super) const fn new(
         method: &'static str,
         startup_timeout: Duration,
@@ -160,8 +168,25 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         false
     }
 
+    fn installation_survives_runtime_reset(&self, config: &LocalNodeConfigRecord) -> bool {
+        self.preserve_generated_config_on_runtime_reset()
+            && std::path::Path::new(&config.config_path).is_file()
+    }
+
     fn ensure_loaded_before_start(&self) -> bool {
         false
+    }
+
+    fn package_managed(&self) -> bool {
+        false
+    }
+
+    fn package_installation_matches_runtime(
+        &self,
+        _config: &LocalNodeConfigRecord,
+        _runtime: Option<&LogoscoreRuntimeProfile>,
+    ) -> bool {
+        true
     }
 
     fn startup_rpc_readiness(&self) -> Option<RpcStartupReadiness> {
@@ -194,7 +219,11 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         match self.lifecycle() {
             NodeLifecycle::InitializedModule(contract) => {
                 let call = contract.call_spec(managed_action(action)?, context.config_path)?;
-                Some(NodeCommandPlan::ManagedModule { contract, call })
+                Some(NodeCommandPlan::ManagedModule {
+                    contract,
+                    call,
+                    result_contract: ManagedCommandResultContract::Any,
+                })
             }
             NodeLifecycle::RegisteredProcess { program } if action == NodeAction::Start => {
                 Some(NodeCommandPlan::DetachedProcess {
@@ -212,6 +241,9 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
             NodeAction::Install => match lifecycle {
                 NodeLifecycle::RegisteredProcess { program } => {
                     NodeActionPolicy::RegisterExecutable { program }
+                }
+                NodeLifecycle::InitializedModule(_) if self.package_managed() => {
+                    NodeActionPolicy::InstallPackage
                 }
                 NodeLifecycle::InitializedModule(_) => NodeActionPolicy::Unsupported {
                     reason: "module nodes must be initialized before they can start",
@@ -287,7 +319,11 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 context.config.is_some_and(|node| node.installed) || context.executable_available
             }
             NodeLifecycle::InitializedModule(_) => {
-                runtime_running && context.config.is_some_and(|node| node.installed)
+                context.config.is_some_and(|node| node.installed)
+                    && context.config.is_some_and(|node| {
+                        self.package_installation_matches_runtime(node, context.runtime)
+                    })
+                    && (self.package_managed() || runtime_running)
             }
         };
         let install_state = if installed {
@@ -295,7 +331,7 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         } else {
             "needs_configuration"
         };
-        let run_state = match self.lifecycle() {
+        let lifecycle_run_state = match self.lifecycle() {
             NodeLifecycle::RegisteredProcess { .. }
                 if context.config.is_some_and(|node| {
                     matches!(
@@ -332,7 +368,15 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 .map(|node| node.lifecycle_state.as_str())
                 .unwrap_or("not_initialized"),
         };
-        let available_actions = self.available_actions(&context);
+        let run_state = if self.kind() == NodeKind::Indexer && lifecycle_run_state == "running" {
+            context
+                .config
+                .and_then(indexer_observed_run_state)
+                .unwrap_or(lifecycle_run_state)
+        } else {
+            lifecycle_run_state
+        };
+        let available_actions = self.available_actions(&context, installed);
         let detail = self.status_detail(install_state, run_state, &context);
         NodeStatusProjection {
             install_state,
@@ -342,7 +386,11 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         }
     }
 
-    fn available_actions(&self, context: &NodeStatusContext<'_>) -> Vec<NodeAction> {
+    fn available_actions(
+        &self,
+        context: &NodeStatusContext<'_>,
+        installation_available: bool,
+    ) -> Vec<NodeAction> {
         match self.lifecycle() {
             NodeLifecycle::RegisteredProcess { .. } => {
                 let Some(config) = context.config else {
@@ -366,19 +414,34 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 actions
             }
             NodeLifecycle::InitializedModule(_) => {
-                if !context
-                    .runtime
-                    .is_some_and(|profile| profile.is_managed() && profile.is_running())
-                    || context.config.is_none()
-                    || context
-                        .config
-                        .is_some_and(|node| node.lifecycle_state.is_pending())
-                {
-                    return Vec::new();
-                }
                 let Some(config) = context.config else {
                     return Vec::new();
                 };
+                if config.lifecycle_state.is_pending() {
+                    return Vec::new();
+                }
+                if self.package_managed() && !installation_available {
+                    return context
+                        .workflow_actions
+                        .iter()
+                        .copied()
+                        .filter(|action| *action == NodeAction::Install)
+                        .collect();
+                }
+                let runtime_running = context
+                    .runtime
+                    .is_some_and(|profile| profile.is_managed() && profile.is_running());
+                if self.package_managed() && !runtime_running {
+                    return context
+                        .workflow_actions
+                        .iter()
+                        .copied()
+                        .filter(|action| *action == NodeAction::Install)
+                        .collect();
+                }
+                if !runtime_running {
+                    return Vec::new();
+                }
                 let mut actions = context.workflow_actions.clone();
                 actions.retain(|action| match (config.installed, action) {
                     (false, NodeAction::Initialize | NodeAction::Purge) => true,
@@ -412,6 +475,9 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         context: &NodeStatusContext<'_>,
     ) -> String {
         if install_state == "needs_configuration" {
+            if self.package_managed() && context.config.is_none_or(|config| !config.installed) {
+                return format!("{} package is not installed", self.label());
+            }
             if let Some(executable) = self.required_executable()
                 && !context.executable_available
             {
@@ -434,6 +500,36 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         if run_state == "stale_pid" {
             return "recorded process id is not running".to_owned();
         }
+        if self.kind() == NodeKind::Indexer {
+            let head = context
+                .config
+                .and_then(|config| config.indexer_head.as_deref());
+            let error = context
+                .config
+                .and_then(|config| config.indexer_error.as_deref());
+            match run_state {
+                "starting" => return "Indexer is starting".to_owned(),
+                "syncing" => {
+                    return head.map_or_else(
+                        || "Indexer is syncing".to_owned(),
+                        |head| format!("Indexer is syncing from finalized block {head}"),
+                    );
+                }
+                "caught_up" => {
+                    return head.map_or_else(
+                        || "Indexer is caught up".to_owned(),
+                        |head| format!("Indexer is caught up at finalized block {head}"),
+                    );
+                }
+                "error" | "stalled" => {
+                    return error.map_or_else(
+                        || format!("Indexer reported {run_state}"),
+                        ToOwned::to_owned,
+                    );
+                }
+                _ => {}
+            }
+        }
         match run_state {
             "starting" => "waiting for endpoint confirmation".to_owned(),
             "stopping" => "waiting for endpoint shutdown confirmation".to_owned(),
@@ -441,6 +537,17 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
             "failed" => "latest module lifecycle event reported failure".to_owned(),
             _ => "ready".to_owned(),
         }
+    }
+}
+
+fn indexer_observed_run_state(config: &LocalNodeConfigRecord) -> Option<&'static str> {
+    match config.indexer_state.as_deref() {
+        Some("starting") => Some("starting"),
+        Some("syncing") => Some("syncing"),
+        Some("caught_up") => Some("caught_up"),
+        Some("error") => Some("error"),
+        Some("stalled") => Some("stalled"),
+        Some("stopped") | None | Some(_) => None,
     }
 }
 
@@ -495,13 +602,18 @@ mod tests {
         process_id: Option<u32>,
     ) -> LocalNodeConfigRecord {
         LocalNodeConfigRecord {
-            kind: NodeKind::Indexer,
-            config_path: "/tmp/indexer.json".to_owned(),
+            kind: NodeKind::Sequencer,
+            config_path: "/tmp/sequencer.json".to_owned(),
             initialization_config_path: None,
-            data_dir: "/tmp/indexer".to_owned(),
+            data_dir: "/tmp/sequencer".to_owned(),
             endpoint: Some("http://127.0.0.1:8779/".to_owned()),
             port: Some(8779),
-            package_path: Some("/usr/bin/indexer_service".to_owned()),
+            package_path: Some("/usr/bin/seq".to_owned()),
+            package_version: None,
+            package_root_hash: None,
+            indexer_state: None,
+            indexer_head: None,
+            indexer_error: None,
             module_path: None,
             process_id,
             installed,
@@ -516,6 +628,11 @@ mod tests {
                 available: true,
                 command: "logoscore".to_owned(),
                 path: Some("/usr/bin/logoscore".to_owned()),
+            },
+            lgpd: super::super::ToolStatus {
+                available: true,
+                command: "lgpd".to_owned(),
+                path: Some("/usr/bin/lgpd".to_owned()),
             },
             lgpm: super::super::ToolStatus {
                 available: false,
@@ -551,6 +668,11 @@ mod tests {
             endpoint: adapter_for(kind).endpoint(adapter_for(kind).default_port()),
             port: adapter_for(kind).default_port(),
             package_path: installed.then(|| "logoscore".to_owned()),
+            package_version: None,
+            package_root_hash: None,
+            indexer_state: None,
+            indexer_head: None,
+            indexer_error: None,
             module_path: None,
             process_id: None,
             installed,
@@ -619,8 +741,6 @@ mod tests {
                 *action,
                 NodeCommandContext {
                     config_path: "/tmp/config.json",
-                    data_dir: "/tmp/data",
-                    port: adapter.default_port(),
                 },
             );
             if matches!(
@@ -667,8 +787,6 @@ mod tests {
                     NodeAction::Start,
                     NodeCommandContext {
                         config_path: "/tmp/config.json",
-                        data_dir: "/tmp/data",
-                        port: adapter.default_port(),
                     },
                 )
                 .is_none()
@@ -681,7 +799,7 @@ mod tests {
 
     #[test]
     fn registered_process_actions_require_owned_process_for_stop() {
-        let adapter = adapter_for(NodeKind::Indexer);
+        let adapter = adapter_for(NodeKind::Sequencer);
         let tools = configured_tools();
         let unowned = registered_process_config(true, None);
 
@@ -717,7 +835,7 @@ mod tests {
 
     #[test]
     fn registered_process_projection_surfaces_watcher_transitions() {
-        let adapter = adapter_for(NodeKind::Indexer);
+        let adapter = adapter_for(NodeKind::Sequencer);
         let tools = configured_tools();
         for (lifecycle_state, expected_run_state) in [
             (super::super::NodeLifecycleState::Starting, "starting"),
@@ -738,6 +856,137 @@ mod tests {
 
             assert_eq!(status.run_state, expected_run_state);
         }
+    }
+
+    #[test]
+    fn package_managed_indexer_install_state_survives_runtime_stop() -> Result<()> {
+        let adapter = adapter_for(NodeKind::Indexer);
+        let tools = configured_tools();
+        let uninstalled =
+            managed_module_config(NodeKind::Indexer, false, NodeLifecycleState::NotInitialized);
+        let uninstalled_status = adapter.project_status(NodeStatusContext {
+            config: Some(&uninstalled),
+            runtime: None,
+            tools: &tools,
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+        anyhow::ensure!(
+            uninstalled_status.install_state == "needs_configuration"
+                && uninstalled_status.available_actions == [NodeAction::Install]
+        );
+
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        let package_dir = modules_dir.join("lez_indexer_module");
+        let package_path = package_dir.join("lez_indexer_module_plugin.so");
+        std::fs::create_dir_all(&package_dir)?;
+        std::fs::write(&package_path, b"module")?;
+        let mut installed =
+            managed_module_config(NodeKind::Indexer, true, NodeLifecycleState::Stopped);
+        installed.package_path = Some(package_path.display().to_string());
+        let stopped_status = adapter.project_status(NodeStatusContext {
+            config: Some(&installed),
+            runtime: None,
+            tools: &tools,
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+        anyhow::ensure!(
+            stopped_status.install_state == "installed"
+                && stopped_status.run_state == "stopped"
+                && stopped_status.available_actions == [NodeAction::Install]
+        );
+
+        let mut runtime = running_managed_runtime();
+        runtime.modules_dir = Some(modules_dir.display().to_string());
+        anyhow::ensure!(
+            projected_actions(adapter, &runtime, &tools, &installed) == [NodeAction::Start]
+        );
+
+        let mut syncing = installed.clone();
+        syncing.lifecycle_state = NodeLifecycleState::Running;
+        syncing.indexer_state = Some("syncing".to_owned());
+        syncing.indexer_head = Some("42".to_owned());
+        let syncing_status = adapter.project_status(NodeStatusContext {
+            config: Some(&syncing),
+            runtime: Some(&runtime),
+            tools: &tools,
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+        anyhow::ensure!(
+            syncing_status.run_state == "syncing"
+                && syncing_status.detail.contains("42")
+                && syncing_status.available_actions == [NodeAction::Stop]
+        );
+
+        syncing.indexer_state = Some("error".to_owned());
+        syncing.indexer_error = Some("bedrock unavailable".to_owned());
+        let error_status = adapter.project_status(NodeStatusContext {
+            config: Some(&syncing),
+            runtime: Some(&runtime),
+            tools: &tools,
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+        anyhow::ensure!(
+            error_status.run_state == "error" && error_status.detail == "bedrock unavailable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_managed_indexer_is_not_installed_for_another_runtime_directory() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let installed_modules = directory.path().join("installed-modules");
+        let runtime_modules = directory.path().join("runtime-modules");
+        let package_dir = installed_modules.join("lez_indexer_module");
+        let package_path = package_dir.join("lez_indexer_module_plugin.so");
+        std::fs::create_dir_all(&package_dir)?;
+        std::fs::create_dir_all(&runtime_modules)?;
+        std::fs::write(&package_path, b"module")?;
+        let adapter = adapter_for(NodeKind::Indexer);
+        let mut config =
+            managed_module_config(NodeKind::Indexer, true, NodeLifecycleState::Stopped);
+        config.package_path = Some(package_path.display().to_string());
+        let mut runtime = running_managed_runtime();
+        runtime.modules_dir = Some(runtime_modules.display().to_string());
+
+        let status = adapter.project_status(NodeStatusContext {
+            config: Some(&config),
+            runtime: Some(&runtime),
+            tools: &configured_tools(),
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+
+        anyhow::ensure!(status.install_state == "needs_configuration");
+        anyhow::ensure!(status.available_actions == [NodeAction::Install]);
+        Ok(())
+    }
+
+    #[test]
+    fn package_managed_indexer_is_not_installed_when_artifact_is_missing() {
+        let adapter = adapter_for(NodeKind::Indexer);
+        let config = managed_module_config(NodeKind::Indexer, true, NodeLifecycleState::Stopped);
+
+        let status = adapter.project_status(NodeStatusContext {
+            config: Some(&config),
+            runtime: None,
+            tools: &configured_tools(),
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+
+        assert_eq!(status.install_state, "needs_configuration");
+        assert_eq!(status.available_actions, [NodeAction::Install]);
     }
 
     #[test]

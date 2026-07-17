@@ -261,7 +261,7 @@ impl OperationControl {
         })
     }
 
-    fn commit_is_active(&self) -> bool {
+    pub(super) fn commit_is_active(&self) -> bool {
         self.commit_active.load(Ordering::Acquire)
     }
 

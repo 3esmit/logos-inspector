@@ -15,7 +15,7 @@ use super::spec::{
     OperationMethod, OperationPolicyDefinition, operation_definition,
 };
 use super::storage;
-use super::{blockchain, delivery};
+use super::{blockchain, delivery, local_nodes};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeOperationRequest {
@@ -103,8 +103,16 @@ impl RuntimeOperationRequest {
         }
     }
 
-    pub(super) const fn deadline(&self) -> std::time::Duration {
-        self.definition.deadline()
+    pub(super) fn deadline(&self) -> std::time::Duration {
+        if matches!(
+            self.command(),
+            OperationCommand::LocalNodes(local_nodes::LocalNodesCommand::Action)
+        ) && local_nodes::is_indexer_package_install(&self.args)
+        {
+            crate::local_nodes::INDEXER_PACKAGE_INSTALL_TIMEOUT
+        } else {
+            self.definition.deadline()
+        }
     }
 
     pub(super) fn node_request(&self) -> Result<&NodeOperationRequest> {
@@ -922,6 +930,30 @@ mod tests {
         if !request.node_request()?.mutating_enabled() {
             bail!("legacy mutation request was not enabled");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_package_install_uses_extended_operation_deadline() -> Result<()> {
+        let install = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalNodesAction,
+            json!(["default", { "action": "install", "node": "indexer" }]),
+            "Install Indexer",
+        )?;
+        let start = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalNodesAction,
+            json!(["default", { "action": "start", "node": "indexer" }]),
+            "Start Indexer",
+        )?;
+
+        anyhow::ensure!(
+            install.deadline() == crate::local_nodes::INDEXER_PACKAGE_INSTALL_TIMEOUT,
+            "Indexer package install did not receive its extended deadline"
+        );
+        anyhow::ensure!(
+            start.deadline() < install.deadline(),
+            "extended deadline leaked to another local node action"
+        );
         Ok(())
     }
 }
