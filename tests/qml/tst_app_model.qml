@@ -193,6 +193,7 @@ TestCase {
         model.transactionsPageRows = []
         model.transactionsPageBeforeBlock = 0
         model.transactionsPageNextBeforeBlock = 0
+        model.transactionsPageAtLatest = false
         model.transactionsPageError = ""
         model.blockDetailValue = null
         model.blockDetailError = ""
@@ -4510,6 +4511,34 @@ TestCase {
         compare(methods.join(","), "blockchainNode,blockchainBlocks")
     }
 
+    function test_transaction_page_tracks_latest_and_older_ranges() {
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 5001,
+                                lib_slot: 5000
+                            }
+                        }
+                    }
+                },
+                blockchainBlocks: []
+            })
+        }
+
+        model.chainPages.refreshTransactionsPage()
+        tryCompare(model, "transactionsPageBeforeBlock", 5000)
+        verify(model.transactionsPageAtLatest)
+        compare(model.transactionsPageNextBeforeBlock, 3999)
+
+        model.chainPages.olderTransactionsPage()
+        tryCompare(model, "transactionsPageBeforeBlock", 3999)
+        verify(!model.transactionsPageAtLatest)
+        compare(model.transactionsPageNextBeforeBlock, 2998)
+    }
+
     function test_transactions_and_detail_lookups_use_runtime_operations() {
         const blocksResult = [{
             header: { slot: 40, id: "block-40" },
@@ -4541,6 +4570,7 @@ TestCase {
         model.chainPages.refreshTransactionsPage()
         tryVerify(function () { return model.transactionsPageRows.length === 1 })
         compare(model.transactionsPageRows[0].hash, "tx-page")
+        verify(model.transactionsPageAtLatest)
 
         model.loadBlockchainBlockById("block-lookup")
         tryVerify(function () {

@@ -495,8 +495,16 @@ ColumnLayout {
     }
 
     function l1TransactionRows() {
-        const transactions = root.model.chainPages.transactionRowsFromBlocks(
-            root.model.chainPages.blocksPageRows || []).slice(0, 5)
+        const loadedTransactions = root.model.chainPages.transactionsPageRows || []
+        let transactions = []
+        if (loadedTransactions.length > 0
+                && root.transactionsPageRowsAreCurrent()) {
+            transactions = loadedTransactions
+        } else {
+            transactions = root.model.chainPages.transactionRowsFromBlocks(
+                root.model.chainPages.blocksPageRows || [])
+        }
+        transactions = transactions.slice(0, 5)
         if (transactions.length > 0) {
             return transactions.map(function (tx) {
                 const txHash = String(tx.hash || "")
@@ -521,6 +529,24 @@ ColumnLayout {
                 blockHash: ""
             }
         ]
+    }
+
+    function transactionsPageRowsAreCurrent() {
+        if (root.model.chainPages.transactionsPageAtLatest !== true) {
+            return false
+        }
+        const libSlot = Number(root.cryptarchiaValue("lib_slot"))
+        const slotTo = Number(
+            root.model.chainPages.transactionsPageBeforeBlock)
+        if (!Number.isFinite(slotTo) || slotTo <= 0) {
+            return false
+        }
+        if (!Number.isFinite(libSlot) || libSlot <= 0) {
+            return true
+        }
+        const batch = Math.max(0, Number(
+            root.model.chainPages.transactionsPageBlockBatch || 0))
+        return Number.isFinite(batch) && slotTo + batch >= libSlot
     }
 
     component GraphTile: Frame {
