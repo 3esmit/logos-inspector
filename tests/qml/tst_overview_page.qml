@@ -215,6 +215,7 @@ TestCase {
         const transactionBlockHash = ZoneFixtureData.identity("c")
         const transactionHash = ZoneFixtureData.identity("b")
         const channelId = ZoneFixtureData.identity("1")
+        const unconfiguredChannelId = ZoneFixtureData.identity("8")
         model.dashboardL1Blocks = [{
             header: {
                 slot: 123456,
@@ -258,12 +259,20 @@ TestCase {
         compare(blockLink.copyText, blockHash)
 
         const zoneLink = findAccessibleByName(
-            page, "Open Zone " + channelId)
+            page, "Open Sequencer dashboard for Zone " + channelId)
         const zoneCopy = findAccessibleByName(
             page, "Copy Zone channel ID " + channelId)
         verifyAccessibleControl(zoneLink, Accessible.Link)
         verifyAccessibleControl(zoneCopy, Accessible.Button)
         compare(zoneLink.copyText, channelId)
+        compare(findAccessibleByName(page, "Open Zone " + channelId), null)
+
+        const unconfiguredZoneLink = findAccessibleByName(
+            page, "Open Zone " + unconfiguredChannelId)
+        verifyAccessibleControl(unconfiguredZoneLink, Accessible.Link)
+        compare(findAccessibleByName(page,
+            "Open Sequencer dashboard for Zone "
+                + unconfiguredChannelId), null)
 
         const transactionLink = findAccessibleByName(
             page, "Open Mantle transaction " + transactionHash)
@@ -518,6 +527,8 @@ TestCase {
         verify(!hiddenCopy.visible)
         compare(findAccessibleByName(
             row, "Open Zone " + channelId), null)
+        compare(findAccessibleByName(row,
+            "Open Sequencer dashboard for Zone " + channelId), null)
     }
 
     function test_narrow_dashboard_layout_stacks_activity_panels() {
@@ -610,6 +621,32 @@ TestCase {
         verify(panel.openZone(channelId))
         compare(model.zoneInspection.activeZoneId, channelId)
         compare(model.shell.currentView, "sequencerDashboard")
+    }
+
+    function test_dashboard_unconfigured_sequencer_name_matches_zone_route() {
+        const panel = findChild(page, "dashboardZonesPanel")
+        const channelId = ZoneFixtureData.identity("1")
+        const configured = dashboardZones()[0]
+        const unconfigured = Object.assign({}, configured, {
+            active_zone_context_fields: Object.assign(
+                {}, configured.active_zone_context_fields, {
+                    selected_sequencer_source_id: null
+                }),
+            settlement_link: Object.assign({}, configured.settlement_link, {
+                selected_sequencer_source_id: null
+            })
+        })
+        model.zoneInspection.zoneSummaries = [unconfigured]
+        wait(0)
+
+        const zoneLink = findAccessibleByName(page, "Open Zone " + channelId)
+        verifyAccessibleControl(zoneLink, Accessible.Link)
+        compare(findAccessibleByName(page,
+            "Open Sequencer dashboard for Zone " + channelId), null)
+
+        mouseClick(zoneLink)
+        compare(model.zoneInspection.activeZoneId, channelId)
+        compare(model.shell.currentView, "zones")
     }
 
     function dashboardZones() {

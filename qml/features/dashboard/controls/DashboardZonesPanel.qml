@@ -229,9 +229,8 @@ Frame {
                 fill: true,
                 link: actionable,
                 copyText: channelId,
-                accessibleName: actionable
-                    ? qsTr("Open Zone %1").arg(channelId)
-                    : root.zoneLabel(zone),
+                accessibleName: root.zoneActionAccessibleName(
+                    zone, actionable),
                 copyAccessibleName: qsTr("Copy Zone channel ID %1").arg(channelId),
                 monospace: false
             },
@@ -273,6 +272,16 @@ Frame {
         return String(zone && zone.kind || "") === "sequencer_zone"
             && String(fields.selected_sequencer_source_id
                 || link.selected_sequencer_source_id || "").length > 0
+    }
+
+    function zoneActionAccessibleName(zone, actionable) {
+        const channelId = String(zone && zone.channel_id || "")
+        if (!actionable) {
+            return root.zoneLabel(zone)
+        }
+        return root.sequencerConfigured(zone)
+            ? qsTr("Open Sequencer dashboard for Zone %1").arg(channelId)
+            : qsTr("Open Zone %1").arg(channelId)
     }
 
     function emptyText() {
