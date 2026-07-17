@@ -16,6 +16,7 @@ ColumnLayout {
     property string guardedTitle: ""
     property bool permissionEnabled: false
     property string permissionEnabledTitle: qsTr("Permission enabled")
+    property string permissionEnabledTone: "warning"
     property string permissionDisabledTitle: qsTr("Permission disabled")
     property string guardedMessage: ""
     property var guardedActions: []
@@ -23,6 +24,7 @@ ColumnLayout {
     property var evidenceRows: []
 
     signal refreshRequested()
+    signal guardedActionRequested(string action)
 
     spacing: root.theme.gap
     Layout.fillWidth: true
@@ -67,7 +69,7 @@ ColumnLayout {
 
         StatusMessage {
             theme: root.theme
-            tone: root.permissionEnabled ? "warning" : "info"
+            tone: root.permissionEnabled ? root.permissionEnabledTone : "info"
             title: root.permissionEnabled ? root.permissionEnabledTitle : root.permissionDisabledTitle
             message: root.guardedMessage
             Layout.fillWidth: true
@@ -85,12 +87,15 @@ ColumnLayout {
 
                     theme: root.theme
                     text: String(modelData.text || "")
-                    enabled: false
+                    enabled: modelData.enabled === true && !root.pending
                     Layout.preferredWidth: Number(modelData.width || 130)
+                    accessibleName: String(modelData.accessibleName || modelData.text || "")
+                    onClicked: root.guardedActionRequested(String(modelData.action || ""))
                 }
             }
 
             Text {
+                visible: root.hasPendingGuardedActions()
                 text: qsTr("Adapters pending")
                 color: root.theme.textDim
                 textFormat: Text.PlainText
@@ -119,5 +124,15 @@ ColumnLayout {
                 tone: String(modelData.tone || "neutral")
             }
         }
+    }
+
+    function hasPendingGuardedActions() {
+        const actions = Array.isArray(root.guardedActions) ? root.guardedActions : []
+        for (let i = 0; i < actions.length; ++i) {
+            if (actions[i].enabled !== true) {
+                return true
+            }
+        }
+        return false
     }
 }
