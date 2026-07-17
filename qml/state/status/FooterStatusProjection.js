@@ -1,24 +1,27 @@
 .import "StatusFieldCatalog.js" as StatusFieldCatalog
 
 function footerGroups(root, region) {
+    const regions = footerRegions(root)
+    return String(region || "left") === "right" ? regions.right : regions.left
+}
+
+function footerRegions(root) {
     const revision = root.model.metrics.footerFieldRevision
     const groups = footerSourceGroups()
-    const rows = []
+    const regions = { left: [], right: [] }
     for (let i = 0; i < groups.length; ++i) {
         const group = groups[i]
         const alignRight = group.alignRight === true
-        if ((String(region || "left") === "right") !== alignRight) {
-            continue
-        }
         const items = footerGroupItems(root, group)
         if (items.length > 0) {
+            const rows = alignRight ? regions.right : regions.left
             rows.push({
                 first: rows.length === 0,
                 items: items
             })
         }
     }
-    return rows
+    return regions
 }
 
 function footerGroupItems(root, group) {

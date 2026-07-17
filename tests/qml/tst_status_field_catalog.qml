@@ -15,6 +15,13 @@ TestCase {
         compare(sourceGroups[sourceGroups.length - 1].alignRight, true)
     }
 
+    function test_footer_source_groups_reuse_static_projection() {
+        const first = StatusFieldCatalog.footerSourceGroups()
+        const second = StatusFieldCatalog.footerSourceGroups()
+
+        verify(first === second)
+    }
+
     function test_defaults_are_catalog_owned() {
         const footer = StatusFieldCatalog.defaultFooterFieldSelections()
         const dashboard = StatusFieldCatalog.defaultDashboardGraphSelections()

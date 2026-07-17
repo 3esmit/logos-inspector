@@ -187,6 +187,23 @@ TestCase {
         }))
     }
 
+    function test_footer_regions_project_left_and_right_in_one_pass() {
+        const regions = FooterStatusProjection.footerRegions(footerRoot)
+
+        verify(Array.isArray(regions.left))
+        verify(Array.isArray(regions.right))
+        verify(regions.left.some(function (group) {
+            return group.items.some(function (item) {
+                return item.fullName === "ST node"
+            })
+        }))
+        verify(regions.right.some(function (group) {
+            return group.items.some(function (item) {
+                return item.fullName === "Overall"
+            })
+        }))
+    }
+
     function test_module_status_and_configured_source_status_are_distinct() {
         model.moduleReports = ({
             storage: {

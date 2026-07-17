@@ -15,6 +15,7 @@ Pane {
     required property AppModel model
 
     readonly property bool compact: width < 900
+    readonly property var projectedGroups: FooterStatusProjection.footerRegions(root)
 
     leftPadding: root.theme.gap
     rightPadding: root.theme.gap
@@ -41,7 +42,7 @@ Pane {
             Layout.fillWidth: true
 
             Repeater {
-                model: root.footerGroups("left")
+                model: root.projectedGroups.left
 
                 FooterSourceGroup {
                     required property var modelData
@@ -57,13 +58,13 @@ Pane {
         Flow {
             id: rightFlow
 
-            visible: root.footerGroups("right").length > 0
+            visible: root.projectedGroups.right.length > 0
             spacing: root.theme.gapSmall
             Layout.fillWidth: root.compact
             Layout.alignment: root.compact ? Qt.AlignLeft : Qt.AlignRight
 
             Repeater {
-                model: root.footerGroups("right")
+                model: root.projectedGroups.right
 
                 FooterSourceGroup {
                     required property var modelData
