@@ -103,6 +103,150 @@ function storageTopologyRows(page) {
     ]
 }
 
+function storageNetworkDebugRows(page, maxRoutingNodes) {
+    const value = page.probeValue("debug")
+    if (value === undefined || value === null) {
+        return []
+    }
+    const debug = unwrappedObject(value)
+    if (debug === null) {
+        return [storageNetworkDebugDetailRow(
+            page, qsTr("Network snapshot"), page.valueSummary(value), value)]
+    }
+
+    const tableValue = objectField(debug, ["table"])
+    const table = tableValue && typeof tableValue === "object"
+        && !Array.isArray(tableValue) ? tableValue : null
+    const nodesValue = objectField(table, ["nodes"])
+    const nodes = Array.isArray(nodesValue) ? nodesValue : []
+    const configuredLimit = Number(maxRoutingNodes)
+    const limit = Number.isFinite(configuredLimit)
+        ? Math.max(0, Math.floor(configuredLimit)) : 50
+    const shownCount = Math.min(nodes.length, limit)
+    const rows = [storageNetworkDebugDetailRow(
+        page,
+        qsTr("Network snapshot"),
+        qsTr("%1 field(s); %2 routing node(s)")
+            .arg(Object.keys(debug).length)
+            .arg(nodes.length),
+        debug)]
+
+    appendStorageDebugValue(rows, page, qsTr("Network peer ID"),
+                            objectField(debug, ["id", "peerId", "peer_id"]))
+    appendStorageDebugList(rows, page, qsTr("Listen address"),
+                           objectField(debug, ["addrs", "listenAddresses", "listen_addresses"]),
+                           limit)
+    appendStorageDebugList(rows, page, qsTr("Announce address"),
+                           objectField(debug, ["announceAddresses", "announce_addresses"]),
+                           limit)
+    appendStorageDebugValue(rows, page, qsTr("libp2p public key"),
+                            objectField(debug, ["libp2pPubKey", "libp2p_pub_key"]))
+    appendStorageDebugValue(rows, page, qsTr("Mix public key"),
+                            objectField(debug, ["mixPubKey", "mix_pub_key"]))
+    appendStorageDebugValue(rows, page, qsTr("Provider record"),
+                            objectField(debug, ["providerRecord", "provider_record"]))
+    appendStorageDebugValue(rows, page, qsTr("Self peer record"),
+                            objectField(debug, ["spr"]))
+
+    const storageValue = objectField(debug, ["storage"])
+    appendStorageDebugValue(rows, page, qsTr("Storage version"),
+                            objectField(storageValue, ["version"]))
+    appendStorageDebugValue(rows, page, qsTr("Storage revision"),
+                            objectField(storageValue, ["revision"]))
+
+    const localNode = objectField(table, ["localNode", "local_node"])
+    if (hasStorageDebugValue(localNode)) {
+        rows.push(storageNetworkDebugDetailRow(
+            page, qsTr("DHT local node"), storageDebugNodeSummary(page, localNode), localNode))
+    }
+    if (Array.isArray(nodesValue)) {
+        rows.push(storageNetworkDebugDetailRow(
+            page,
+            qsTr("DHT routing nodes"),
+            qsTr("%1 node(s); showing %2").arg(nodes.length).arg(shownCount),
+            nodes))
+    }
+    for (let i = 0; i < shownCount; ++i) {
+        rows.push(storageNetworkDebugDetailRow(
+            page,
+            qsTr("Routing node %1").arg(i + 1),
+            storageDebugNodeSummary(page, nodes[i]),
+            nodes[i]))
+    }
+    return rows
+}
+
+function storageNetworkDebugDetailRow(page, label, displayValue, copyValue) {
+    const row = page.detailRow(label, displayValue)
+    row.value = String(displayValue === undefined || displayValue === null
+        ? qsTr("n/a") : displayValue)
+    row.copyText = hasStorageDebugValue(copyValue) ? page.copyValue(copyValue) : ""
+    row.source = page.sourceName()
+    return row
+}
+
+function appendStorageDebugValue(rows, page, label, value) {
+    if (!hasStorageDebugValue(value)) {
+        return
+    }
+    rows.push(storageNetworkDebugDetailRow(page, label, page.valueSummary(value), value))
+}
+
+function appendStorageDebugList(rows, page, label, value, maxItems) {
+    if (!Array.isArray(value)) {
+        return
+    }
+    const shownCount = Math.min(value.length, maxItems)
+    for (let i = 0; i < shownCount; ++i) {
+        rows.push(storageNetworkDebugDetailRow(
+            page, qsTr("%1 %2").arg(label).arg(i + 1), page.valueSummary(value[i]), value[i]))
+    }
+    if (shownCount < value.length) {
+        rows.push(storageNetworkDebugDetailRow(
+            page,
+            qsTr("%1 list").arg(label),
+            qsTr("%1 item(s); showing %2").arg(value.length).arg(shownCount),
+            value))
+    }
+}
+
+function storageDebugNodeSummary(page, value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return page.valueSummary(value)
+    }
+    const parts = []
+    const peerId = objectField(value, ["peerId", "peer_id"])
+    const address = objectField(value, ["address", "addr"])
+    const nodeId = objectField(value, ["nodeId", "node_id"])
+    if (hasStorageDebugValue(peerId)) {
+        parts.push(String(peerId))
+    }
+    if (hasStorageDebugValue(address)) {
+        parts.push(String(address))
+    }
+    if (hasStorageDebugValue(nodeId)) {
+        parts.push(String(nodeId))
+    }
+    return parts.length > 0 ? parts.join(" | ") : page.valueSummary(value)
+}
+
+function hasStorageDebugValue(value) {
+    return value !== undefined && value !== null && String(value).length > 0
+}
+
+function unwrappedObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null
+    }
+    if (value.result !== undefined) {
+        return unwrappedObject(value.result)
+    }
+    if (value.value !== undefined) {
+        return unwrappedObject(value.value)
+    }
+    return value
+}
+
 function storageCapacityRows(page) {
     return [
         page.spaceRow(qsTr("Quota used"), ["quotaUsedBytes", "quota_used_bytes", "used", "usedBytes"]),

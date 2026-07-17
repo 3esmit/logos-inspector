@@ -9,6 +9,7 @@ TestCase {
     name: "SourceObservationProjection"
     property bool storageMetricsConfigured: false
     property string storageDataDirProbe: ""
+    property var storageDebugProbe: null
 
     QtObject {
         id: sourceRoutingStub
@@ -72,6 +73,9 @@ TestCase {
             if (method === "dataDir" && testRoot.storageDataDirProbe.length > 0) {
                 return testRoot.storageDataDirProbe
             }
+            if (method === "debug") {
+                return testRoot.storageDebugProbe
+            }
             return null
         }
         function probeKnown(method) { return probeValue(method) !== null }
@@ -96,8 +100,18 @@ TestCase {
         function sourceMetricsEndpoint() { return "http://storage/metrics" }
         function metricsEndpointConfigured() { return testRoot.storageMetricsConfigured }
         function report() { return null }
-        function valueSummary(value) { return value === null || value === undefined ? "n/a" : JSON.stringify(value) }
-        function copyValue(value) { return String(value || "") }
+        function valueSummary(value) {
+            if (value === null || value === undefined) {
+                return "n/a"
+            }
+            return typeof value === "object" ? JSON.stringify(value) : String(value)
+        }
+        function copyValue(value) {
+            if (value !== null && typeof value === "object") {
+                return JSON.stringify(value)
+            }
+            return String(value || "")
+        }
         function shortText(value, maxLength) { return String(value || "").slice(0, maxLength || 32) }
         function statusRow(label, state, evidence, tone) {
             return { label: label, state: state, evidence: evidence, tone: tone }
@@ -194,7 +208,56 @@ TestCase {
     function init() {
         testRoot.storageMetricsConfigured = false
         testRoot.storageDataDirProbe = ""
+        testRoot.storageDebugProbe = null
         storageModel.storageLocalDiagnosticsEnabled = false
+    }
+
+    function storageDebugFixture(nodeCount) {
+        const nodes = []
+        for (let i = 0; i < nodeCount; ++i) {
+            nodes.push({
+                peerId: "routing-peer-" + (i + 1),
+                address: "/ip4/10.0.0." + (i + 1) + "/tcp/3000",
+                nodeId: "routing-node-" + (i + 1),
+                record: "routing-record-" + (i + 1),
+                seen: i + 10
+            })
+        }
+        return {
+            id: "debug-peer-id",
+            addrs: [
+                "/ip4/127.0.0.1/tcp/8070",
+                "/ip4/10.0.0.2/tcp/8070"
+            ],
+            announceAddresses: ["/dns4/storage.test/tcp/443/wss"],
+            libp2pPubKey: "debug-libp2p-public-key",
+            mixPubKey: null,
+            providerRecord: "debug-provider-record",
+            spr: "debug-self-peer-record",
+            storage: {
+                version: "0.1.0-test",
+                revision: "debug-revision"
+            },
+            table: {
+                localNode: {
+                    peerId: "debug-peer-id",
+                    address: "/ip4/127.0.0.1/tcp/8070",
+                    nodeId: "debug-local-node",
+                    record: "debug-local-record",
+                    seen: 1
+                },
+                nodes: nodes
+            }
+        }
+    }
+
+    function detailRowByLabel(rows, label) {
+        for (let i = 0; i < rows.length; ++i) {
+            if (rows[i].label === label) {
+                return rows[i]
+            }
+        }
+        return null
     }
 
     function test_storage_projection_extracts_identity_and_rows() {
@@ -252,6 +315,79 @@ TestCase {
             storagePage, true, probe, "Probe")
 
         compare(row.evidence, "/var/lib/logos/storage")
+    }
+
+    function test_storage_network_debug_rows_expose_structured_payload() {
+        const debug = storageDebugFixture(2)
+        testRoot.storageDebugProbe = debug
+
+        const rows = SourceObservation.storageNetworkDebugRows(storagePage, 50)
+        const snapshot = detailRowByLabel(rows, "Network snapshot")
+        const peerId = detailRowByLabel(rows, "Network peer ID")
+        const listenAddress = detailRowByLabel(rows, "Listen address 1")
+        const announceAddress = detailRowByLabel(rows, "Announce address 1")
+        const localNode = detailRowByLabel(rows, "DHT local node")
+        const routingNodes = detailRowByLabel(rows, "DHT routing nodes")
+        const firstNode = detailRowByLabel(rows, "Routing node 1")
+
+        verify(snapshot !== null)
+        compare(snapshot.value, "9 field(s); 2 routing node(s)")
+        compare(snapshot.copyText, JSON.stringify(debug))
+        compare(peerId.value, debug.id)
+        compare(peerId.copyText, debug.id)
+        compare(listenAddress.value, debug.addrs[0])
+        compare(listenAddress.copyText, debug.addrs[0])
+        compare(announceAddress.value, debug.announceAddresses[0])
+        compare(localNode.copyText, JSON.stringify(debug.table.localNode))
+        compare(routingNodes.value, "2 node(s); showing 2")
+        compare(routingNodes.copyText, JSON.stringify(debug.table.nodes))
+        compare(firstNode.value, "routing-peer-1 | /ip4/10.0.0.1/tcp/3000 | routing-node-1")
+        compare(firstNode.copyText, JSON.stringify(debug.table.nodes[0]))
+        compare(detailRowByLabel(rows, "libp2p public key").value,
+                debug.libp2pPubKey)
+        compare(detailRowByLabel(rows, "Provider record").value,
+                debug.providerRecord)
+        compare(detailRowByLabel(rows, "Self peer record").value, debug.spr)
+        compare(detailRowByLabel(rows, "Storage version").value,
+                debug.storage.version)
+        compare(detailRowByLabel(rows, "Storage revision").value,
+                debug.storage.revision)
+    }
+
+    function test_storage_network_debug_rows_bound_copy() {
+        const debug = storageDebugFixture(55)
+        debug.addrs = []
+        for (let i = 0; i < 55; ++i) {
+            debug.addrs.push("/ip4/10.1.0." + (i + 1) + "/tcp/8070")
+        }
+        testRoot.storageDebugProbe = debug
+
+        const rows = SourceObservation.storageNetworkDebugRows(storagePage, 3)
+        let routingNodeRows = 0
+        for (let i = 0; i < rows.length; ++i) {
+            if (String(rows[i].label).indexOf("Routing node ") === 0) {
+                routingNodeRows += 1
+            }
+        }
+
+        compare(routingNodeRows, 3)
+        compare(detailRowByLabel(rows, "DHT routing nodes").value,
+                "55 node(s); showing 3")
+        compare(detailRowByLabel(rows, "DHT routing nodes").copyText,
+                JSON.stringify(debug.table.nodes))
+        compare(detailRowByLabel(rows, "Network snapshot").copyText,
+                JSON.stringify(debug))
+        verify(detailRowByLabel(rows, "Routing node 4") === null)
+        compare(detailRowByLabel(rows, "Listen address list").value,
+                "55 item(s); showing 3")
+        compare(detailRowByLabel(rows, "Listen address list").copyText,
+                JSON.stringify(debug.addrs))
+        verify(detailRowByLabel(rows, "Listen address 3") !== null)
+        verify(detailRowByLabel(rows, "Listen address 4") === null)
+    }
+
+    function test_storage_network_debug_rows_are_empty_without_debug_probe() {
+        compare(SourceObservation.storageNetworkDebugRows(storagePage, 50).length, 0)
     }
 
     function test_delivery_projection_extracts_protocol_health_and_counts() {
