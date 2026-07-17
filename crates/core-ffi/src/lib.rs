@@ -24,6 +24,7 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 const HOST_TRANSPORT_ABI_VERSION: u32 = 1;
+const HOST_RESPONSE_JSON_MAX_BYTES: usize = 16 * 1024 * 1024;
 const ASYNC_WORKER_QUEUE_CAPACITY: usize = 128;
 const HOST_EVENT_SUBSCRIPTION_CAPACITY: usize = 64;
 const HOST_EVENT_SUBSCRIPTION_LIMIT: usize = 64;
@@ -1468,6 +1469,26 @@ fn c_string(value: *const c_char, label: &str) -> Result<String, String> {
         .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
 }
 
+fn c_string_bounded(value: *const c_char, label: &str, max_bytes: usize) -> Result<String, String> {
+    if max_bytes == 0 {
+        return Err(format!("{label} byte limit must be greater than zero"));
+    }
+    if value.is_null() {
+        return Err(format!("{label} is required"));
+    }
+
+    // SAFETY: caller provides a valid NUL-terminated C string for the duration
+    // of this call.
+    let value = unsafe { CStr::from_ptr(value) };
+    if value.to_bytes().len() > max_bytes {
+        return Err(format!("{label} exceeded {max_bytes} byte limit"));
+    }
+    value
+        .to_str()
+        .map(ToOwned::to_owned)
+        .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
+}
+
 fn into_c_string(value: String) -> *mut c_char {
     let sanitized = value.replace('\0', "\\u0000");
     match CString::new(sanitized) {
@@ -1500,7 +1521,15 @@ unsafe extern "C" fn host_transport_reply(
 }
 
 fn host_result(ok: i32, payload_json: *const c_char) -> Result<Value, String> {
-    let payload = c_string(payload_json, "host response JSON")?;
+    host_result_bounded(ok, payload_json, HOST_RESPONSE_JSON_MAX_BYTES)
+}
+
+fn host_result_bounded(
+    ok: i32,
+    payload_json: *const c_char,
+    max_bytes: usize,
+) -> Result<Value, String> {
+    let payload = c_string_bounded(payload_json, "host response JSON", max_bytes)?;
     if ok == 1 {
         return serde_json::from_str(&payload)
             .map_err(|error| format!("host returned invalid success JSON: {error}"));
@@ -3260,6 +3289,23 @@ mod tests {
             || drops.load(Ordering::Acquire) != 2
         {
             return err("invalid host success payload was not explicit");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_response_json_enforces_byte_limit_before_parse() -> TestResult {
+        let exact = CString::new("\"123456\"")?;
+        let oversized = CString::new("\"1234567\"")?;
+
+        if host_result_bounded(1, exact.as_ptr(), 8)? != serde_json::json!("123456") {
+            return err("exact-limit host response was not preserved");
+        }
+        let error = host_result_bounded(1, oversized.as_ptr(), 8)
+            .err()
+            .ok_or("oversized host response should fail")?;
+        if !error.contains("host response JSON exceeded 8 byte limit") {
+            return err("oversized host response error did not report byte limit");
         }
         Ok(())
     }
