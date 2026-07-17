@@ -1277,6 +1277,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_cancel_terminalizes_after_remote_and_local_cleanup() -> Result<()> {
+        let _test_permit = storage_layer::serialize_cli_backup_test();
         let fixture = CliBackupCancelFixture::new()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1337,6 +1338,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_system_cleanup_unknown_retains_lease_without_cancel_request() -> Result<()> {
+        let _test_permit = storage_layer::serialize_cli_backup_test();
         let fixture = CliBackupCancelFixture::cleanup_unknown()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1403,6 +1405,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_cancel_cleanup_unknown_retains_lease_with_cancel_evidence() -> Result<()> {
+        let _test_permit = storage_layer::serialize_cli_backup_test();
         let fixture = CliBackupCancelFixture::cancellation_cleanup_unknown()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1474,6 +1477,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_deadline_cleanup_unknown_preserves_nonterminal_error_type() -> Result<()> {
+        let _test_permit = storage_layer::serialize_cli_backup_test();
         let fixture = CliBackupCancelFixture::cancellation_cleanup_unknown()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1523,6 +1527,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cli_backup_unsupported_protocol_fails_before_dispatch_or_catalog_projection() -> Result<()> {
+        let _test_permit = storage_layer::serialize_cli_backup_test();
         let fixture = CliBackupCancelFixture::unsupported_protocol()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

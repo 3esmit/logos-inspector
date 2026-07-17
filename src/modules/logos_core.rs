@@ -3840,7 +3840,8 @@ esac
         let control = CommandControl::new(
             CancellationToken::new(),
             StdInstant::now() + Duration::from_secs(2),
-        );
+        )
+        .with_isolated_test_budget();
 
         let discovery = runtime.discover_module_controlled_with(
             "storage_module",

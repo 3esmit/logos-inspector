@@ -41,3 +41,5 @@ pub(crate) use operations::{
 };
 pub(crate) use plan::storage_module_probe_plan;
 pub(crate) use transport::BackupDownloadCleanupUnconfirmed;
+#[cfg(all(test, unix))]
+pub(crate) use transport::serialize_cli_backup_test;
