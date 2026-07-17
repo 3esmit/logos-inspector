@@ -446,37 +446,11 @@ ColumnLayout {
                 }
             }
 
-            StatusMessage {
-                visible: root.model.operation.known
+            ActiveStorageOperationControls {
                 theme: root.theme
-                tone: root.model.operation.tone
-                title: root.model.operation.statusText
-                message: root.model.activeStorageDetailText()
+                model: root.model
+                cancelActionObjectName: "storageTransferCancelButton"
                 Layout.fillWidth: true
-            }
-
-            RowLayout {
-                visible: root.model.operation.running
-                spacing: root.theme.gapSmall
-                Layout.fillWidth: true
-
-                ActionButton {
-                    theme: root.theme
-                    text: qsTr("Cancel")
-                    visible: root.model.operation.cancelable
-                    enabled: root.model.operation.cancelable
-                    Layout.preferredWidth: 112
-                    onClicked: root.model.cancelStorageOperation()
-                }
-
-                Text {
-                    text: root.model.activeStorageProgressText()
-                    color: root.theme.textMuted
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    font.pixelSize: root.theme.secondaryText
-                    Layout.fillWidth: true
-                }
             }
         }
     }
@@ -487,6 +461,13 @@ ColumnLayout {
         Panel {
             theme: root.theme
             title: qsTr("Operations")
+
+            ActiveStorageOperationControls {
+                theme: root.theme
+                model: root.model
+                cancelActionObjectName: "storageOperationsCancelButton"
+                Layout.fillWidth: true
+            }
 
             ColumnLayout {
                 spacing: root.theme.gapSmall
@@ -546,6 +527,51 @@ ColumnLayout {
             return operationsTab
         default:
             return filesTab
+        }
+    }
+
+    component ActiveStorageOperationControls: ColumnLayout {
+        id: activeOperationRoot
+
+        required property Theme theme
+        required property StorageAppState model
+        property string cancelActionObjectName: ""
+
+        visible: activeOperationRoot.model.operation.known
+        spacing: activeOperationRoot.theme.gapSmall
+
+        StatusMessage {
+            visible: activeOperationRoot.model.operation.known
+            theme: activeOperationRoot.theme
+            tone: activeOperationRoot.model.operation.tone
+            title: activeOperationRoot.model.operation.statusText
+            message: activeOperationRoot.model.activeStorageDetailText()
+            Layout.fillWidth: true
+        }
+
+        RowLayout {
+            visible: activeOperationRoot.model.operation.running
+            spacing: activeOperationRoot.theme.gapSmall
+            Layout.fillWidth: true
+
+            ActionButton {
+                objectName: activeOperationRoot.cancelActionObjectName
+                theme: activeOperationRoot.theme
+                text: qsTr("Cancel")
+                visible: activeOperationRoot.model.operation.cancelable
+                enabled: activeOperationRoot.model.operation.cancelable
+                Layout.preferredWidth: 112
+                onClicked: activeOperationRoot.model.cancelStorageOperation()
+            }
+
+            Text {
+                text: activeOperationRoot.model.activeStorageProgressText()
+                color: activeOperationRoot.theme.textMuted
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                font.pixelSize: activeOperationRoot.theme.secondaryText
+                Layout.fillWidth: true
+            }
         }
     }
 

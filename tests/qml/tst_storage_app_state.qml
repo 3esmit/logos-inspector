@@ -826,6 +826,28 @@ TestCase {
         compare(state.lastOperation, "Complete")
     }
 
+    function test_canceled_operation_is_neutral_and_explicit() {
+        state.operationSession.acceptUpdate({
+            operationId: "storage-download-canceled-1",
+            domain: "storage",
+            method: "storageDownloadToUrl",
+            status: "canceled",
+            label: "Download file",
+            cid: "z-canceled",
+            path: "/tmp/canceled.bin",
+            error: "storage operation cancellation confirmed"
+        })
+
+        verify(state.appendTerminalStorageOperation(state.operation.active))
+
+        compare(state.lastOperation, "Stopped")
+        compare(state.operation.rows[0].status, "canceled")
+        compare(gateway.resultTitle, "Download file")
+        compare(gateway.resultValue.status, "canceled")
+        verify(gateway.resultText.indexOf("Canceled") >= 0)
+        verify(!gateway.resultIsError)
+    }
+
     function test_manifest_fetch_completes_with_exact_result() {
         const manifest = {
             cid: "z-manifest",

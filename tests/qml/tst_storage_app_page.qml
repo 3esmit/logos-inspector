@@ -180,6 +180,49 @@ TestCase {
         compare(String(row.Accessible.description), "12:34:56. 15 manifests")
     }
 
+    function test_operations_tab_exposes_running_cancel_action() {
+        gateway.requestResponses = ({
+            runtimeOperationCancel: {
+                ok: true,
+                value: {
+                    operationId: "storage-download-running-1",
+                    domain: "storage",
+                    method: "storageDownloadToUrl",
+                    status: "canceling",
+                    label: "Download file",
+                    cancellable: true
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+        storageState.operationSession.acceptUpdate({
+            operationId: "storage-download-running-1",
+            domain: "storage",
+            method: "storageDownloadToUrl",
+            status: "running",
+            label: "Download file",
+            cancellable: true
+        })
+        storageState.currentTab = "operations"
+
+        let cancelButton = null
+        tryVerify(function () {
+            cancelButton = findChild(page, "storageOperationsCancelButton")
+            return cancelButton !== null
+        })
+        compare(cancelButton.Accessible.name, "Cancel")
+        compare(cancelButton.Accessible.role, Accessible.Button)
+        verify(cancelButton.visible)
+        verify(cancelButton.enabled)
+
+        mouseClick(cancelButton, cancelButton.width / 2, cancelButton.height / 2)
+
+        compare(gateway.lastMethod, "runtimeOperationCancel")
+        compare(gateway.lastArgs[0], "storage-download-running-1")
+        tryVerify(function () { return !cancelButton.visible || !cancelButton.enabled })
+    }
+
     function test_fetch_disables_while_storage_operation_is_busy() {
         gate.allowActions = true
         gate.revision += 1
