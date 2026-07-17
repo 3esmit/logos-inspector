@@ -5584,6 +5584,39 @@ TestCase {
         compare(callCountFor("lezBlockListReport"), 0)
     }
 
+    function test_zone_projection_preserves_periodic_bedrock_footer_observation() {
+        const bedrockNode = {
+            endpoint: "http://127.0.0.1:8080/",
+            consensus: {
+                ok: true,
+                value: {
+                    cryptarchia_info: {
+                        slot: 42,
+                        lib_slot: 40
+                    }
+                }
+            }
+        }
+        model.dashboardOverview = { node: bedrockNode }
+
+        model.entityNavigation.projectZoneDashboard()
+
+        verify(model.dashboardOverview !== null)
+        compare(model.dashboardOverview.node, bedrockNode)
+
+        setActiveZone("22".repeat(32))
+
+        compare(model.dashboardOverview.node, bedrockNode)
+        verify(model.dashboardOverview.sequencer !== undefined)
+        verify(model.dashboardOverview.indexer !== undefined)
+
+        model.zoneInspection.activeZoneContext = null
+
+        compare(model.dashboardOverview.node, bedrockNode)
+        verify(model.dashboardOverview.sequencer === undefined)
+        verify(model.dashboardOverview.indexer === undefined)
+    }
+
     function setTipMinusLib(value) {
         model.dashboardNode = {
             cryptarchia_info: {
