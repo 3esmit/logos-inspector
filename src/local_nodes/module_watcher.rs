@@ -1192,11 +1192,36 @@ mod tests {
     }
 
     fn only_node(state: &LocalNodesState) -> Result<&LocalNodeConfigRecord> {
-        state
-            .devnets
-            .first()
-            .and_then(|record| record.nodes.first())
+        first_devnet(state)?.nodes.first().context("missing node")
+    }
+
+    fn only_node_mut(state: &mut LocalNodesState) -> Result<&mut LocalNodeConfigRecord> {
+        first_devnet_mut(state)?
+            .nodes
+            .first_mut()
             .context("missing node")
+    }
+
+    fn first_devnet(state: &LocalNodesState) -> Result<&LocalDevnetRecord> {
+        state.devnets.first().context("missing devnet")
+    }
+
+    fn first_devnet_mut(state: &mut LocalNodesState) -> Result<&mut LocalDevnetRecord> {
+        state.devnets.first_mut().context("missing devnet")
+    }
+
+    fn only_event(events: &[ModuleTransportEvent]) -> Result<&ModuleTransportEvent> {
+        let [event] = events else {
+            anyhow::bail!("expected one module event, got {}", events.len());
+        };
+        Ok(event)
+    }
+
+    fn first_event_arg(event: &ModuleTransportEvent) -> Result<&Value> {
+        event
+            .args()
+            .first()
+            .context("missing module event argument")
     }
 
     fn probe_for(
@@ -1246,18 +1271,17 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == "delivery_module" && event.event() == "nodeStarted");
         anyhow::ensure!(
-            events[0].module() == "delivery_module" && events[0].event() == "nodeStarted"
-        );
-        anyhow::ensure!(
-            events[0]
+            event
                 .args()
                 .iter()
                 .find_map(|payload| payload.get("simulated"))
                 .and_then(Value::as_bool)
                 == Some(true)
         );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Running
                 && node.pending_lifecycle_action.is_none()
@@ -1284,21 +1308,15 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
+        let event = only_event(&events)?;
+        let payload = first_event_arg(event)?;
+        anyhow::ensure!(event.module() == "blockchain_module" && event.event() == "nodeStarted");
         anyhow::ensure!(
-            events[0].module() == "blockchain_module" && events[0].event() == "nodeStarted"
+            payload.get("node").and_then(Value::as_str) == Some("bedrock")
+                && payload.get("network_id").and_then(Value::as_str) == Some("devnet")
+                && payload.get("simulated").and_then(Value::as_bool) == Some(true)
         );
-        anyhow::ensure!(
-            events[0].args()[0].get("node").and_then(Value::as_str) == Some("bedrock")
-                && events[0].args()[0]
-                    .get("network_id")
-                    .and_then(Value::as_str)
-                    == Some("devnet")
-                && events[0].args()[0]
-                    .get("simulated")
-                    .and_then(Value::as_bool)
-                    == Some(true)
-        );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Running
                 && node.pending_lifecycle_action.is_none()
@@ -1331,10 +1349,9 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(
-            events[0].module() == "blockchain_module" && events[0].event() == "nodeStarted"
-        );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == "blockchain_module" && event.event() == "nodeStarted");
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Running
                 && node.pending_lifecycle_action.is_none()
@@ -1361,11 +1378,12 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == INDEXER_WATCHER_MODULE && event.event() == "nodeStarted");
         anyhow::ensure!(
-            events[0].module() == INDEXER_WATCHER_MODULE && events[0].event() == "nodeStarted"
+            first_event_arg(event)?.get("node").and_then(Value::as_str) == Some("indexer")
         );
-        anyhow::ensure!(events[0].args()[0].get("node").and_then(Value::as_str) == Some("indexer"));
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Running
                 && node.pending_lifecycle_action.is_none()
@@ -1382,7 +1400,7 @@ mod tests {
             NodeLifecycleState::Stopping,
             Some(NodeAction::Stop),
         );
-        state.devnets[0].nodes[0].process_id = Some(4242);
+        only_node_mut(&mut state)?.process_id = Some(4242);
         let probe = probe_for(
             NodeKind::Indexer,
             NodeLifecycleState::Stopping,
@@ -1393,10 +1411,9 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(
-            events[0].module() == INDEXER_WATCHER_MODULE && events[0].event() == "nodeStopped"
-        );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == INDEXER_WATCHER_MODULE && event.event() == "nodeStopped");
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Stopped
                 && node.pending_lifecycle_action.is_none()
@@ -1414,9 +1431,9 @@ mod tests {
             NodeLifecycleState::Stopping,
             Some(NodeAction::Stop),
         );
-        state.devnets[0].nodes[0].process_id = Some(4242);
+        only_node_mut(&mut state)?.process_id = Some(4242);
         let updated_at = now_millis();
-        state.devnets[0].updated_at = updated_at;
+        first_devnet_mut(&mut state)?.updated_at = updated_at;
         let mut probe = probe_for(
             NodeKind::Indexer,
             NodeLifecycleState::Stopping,
@@ -1428,7 +1445,7 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(!changed && events.is_empty());
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Stopping
                 && node.pending_lifecycle_action == Some(NodeAction::Stop)
@@ -1456,11 +1473,10 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(
-            events[0].module() == "storage_module" && events[0].event() == "storageStop"
-        );
-        anyhow::ensure!(events[0].args()[0].is_string());
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == "storage_module" && event.event() == "storageStop");
+        anyhow::ensure!(first_event_arg(event)?.is_string());
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Stopped
                 && node.pending_lifecycle_action.is_none()
@@ -1499,7 +1515,7 @@ mod tests {
             false,
             ModuleAvailability::Loaded,
         )?;
-        second_probe.record_updated_at = state.devnets[0].updated_at;
+        second_probe.record_updated_at = first_devnet(&state)?.updated_at;
 
         let (second_changed, second_events) =
             apply_liveness_observation(&mut state, std::slice::from_ref(&second_probe))?;
@@ -1661,9 +1677,10 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(events[0].event() == "nodeStarted");
-        anyhow::ensure!(events[0].args().first() == Some(&Value::Bool(false)));
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.event() == "nodeStarted");
+        anyhow::ensure!(event.args().first() == Some(&Value::Bool(false)));
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Failed
                 && node.pending_lifecycle_action.is_none()
@@ -1691,16 +1708,17 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(events[0].event() == "nodeUnavailable");
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.event() == "nodeUnavailable");
         anyhow::ensure!(
-            events[0]
+            event
                 .args()
                 .first()
                 .and_then(|value| value.get("message"))
                 .and_then(Value::as_str)
                 .is_some_and(|detail| detail.contains("not initialized"))
         );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(node.lifecycle_state == NodeLifecycleState::Unknown);
         Ok(())
     }
@@ -1715,7 +1733,7 @@ mod tests {
             Some(NodeAction::Start),
         );
         let current = now_millis();
-        state.devnets[0].updated_at = current;
+        first_devnet_mut(&mut state)?.updated_at = current;
         let mut probe = probe_for(
             NodeKind::Messaging,
             NodeLifecycleState::Starting,
@@ -1729,28 +1747,29 @@ mod tests {
             apply_liveness_observation(&mut state, std::slice::from_ref(&probe))?;
 
         anyhow::ensure!(!pending_changed && pending_events.is_empty());
-        let pending_node = state.devnets[0].nodes.first().context("missing node")?;
+        let pending_node = only_node(&state)?;
         anyhow::ensure!(
             pending_node.lifecycle_state == NodeLifecycleState::Starting
                 && pending_node.pending_lifecycle_action == Some(NodeAction::Start)
         );
 
         let expired = now_millis().saturating_sub(LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS + 1);
-        state.devnets[0].updated_at = expired;
+        first_devnet_mut(&mut state)?.updated_at = expired;
         probe.record_updated_at = expired;
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(events[0].event() == "nodeStarted");
-        anyhow::ensure!(events[0].args().first() == Some(&Value::Bool(false)));
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.event() == "nodeStarted");
+        anyhow::ensure!(event.args().first() == Some(&Value::Bool(false)));
         anyhow::ensure!(
-            events[0]
+            event
                 .args()
                 .get(1)
                 .and_then(Value::as_str)
                 .is_some_and(|detail| detail.contains("could not be verified"))
         );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Failed
                 && node.pending_lifecycle_action.is_none()
@@ -1768,7 +1787,7 @@ mod tests {
             Some(NodeAction::Stop),
         );
         let expired = now_millis().saturating_sub(LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS + 1);
-        state.devnets[0].updated_at = expired;
+        first_devnet_mut(&mut state)?.updated_at = expired;
         let mut probe = probe_for(
             NodeKind::Messaging,
             NodeLifecycleState::Stopping,
@@ -1781,16 +1800,17 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(events[0].event() == "nodeStopped");
-        anyhow::ensure!(events[0].args().first() == Some(&Value::Bool(false)));
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.event() == "nodeStopped");
+        anyhow::ensure!(event.args().first() == Some(&Value::Bool(false)));
         anyhow::ensure!(
-            events[0]
+            event
                 .args()
                 .get(1)
                 .and_then(Value::as_str)
                 .is_some_and(|detail| detail.contains("could not be verified"))
         );
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        let node = only_node(&state)?;
         anyhow::ensure!(
             node.lifecycle_state == NodeLifecycleState::Failed
                 && node.pending_lifecycle_action.is_none()
@@ -1841,8 +1861,8 @@ mod tests {
         let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
 
         anyhow::ensure!(changed && events.len() == 1);
-        anyhow::ensure!(events[0].event() == "nodeStarted");
-        let node = state.devnets[0].nodes.first().context("missing node")?;
+        anyhow::ensure!(only_event(&events)?.event() == "nodeStarted");
+        let node = only_node(&state)?;
         anyhow::ensure!(node.lifecycle_state == NodeLifecycleState::Running);
         Ok(())
     }
@@ -1864,10 +1884,11 @@ mod tests {
         );
 
         anyhow::ensure!(probes.len() == 1);
+        let probe = probes.first().context("missing Bedrock liveness probe")?;
         anyhow::ensure!(
-            probes[0].module == "blockchain_module"
-                && matches!(probes[0].event_route, LifecycleEventRoute::Synthetic)
-                && probes[0].requires_module_context
+            probe.module == "blockchain_module"
+                && matches!(probe.event_route, LifecycleEventRoute::Synthetic)
+                && probe.requires_module_context
         );
         Ok(())
     }
@@ -1884,10 +1905,10 @@ mod tests {
         state
             .module_context_topology_by_kind
             .remove(&NodeKind::Indexer);
-        let mut sequencer = state.devnets[0].nodes[0].clone();
+        let mut sequencer = only_node(&state)?.clone();
         sequencer.kind = NodeKind::Sequencer;
         sequencer.port = adapter_for(NodeKind::Sequencer).default_port();
-        state.devnets[0].nodes.push(sequencer);
+        first_devnet_mut(&mut state)?.nodes.push(sequencer);
 
         let probes = collect_liveness_probes(&state, &BTreeSet::new(), false);
 
@@ -1910,10 +1931,10 @@ mod tests {
             Some(NodeAction::Start),
         );
         for kind in [NodeKind::Messaging, NodeKind::Storage] {
-            let mut node = state.devnets[0].nodes[0].clone();
+            let mut node = only_node(&state)?.clone();
             node.kind = kind;
             node.port = adapter_for(kind).default_port();
-            state.devnets[0].nodes.push(node);
+            first_devnet_mut(&mut state)?.nodes.push(node);
             state
                 .module_context_topology_by_kind
                 .insert(kind, "devnet".to_owned());
@@ -1943,7 +1964,7 @@ mod tests {
 
         anyhow::ensure!(changed && events.len() == 3);
         anyhow::ensure!(
-            state.devnets[0]
+            first_devnet(&state)?
                 .nodes
                 .iter()
                 .all(|node| node.lifecycle_state == NodeLifecycleState::Running)
@@ -1960,7 +1981,7 @@ mod tests {
             NodeLifecycleState::Running,
             None,
         );
-        let mut testnet = state.devnets[0].clone();
+        let mut testnet = first_devnet(&state)?.clone();
         testnet.id = "logos-testnet".to_owned();
         state.testnet = Some(testnet);
         state
@@ -1974,7 +1995,13 @@ mod tests {
         );
 
         anyhow::ensure!(probes.len() == 1);
-        anyhow::ensure!(probes[0].topology_id == "logos-testnet");
+        anyhow::ensure!(
+            probes
+                .first()
+                .context("missing bound Messaging liveness probe")?
+                .topology_id
+                == "logos-testnet"
+        );
         Ok(())
     }
 
@@ -2020,7 +2047,7 @@ mod tests {
         state
             .module_context_topology_by_kind
             .remove(&NodeKind::Messaging);
-        let mut testnet = state.devnets[0].clone();
+        let mut testnet = first_devnet(&state)?.clone();
         testnet.id = "logos-testnet".to_owned();
         state.testnet = Some(testnet);
 
@@ -2115,11 +2142,21 @@ mod tests {
         anyhow::ensure!(snapshot.len() == 2);
         anyhow::ensure!(snapshot.iter().any(|event| {
             event.event() == "nodeStopped"
-                && event.args()[0].get("network_id").and_then(Value::as_str) == Some("alpha")
+                && event
+                    .args()
+                    .first()
+                    .and_then(|payload| payload.get("network_id"))
+                    .and_then(Value::as_str)
+                    == Some("alpha")
         }));
         anyhow::ensure!(snapshot.iter().any(|event| {
             event.event() == "nodeStarted"
-                && event.args()[0].get("network_id").and_then(Value::as_str) == Some("beta")
+                && event
+                    .args()
+                    .first()
+                    .and_then(|payload| payload.get("network_id"))
+                    .and_then(Value::as_str)
+                    == Some("beta")
         }));
         Ok(())
     }
