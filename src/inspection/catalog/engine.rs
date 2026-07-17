@@ -1487,17 +1487,24 @@ struct WorkingCatalog {
     traversal: Option<CatalogTraversal>,
     zones: BTreeMap<String, ZoneCatalogRecord>,
     evidence: BTreeMap<String, ZoneEvidenceReference>,
+    latest_primary_evidence: BTreeMap<String, String>,
+    latest_configuration_evidence: BTreeMap<String, String>,
     segments: BTreeMap<String, CoverageSegment>,
     gaps: BTreeMap<String, CoverageGap>,
 }
 
 impl WorkingCatalog {
     fn from_snapshot(snapshot: &CatalogSnapshot) -> Self {
+        let evidence = records_by_key(&snapshot.evidence, |record| &record.evidence_id);
+        let (latest_primary_evidence, latest_configuration_evidence) =
+            latest_evidence_ids(&evidence);
         Self {
             frontier: snapshot.frontier.clone(),
             traversal: snapshot.traversal.clone(),
             zones: records_by_key(&snapshot.zones, |record| &record.channel_id),
-            evidence: records_by_key(&snapshot.evidence, |record| &record.evidence_id),
+            evidence,
+            latest_primary_evidence,
+            latest_configuration_evidence,
             segments: records_by_key(&snapshot.segments, |record| &record.segment_id),
             gaps: records_by_key(&snapshot.gaps, |record| &record.gap_id),
         }
@@ -1555,6 +1562,36 @@ fn records_by_key<T: Clone>(records: &[T], key: impl Fn(&T) -> &String) -> BTree
         .iter()
         .map(|record| (key(record).clone(), record.clone()))
         .collect()
+}
+
+fn latest_evidence_ids(
+    evidence: &BTreeMap<String, ZoneEvidenceReference>,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let mut primary = BTreeMap::new();
+    let mut configuration = BTreeMap::new();
+    for reference in evidence.values() {
+        if reference.evidence_kind != ZoneEvidenceKind::ChannelCreated {
+            update_latest_evidence_id(&mut primary, evidence, reference);
+        }
+        if reference.evidence_kind == ZoneEvidenceKind::ChannelConfiguration {
+            update_latest_evidence_id(&mut configuration, evidence, reference);
+        }
+    }
+    (primary, configuration)
+}
+
+fn update_latest_evidence_id(
+    latest: &mut BTreeMap<String, String>,
+    evidence: &BTreeMap<String, ZoneEvidenceReference>,
+    candidate: &ZoneEvidenceReference,
+) {
+    let should_replace = latest
+        .get(&candidate.channel_id)
+        .and_then(|evidence_id| evidence.get(evidence_id))
+        .is_none_or(|current| evidence_order(candidate) > evidence_order(current));
+    if should_replace {
+        latest.insert(candidate.channel_id.clone(), candidate.evidence_id.clone());
+    }
 }
 
 fn record_diff<T: Clone + PartialEq>(
@@ -1858,27 +1895,15 @@ fn ingest_observation(
         return Ok(());
     }
 
-    let observation_is_latest = working
-        .evidence
-        .values()
-        .filter(|reference| {
-            reference.channel_id == observation.channel_id
-                && reference.evidence_kind != ZoneEvidenceKind::ChannelCreated
-        })
-        .max_by_key(|reference| evidence_order(reference))
-        .is_some_and(|reference| reference.evidence_id == primary.evidence_id);
+    let observation_is_latest =
+        working.latest_primary_evidence.get(&observation.channel_id) == Some(&primary.evidence_id);
     let configuration_is_latest = matches!(
         &observation.kind,
         ChannelObservationKind::Configuration { .. }
     ) && working
-        .evidence
-        .values()
-        .filter(|reference| {
-            reference.channel_id == observation.channel_id
-                && reference.evidence_kind == ZoneEvidenceKind::ChannelConfiguration
-        })
-        .max_by_key(|reference| evidence_order(reference))
-        .is_some_and(|reference| reference.evidence_id == primary.evidence_id);
+        .latest_configuration_evidence
+        .get(&observation.channel_id)
+        == Some(&primary.evidence_id);
 
     let record = working
         .zones
@@ -2015,9 +2040,31 @@ fn insert_evidence(
             evidence.evidence_id
         )));
     }
-    working
-        .evidence
-        .insert(evidence.evidence_id.clone(), evidence);
+    let primary_is_latest = evidence.evidence_kind != ZoneEvidenceKind::ChannelCreated
+        && working
+            .latest_primary_evidence
+            .get(&evidence.channel_id)
+            .and_then(|evidence_id| working.evidence.get(evidence_id))
+            .is_none_or(|current| evidence_order(&evidence) > evidence_order(current));
+    let configuration_is_latest = evidence.evidence_kind == ZoneEvidenceKind::ChannelConfiguration
+        && working
+            .latest_configuration_evidence
+            .get(&evidence.channel_id)
+            .and_then(|evidence_id| working.evidence.get(evidence_id))
+            .is_none_or(|current| evidence_order(&evidence) > evidence_order(current));
+    let channel_id = evidence.channel_id.clone();
+    let evidence_id = evidence.evidence_id.clone();
+    working.evidence.insert(evidence_id.clone(), evidence);
+    if primary_is_latest {
+        working
+            .latest_primary_evidence
+            .insert(channel_id.clone(), evidence_id.clone());
+    }
+    if configuration_is_latest {
+        working
+            .latest_configuration_evidence
+            .insert(channel_id, evidence_id);
+    }
     Ok(true)
 }
 
@@ -2112,12 +2159,13 @@ fn count_evidence(
     .map_err(|_| CatalogEngineError::Overflow("evidence counter exceeds u64".to_owned()))
 }
 
-fn evidence_order(reference: &ZoneEvidenceReference) -> (u64, &str, u32, u8) {
+fn evidence_order(reference: &ZoneEvidenceReference) -> (u64, &str, u32, u8, &str) {
     (
         reference.l1_slot,
         reference.transaction_hash.as_deref().unwrap_or_default(),
         reference.operation_index,
         evidence_kind_rank(reference.evidence_kind),
+        &reference.evidence_id,
     )
 }
 

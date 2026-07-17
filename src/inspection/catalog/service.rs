@@ -150,6 +150,29 @@ pub struct ZoneCatalogRunContext {
 }
 
 impl ZoneCatalogRunContext {
+    #[cfg(test)]
+    pub(crate) fn test_context(source_revision: u64) -> Self {
+        let desired_revision = Arc::new(AtomicU64::new(source_revision));
+        let (reports, _receiver) = watch::channel(ZoneCatalogServiceReport {
+            source_revision,
+            source_fingerprint: Some("test-source".to_owned()),
+            verification_state: CatalogVerificationState::Verifying,
+            catalog: None,
+            current_error: None,
+            worker_running: true,
+        });
+        Self {
+            source_revision,
+            source_fingerprint: "test-source".to_owned(),
+            run_mode: ZoneCatalogRunMode::Resume,
+            cancellation: CancellationToken::new(),
+            publisher: CatalogRunPublisher {
+                desired_revision,
+                reports,
+            },
+        }
+    }
+
     #[must_use]
     pub const fn source_revision(&self) -> u64 {
         self.source_revision
