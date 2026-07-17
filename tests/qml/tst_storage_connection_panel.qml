@@ -71,6 +71,7 @@ TestCase {
     function init() {
         fakeHost.reset()
         model.storageLocalDiagnosticsEnabled = false
+        model.storagePrivilegedDebugEnabled = false
         wait(0)
     }
 
@@ -101,6 +102,27 @@ TestCase {
                 "/tmp/legacy-storage-data")
         verify(findAccessibleByName(panel, "Data directory") === null)
         verify(!hasVisibleText(panel, "Data directory"))
+    }
+
+    function test_network_debug_toggle_describes_real_read_only_probe() {
+        let networkDebug = null
+        tryVerify(function () {
+            networkDebug = findAccessibleByName(
+                    panel, "Include network debug details")
+            return networkDebug !== null
+        })
+
+        compare(networkDebug.Accessible.role, Accessible.CheckBox)
+        compare(
+            String(networkDebug.Accessible.description),
+            "Queries peer identity, addresses, public records, and the DHT routing table during Storage status checks. Read-only; may expose network topology.")
+        verify(findAccessibleByName(panel, "Privileged debug") === null)
+
+        mouseClick(networkDebug,
+                   networkDebug.width / 2,
+                   networkDebug.height / 2)
+
+        tryCompare(model, "storagePrivilegedDebugEnabled", true)
     }
 
     function findAccessibleByName(item, expectedName) {
