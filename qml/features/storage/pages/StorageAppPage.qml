@@ -323,10 +323,13 @@ ColumnLayout {
                 CheckBox {
                     id: localOnly
 
+                    objectName: "storageLocalOnlyCheckBox"
+
                     text: qsTr("Local only")
                     checked: false
                     enabled: root.model.storageActionEnabled("download")
                     palette.text: root.theme.text
+                    palette.windowText: enabled ? root.theme.text : root.theme.textDim
                     Layout.preferredWidth: 132
                 }
 

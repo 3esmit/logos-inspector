@@ -507,6 +507,7 @@ ColumnLayout {
                     checked: false
                     enabled: root.deliveryRestSource()
                     palette.text: root.theme.text
+                    palette.windowText: enabled ? root.theme.text : root.theme.textDim
                     Layout.fillWidth: true
                 }
             }
