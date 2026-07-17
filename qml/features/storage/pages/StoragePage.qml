@@ -21,7 +21,7 @@ ColumnLayout {
         family: "storage"
     }
     readonly property var sourceView: sourceSession.view
-    property string currentTab: "overview"
+    readonly property string currentTab: root.model.storageDiagnosticsTab
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -102,7 +102,7 @@ ColumnLayout {
         current: root.currentTab
         options: storageTabs
         Layout.fillWidth: true
-        onSelected: value => root.currentTab = value
+        onSelected: value => root.model.storageDiagnosticsTab = value
     }
 
     Loader {

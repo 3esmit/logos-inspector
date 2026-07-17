@@ -668,6 +668,7 @@ QtObject {
     }
     property alias storageAppTab: storageAppState.currentTab
     property alias storageCidProbe: storageAppState.cidProbe
+    property string storageDiagnosticsTab: "overview"
     property DeliveryAppState deliveryApp: DeliveryAppState {
         id: deliveryAppState
 
