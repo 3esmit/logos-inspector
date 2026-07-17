@@ -256,6 +256,17 @@ TestCase {
         model.deliveryNodeStatus = ""
         model.social.socialCommentState = ({})
         model.social.socialCommentRevision = 0
+        model.nodeUrl = "http://127.0.0.1:8080/"
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "direct_l1_rpc",
+                    provenance: "test"
+                }
+            }
+        })
+        model.blockchainSourceMode = "rpc"
+        wait(0)
         model.blocksPageRows = []
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
@@ -263,6 +274,22 @@ TestCase {
         model.blocksLiveUnknownEvents = 0
         model.blocksLiveCheckedAt = ""
         model.blocksLiveError = ""
+        model.blockchainModuleEventRevision = 0
+        model.blockchainLastEventText = ""
+        model.walletPublicKeyProbe = ""
+    }
+
+    function useHostBlockchainModule() {
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "blockchain_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.blockchainSourceMode = "module"
+        wait(0)
     }
 
     function runtimeModuleEventCalls(calls) {
@@ -453,6 +480,7 @@ TestCase {
     }
 
     function test_ingest_blockchain_event_updates_live_rows() {
+        useHostBlockchainModule()
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -471,6 +499,7 @@ TestCase {
     }
 
     function test_ingest_blockchain_wrapped_event_dedupes_live_rows() {
+        useHostBlockchainModule()
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -494,5 +523,59 @@ TestCase {
         compare(model.blocksPageRows[1].header.id, "slot-30")
         compare(model.blocksLiveSource, "module_event")
         compare(model.blocksPageSlotTo, 31)
+    }
+
+    function test_direct_rpc_rejects_untagged_blockchain_event() {
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30-rpc" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        model.nodeUrl = "http://127.0.0.1:18080/"
+        wait(0)
+
+        compare(model.blocksPageRows.length, 0)
+        compare(model.blocksPageSlotFrom, 0)
+        compare(model.blocksPageSlotTo, 0)
+        model.walletPublicKeyProbe = "slot-31-untagged"
+        fakeHost.calls = []
+
+        verify(!intake.ingest(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "slot-31-untagged" }, transactions: [] })
+        ]))
+        wait(0)
+
+        compare(model.blocksPageRows.length, 0)
+        compare(model.blocksPageSlotFrom, 0)
+        compare(model.blocksPageSlotTo, 0)
+        compare(model.blocksLiveSource, "")
+        compare(model.blockchainModuleEventRevision, 0)
+        compare(model.blockchainLastEventText, "")
+        compare(fakeHost.calls.length, 0)
+    }
+
+    function test_logoscore_cli_rejects_untagged_blockchain_event() {
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "logoscore_cli_blockchain_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.blockchainSourceMode = "logoscore_cli"
+        wait(0)
+
+        compare(model.sourceRouting.coreSourceView("blockchain").resolvedMode,
+                "logoscore_cli")
+        verify(!intake.ingest(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "slot-31-cli" }, transactions: [] })
+        ]))
+        compare(model.blocksPageRows.length, 0)
+        compare(model.blocksPageSlotFrom, 0)
+        compare(model.blocksPageSlotTo, 0)
+        compare(model.blocksLiveSource, "")
+        compare(model.blockchainModuleEventRevision, 0)
+        compare(model.blockchainLastEventText, "")
     }
 }

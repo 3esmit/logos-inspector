@@ -78,6 +78,38 @@ TestCase {
         compare(view.target, "storage_module")
     }
 
+    function test_untagged_blockchain_module_event_authority_uses_canonical_connector() {
+        state.connectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "direct_l1_rpc",
+                    provenance: "test"
+                }
+            }
+        })
+        verify(!state.acceptsUntaggedBlockchainModuleEvents())
+
+        state.connectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "blockchain_module",
+                    provenance: "test"
+                }
+            }
+        })
+        verify(state.acceptsUntaggedBlockchainModuleEvents())
+
+        state.connectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "logoscore_cli_blockchain_module",
+                    provenance: "test"
+                }
+            }
+        })
+        verify(!state.acceptsUntaggedBlockchainModuleEvents())
+    }
+
     function test_source_report_view_does_not_change_configured_connector() {
         state.connectorConfig = ({
             scopes: {
