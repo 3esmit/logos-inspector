@@ -20,6 +20,11 @@ pub(crate) struct ParsedValue {
 #[derive(Debug, Clone)]
 pub(crate) enum DynamicValue {
     Bool(bool),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    I128(i128),
     U8(u8),
     U32(u32),
     U64(u64),
@@ -38,6 +43,11 @@ impl serde::Serialize for DynamicValue {
     ) -> std::result::Result<S::Ok, S::Error> {
         match self {
             Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::I8(value) => serializer.serialize_i8(*value),
+            Self::I16(value) => serializer.serialize_i16(*value),
+            Self::I32(value) => serializer.serialize_i32(*value),
+            Self::I64(value) => serializer.serialize_i64(*value),
+            Self::I128(value) => serializer.serialize_i128(*value),
             Self::U8(value) => serializer.serialize_u8(*value),
             Self::U32(value) => serializer.serialize_u32(*value),
             Self::U64(value) => serializer.serialize_u64(*value),
@@ -135,6 +145,46 @@ fn parse_primitive(raw: &str, primitive: &str) -> Result<ParsedValue> {
             Ok(parsed_value(
                 value.to_string(),
                 DynamicValue::Bool(value),
+                None,
+            ))
+        }
+        "i8" => {
+            let value = raw.parse::<i8>().context("invalid i8")?;
+            Ok(parsed_value(
+                value.to_string(),
+                DynamicValue::I8(value),
+                None,
+            ))
+        }
+        "i16" => {
+            let value = raw.parse::<i16>().context("invalid i16")?;
+            Ok(parsed_value(
+                value.to_string(),
+                DynamicValue::I16(value),
+                None,
+            ))
+        }
+        "i32" => {
+            let value = raw.parse::<i32>().context("invalid i32")?;
+            Ok(parsed_value(
+                value.to_string(),
+                DynamicValue::I32(value),
+                None,
+            ))
+        }
+        "i64" => {
+            let value = raw.parse::<i64>().context("invalid i64")?;
+            Ok(parsed_value(
+                value.to_string(),
+                DynamicValue::I64(value),
+                None,
+            ))
+        }
+        "i128" => {
+            let value = raw.parse::<i128>().context("invalid i128")?;
+            Ok(parsed_value(
+                value.to_string(),
+                DynamicValue::I128(value),
                 None,
             ))
         }
@@ -492,7 +542,19 @@ fn decode_instruction_primitive(
     let (value, consumed) = match ty {
         "bool" => (word_at(words, offset)? != 0).to_string().into_pair(1),
         "u8" | "u16" | "u32" => (word_at(words, offset)? as u128).to_string().into_pair(1),
-        "i8" | "i16" | "i32" => (word_at(words, offset)? as i32).to_string().into_pair(1),
+        "i8" => {
+            let signed = word_at(words, offset)? as i32;
+            let value = i8::try_from(signed)
+                .map_err(|_| anyhow::anyhow!("i8 value {signed} is out of range"))?;
+            value.to_string().into_pair(1)
+        }
+        "i16" => {
+            let signed = word_at(words, offset)? as i32;
+            let value = i16::try_from(signed)
+                .map_err(|_| anyhow::anyhow!("i16 value {signed} is out of range"))?;
+            value.to_string().into_pair(1)
+        }
+        "i32" => (word_at(words, offset)? as i32).to_string().into_pair(1),
         "u64" => read_words_unsigned(words, offset, 2)?
             .to_string()
             .into_pair(2),

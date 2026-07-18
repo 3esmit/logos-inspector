@@ -257,6 +257,113 @@ mod tests {
     }
 
     #[test]
+    fn preview_serializes_signed_scalars_with_risc0_wire_parity() -> Result<()> {
+        #[derive(Serialize)]
+        enum ReferenceInstruction {
+            SetSigned(i8, i16, i32, i64, i128),
+        }
+
+        let values = (
+            -17_i8,
+            -1_234_i16,
+            -56_789_i32,
+            -9_876_543_210_i64,
+            i128::MIN,
+        );
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instructions": [{
+                    "name": "set_signed",
+                    "args": [
+                        {"name": "tiny", "type": "i8"},
+                        {"name": "small", "type": "i16"},
+                        {"name": "tick", "type": "i32"},
+                        {"name": "cumulative", "type": "i64"},
+                        {"name": "gain", "type": "i128"}
+                    ]
+                }]
+            })
+            .to_string(),
+            program_id_hex: "11".repeat(32),
+            instruction: "set_signed".to_owned(),
+            args: BTreeMap::from([
+                ("tiny".to_owned(), values.0.to_string()),
+                ("small".to_owned(), values.1.to_string()),
+                ("tick".to_owned(), values.2.to_string()),
+                ("cumulative".to_owned(), values.3.to_string()),
+                ("gain".to_owned(), values.4.to_string()),
+            ]),
+            ..Default::default()
+        };
+
+        let report = local_wallet_instruction_preview(serde_json::to_value(request)?)?;
+        let expected_words = risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetSigned(
+            values.0, values.1, values.2, values.3, values.4,
+        ))
+        .map_err(|error| anyhow::anyhow!("failed to serialize reference instruction: {error}"))?;
+        if report.instruction_words != expected_words {
+            bail!(
+                "signed scalar words differ from RISC0 serialization: {:?} != {:?}",
+                report.instruction_words,
+                expected_words
+            );
+        }
+        let reported_values = report
+            .args
+            .iter()
+            .map(|arg| arg.value.as_str())
+            .collect::<Vec<_>>();
+        let expected_values = [
+            values.0.to_string(),
+            values.1.to_string(),
+            values.2.to_string(),
+            values.3.to_string(),
+            values.4.to_string(),
+        ];
+        if reported_values
+            != expected_values
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        {
+            bail!("signed scalar report values were not canonical decimals");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preview_rejects_out_of_range_signed_scalar() -> Result<()> {
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instructions": [{
+                    "name": "set_tick",
+                    "args": [{"name": "tick", "type": "i8"}]
+                }]
+            })
+            .to_string(),
+            program_id_hex: "11".repeat(32),
+            instruction: "set_tick".to_owned(),
+            args: BTreeMap::from([("tick".to_owned(), "128".to_owned())]),
+            ..Default::default()
+        };
+
+        let result = local_wallet_instruction_preview(serde_json::to_value(request)?);
+        if result.is_ok() {
+            bail!("out-of-range i8 was accepted");
+        }
+        let error = result
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        if !error.contains("invalid i8") {
+            bail!("unexpected signed scalar range error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn private_instruction_requires_program_binary() -> Result<()> {
         let account = format!("Private/0x{}", "33".repeat(32));
         let request = serde_json::to_value(sample_request(&account))?;

@@ -320,6 +320,107 @@ fn decode_instruction_words_with_idl_matches_risc0_optional_account_id_wire() {
 }
 
 #[test]
+fn decode_instruction_words_with_idl_matches_risc0_signed_scalar_wire() {
+    #[derive(Serialize)]
+    enum ReferenceInstruction {
+        SetSigned(i8, i8, i16, i16, i32, i32, i64, i64, i128, i128, u32),
+    }
+
+    let words = risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetSigned(
+        i8::MIN,
+        i8::MAX,
+        i16::MIN,
+        i16::MAX,
+        i32::MIN,
+        i32::MAX,
+        i64::MIN,
+        i64::MAX,
+        i128::MIN,
+        i128::MAX,
+        42,
+    ));
+    assert!(words.is_ok(), "{words:?}");
+    let Ok(words) = words else {
+        return;
+    };
+    let idl = r#"{
+        "name": "test_program",
+        "instructions": [{
+            "name": "set_signed",
+            "args": [
+                { "name": "i8_min", "type": "i8" },
+                { "name": "i8_max", "type": "i8" },
+                { "name": "i16_min", "type": "i16" },
+                { "name": "i16_max", "type": "i16" },
+                { "name": "i32_min", "type": "i32" },
+                { "name": "i32_max", "type": "i32" },
+                { "name": "i64_min", "type": "i64" },
+                { "name": "i64_max", "type": "i64" },
+                { "name": "i128_min", "type": "i128" },
+                { "name": "i128_max", "type": "i128" },
+                { "name": "following", "type": "u32" }
+            ]
+        }]
+    }"#;
+
+    let report = decode_instruction_words_with_idl(idl, "program", &words, &[]);
+
+    assert!(report.is_ok(), "{report:?}");
+    let Ok(report) = report else {
+        return;
+    };
+    assert_eq!(report.decode_error, None);
+    assert_eq!(report.remaining_words, Vec::<u32>::new());
+    assert_eq!(
+        report
+            .args
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            i8::MIN.to_string(),
+            i8::MAX.to_string(),
+            i16::MIN.to_string(),
+            i16::MAX.to_string(),
+            i32::MIN.to_string(),
+            i32::MAX.to_string(),
+            i64::MIN.to_string(),
+            i64::MAX.to_string(),
+            i128::MIN.to_string(),
+            i128::MAX.to_string(),
+            "42".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn decode_instruction_words_with_idl_rejects_out_of_range_narrow_signed_wire() {
+    for (ty, malformed_word, expected_error) in [
+        ("i8", 0x0000_0080, "i8 value 128 is out of range"),
+        ("i16", 0x0000_8000, "i16 value 32768 is out of range"),
+    ] {
+        let idl = format!(
+            r#"{{
+                "name": "test_program",
+                "instructions": [{{
+                    "name": "set_value",
+                    "args": [{{ "name": "value", "type": "{ty}" }}]
+                }}]
+            }}"#
+        );
+
+        let report = decode_instruction_words_with_idl(&idl, "program", &[0, malformed_word], &[]);
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            continue;
+        };
+        assert_eq!(report.decode_error.as_deref(), Some(expected_error));
+        assert_eq!(report.remaining_words, vec![malformed_word]);
+    }
+}
+
+#[test]
 fn decode_instruction_words_with_idl_reports_arg_decode_error() {
     let idl = r#"{
         "name": "test_program",
