@@ -119,6 +119,7 @@ pub(super) fn delivery_report(
         adapter,
         args.optional_string(0),
         args.optional_bool(1),
+        false,
     )))
 }
 

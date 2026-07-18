@@ -23,7 +23,10 @@ pub(crate) use core::adapters::BLOCKCHAIN_MODULE;
 pub(crate) use core::layer as bedrock_layer;
 pub(crate) use delivery as messaging_layer;
 pub use delivery::delivery_source_report;
-pub(crate) use delivery::{delivery_advertised_identity_probe_plan, delivery_module_probe_plan};
+pub(crate) use delivery::{
+    delivery_advertised_health_identity_probe_plan, delivery_advertised_identity_probe_plan,
+    delivery_module_probe_plan,
+};
 pub use network_profiles::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,
     infer_network_profile, network_profiles, resolve_network_endpoints,

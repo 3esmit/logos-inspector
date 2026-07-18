@@ -316,6 +316,8 @@ struct MessagingReportEnvelope {
 struct MessagingReportOptions {
     #[serde(default)]
     runtime_diagnostics_enabled: bool,
+    #[serde(default)]
+    health_endpoint: Option<String>,
 }
 
 impl<'a> MessagingAdapter<'a> {
@@ -386,9 +388,17 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Messagi
     let initialization = AdapterInitialization::parse(value, MESSAGING_SOURCE_MODES, "rest")?;
     let envelope: MessagingReportEnvelope = serde_json::from_value(value.clone())
         .context("Messaging adapter initialization must be an object")?;
+    let source_mode = initialization.source_mode().to_owned();
+    let rest_endpoint = if crate::source_routing::DeliverySourceMode::from_token(&source_mode)
+        == crate::source_routing::DeliverySourceMode::LogoscoreCli
+    {
+        envelope.options.health_endpoint
+    } else {
+        initialization.input("rest_endpoint").map(ToOwned::to_owned)
+    };
     Ok(MessagingReportInputs {
-        source_mode: initialization.source_mode().to_owned(),
-        rest_endpoint: initialization.input("rest_endpoint").map(ToOwned::to_owned),
+        source_mode,
+        rest_endpoint,
         metrics_endpoint: initialization
             .input("metrics_endpoint")
             .map(ToOwned::to_owned),
@@ -405,12 +415,14 @@ pub(crate) async fn module_report(
     transport: ModuleTransportKind,
     content_topic: Option<&str>,
     runtime_diagnostics_enabled: bool,
+    health_identity_required: bool,
 ) -> ModuleReport {
-    crate::modules::delivery_report(
+    crate::modules::delivery_report_with_identity_binding(
         module_transport,
         transport,
         content_topic,
         runtime_diagnostics_enabled,
+        health_identity_required,
     )
     .await
 }
@@ -537,6 +549,19 @@ mod tests {
     }
 
     #[test]
+    fn messaging_cli_health_endpoint_is_report_only() -> Result<()> {
+        let cli = MESSAGING_SOURCE_MODES
+            .iter()
+            .find(|mode| mode.key == "logoscore_cli")
+            .context("LogosCore CLI Delivery source policy is missing")?;
+
+        if !cli.adapter.inputs.is_empty() {
+            bail!("LogosCore CLI health endpoint leaked into module adapter inputs");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn messaging_rest_adapter_does_not_advertise_module_lifecycle() -> Result<()> {
         let rest = MESSAGING_SOURCE_MODES
             .iter()
@@ -562,12 +587,22 @@ mod tests {
             "source_mode": "metrics",
             "inputs": { "metrics_endpoint": "http://metrics" }
         }]))?;
+        let cli = crate::support::args::Args::new(json!([{
+            "source_mode": "logoscore_cli",
+            "inputs": {},
+            "options": {
+                "runtime_diagnostics_enabled": true,
+                "health_endpoint": "http://delivery"
+            }
+        }]))?;
 
         if report_inputs(&module)?.rest_endpoint.is_some()
             || report_inputs(&module)?.metrics_endpoint.is_some()
             || !report_inputs(&module)?.runtime_diagnostics_enabled
             || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
             || report_inputs(&metrics)?.runtime_diagnostics_enabled
+            || report_inputs(&cli)?.rest_endpoint.as_deref() != Some("http://delivery")
+            || !report_inputs(&cli)?.runtime_diagnostics_enabled
         {
             anyhow::bail!("compact Messaging report inputs were parsed incorrectly");
         }

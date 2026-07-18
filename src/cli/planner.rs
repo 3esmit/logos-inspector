@@ -390,11 +390,27 @@ fn delivery_report_initialization(
         "metrics" => json!({
             "metrics_endpoint": metrics_url.unwrap_or(DEFAULT_DELIVERY_METRICS_ENDPOINT),
         }),
+        "logoscore_cli" => json!({}),
         _ => json!({}),
+    };
+    let options = if source_mode == "logoscore_cli" {
+        rest_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                json!({
+                    "runtime_diagnostics_enabled": true,
+                    "health_endpoint": value,
+                })
+            })
+            .unwrap_or_else(|| json!({ "runtime_diagnostics_enabled": true }))
+    } else {
+        json!({ "runtime_diagnostics_enabled": true })
     };
     json!({
         "source_mode": source_mode,
         "inputs": inputs,
+        "options": options,
     })
 }
 
@@ -645,10 +661,31 @@ mod tests {
             invocation.args
                 == json!([{
                     "source_mode": "logoscore_cli",
-                    "inputs": {}
+                    "inputs": {},
+                    "options": { "runtime_diagnostics_enabled": true }
                 }]),
             "unexpected args: {}",
             invocation.args
+        );
+
+        let with_health = CliCommand::Messaging {
+            source_mode: "logoscore_cli".to_owned(),
+            rest_url: Some("http://delivery.example".to_owned()),
+            metrics_url: None,
+        }
+        .invocation()?;
+        ensure!(
+            with_health.args
+                == json!([{
+                    "source_mode": "logoscore_cli",
+                    "inputs": {},
+                    "options": {
+                        "runtime_diagnostics_enabled": true,
+                        "health_endpoint": "http://delivery.example"
+                    }
+                }]),
+            "unexpected health args: {}",
+            with_health.args
         );
         Ok(())
     }

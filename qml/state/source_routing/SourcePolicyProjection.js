@@ -174,12 +174,16 @@ function coreSourceArgs(root, sourceMode, endpoint, extra) {
 }
 
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, runtimeDiagnosticsEnabled) {
+    const descriptor = sourceModeDescriptor(root, "delivery", sourceMode)
     const initialization = adapterInitialization(root, "delivery", sourceMode, {
         rest_endpoint: String(restEndpoint || ""),
         metrics_endpoint: String(metricsEndpoint || "")
     })
     initialization.options = {
         runtime_diagnostics_enabled: runtimeDiagnosticsEnabled !== false
+    }
+    if (descriptor.key === "logoscore_cli") {
+        initialization.options.health_endpoint = String(restEndpoint || "")
     }
     return [initialization]
 }
