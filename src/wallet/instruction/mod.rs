@@ -234,4 +234,41 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn blank_instruction_plan_bootstraps_instruction_choices() -> Result<()> {
+        let mut request = sample_request(&format!("Private/0x{}", "33".repeat(32)));
+        request.idl_json = json!({
+            "name": "sample",
+            "instructions": [
+                {
+                    "name": "set_value",
+                    "accounts": [{"name": "target", "signer": true}],
+                    "args": [{"name": "value", "type": "u32"}]
+                },
+                {
+                    "name": "close",
+                    "accounts": [{"name": "target", "signer": true}],
+                    "args": []
+                }
+            ]
+        })
+        .to_string();
+        request.instruction.clear();
+        request.program_binary = "/tmp/stale-program.bin".to_owned();
+
+        let report = local_wallet_instruction_plan(serde_json::to_value(request)?)?;
+
+        if !report.instruction.is_empty()
+            || report.instructions != ["set_value", "close"]
+            || !report.accounts.is_empty()
+            || !report.args.is_empty()
+            || report.private_mode
+            || report.program_binary_required
+            || report.inputs_complete
+        {
+            bail!("blank plan did not return selector bootstrap state");
+        }
+        Ok(())
+    }
 }
