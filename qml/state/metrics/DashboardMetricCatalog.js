@@ -201,11 +201,8 @@ function dashboardMetricRawValue(root, key) {
         return root.moduleMetricSum("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
     case "messaging.peer_count":
         return preferredModuleMetricValue(root, "messaging", [
-            "waku_total_unique_peers",
-            "waku_connected_peers",
             { name: "libp2p_peers", labels: { type: "connected" } },
             "libp2p_peers",
-            "waku_peers",
             "messaging_peer_count",
             "peer_count"
         ])
