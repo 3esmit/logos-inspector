@@ -682,6 +682,9 @@ QtObject {
         const value = successfulTransport && response.value !== undefined
             ? response.value : null
         const storedReport = sourceReport(target)
+        const reducedWithoutEvidence = successfulTransport
+            && (storedReport === null || storedReport === undefined)
+            && reducedStorageObservationHasNoEvidence(target, lease, value)
         const statusValue = successfulTransport && preserveFullReport
             ? storedReport : value
         const healthy = successfulTransport
@@ -710,7 +713,8 @@ QtObject {
         attempts[target] = attempt
         observationAttempts = attempts
 
-        if (successfulTransport && preserveFullReport) {
+        if (successfulTransport
+                && (preserveFullReport || reducedWithoutEvidence)) {
             return
         }
 
@@ -759,6 +763,26 @@ QtObject {
             && identity.runtimeDiagnosticsReduced !== true
             && Number(identity.configurationGeneration || 0)
                 === Number(lease.configurationGeneration || 0)
+    }
+
+    function reducedStorageObservationHasNoEvidence(kind, lease, report) {
+        const target = String(kind || "")
+        if (!lease || target !== "storage"
+                || lease.runtimeDiagnosticsReduced !== true
+                || !passiveSourceObservation(lease.origin)
+                || !report || typeof report !== "object") {
+            return false
+        }
+        const health = report.health && typeof report.health === "object"
+            ? report.health : null
+        const probes = Array.isArray(report.probes) ? report.probes : []
+        const facts = Array.isArray(report.probe_facts)
+            ? report.probe_facts : []
+        return health !== null
+            && health.reachable === true
+            && health.ready === false
+            && probes.length === 0
+            && facts.length === 0
     }
 
     function cacheObservationValue(kind, value, lease, checkedAtMs) {
