@@ -112,9 +112,12 @@ ColumnLayout {
         sourceComponent: ZoneL2Inspector {
             theme: root.theme
             zoneState: root.l2State.blocks
-            initialView: String(root.zoneState.requestedL2View || "blocks")
+            initialView: root.l2ViewForState()
             exactSourceId: root.sequencerSourceId
             onConfigureSourcesRequested: root.openSources()
+            onViewRequested: function (view) {
+                root.zoneState.requestedL2View = String(view || "blocks")
+            }
         }
     }
 
@@ -174,6 +177,25 @@ ColumnLayout {
     function openIdlRegistry() {
         root.model.programTab = "idls"
         root.model.selectView("programs")
+    }
+
+    function l2ViewForState() {
+        const blocks = root.l2State && root.l2State.blocks
+            ? root.l2State.blocks : null
+        if (blocks && String(blocks.l2TransactionId || "").length > 0) {
+            return "transaction"
+        }
+        if (root.hasRetainedBlockView(blocks)) {
+            return "block"
+        }
+        return "blocks"
+    }
+
+    function hasRetainedBlockView(blocks) {
+        return blocks && (blocks.l2BlockTarget !== null
+            || blocks.l2BlockDetail !== null
+            || blocks.l2BlockDetailInFlight
+            || String(blocks.l2BlockDetailError || "").length > 0)
     }
 
     function inspectSubmittedTransaction(transactionId, exactSourceId) {

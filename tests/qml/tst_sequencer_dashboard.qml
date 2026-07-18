@@ -171,6 +171,11 @@ TestCase {
         zoneState.resetL2Fixture()
         dashboardZoneState.requestedL2View = ""
         dashboardZoneState.requestedDetailTab = ""
+        zoneState.l2BlockTarget = null
+        zoneState.l2BlockRequestedSourceId = ""
+        zoneState.l2BlockDetailError = ""
+        zoneState.l2BlockDetailErrorDetails = null
+        zoneState.l2BlockDetailInFlight = false
         zoneState.l2TransactionId = ""
         zoneState.l2TransactionRequestedSourceId = ""
         zoneState.clearTransactionOnBlockRefresh = false
@@ -299,6 +304,110 @@ TestCase {
         tryVerify(function () {
             const detail = findChild(page, "zoneL2TransactionDetail")
             return detail !== null && detail.visible
+        })
+    }
+
+    function test_manual_transaction_survives_program_registry_round_trip() {
+        const transactionId = FixtureData.identity("d")
+        zoneState.clearTransactionOnBlockRefresh = true
+        let blocks = null
+        let inspect = null
+        tryVerify(function () {
+            blocks = findChild(page, "zoneL2Blocks")
+            inspect = blocks ? findChild(blocks, "zoneL2TransactionInspectButton") : null
+            return blocks !== null && inspect !== null
+        })
+        blocks.transactionQuery = transactionId
+        verify(inspect.enabled)
+        inspect.clicked()
+
+        compare(zoneState.l2TransactionId, transactionId)
+        compare(zoneState.l2TransactionRequestedSourceId,
+            zoneState.l2SequencerSourceId())
+        compare(dashboardZoneState.requestedL2View, "transaction")
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2TransactionDetail")
+            return detail !== null && detail.visible
+        })
+
+        page.selectTab("programs")
+        compare(dashboardZoneState.requestedDetailTab, "programs")
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2TransactionDetail")
+            return detail === null || !detail.visible
+        })
+
+        page.selectTab("blocks")
+        compare(dashboardZoneState.requestedDetailTab, "l2")
+        compare(dashboardZoneState.requestedL2View, "transaction")
+        compare(zoneState.l2TransactionId, transactionId)
+        compare(zoneState.l2TransactionRequestedSourceId,
+            zoneState.l2SequencerSourceId())
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2TransactionDetail")
+            return detail !== null && detail.visible
+        })
+    }
+
+    function test_block_request_and_error_survive_program_round_trip() {
+        let blocks = null
+        tryVerify(function () {
+            blocks = findChild(page, "zoneL2Blocks")
+            return blocks !== null && zoneState.l2BlockRows.length > 0
+        })
+        const row = zoneState.l2BlockRows[0]
+        blocks.blockRequested(row.summary, zoneState.l2SequencerSourceId())
+
+        compare(dashboardZoneState.requestedL2View, "block")
+        verify(zoneState.l2BlockTarget !== null)
+        zoneState.l2BlockDetail = null
+        zoneState.l2BlockDetailInFlight = true
+
+        page.selectTab("programs")
+        page.selectTab("blocks")
+        compare(dashboardZoneState.requestedL2View, "block")
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2BlockDetail")
+            return detail !== null && detail.visible
+        })
+
+        zoneState.l2BlockDetailInFlight = false
+        zoneState.l2BlockDetailError = "Selected block could not be loaded."
+        page.selectTab("programs")
+        page.selectTab("blocks")
+        compare(dashboardZoneState.requestedL2View, "block")
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2BlockDetail")
+            return detail !== null && detail.visible
+                && hasVisibleText(detail, zoneState.l2BlockDetailError)
+        })
+    }
+
+    function test_transaction_back_restores_retained_block_error() {
+        const sourceId = zoneState.l2SequencerSourceId()
+        const transactionId = FixtureData.identity("c")
+        zoneState.l2BlockTarget = zoneState.l2BlockRows[0].summary
+        zoneState.l2BlockRequestedSourceId = sourceId
+        zoneState.l2BlockDetail = null
+        zoneState.l2BlockDetailError = "Selected block could not be loaded."
+        dashboardZoneState.requestedL2View = "block"
+
+        page.selectTab("programs")
+        verify(page.inspectSubmittedTransaction(transactionId, sourceId))
+        let back = null
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2TransactionDetail")
+            back = detail ? findChild(detail, "zoneL2TransactionBackButton") : null
+            return detail !== null && detail.visible && back !== null
+        })
+        back.clicked()
+
+        compare(zoneState.l2TransactionId, "")
+        compare(dashboardZoneState.requestedL2View, "block")
+        tryVerify(function () {
+            const detail = findChild(page, "zoneL2BlockDetail")
+            return detail !== null && detail.visible
+                && hasVisibleText(detail, zoneState.l2BlockDetailError)
         })
     }
 
