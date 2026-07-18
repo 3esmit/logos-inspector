@@ -121,7 +121,7 @@ SourceSettingsPanel {
         theme: root.theme
         tone: "warning"
         title: qsTr("Source unavailable")
-        message: qsTr("The configured connector no longer has an adapter. Select Storage module, Standalone REST, or Metrics only.")
+        message: root.unavailableSourceMessage()
         Layout.fillWidth: true
     }
 
@@ -155,5 +155,37 @@ SourceSettingsPanel {
 
     function sourceSettingsLocked() {
         return root.modelRef && root.modelRef.storageApp.sourceSettingsLocked
+    }
+
+    function unavailableSourceMessage() {
+        const choices = root.sourceChoiceText()
+        return choices.length
+            ? qsTr("The configured connector no longer has an adapter. Select %1.").arg(choices)
+            : qsTr("The configured connector no longer has an adapter. Select another available connector.")
+    }
+
+    function sourceChoiceText() {
+        const labels = []
+        const options = root.sourceOptions
+        const count = options && options.count !== undefined
+            ? Number(options.count)
+            : (Array.isArray(options) ? options.length : 0)
+        for (let i = 0; i < count; ++i) {
+            const option = options && typeof options.get === "function"
+                ? options.get(i)
+                : options[i]
+            const label = String(option && option.label || "").trim()
+            if (label.length) {
+                labels.push(label)
+            }
+        }
+        if (labels.length < 2) {
+            return labels.length ? labels[0] : ""
+        }
+        if (labels.length === 2) {
+            return qsTr("%1 or %2").arg(labels[0]).arg(labels[1])
+        }
+        const last = labels.pop()
+        return qsTr("%1, or %2").arg(labels.join(", ")).arg(last)
     }
 }
