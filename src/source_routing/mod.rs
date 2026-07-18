@@ -22,8 +22,8 @@ pub(crate) use channel_sources::layer as execution_zone_layer;
 pub(crate) use core::adapters::BLOCKCHAIN_MODULE;
 pub(crate) use core::layer as bedrock_layer;
 pub(crate) use delivery as messaging_layer;
-pub(crate) use delivery::delivery_module_probe_plan;
 pub use delivery::delivery_source_report;
+pub(crate) use delivery::{delivery_advertised_identity_probe_plan, delivery_module_probe_plan};
 pub use network_profiles::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,
     infer_network_profile, network_profiles, resolve_network_endpoints,
@@ -45,6 +45,7 @@ pub use policy::{
 };
 pub(crate) use policy::{capability_provider_mode_policies, network_adapter_policy_for_connector};
 pub(crate) use selection::SourceEndpoint;
+pub(crate) use shared::plan::ModuleProbeStep;
 pub use shared::{
     SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceHealthStatus, SourceProbeFact,
     SourceReport,
