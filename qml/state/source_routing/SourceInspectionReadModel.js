@@ -45,6 +45,11 @@ function build(model, theme, family) {
     page.storageCidProbe = function () {
         return storage ? String(model.sourceRouting.storageCidProbe || "") : ""
     }
+    page.reportStorageCid = function () {
+        return storage
+            ? String(model.metrics.observationReportStorageCid("storage") || "")
+            : ""
+    }
     page.probe = function (method) {
         return SourceDiagnostics.probe(model, moduleFamily, report, method)
     }
