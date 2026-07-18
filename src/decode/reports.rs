@@ -6,6 +6,7 @@ use super::{
     borsh::{DecodedValue, decode_borsh_shape, decode_borsh_type, parse_hex_bytes},
     idl_type::idl_type_label,
     instruction_codec::decode_instruction_type,
+    instruction_variant::InstructionVariantMap,
 };
 use crate::value_to_string;
 
@@ -181,25 +182,11 @@ pub fn decode_instruction_words_with_idl(
     account_ids: &[String],
 ) -> Result<InstructionDecodeReport> {
     let idl: Value = serde_json::from_str(idl_json).context("failed to parse IDL JSON")?;
-    if let Some(instruction_type) = idl
-        .get("instruction_type")
-        .filter(|value| !value.is_null() && !value.is_string())
-    {
-        bail!(
-            "IDL uses external instruction_type `{}`; positional instruction decode is unsafe without explicit variant metadata",
-            idl_type_label(instruction_type)
-        );
-    }
     let variant_index = *instruction_words
         .first()
         .context("instruction data is empty")?;
-    let instructions = idl
-        .get("instructions")
-        .and_then(Value::as_array)
-        .context("IDL has no instructions array")?;
-    let instruction = instructions
-        .get(variant_index as usize)
-        .with_context(|| format!("IDL instruction variant {variant_index} not found"))?;
+    let variants = InstructionVariantMap::from_idl(&idl)?;
+    let instruction = variants.instruction_for_variant(variant_index)?;
     let instruction_name = instruction
         .get("name")
         .and_then(Value::as_str)

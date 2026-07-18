@@ -9,7 +9,7 @@ use super::{
     LocalWalletInstructionRequest, ResolvedInstructionArg,
     accounts::resolve_accounts,
     model::{AccountPrivacy, InstructionMode, PreparedInstruction},
-    plan::{instruction_rows, parse_idl, select_instruction},
+    plan::{parse_idl, select_instruction},
     values::{
         InstructionData, ParsedValue, named_value, parse_typed_value, program_id_from_hex,
         type_label,
@@ -22,8 +22,7 @@ pub(super) fn prepare_instruction(
     let idl = parse_idl(&request.idl_json)?;
     let program_id_hex = normalize_program_id_hex(&request.program_id_hex)?;
     let program_id = program_id_from_hex(&program_id_hex)?;
-    let instructions = instruction_rows(&idl)?;
-    let selection = select_instruction(instructions, &request.instruction)?;
+    let selection = select_instruction(&idl, &request.instruction)?;
     let instruction = &selection.instruction;
     let instruction_name = selection.name;
     let args = instruction
@@ -57,7 +56,7 @@ pub(super) fn prepare_instruction(
     }
 
     let instruction_words = risc0_zkvm::serde::to_vec(&InstructionData {
-        variant_index: selection.variant_index as u32,
+        variant_index: selection.variant_index,
         fields: &fields,
     })
     .map_err(|error| anyhow::anyhow!("failed to serialize instruction data: {error}"))?;

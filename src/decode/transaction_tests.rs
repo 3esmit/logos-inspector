@@ -536,7 +536,7 @@ fn decode_instruction_words_with_idl_reports_arg_decode_error() {
 }
 
 #[test]
-fn decode_instruction_words_with_idl_allows_string_instruction_type() {
+fn decode_instruction_words_with_idl_rejects_external_type_without_variant_map() {
     let idl = r#"{
         "name": "test_program",
         "instruction_type": "test_program::Instruction",
@@ -552,36 +552,112 @@ fn decode_instruction_words_with_idl_allows_string_instruction_type() {
 
     let report = decode_instruction_words_with_idl(idl, "program", &[0, 9], &[]);
 
-    assert!(report.is_ok(), "{report:?}");
-    let Ok(report) = report else {
-        return;
-    };
-    assert_eq!(report.instruction, "set_value");
-    assert_eq!(
-        report.args.first(),
-        Some(&DecodedField {
-            path: "value: u32".to_owned(),
-            value: "9".to_owned()
-        })
-    );
+    assert!(report.is_err(), "{report:?}");
+    assert!(report.err().is_some_and(|error| {
+        error
+            .to_string()
+            .contains("instruction `set_value` must declare a u32 variant_index")
+    }));
 }
 
 #[test]
-fn decode_instruction_words_with_idl_rejects_structured_external_instruction_type() {
+fn decode_instruction_words_with_idl_accepts_structured_external_type_with_variant_map() {
     let idl = r#"{
         "name": "test_program",
         "instruction_type": { "defined": "Instruction" },
         "instructions": [
-            { "name": "set_value", "args": [] }
+            { "name": "set_value", "variant_index": 0, "args": [] }
         ]
     }"#;
 
     let report = decode_instruction_words_with_idl(idl, "program", &[0], &[]);
 
-    assert!(report.is_err());
-    assert!(report.err().is_some_and(|error| {
-        error
-            .to_string()
-            .contains("positional instruction decode is unsafe")
-    }));
+    assert!(report.is_ok(), "{report:?}");
+    assert_eq!(
+        report.ok().map(|report| report.instruction),
+        Some("set_value".to_owned())
+    );
+}
+
+#[test]
+fn decode_instruction_words_with_idl_uses_explicit_external_variant_indices() {
+    #[derive(Serialize)]
+    enum ReferenceInstruction {
+        Transfer,
+        NewFungibleDefinition,
+        NewDefinitionWithMetadata,
+        InitializeAccount,
+        Burn,
+        Mint,
+        MintWithAuthority,
+        PrintNft,
+        SetAuthority(Option<AccountId>),
+        SetAuthorityWithAuthority(Option<AccountId>),
+    }
+
+    let prefix = [
+        ReferenceInstruction::Transfer,
+        ReferenceInstruction::NewFungibleDefinition,
+        ReferenceInstruction::NewDefinitionWithMetadata,
+        ReferenceInstruction::InitializeAccount,
+        ReferenceInstruction::Burn,
+        ReferenceInstruction::Mint,
+        ReferenceInstruction::MintWithAuthority,
+    ];
+    for (expected, instruction) in prefix.into_iter().enumerate() {
+        let words = risc0_zkvm::serde::to_vec(&instruction);
+        assert!(words.is_ok(), "{words:?}");
+        assert_eq!(
+            words.ok().and_then(|words| words.first().copied()),
+            Some(expected as u32)
+        );
+    }
+
+    let idl = r#"{
+        "name": "token",
+        "instruction_type": "token_core::Instruction",
+        "instructions": [
+            { "name": "transfer", "variant_index": 0, "args": [] },
+            { "name": "new_fungible_definition", "variant_index": 1, "args": [] },
+            { "name": "new_definition_with_metadata", "variant_index": 2, "args": [] },
+            { "name": "initialize_account", "variant_index": 3, "args": [] },
+            { "name": "burn", "variant_index": 4, "args": [] },
+            { "name": "mint", "variant_index": 5, "args": [] },
+            { "name": "mint_with_authority", "variant_index": 6, "args": [] },
+            {
+                "name": "set_authority",
+                "variant_index": 8,
+                "args": [{ "name": "new_authority", "type": { "option": "account_id" } }]
+            },
+            {
+                "name": "set_authority_with_authority",
+                "variant_index": 9,
+                "args": [{ "name": "new_authority", "type": { "option": "account_id" } }]
+            },
+            { "name": "print_nft", "variant_index": 7, "args": [] }
+        ]
+    }"#;
+    let cases = [
+        ("print_nft", ReferenceInstruction::PrintNft),
+        ("set_authority", ReferenceInstruction::SetAuthority(None)),
+        (
+            "set_authority_with_authority",
+            ReferenceInstruction::SetAuthorityWithAuthority(None),
+        ),
+    ];
+    for (expected_name, instruction) in cases {
+        let words = risc0_zkvm::serde::to_vec(&instruction);
+        assert!(words.is_ok(), "{words:?}");
+        let Ok(words) = words else {
+            continue;
+        };
+        let report = decode_instruction_words_with_idl(idl, "program", &words, &[]);
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            continue;
+        };
+        assert_eq!(report.instruction, expected_name);
+        assert_eq!(report.decode_error, None);
+        assert_eq!(report.remaining_words, Vec::<u32>::new());
+    }
 }
