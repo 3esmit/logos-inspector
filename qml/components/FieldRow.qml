@@ -31,7 +31,7 @@ ColumnLayout {
 
     Text {
         text: root.label
-        color: root.theme.textMuted
+        color: root.enabled ? root.theme.textMuted : root.theme.textDim
         textFormat: Text.PlainText
         font.pixelSize: root.theme.secondaryText
         font.weight: Font.Medium
@@ -42,7 +42,7 @@ ColumnLayout {
         id: field
 
         objectName: root.objectName.length > 0 ? root.objectName + "Input" : ""
-        color: root.theme.text
+        color: field.enabled ? root.theme.text : root.theme.textDim
         placeholderTextColor: root.theme.textDim
         selectionColor: root.theme.accent
         selectedTextColor: root.theme.selectedText
@@ -65,9 +65,11 @@ ColumnLayout {
 
         background: Rectangle {
             radius: root.theme.radius
-            color: field.hovered || field.activeFocus ? root.theme.surfaceRaised : root.theme.field
+            color: !field.enabled ? root.theme.surface
+                : field.hovered || field.activeFocus ? root.theme.surfaceRaised : root.theme.field
             border.width: root.invalid || field.activeFocus ? 2 : 1
-            border.color: root.invalid ? root.theme.error
+            border.color: !field.enabled ? root.theme.outlineMuted
+                : root.invalid ? root.theme.error
                 : field.activeFocus ? root.theme.accent : root.theme.outlineMuted
         }
 

@@ -1609,11 +1609,14 @@ QtObject {
 
     function setNetworkConnectorMode(scope, mode) {
         const key = String(scope || "")
+        if (key === "storage" && storageApp.sourceSettingsLocked) {
+            return false
+        }
         const family = key === "l1" ? "core" : key
         const descriptor = sourceRouting.sourceModeDescriptor(family, mode)
         const connectorId = String(descriptor.connectorId || "")
         if (!connectorId.length) {
-            return
+            return false
         }
         const next = normalizedNetworkConnectorConfig(networkConnectorConfig)
         next.scopes[key] = {
@@ -1623,6 +1626,7 @@ QtObject {
         }
         networkConnectorConfig = next
         setSourceModeProperty(key, String(descriptor.key || mode || ""))
+        return true
     }
 
     function setSourceModeProperty(scope, mode) {
