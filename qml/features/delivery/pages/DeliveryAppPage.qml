@@ -16,9 +16,25 @@ ColumnLayout {
     required property AppModel model
     readonly property var deliveryState: root.model.deliveryApp
     readonly property var socialIdentityView: root.model.social.identitiesView()
+    property bool deliveryConfirmationAccepted: false
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
+
+    Component.onCompleted: root.deliveryState.refreshManagedNodeState()
+    onVisibleChanged: {
+        if (visible) {
+            root.deliveryState.refreshManagedNodeState()
+        }
+    }
+
+    Connections {
+        target: root.deliveryState
+
+        function onSourceModeChanged() {
+            root.deliveryState.refreshManagedNodeState()
+        }
+    }
 
     ListModel {
         id: deliveryTabs
@@ -86,7 +102,7 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Last")
-            value: root.deliveryState.lastOperation
+            value: root.deliveryState.displayedLastOperation()
             tone: root.model.shell.resultIsError && root.model.shell.resultOwner === root.model.shell.currentView ? "error" : "neutral"
             Layout.fillWidth: true
         }
@@ -237,11 +253,20 @@ ColumnLayout {
         id: deliveryConfirm
 
         theme: root.theme
-        title: root.deliveryState.pendingOperation.label
-        message: qsTr("This will call the configured Delivery source and may change node relay state.")
-        confirmText: root.deliveryState.pendingOperation.label
-        confirmEnabled: root.deliveryState.pendingOperation.method.length > 0
-        onAccepted: root.runPendingDelivery()
+        title: root.deliveryState.nodeConfirmationTitle()
+        message: root.deliveryState.nodeConfirmationMessage()
+        confirmText: root.deliveryState.nodeConfirmationText()
+        confirmEnabled: root.deliveryState.nodeConfirmationEnabled()
+        onAccepted: {
+            root.deliveryConfirmationAccepted = true
+            root.deliveryState.runPendingNodeAction()
+        }
+        onClosed: Qt.callLater(function () {
+            if (!root.deliveryConfirmationAccepted) {
+                root.deliveryState.clearNodeConfirmation()
+            }
+            root.deliveryConfirmationAccepted = false
+        })
     }
 
     Component {
@@ -251,9 +276,39 @@ ColumnLayout {
             theme: root.theme
             title: qsTr("Node")
 
+            StatusMessage {
+                visible: root.deliveryState.managedNodeLifecycleSource()
+                theme: root.theme
+                tone: root.deliveryState.managedNodeStatusTone()
+                title: qsTr("Managed Messaging")
+                message: root.deliveryState.managedNodeStatusText()
+                Layout.fillWidth: true
+            }
+
+            StatusMessage {
+                visible: !root.deliveryModuleSource()
+                theme: root.theme
+                tone: "warning"
+                title: qsTr("LogosCore CLI required")
+                message: qsTr("Select LogosCore CLI in Messaging / Delivery Settings to create, start, or stop the managed Messaging node.")
+                Layout.fillWidth: true
+            }
+
+            StatusMessage {
+                visible: root.deliveryModuleSource()
+                    && !root.deliveryState.managedNodeLifecycleSource()
+                theme: root.theme
+                tone: "warning"
+                title: qsTr("Host module lifecycle")
+                message: qsTr("Create and Start call the host Delivery module. Stop is unavailable because the native stop callback is not a terminal shutdown boundary.")
+                Layout.fillWidth: true
+            }
+
             TextAreaField {
                 id: nodeConfig
 
+                visible: root.deliveryModuleSource()
+                    && !root.deliveryState.managedNodeLifecycleSource()
                 theme: root.theme
                 label: qsTr("Config JSON")
                 rows: 7
@@ -267,27 +322,53 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Create")
+                    text: root.deliveryState.nodeActionLabel("create")
                     primary: true
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
+                    enabled: root.deliveryState.nodeActionEnabled("create")
+                        && (root.deliveryState.managedNodeLifecycleSource()
+                            || nodeConfig.text.trim().length > 0)
                     Layout.preferredWidth: 112
-                    onClicked: root.confirmDelivery("deliveryCreateNode", [nodeConfig.text.trim()], qsTr("Create node"))
+                    onClicked: {
+                        if (root.deliveryState.confirmNodeAction("create", nodeConfig.text)) {
+                            deliveryConfirm.open()
+                        }
+                    }
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Start")
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryModuleSource()
+                    enabled: root.deliveryState.nodeActionEnabled("start")
                     Layout.preferredWidth: 96
-                    onClicked: root.confirmDelivery("deliveryStart", [], qsTr("Start node"))
+                    onClicked: {
+                        if (root.deliveryState.confirmNodeAction("start", "")) {
+                            deliveryConfirm.open()
+                        }
+                    }
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Stop")
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryModuleSource()
+                    visible: root.deliveryState.managedNodeLifecycleSource()
+                    enabled: root.deliveryState.nodeActionEnabled("stop")
                     Layout.preferredWidth: 96
-                    onClicked: root.confirmDelivery("deliveryStop", [], qsTr("Stop node"))
+                    onClicked: {
+                        if (root.deliveryState.confirmNodeAction("stop", "")) {
+                            deliveryConfirm.open()
+                        }
+                    }
+                }
+
+                ActionButton {
+                    visible: root.deliveryState.managedNodeLifecycleSource()
+                    theme: root.theme
+                    text: qsTr("Refresh")
+                    enabled: !root.model.shell.busy
+                        && (!root.deliveryState.managedNodes
+                            || root.deliveryState.managedNodes.statusLoading !== true)
+                    Layout.preferredWidth: 104
+                    onClicked: root.deliveryState.refreshManagedNodeState()
                 }
 
                 ActionButton {
@@ -558,6 +639,21 @@ ColumnLayout {
                     font.pixelSize: root.theme.secondaryText
                     font.weight: Font.Medium
                     Layout.fillWidth: true
+                }
+
+                Repeater {
+                    model: root.deliveryState.managedNodeLifecycleSource()
+                        ? root.deliveryState.managedNodeOperationRows() : []
+
+                    delegate: OperationHistoryRow {
+                        required property var modelData
+
+                        theme: root.theme
+                        timeText: String(modelData.time || "")
+                        labelText: String(modelData.label || "")
+                        statusText: String(modelData.status || "")
+                        detailText: String(modelData.detail || "")
+                    }
                 }
 
                 Repeater {

@@ -13,6 +13,11 @@ QtObject {
     property string error: ""
     property var operations: []
     property int revision: 0
+    property bool statusLoading: false
+    property int statusGeneration: 0
+    property bool statusRefreshDeferred: false
+    property bool statusRefreshShowResult: false
+    property bool statusRefreshIncludePackageCatalog: false
     property var devnets: []
     property var packageCatalog: null
     property string packageCatalogError: ""
@@ -30,6 +35,24 @@ QtObject {
     property string pendingPackageVersion: ""
     property string pendingPackageRootHash: ""
 
+    onBusyChanged: {
+        if (!busy) {
+            runDeferredStatusRefresh()
+        }
+    }
+
+    onNetworkProfileChanged: {
+        invalidateStatusRefresh()
+        statusRefreshDeferred = false
+        statusRefreshShowResult = false
+        statusRefreshIncludePackageCatalog = false
+        report = null
+        error = ""
+        operations = []
+        clearActionDraft()
+        revision += 1
+    }
+
     function clearStatus() {
         report = null;
         error = "";
@@ -37,8 +60,23 @@ QtObject {
     }
 
     function refresh(showResult, includePackageCatalog) {
+        if (busy || statusLoading) {
+            statusRefreshDeferred = true;
+            statusRefreshShowResult = statusRefreshShowResult || showResult === true;
+            statusRefreshIncludePackageCatalog = statusRefreshIncludePackageCatalog
+                || includePackageCatalog === true;
+            return null;
+        }
+        const generation = statusGeneration + 1;
+        const requestedProfile = networkProfile;
+        statusGeneration = generation;
+        statusLoading = true;
         error = "";
-        return gateway.request("localNodesStatus", [networkProfile], qsTr("Local nodes"), showResult === true, function (response) {
+        return gateway.request("localNodesStatus", [requestedProfile], qsTr("Local nodes"), showResult === true, function (response) {
+            if (generation !== statusGeneration || requestedProfile !== networkProfile) {
+                return;
+            }
+            statusLoading = false;
             if (response.ok) {
                 report = response.value || null;
                 operations = response.value && Array.isArray(response.value.operations) ? response.value.operations : [];
@@ -52,7 +90,25 @@ QtObject {
             if (includePackageCatalog === true) {
                 refreshPackageCatalog(root.runtimeModulesDir());
             }
+            runDeferredStatusRefresh();
         });
+    }
+
+    function runDeferredStatusRefresh() {
+        if (!statusRefreshDeferred || busy || statusLoading) {
+            return null;
+        }
+        const showResult = statusRefreshShowResult;
+        const includePackageCatalog = statusRefreshIncludePackageCatalog;
+        statusRefreshDeferred = false;
+        statusRefreshShowResult = false;
+        statusRefreshIncludePackageCatalog = false;
+        return refresh(showResult, includePackageCatalog);
+    }
+
+    function invalidateStatusRefresh() {
+        statusGeneration += 1;
+        statusLoading = false;
     }
 
     function refreshDevnets() {
@@ -138,9 +194,9 @@ QtObject {
         }
 
         const operationLabel = String(label || actionLabel(action));
+        invalidateStatusRefresh();
         gateway.setBusy(true, operationLabel);
         return gateway.request("localNodesAction", [networkProfile, request, ConfirmationPolicy.token("local-node-action")], operationLabel, true, function (response) {
-            gateway.setBusy(false, "");
             if (response.ok) {
                 report = response.value || null;
                 operations = response.value && Array.isArray(response.value.operations) ? response.value.operations : [];
@@ -171,19 +227,31 @@ QtObject {
                 }
             } else {
                 error = response.error || qsTr("Local node action failed.");
-                appendOperation(actionLabel(action), "failed", error);
+                appendNodeOperation(action, nodeKey, "failed", error);
             }
+            gateway.setBusy(false, "");
         });
     }
 
     function appendOperation(label, status, detail) {
+        return appendOperationRecord(label, "", status, detail, label);
+    }
+
+    function appendNodeOperation(action, node, status, detail) {
+        return appendOperationRecord(action, node, status, detail, actionLabel(action));
+    }
+
+    function appendOperationRecord(action, node, status, detail, label) {
+        const actionKey = String(action || "");
+        const nodeKey = String(node || "");
         const labelText = String(label || qsTr("Local nodes"));
         const statusText = String(status || "failed");
         const detailText = String(detail || "");
         const rows = Array.isArray(operations) ? operations.slice(0) : [];
         rows.push({
             time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
-            action: labelText,
+            action: actionKey,
+            node: nodeKey,
             status: statusText,
             detail: detailText
         });
@@ -200,6 +268,7 @@ QtObject {
             },
             error: statusText === "failed" ? detailText : ""
         }, detailText);
+        return rows[rows.length - 1];
     }
 
     function actionDetail(operationRows, request) {

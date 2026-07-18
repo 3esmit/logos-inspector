@@ -872,6 +872,71 @@ TestCase {
         compare(localNodeHistory[0].status, "completed")
     }
 
+    function test_delivery_managed_node_control_uses_local_nodes_contract() {
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: { connector_id: "direct_l1_rpc", provenance: "test" },
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "network_profile"
+                },
+                storage: { connector_id: "direct_storage_rest", provenance: "test" }
+            }
+        })
+        model.messagingSourceMode = "logoscore_cli"
+        model.localNodesReport = {
+            profile: "default",
+            nodes: [{
+                key: "messaging",
+                run_state: "running",
+                available_actions: ["stop"]
+            }],
+            operations: []
+        }
+        model.localNodesOperations = []
+        model.localNodesRevision += 1
+        fakeHost.reset()
+        fakeHost.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: {
+                    profile: "default",
+                    nodes: [{
+                        key: "messaging",
+                        run_state: "stopped",
+                        available_actions: ["initialize"]
+                    }],
+                    operations: [{
+                        action: "stop",
+                        node: "messaging",
+                        status: "stopped",
+                        detail: "Delivery unloaded"
+                    }]
+                },
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        compare(model.deliveryApp.sourceMode, "logoscore_cli")
+        verify(model.deliveryApp.confirmNodeAction("stop", ""))
+        model.deliveryApp.runPendingNodeAction()
+
+        tryCompare(fakeHost, "callCount", 2)
+        compare(fakeHost.calls[0].method, "localNodesAction")
+        compare(fakeHost.calls[0].args[0], "default")
+        compare(fakeHost.calls[0].args[1].action, "stop")
+        compare(fakeHost.calls[0].args[1].node, "messaging")
+        compare(fakeHost.calls[0].args[2], "confirm-local-node-action")
+        compare(model.localNodesReport.nodes[0].run_state, "stopped")
+    }
+
     function test_local_node_observations_join_source_health_and_l2_heads() {
         model.metrics.networkConnectionStatus = ({
             blockchain: { known: true, ok: true, detail: "Online", checkedAt: "10:00" },

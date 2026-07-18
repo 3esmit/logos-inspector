@@ -24,6 +24,10 @@ QtObject {
     property string moduleName: "delivery_module"
     property string networkPreset: "logos.test"
     property bool mutatingDiagnosticsEnabled: true
+    property var managedNodes: null
+    property bool managedNodeConfirmationPending: false
+    property string lastOperationOwner: "delivery"
+    property string managedNodeBaselineOperationFingerprint: ""
     property string currentTab: "messages"
     property string activeTopic: "/logos-inspector/1/chat/proto"
 
@@ -55,6 +59,10 @@ QtObject {
         invalidateSourceRequests()
     }
 
+    onSourceModeChanged: {
+        clearNodeConfirmation()
+    }
+
     function invalidateSourceRequests() {
         deliveryOperations.clearActive()
     }
@@ -79,11 +87,260 @@ QtObject {
         return sourceTargetKind !== "none"
     }
 
+    function managedNodeLifecycleSource() {
+        return sourceMode === "logoscore_cli"
+    }
+
+    function managedNodeActionKey(action) {
+        return String(action || "") === "create" ? "initialize" : String(action || "")
+    }
+
+    function managedNodeActionAvailable(action) {
+        if (!managedNodeLifecycleSource() || !managedNodes
+                || typeof managedNodes.actionAvailable !== "function") {
+            return false
+        }
+        return managedNodes.actionAvailable("messaging", managedNodeActionKey(action))
+    }
+
+    function nodeActionAvailable(action) {
+        if (!deliveryModuleSource()) {
+            return false
+        }
+        if (managedNodeLifecycleSource()) {
+            return managedNodeActionAvailable(action)
+        }
+        // The installed Delivery stop callback is not a terminal lifecycle
+        // boundary. LogosCore CLI uses the verified managed unload workflow;
+        // a host module cannot safely expose direct Stop here.
+        return String(action || "") !== "stop"
+    }
+
+    function nodeActionEnabled(action) {
+        return !busy && !deliveryOperations.view.busy
+            && nodeActionAvailable(action)
+            && (!managedNodeLifecycleSource()
+                || !managedNodes || managedNodes.busy !== true)
+    }
+
+    function nodeActionLabel(action) {
+        if (managedNodeLifecycleSource() && String(action || "") === "create") {
+            return qsTr("Initialize")
+        }
+        switch (String(action || "")) {
+        case "create":
+            return qsTr("Create")
+        case "start":
+            return qsTr("Start")
+        case "stop":
+            return qsTr("Stop")
+        default:
+            return qsTr("Node action")
+        }
+    }
+
+    function confirmNodeAction(action, config) {
+        const key = String(action || "")
+        if (!nodeActionEnabled(key)) {
+            return false
+        }
+        clearNodeConfirmation()
+        if (managedNodeLifecycleSource()) {
+            if (!managedNodes || typeof managedNodes.beginNodeAction !== "function") {
+                return false
+            }
+            managedNodes.beginNodeAction(managedNodeActionKey(key), "messaging")
+            managedNodeConfirmationPending = true
+            return true
+        }
+        const methods = {
+            create: "deliveryCreateNode",
+            start: "deliveryStart"
+        }
+        const labels = {
+            create: qsTr("Create node"),
+            start: qsTr("Start node")
+        }
+        const method = String(methods[key] || "")
+        if (!method.length) {
+            return false
+        }
+        confirmDelivery(method, key === "create" ? [String(config || "").trim()] : [], labels[key])
+        return true
+    }
+
+    function nodeConfirmationTitle() {
+        if (managedNodeConfirmationPending && managedNodes
+                && typeof managedNodes.actionDraftTitle === "function") {
+            return managedNodes.actionDraftTitle()
+        }
+        return pendingOperation.label
+    }
+
+    function nodeConfirmationMessage() {
+        if (managedNodeConfirmationPending && managedNodes
+                && typeof managedNodes.actionDraftMessage === "function") {
+            return managedNodes.actionDraftMessage()
+        }
+        return qsTr("This will call the configured Delivery source and may change node relay state.")
+    }
+
+    function nodeConfirmationText() {
+        if (managedNodeConfirmationPending && managedNodes
+                && typeof managedNodes.actionLabel === "function") {
+            return managedNodes.actionLabel(managedNodes.pendingAction)
+        }
+        return pendingOperation.label
+    }
+
+    function nodeConfirmationEnabled() {
+        if (managedNodeConfirmationPending) {
+            return pendingManagedNodeActionAvailable()
+        }
+        return pendingOperation.method.length > 0
+    }
+
+    function pendingManagedNodeActionAvailable() {
+        if (!managedNodeConfirmationPending || !managedNodeLifecycleSource()
+                || !managedNodes || managedNodes.busy === true
+                || String(managedNodes.pendingNode || "") !== "messaging") {
+            return false
+        }
+        const action = String(managedNodes.pendingAction || "")
+        return action.length > 0
+            && typeof managedNodes.actionAvailable === "function"
+            && managedNodes.actionAvailable("messaging", action)
+    }
+
+    function runPendingNodeAction() {
+        if (!managedNodeConfirmationPending) {
+            return runPendingDelivery()
+        }
+        if (!pendingManagedNodeActionAvailable()) {
+            const error = qsTr("Messaging lifecycle changed. Refresh status and choose an available action.")
+            clearNodeConfirmation()
+            lastOperationOwner = "managed"
+            lastOperation = qsTr("Error")
+            gateway.setResult(qsTr("Messaging lifecycle"), error, true, null)
+            return { ok: false, error: error }
+        }
+        const rows = managedNodeOperationRows()
+        managedNodeBaselineOperationFingerprint = rows.length > 0
+            ? String(rows[0].fingerprint || "") : ""
+        managedNodeConfirmationPending = false
+        if (!managedNodes || typeof managedNodes.runPendingAction !== "function") {
+            return null
+        }
+        lastOperationOwner = "managed"
+        lastOperation = qsTr("Starting")
+        currentTab = "operations"
+        return managedNodes.runPendingAction()
+    }
+
+    function clearNodeConfirmation() {
+        if (managedNodeConfirmationPending && managedNodes
+                && typeof managedNodes.clearActionDraft === "function") {
+            managedNodes.clearActionDraft()
+        }
+        managedNodeConfirmationPending = false
+        deliveryOperations.clearConfirmation()
+    }
+
+    function refreshManagedNodeState() {
+        if (managedNodeLifecycleSource() && managedNodes
+                && typeof managedNodes.refresh === "function") {
+            return managedNodes.refresh(false)
+        }
+        return null
+    }
+
+    function managedNodeRecord() {
+        if (!managedNodes || typeof managedNodes.nodeByKind !== "function") {
+            return null
+        }
+        return managedNodes.nodeByKind("messaging")
+    }
+
+    function managedNodeStatusText() {
+        const error = managedNodes ? String(managedNodes.error || "") : ""
+        if (error.length > 0) {
+            return qsTr("Messaging lifecycle status failed: %1").arg(error)
+        }
+        const node = managedNodeRecord()
+        if (!node) {
+            return managedNodes && managedNodes.statusLoading === true
+                ? qsTr("Loading Inspector-managed Messaging state.")
+                : qsTr("Messaging lifecycle status is unavailable. Select Refresh to try again.")
+        }
+        const runState = String(node.run_state || "unknown").replace(/_/g, " ")
+        const available = ["create", "start", "stop"].filter(function (action) {
+            return managedNodeActionAvailable(action)
+        }).map(function (action) {
+            return nodeActionLabel(action)
+        })
+        if (available.length > 0) {
+            return qsTr("Messaging is %1. Available: %2.").arg(runState).arg(available.join(", "))
+        }
+        return qsTr("Messaging is %1. Refresh Local Nodes for lifecycle status.").arg(runState)
+    }
+
+    function managedNodeStatusTone() {
+        if (managedNodes && String(managedNodes.error || "").length > 0) {
+            return "error"
+        }
+        return managedNodeRecord() ? "info" : "warning"
+    }
+
+    function managedNodeOperationFingerprint(row) {
+        const value = row || {}
+        return [
+            String(value.action || ""),
+            String(value.node || ""),
+            String(value.status || ""),
+            String(value.timestamp_millis || value.time || ""),
+            String(value.detail || "")
+        ].join("\u001f")
+    }
+
+    function managedNodeOperationRows() {
+        const revision = managedNodes && Number(managedNodes.revision || 0)
+        const rows = managedNodes && Array.isArray(managedNodes.operations)
+            ? managedNodes.operations : []
+        const result = []
+        for (let i = rows.length - 1; i >= 0; --i) {
+            const row = rows[i] || {}
+            if (String(row.node || "") !== "messaging") {
+                continue
+            }
+            const millis = Number(row.timestamp_millis || row.time || 0)
+            const action = String(row.action || "")
+            const label = managedNodes && typeof managedNodes.actionLabel === "function"
+                ? managedNodes.actionLabel(action) : action
+            result.push({
+                time: millis > 0 ? Qt.formatTime(new Date(millis), "HH:mm:ss") : String(row.time || "-"),
+                label: qsTr("%1 Messaging").arg(label),
+                status: String(row.status || "-"),
+                detail: String(row.detail || "-"),
+                fingerprint: managedNodeOperationFingerprint(row)
+            })
+        }
+        return result
+    }
+
+    function displayedLastOperation() {
+        const rows = lastOperationOwner === "managed" ? managedNodeOperationRows() : []
+        return rows.length > 0
+                && String(rows[0].fingerprint || "") !== managedNodeBaselineOperationFingerprint
+            ? qsTr("%1: %2").arg(rows[0].label).arg(rows[0].status)
+            : lastOperation
+    }
+
     function deliveryArgs(method, extra) {
         return deliveryOperations.requestArgs(method, extra)
     }
 
     function confirmDelivery(method, args, label) {
+        clearNodeConfirmation()
         deliveryOperations.confirm(method, args, label)
     }
 
@@ -100,6 +357,7 @@ QtObject {
 
     function startDeliveryOperation(method, args, label) {
         const storeQuery = String(method || "") === "deliveryStoreQuery"
+        lastOperationOwner = "delivery"
         lastOperation = qsTr("Starting")
         const started = deliveryOperations.start(method, args, label, function (response, operation) {
             if (response && response.ok) {
