@@ -319,7 +319,8 @@ function storageCidRows(page) {
             page.detailRow(qsTr("Network diagnostics"), qsTr("Not queried"))
         ]
     }
-    const exists = page.probe("exists")
+    const reportCid = page.reportStorageCid().trim()
+    const exists = reportCid === cid ? page.probe("exists") : null
     return [
         page.detailRow(qsTr("Selected CID"), cid),
         page.detailRow(qsTr("Local exists"), exists ? (exists.ok ? page.valueSummary(exists.value) : String(exists.error || qsTr("problem"))) : qsTr("Not queried")),

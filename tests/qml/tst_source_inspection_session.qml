@@ -97,6 +97,47 @@ TestCase {
         compare(storageSession.view.cidRows[0].copyText, "z-test")
     }
 
+    function test_storage_exists_result_is_not_relabeled_after_cid_edit() {
+        model.storageCidProbe = "cid-a"
+        fakeHost.responses = ({
+            storageSourceReport: {
+                ok: true,
+                value: {
+                    health: {
+                        ready: true,
+                        status: "healthy",
+                        summary: "source ready",
+                        detail: "ready"
+                    },
+                    probes: [{
+                        probe_key: "exists",
+                        label: "storage_module.exists",
+                        ok: true,
+                        value: false,
+                        error: null
+                    }]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        storageSession.refresh(false, true)
+
+        tryVerify(function () {
+            return model.metrics.sourceReport("storage") !== null
+        })
+        compare(fakeHost.lastArgs[0].options.cid, "cid-a")
+        verify(model.metrics.reportProbe(
+            model.metrics.sourceReport("storage"), "exists") !== null)
+        tryCompare(storageSession.view.cidRows[1], "value", "false")
+
+        model.storageCidProbe = "cid-b"
+
+        tryCompare(storageSession.view.cidRows[0], "copyText", "cid-b")
+        compare(storageSession.view.cidRows[1].value, "Not queried")
+    }
+
     function test_configured_source_report_never_falls_back_to_module_report() {
         model.metrics.setModuleReport("storage", {
             marker: "stale-module",

@@ -138,7 +138,7 @@ QtObject {
     }
 
     function beginObservation(kind, origin, requestKey, requestBaseKey,
-            sensitiveProbe, runtimeDiagnosticsEnabled,
+            sensitiveProbe, storageCid, runtimeDiagnosticsEnabled,
             runtimeDiagnosticsReduced, interactive, waiter) {
         const target = String(kind || "")
         const lease = {
@@ -149,6 +149,7 @@ QtObject {
             requestKey: String(requestKey || ""),
             requestBaseKey: String(requestBaseKey || requestKey || ""),
             sensitiveProbe: sensitiveProbe === true,
+            storageCid: target === "storage" ? String(storageCid || "").trim() : "",
             runtimeDiagnosticsEnabled: runtimeDiagnosticsEnabled === true,
             runtimeDiagnosticsReduced: runtimeDiagnosticsReduced === true,
             interactive: interactive === true,
@@ -286,6 +287,7 @@ QtObject {
         ])
         const requestBaseKey = observationRequestBaseKey(target, request)
         const sensitiveProbe = observationRequestIncludesSensitiveProbe(target, request)
+        const storageCid = observationRequestStorageCid(target, request)
         const runtimeDiagnosticsEnabled =
             observationRequestIncludesRuntimeDiagnostics(target, request)
         const runtimeDiagnosticsReduced =
@@ -362,6 +364,7 @@ QtObject {
             requestKey,
             requestBaseKey,
             sensitiveProbe,
+            storageCid,
             runtimeDiagnosticsEnabled,
             runtimeDiagnosticsReduced,
             interactive,
@@ -455,6 +458,17 @@ QtObject {
         const nestedFlag = head.inputs && typeof head.inputs === "object"
             ? head.inputs.include_sensitive_probe === true : false
         return cid.length > 0 || nestedFlag || head.include_sensitive_probe === true
+    }
+
+    function observationRequestStorageCid(kind, request) {
+        if (String(kind || "") !== "storage" || !request
+                || !Array.isArray(request.args) || request.args.length === 0) {
+            return ""
+        }
+        const head = request.args[0]
+        return head && typeof head === "object"
+                && head.options && typeof head.options === "object"
+            ? String(head.options.cid || "").trim() : ""
     }
 
     function observationRequestIncludesRuntimeDiagnostics(kind, request) {
@@ -986,6 +1000,14 @@ QtObject {
         return sourceReport(kind)
     }
 
+    function observationReportStorageCid(kind) {
+        const target = String(kind || "") === "delivery"
+            ? "messaging" : String(kind || "")
+        const identity = observationReportRequestIdentities[target] || null
+        return target === "storage" && identity
+            ? String(identity.storageCid || "").trim() : ""
+    }
+
     function setModuleReport(kind, report) {
         const target = String(kind || "")
         if (target === "blockchain") {
@@ -1035,6 +1057,8 @@ QtObject {
                 requestBaseKey: String(requestIdentity.requestBaseKey
                     || requestIdentity.requestKey || ""),
                 sensitiveProbe: requestIdentity.sensitiveProbe === true,
+                storageCid: target === "storage"
+                    ? String(requestIdentity.storageCid || "").trim() : "",
                 runtimeDiagnosticsEnabled:
                     requestIdentity.runtimeDiagnosticsEnabled === true,
                 runtimeDiagnosticsReduced:
