@@ -206,6 +206,9 @@ TestCase {
         function sourceTarget() { return "http://delivery" }
         function report() { return null }
         function statusTone() { return "success" }
+        function networkMonitorPeerCount() { return SourceObservation.deliveryNetworkMonitorPeerCount(deliveryPage) }
+        function networkMonitorTopicCount() { return SourceObservation.deliveryNetworkMonitorTopicCount(deliveryPage) }
+        function servicePeerCount() { return SourceObservation.deliveryServicePeerCount(deliveryPage) }
     }
 
     function init() {
@@ -216,6 +219,12 @@ TestCase {
         testRoot.deliveryProtocolsHealth = [
             { protocol: "relay", health: "ready", desc: "ok" }
         ]
+        deliveryModel.metricValues = ({
+            "messaging.store_peers": 2,
+            "messaging.filter_peers": 1,
+            "messaging.lightpush_peers": 3,
+            "messaging.content_topics": 5
+        })
     }
 
     function storageDebugFixture(nodeCount) {
@@ -404,6 +413,37 @@ TestCase {
         compare(rows[0].tone, "success")
         compare(SourceObservation.deliveryNetworkMonitorPeerCount(deliveryPage), 2)
         compare(SourceObservation.deliveryServicePeerCount(deliveryPage), 6)
+    }
+
+    function test_delivery_topology_uses_exact_metric_semantics_and_requires_complete_service_counts() {
+        deliveryModel.metricValues = ({
+            "messaging.peer_count": 15,
+            "messaging.pubsub_peers": 14,
+            "messaging.store_peers": 2,
+            "messaging.filter_peers": 1,
+            "messaging.lightpush_peers": 3,
+            "messaging.content_topics": 5
+        })
+
+        let rows = SourceObservation.deliveryTopologyRows(deliveryPage)
+        compare(rows[0].label, "Local connected peers")
+        compare(rows[0].evidence, "15")
+        compare(rows[1].label, "Pubsub peer instances")
+        compare(rows[1].evidence, "14")
+        compare(rows[3].label, "Service peer instances")
+        compare(rows[3].evidence, "6 combined Store/Filter/Lightpush peer instance(s)")
+
+        deliveryModel.metricValues = ({
+            "messaging.peer_count": 15,
+            "messaging.pubsub_peers": 14,
+            "messaging.store_peers": 2,
+            "messaging.filter_peers": null,
+            "messaging.content_topics": 5
+        })
+        rows = SourceObservation.deliveryTopologyRows(deliveryPage)
+        compare(rows[3].state, "unknown")
+        compare(rows[3].evidence, "Complete Store/Filter/Lightpush peer metrics unavailable.")
+        compare(SourceObservation.deliveryServicePeerCount(deliveryPage), null)
     }
 
     function test_delivery_health_prefers_exact_protocol_state_over_peer_metrics() {

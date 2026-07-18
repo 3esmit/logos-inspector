@@ -600,9 +600,9 @@ function deliveryTopologyRows(page) {
     const servicePeers = page.servicePeerCount()
     return [
         page.statusRow(qsTr("Local connected peers"), page.metricKnown("messaging.peer_count") ? qsTr("observed") : qsTr("unknown"), page.metricDisplay("messaging.peer_count"), page.metricKnown("messaging.peer_count") ? "success" : "neutral"),
-        page.statusRow(qsTr("Relay mesh peers"), page.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), page.metricDisplay("messaging.pubsub_peers"), page.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
+        page.statusRow(qsTr("Pubsub peer instances"), page.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), page.metricDisplay("messaging.pubsub_peers"), page.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
         page.statusRow(qsTr("Discovery peers"), discovered !== null ? qsTr("observed") : qsTr("unknown"), discovered !== null ? qsTr("%1 peer(s)").arg(discovered) : qsTr("No Delivery Network Monitor peer snapshot."), discovered !== null ? "success" : "neutral"),
-        page.statusRow(qsTr("Service peers"), servicePeers !== null ? qsTr("observed") : qsTr("unknown"), servicePeers !== null ? qsTr("%1 service peer(s)").arg(servicePeers) : qsTr("No Store/Filter/Lightpush peer metrics."), servicePeers !== null ? "success" : "neutral"),
+        page.statusRow(qsTr("Service peer instances"), servicePeers !== null ? qsTr("observed") : qsTr("unknown"), servicePeers !== null ? qsTr("%1 combined Store/Filter/Lightpush peer instance(s)").arg(servicePeers) : qsTr("Complete Store/Filter/Lightpush peer metrics unavailable."), servicePeers !== null ? "success" : "neutral"),
         page.statusRow(qsTr("Content topics"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 topic(s)").arg(topics) : qsTr("No Delivery Network Monitor topic snapshot."), topics !== null ? "success" : "neutral")
     ]
 }
@@ -936,16 +936,20 @@ function deliveryNetworkMonitorTopicCount(page) {
 
 function deliveryServicePeerCount(page) {
     let total = 0
-    let found = false
     const keys = ["messaging.store_peers", "messaging.filter_peers", "messaging.lightpush_peers"]
     for (let i = 0; i < keys.length; ++i) {
-        const value = Number(page.model.metrics.dashboardMetricValue(keys[i]))
+        const rawValue = page.model.metrics.dashboardMetricValue(keys[i])
+        if (rawValue === null || rawValue === undefined) {
+            return null
+        }
+        const value = Number(rawValue)
         if (Number.isFinite(value)) {
             total += value
-            found = true
+        } else {
+            return null
         }
     }
-    return found ? total : null
+    return total
 }
 
 function deliveryCountValue(page, value) {
