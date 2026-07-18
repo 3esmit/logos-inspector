@@ -42,11 +42,11 @@ SourceSettingsPanel {
             visible: root.storageRestEnabled()
             theme: root.theme
             label: qsTr("REST URL")
-            sourceText: root.modelRef.storageRestUrl
+            sourceText: root.modelRef.sourceRouting.configuredStorageRestUrl()
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8080/api/storage/v1")
             enabled: !root.sourceSettingsLocked()
-            onTextEdited: text => root.modelRef.storageRestUrl = String(text || "").trim()
+            onTextEdited: text => root.modelRef.setNetworkConnectorEndpoint("storage", text)
         }
 
         FieldRow {
