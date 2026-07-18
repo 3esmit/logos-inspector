@@ -12,10 +12,14 @@ ColumnLayout {
 
     required property Theme theme
     required property var zoneState
+    property var appModel: null
+    property var zoneDetail: null
     property string currentTool: "programs"
     property string commitmentQuery: ""
 
     signal configureSourcesRequested()
+    signal configureIdlsRequested()
+    signal transactionRequested(string transactionId, string exactSourceId)
 
     objectName: "zoneL2Programs"
     spacing: root.theme.gapLarge
@@ -35,6 +39,7 @@ ColumnLayout {
         id: tools
 
         ListElement { value: "programs"; label: "Known Programs" }
+        ListElement { value: "interact"; label: "Interact" }
         ListElement { value: "proof"; label: "Commitment Proof" }
         ListElement { value: "nonces"; label: "Account Nonces" }
     }
@@ -104,6 +109,27 @@ ColumnLayout {
             root.currentTool = value
             if (value === "programs") {
                 root.ensureProgramsLoaded()
+            }
+        }
+    }
+
+    Loader {
+        id: interactionLoader
+
+        active: root.zoneState.l2SequencerReadEnabled
+            && root.currentTool === "interact"
+        visible: active
+        Layout.fillWidth: true
+
+        sourceComponent: ZoneL2ProgramInteraction {
+            theme: root.theme
+            appModel: root.appModel
+            zoneState: root.zoneState
+            zoneDetail: root.zoneDetail
+            width: interactionLoader.width
+            onConfigureIdlsRequested: root.configureIdlsRequested()
+            onTransactionRequested: function (transactionId, exactSourceId) {
+                root.transactionRequested(transactionId, exactSourceId)
             }
         }
     }

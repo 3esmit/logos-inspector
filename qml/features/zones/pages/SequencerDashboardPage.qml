@@ -99,9 +99,7 @@ ColumnLayout {
         options: sequencerTabs
         current: root.currentTab
         compressTabs: false
-        onSelected: function (value) {
-            root.currentTab = root.normalizedTab(value)
-        }
+        onSelected: value => root.selectTab(value)
     }
 
     Loader {
@@ -144,7 +142,13 @@ ColumnLayout {
         sourceComponent: ZoneL2Programs {
             theme: root.theme
             zoneState: root.l2State.tools
+            appModel: root.model
+            zoneDetail: root.zoneState.zoneDetail
             onConfigureSourcesRequested: root.openSources()
+            onConfigureIdlsRequested: root.openIdlRegistry()
+            onTransactionRequested: function (transactionId, exactSourceId) {
+                root.inspectSubmittedTransaction(transactionId, exactSourceId)
+            }
         }
     }
 
@@ -156,8 +160,33 @@ ColumnLayout {
         return "blocks"
     }
 
+    function selectTab(value) {
+        const tab = root.normalizedTab(value)
+        root.currentTab = tab
+        root.zoneState.requestedDetailTab = tab === "blocks" ? "l2" : tab
+    }
+
     function openSources() {
         root.zoneState.requestedDetailTab = "sources"
         root.model.selectView("zones")
+    }
+
+    function openIdlRegistry() {
+        root.model.programTab = "idls"
+        root.model.selectView("programs")
+    }
+
+    function inspectSubmittedTransaction(transactionId, exactSourceId) {
+        const transaction = String(transactionId || "").trim()
+        const source = String(exactSourceId || "").trim()
+        if (!transaction.length || !source.length
+                || source !== root.sequencerSourceId) {
+            return false
+        }
+        root.zoneState.requestedL2View = "transaction"
+        root.zoneState.requestedDetailTab = "l2"
+        root.l2State.blocks.openL2Transaction(transaction, source)
+        root.currentTab = "blocks"
+        return true
     }
 }

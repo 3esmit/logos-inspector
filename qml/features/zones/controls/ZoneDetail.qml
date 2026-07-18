@@ -169,7 +169,13 @@ ColumnLayout {
         sourceComponent: ZoneL2Programs {
             theme: root.theme
             zoneState: root.l2ToolState
+            appModel: root.zoneState.appModel
+            zoneDetail: root.detail
             onConfigureSourcesRequested: root.requestTab("sources")
+            onConfigureIdlsRequested: root.openIdlRegistry()
+            onTransactionRequested: function (transactionId, exactSourceId) {
+                root.inspectL2Transaction(transactionId, exactSourceId)
+            }
         }
     }
 
@@ -259,9 +265,24 @@ ColumnLayout {
     }
 
     function inspectL2Transaction(transactionId, exactSourceId) {
-        l2BlockState.openL2Transaction(transactionId, exactSourceId)
+        const transaction = String(transactionId || "").trim()
+        const source = String(exactSourceId || "").trim()
+        if (!transaction.length || !source.length
+                || source !== root.l2Context.l2SequencerSourceId()) {
+            return false
+        }
+        l2BlockState.openL2Transaction(transaction, source)
         l2InitialView = "transaction"
         currentTab = "l2"
+        return true
+    }
+
+    function openIdlRegistry() {
+        if (!root.zoneState.appModel) {
+            return
+        }
+        root.zoneState.appModel.programTab = "idls"
+        root.zoneState.appModel.selectView("programs")
     }
 
     function l2ViewForState() {
