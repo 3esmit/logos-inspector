@@ -2,12 +2,15 @@ import QtQuick
 import QtQml.Models
 import QtTest
 import "../../qml/state/settings/SettingsProfileWorkspace.js" as SettingsProfileWorkspace
+import "../../qml/state/storage/StorageCidValidation.js" as StorageCidValidation
 
 TestCase {
     name: "SettingsProfileWorkspace"
 
     QtObject {
         id: sourceRoutingStub
+
+        property bool supportsStorageCidProbe: true
 
         function sourceModeOptions(family) {
             return [
@@ -22,6 +25,10 @@ TestCase {
 
         function sourceModeAt(index, options) {
             return options.get(index).value
+        }
+
+        function storageSourceView() {
+            return { supportsCidProbe: supportsStorageCidProbe }
         }
     }
 
@@ -99,6 +106,7 @@ TestCase {
     function init() {
         profileOptions.clear()
         sourceOptions.clear()
+        sourceRoutingStub.supportsStorageCidProbe = true
         model.nodeUrl = "https://node/"
         model.networkProfile = "default"
         model.localWalletStatus = null
@@ -150,5 +158,54 @@ TestCase {
         compare(metricsStub.lastQueryKind, "storage")
         verify(metricsStub.lastQueryShowResult)
         verify(metricsStub.lastQueryIncludeSensitiveProbe)
+    }
+
+    function test_storage_status_query_rejects_invalid_cid_before_metrics() {
+        model.storageCidProbe = "cid/child"
+
+        let response = SettingsProfileWorkspace.queryStorageStatus(root)
+
+        verify(!response.ok)
+        compare(
+            response.error,
+            "Storage CID must contain only ASCII letters, digits, `-`, or `_`.")
+        compare(metricsStub.queryCount, 0)
+
+        model.storageCidProbe = "a".repeat(257)
+        response = SettingsProfileWorkspace.queryStorageStatus(root)
+
+        verify(!response.ok)
+        compare(response.error, "Storage CID exceeds 256-byte limit.")
+        compare(metricsStub.queryCount, 0)
+
+        sourceRoutingStub.supportsStorageCidProbe = false
+        verify(SettingsProfileWorkspace.queryStorageStatus(root))
+        compare(metricsStub.queryCount, 1)
+        verify(!metricsStub.lastQueryIncludeSensitiveProbe)
+
+        sourceRoutingStub.supportsStorageCidProbe = true
+        model.storageCidProbe = "valid-CID_123"
+        verify(SettingsProfileWorkspace.queryStorageStatus(root))
+        compare(metricsStub.queryCount, 2)
+        verify(metricsStub.lastQueryIncludeSensitiveProbe)
+    }
+
+    function test_storage_cid_validation_matches_route_safety_contract() {
+        compare(StorageCidValidation.optionalError(""), "")
+        compare(StorageCidValidation.optionalError("   "), "")
+        compare(StorageCidValidation.optionalError("A0-_"), "")
+        compare(StorageCidValidation.optionalError("a".repeat(256)), "")
+        compare(
+            StorageCidValidation.optionalError("a".repeat(257)),
+            "Storage CID exceeds 256-byte limit.")
+        compare(
+            StorageCidValidation.optionalError("😀".repeat(65)),
+            "Storage CID exceeds 256-byte limit.")
+        compare(
+            StorageCidValidation.optionalError("cid/child"),
+            "Storage CID must contain only ASCII letters, digits, `-`, or `_`.")
+        compare(
+            StorageCidValidation.optionalError("cid-é"),
+            "Storage CID must contain only ASCII letters, digits, `-`, or `_`.")
     }
 }

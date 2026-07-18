@@ -4,6 +4,7 @@ import "../chain/BlockchainRangeValidation.js" as BlockchainRangeValidation
 import "../chain/ChainPageQuery.js" as ChainPageQuery
 import "../metrics/AppModelMetrics.js" as AppModelMetrics
 import "../network/AppModelNetwork.js" as AppModelNetwork
+import "../storage/StorageCidValidation.js" as StorageCidValidation
 
 QtObject {
     id: root
@@ -281,20 +282,37 @@ QtObject {
             }
         }
 
+        const storageCid = observationRequestStorageCid(target, request)
+        const interactive = showResult === true
+        const waiter = observationWaiter(
+            callback, interactive, request.label, target)
+        const storageCidError = target === "storage"
+            ? StorageCidValidation.optionalError(storageCid) : ""
+        if (storageCidError.length) {
+            const response = {
+                ok: false,
+                text: "",
+                error: storageCidError
+            }
+            if (waiter) {
+                completeObservationPresentation(waiter, response)
+                if (typeof waiter.callback === "function") {
+                    waiter.callback(response, sourceObservation(target))
+                }
+            }
+            return response
+        }
+
         const requestKey = JSON.stringify([
             request.method,
             request.args
         ])
         const requestBaseKey = observationRequestBaseKey(target, request)
         const sensitiveProbe = observationRequestIncludesSensitiveProbe(target, request)
-        const storageCid = observationRequestStorageCid(target, request)
         const runtimeDiagnosticsEnabled =
             observationRequestIncludesRuntimeDiagnostics(target, request)
         const runtimeDiagnosticsReduced =
             request.runtimeDiagnosticsReduced === true
-        const interactive = showResult === true
-        const waiter = observationWaiter(
-            callback, interactive, request.label, target)
         if (networkConnectionIsPending(target)) {
             const active = activeObservationLeases[target]
             if (observationRequestCompatible(

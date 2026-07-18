@@ -12,6 +12,7 @@ Panel {
     property string statusDetail: ""
     property color statusColor: theme.textMuted
     property bool busy: false
+    property bool queryEnabled: true
     property string queryAccessibleName: qsTr("Query %1 status").arg(root.title)
     default property alias bodyContent: body.data
 
@@ -55,7 +56,7 @@ Panel {
             theme: root.theme
             text: qsTr("Query status")
             primary: true
-            enabled: !root.busy
+            enabled: root.queryEnabled && !root.busy
             Layout.preferredWidth: 132
             accessibleName: root.queryAccessibleName
             onClicked: root.queryClicked()

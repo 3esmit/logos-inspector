@@ -325,10 +325,12 @@ pub(super) async fn manifests(endpoint: &str) -> Result<Value> {
 }
 
 pub(super) async fn manifest(endpoint: &str, cid: &str) -> Result<Value> {
+    super::validate_storage_cid(cid)?;
     crate::rpc::raw_http_json(endpoint, &format!("/data/{cid}/network/manifest")).await
 }
 
 pub(super) async fn exists(endpoint: &str, cid: &str) -> Result<Value> {
+    super::validate_storage_cid(cid)?;
     crate::rpc::raw_http_json(endpoint, &format!("/data/{cid}/exists")).await
 }
 
@@ -343,6 +345,7 @@ pub(super) async fn probe_metrics(endpoint: &str) -> Result<String> {
 }
 
 pub(super) async fn fetch(endpoint: &str, cid: &str) -> Result<Value> {
+    super::validate_storage_cid(cid)?;
     http::rest_json_request(
         Method::POST,
         endpoint,
@@ -1710,6 +1713,44 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn rest_cid_routes_reject_invalid_values_before_io() -> Result<()> {
+        let endpoint = "http://127.0.0.1:9";
+        let errors = [
+            manifest(endpoint, "cid/child")
+                .await
+                .err()
+                .context("invalid manifest CID was accepted")?,
+            exists(endpoint, "cid/child")
+                .await
+                .err()
+                .context("invalid exists CID was accepted")?,
+            fetch(endpoint, "cid/child")
+                .await
+                .err()
+                .context("invalid fetch CID was accepted")?,
+            remove(endpoint, "cid/child")
+                .await
+                .err()
+                .context("invalid remove CID was accepted")?,
+        ];
+        for error in errors {
+            anyhow::ensure!(
+                error
+                    .to_string()
+                    .contains("storage CID must contain only ASCII letters, digits, `-`, or `_`"),
+                "invalid REST CID reached I/O or returned unrelated error: {error:#}"
+            );
+        }
+        anyhow::ensure!(
+            download_route("cid/child", false)
+                .err()
+                .is_some_and(|error| error.to_string().contains("backup CID")),
+            "invalid download CID reached route construction"
+        );
+        Ok(())
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum HostDownloadBehavior {

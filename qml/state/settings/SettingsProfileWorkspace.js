@@ -1,4 +1,5 @@
 .import "../status/StatusFieldCatalog.js" as StatusFieldCatalog
+.import "../storage/StorageCidValidation.js" as StorageCidValidation
 
 function connectionStatus(root, kind) {
     return root.model.metrics.networkConnectionState(kind)
@@ -34,8 +35,26 @@ function connectionStatusColor(root, kind) {
 
 function queryStorageStatus(root) {
     const cid = String(root.model.storageCidProbe || "").trim()
+    const includeCid = cid.length > 0 && storageCidProbeSupported(root)
+    const error = includeCid ? StorageCidValidation.optionalError(cid) : ""
+    if (error.length) {
+        return {
+            ok: false,
+            text: "",
+            error: error
+        }
+    }
     return root.model.metrics.queryNetworkConnection(
-        "storage", true, cid.length > 0)
+        "storage", true, includeCid)
+}
+
+function storageCidProbeSupported(root) {
+    const routing = root && root.model ? root.model.sourceRouting : null
+    if (!routing || typeof routing.storageSourceView !== "function") {
+        return true
+    }
+    const source = routing.storageSourceView()
+    return !source || source.supportsCidProbe !== false
 }
 
 function walletSourceStatusText(root) {

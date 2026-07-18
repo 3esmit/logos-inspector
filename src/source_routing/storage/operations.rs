@@ -559,7 +559,7 @@ fn operation_plan(
         }
         StorageOperation::DownloadManifest => {
             let payload: CidPayload = request.payload("storage manifest")?;
-            let cid = required_text(payload.cid, "CID")?;
+            let cid = parse_storage_cid(payload.cid)?;
             plan_for_client(
                 client,
                 "downloadManifest",
@@ -570,7 +570,7 @@ fn operation_plan(
         }
         StorageOperation::Fetch => {
             let payload: CidPayload = request.payload("storage fetch")?;
-            let cid = required_text(payload.cid, "CID")?;
+            let cid = parse_storage_cid(payload.cid)?;
             plan_for_client(client, "fetch", vec![json!(cid)], vec![("cid", cid)], true)
         }
         StorageOperation::Upload => {
@@ -2135,7 +2135,7 @@ impl StorageExistsRequest {
         let payload: ExistsPayload = request.payload("storage exists")?;
         Ok(Self {
             client: StorageClient::from_initialization(request.adapter())?,
-            cid: required_text(payload.cid, "CID")?,
+            cid: parse_storage_cid(payload.cid)?,
         })
     }
 
@@ -2899,6 +2899,43 @@ esac
             "unexpected Storage download plan: {:?}",
             request.plan
         );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_cid_actions_reject_route_breaking_and_oversized_values() -> Result<()> {
+        for cid in [
+            "cid/child".to_owned(),
+            "a".repeat(STORAGE_CID_MAX_BYTES + 1),
+        ] {
+            let value = json!({
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://storage" }
+                },
+                "mutating_enabled": true,
+                "payload": { "cid": cid }
+            });
+            for operation in [StorageOperation::DownloadManifest, StorageOperation::Fetch] {
+                let request = request(value.clone())?;
+                let error = StorageOperationRequest::parse(&request, operation)
+                    .err()
+                    .context("invalid exact-CID Storage action was accepted")?;
+                anyhow::ensure!(
+                    error.to_string().contains("storage CID"),
+                    "invalid exact-CID action returned unrelated error: {error:#}"
+                );
+            }
+
+            let args = Args::new(json!([value]))?;
+            let error = StorageExistsRequest::parse(&args)
+                .err()
+                .context("invalid Storage exists CID was accepted")?;
+            anyhow::ensure!(
+                error.to_string().contains("storage CID"),
+                "invalid Storage exists CID returned unrelated error: {error:#}"
+            );
+        }
         Ok(())
     }
 
