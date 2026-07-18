@@ -421,6 +421,89 @@ fn decode_instruction_words_with_idl_rejects_out_of_range_narrow_signed_wire() {
 }
 
 #[test]
+fn decode_instruction_words_with_idl_matches_risc0_narrow_unsigned_wire() {
+    #[derive(Serialize)]
+    enum ReferenceInstruction {
+        SetUnsigned(u8, u8, u16, u16, u32),
+    }
+
+    let words = risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetUnsigned(
+        u8::MIN,
+        u8::MAX,
+        u16::MIN,
+        u16::MAX,
+        42,
+    ));
+    assert!(words.is_ok(), "{words:?}");
+    let Ok(words) = words else {
+        return;
+    };
+    let idl = r#"{
+        "name": "test_program",
+        "instructions": [{
+            "name": "set_unsigned",
+            "args": [
+                { "name": "u8_min", "type": "u8" },
+                { "name": "u8_max", "type": "u8" },
+                { "name": "u16_min", "type": "u16" },
+                { "name": "u16_max", "type": "u16" },
+                { "name": "following", "type": "u32" }
+            ]
+        }]
+    }"#;
+
+    let report = decode_instruction_words_with_idl(idl, "program", &words, &[]);
+
+    assert!(report.is_ok(), "{report:?}");
+    let Ok(report) = report else {
+        return;
+    };
+    assert_eq!(report.decode_error, None);
+    assert_eq!(report.remaining_words, Vec::<u32>::new());
+    assert_eq!(
+        report
+            .args
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            u8::MIN.to_string(),
+            u8::MAX.to_string(),
+            u16::MIN.to_string(),
+            u16::MAX.to_string(),
+            "42".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn decode_instruction_words_with_idl_rejects_out_of_range_narrow_unsigned_wire() {
+    for (ty, malformed_word, expected_error) in [
+        ("u8", 0x0000_0100, "u8 value 256 is out of range"),
+        ("u16", 0x0001_0000, "u16 value 65536 is out of range"),
+    ] {
+        let idl = format!(
+            r#"{{
+                "name": "test_program",
+                "instructions": [{{
+                    "name": "set_value",
+                    "args": [{{ "name": "value", "type": "{ty}" }}]
+                }}]
+            }}"#
+        );
+
+        let report = decode_instruction_words_with_idl(&idl, "program", &[0, malformed_word], &[]);
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            continue;
+        };
+        assert_eq!(report.decode_error.as_deref(), Some(expected_error));
+        assert_eq!(report.remaining_words, vec![malformed_word]);
+    }
+}
+
+#[test]
 fn decode_instruction_words_with_idl_reports_arg_decode_error() {
     let idl = r#"{
         "name": "test_program",
