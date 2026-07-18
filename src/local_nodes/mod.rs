@@ -10,6 +10,7 @@ mod action_workspace;
 mod adapters;
 mod commands;
 mod lifecycle;
+mod messaging_identity;
 mod model;
 mod module_watcher;
 mod package;
@@ -389,6 +390,7 @@ mod tests {
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         let mut runtime = None;
@@ -460,6 +462,7 @@ mod tests {
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         let cancellation = tokio_util::sync::CancellationToken::new();
@@ -763,6 +766,7 @@ mod tests {
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
 
@@ -819,6 +823,7 @@ mod tests {
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: Some("Demo Net".to_owned()),
         };
         let mut runtime = None;

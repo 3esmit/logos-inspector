@@ -397,21 +397,29 @@ fn runtime_start(
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
     operation_result(request, None, || {
-        if let Some(existing) = runtime.as_ref()
-            && existing.is_managed()
-            && !existing.is_running()
-        {
-            reap_runtime_process_group(existing)?;
-            if let Some(process_id) = existing.daemon_process_id {
-                wait_for_runtime_process_group_exit(process_id, control)?;
-            }
-        }
         let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             runtime_config_root,
             runtime.as_ref(),
             request.runtime_binary_path.as_deref(),
             request.runtime_modules_dir.as_deref(),
         )?;
+        let generated_identity = match prepare_runtime_context_reset_messaging_identities(
+            state,
+            request.allow_identity_rotation,
+        )? {
+            RuntimeContextResetIdentityPreparation::Ready { generated } => generated,
+            RuntimeContextResetIdentityPreparation::AcknowledgementRequired => {
+                return Ok(needs_configuration(
+                    "Starting LogosCore would clear a legacy Messaging context without a persisted peer identity. Confirm Start Local Runtime with one-time identity rotation acknowledged; the next Messaging Initialize will use a new Peer ID and later lifecycle cycles will preserve it",
+                ));
+            }
+        };
+        if let Some(existing) = runtime.as_ref() {
+            reap_runtime_process_group(existing)?;
+            if let Some(process_id) = existing.daemon_process_id {
+                wait_for_runtime_process_group_exit(process_id, control)?;
+            }
+        }
         reconcile_indexer_runtime_modules_dir(state, &profile)?;
         let command = profile.daemon_command()?;
         let display = command_display(&command);
@@ -428,18 +436,27 @@ fn runtime_start(
         match readiness {
             Ok(()) => Ok(OperationOutcome {
                 status: "started".to_owned(),
-                detail: "Inspector-managed logoscore daemon is ready".to_owned(),
+                detail: messaging_identity_operation_detail(
+                    "Inspector-managed logoscore daemon is ready".to_owned(),
+                    generated_identity,
+                ),
                 command: Some(display),
             }),
             Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) if still_running => Ok(OperationOutcome {
                 status: "starting".to_owned(),
-                detail: operation_error_detail(&error),
+                detail: messaging_identity_operation_detail(
+                    operation_error_detail(&error),
+                    generated_identity,
+                ),
                 command: Some(display),
             }),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
-                detail: operation_error_detail(&error),
+                detail: messaging_identity_operation_detail(
+                    operation_error_detail(&error),
+                    generated_identity,
+                ),
                 command: Some(display),
             }),
         }
@@ -467,6 +484,17 @@ fn runtime_stop(
                 command: None,
             });
         }
+        let generated_identity = match prepare_runtime_context_reset_messaging_identities(
+            state,
+            request.allow_identity_rotation,
+        )? {
+            RuntimeContextResetIdentityPreparation::Ready { generated } => generated,
+            RuntimeContextResetIdentityPreparation::AcknowledgementRequired => {
+                return Ok(needs_configuration(
+                    "Stopping LogosCore would destroy a legacy Messaging context without a persisted peer identity. Confirm Stop Local Runtime with one-time identity rotation acknowledged; the next Messaging Initialize will use a new Peer ID and later lifecycle cycles will preserve it",
+                ));
+            }
+        };
         if !profile.is_running() {
             reap_runtime_process_group(profile)?;
             if let Some(process_id) = profile.daemon_process_id {
@@ -476,7 +504,10 @@ fn runtime_stop(
             reset_module_contexts(state);
             return Ok(OperationOutcome {
                 status: "stopped".to_owned(),
-                detail: "Inspector-managed logoscore daemon is already stopped".to_owned(),
+                detail: messaging_identity_operation_detail(
+                    "Inspector-managed logoscore daemon is already stopped".to_owned(),
+                    generated_identity,
+                ),
                 command: None,
             });
         }
@@ -499,16 +530,69 @@ fn runtime_stop(
             reset_module_contexts(state);
             return Ok(OperationOutcome {
                 status: "stopped".to_owned(),
-                detail: operation_detail_from_value(&value),
+                detail: messaging_identity_operation_detail(
+                    operation_detail_from_value(&value),
+                    generated_identity,
+                ),
                 command: Some("logoscore --config-dir <managed> stop --json".to_owned()),
             });
         }
         Ok(OperationOutcome {
             status: "stopping".to_owned(),
-            detail: "stop request accepted; waiting for managed daemon exit".to_owned(),
+            detail: messaging_identity_operation_detail(
+                "stop request accepted; waiting for managed daemon exit".to_owned(),
+                generated_identity,
+            ),
             command: Some("logoscore --config-dir <managed> stop --json".to_owned()),
         })
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeContextResetIdentityPreparation {
+    Ready { generated: bool },
+    AcknowledgementRequired,
+}
+
+fn prepare_runtime_context_reset_messaging_identities(
+    state: &LocalNodesState,
+    allow_identity_rotation: bool,
+) -> Result<RuntimeContextResetIdentityPreparation> {
+    let bound_topology = state.module_context_topology_id(NodeKind::Messaging);
+    let configs = state
+        .testnet
+        .iter()
+        .chain(state.devnets.iter())
+        .flat_map(|record| {
+            record
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.kind == NodeKind::Messaging
+                        && (node.lifecycle_state.has_module_context()
+                            || bound_topology == Some(record.id.as_str()))
+                })
+                .map(|node| {
+                    (
+                        PathBuf::from(&record.workspace),
+                        PathBuf::from(&node.config_path),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut missing_identity = false;
+    for (workspace, config_path) in &configs {
+        missing_identity |= super::messaging_identity::identity_is_missing(workspace, config_path)?;
+    }
+    if missing_identity && !allow_identity_rotation {
+        return Ok(RuntimeContextResetIdentityPreparation::AcknowledgementRequired);
+    }
+    let mut generated = false;
+    for (workspace, config_path) in configs {
+        generated |= super::messaging_identity::prepare_existing_config(&workspace, &config_path)?
+            == super::messaging_identity::IdentityPreparation::Generated;
+    }
+    Ok(RuntimeContextResetIdentityPreparation::Ready { generated })
 }
 
 fn reap_runtime_process_group(profile: &LogoscoreRuntimeProfile) -> Result<()> {
@@ -878,10 +962,16 @@ fn node_initialize(
             };
             runtime.cli_runtime()?
         };
-        let (spec, reuse_generated_config) = {
+        let (spec, reuse_generated_config, generated_identity) = {
             let record = active_topology_mut(state, profile)?;
+            let workspace = record.workspace.clone();
             let config = required_node_config(record, kind)?;
             let action_config_path = action_config_path(config, NodeAction::Initialize);
+            let generated_identity = kind == NodeKind::Messaging
+                && super::messaging_identity::prepare_existing_config(
+                    Path::new(&workspace),
+                    Path::new(action_config_path),
+                )? == super::messaging_identity::IdentityPreparation::Generated;
             let spec = command_spec_for(
                 kind,
                 NodeAction::Initialize,
@@ -890,7 +980,11 @@ fn node_initialize(
                 config.port,
             )
             .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
-            (spec, reusable_generated_config(adapter, config))
+            (
+                spec,
+                reusable_generated_config(adapter, config),
+                generated_identity,
+            )
         };
         if ensure_loaded {
             ensure_module_loaded(&spec, Some(&cli), control)?;
@@ -933,10 +1027,13 @@ fn node_initialize(
                             mark_node_initialized(state, profile, kind, &spec.program)?;
                             return Ok(OperationOutcome {
                                 status: "initialized".to_owned(),
-                                detail: format!(
-                                    "{}; verified Messaging context with MyPeerId `{}`",
-                                    operation_detail_from_value(&value),
-                                    verification.peer_id
+                                detail: messaging_identity_operation_detail(
+                                    format!(
+                                        "{}; verified Messaging context with MyPeerId `{}`",
+                                        operation_detail_from_value(&value),
+                                        verification.peer_id
+                                    ),
+                                    generated_identity,
                                 ),
                                 command: Some(spec.display),
                             });
@@ -976,7 +1073,10 @@ fn node_initialize(
                         mark_node_initialized(state, profile, kind, &spec.program)?;
                         Ok(OperationOutcome {
                             status: "initialized".to_owned(),
-                            detail: messaging_context_recovery_detail(&verification),
+                            detail: messaging_identity_operation_detail(
+                                messaging_context_recovery_detail(&verification),
+                                generated_identity,
+                            ),
                             command: Some(spec.display),
                         })
                     }
@@ -1116,6 +1216,14 @@ fn messaging_context_recovery_detail(verification: &MessagingContextVerification
             "createNode response was lost; verified Messaging context with MyPeerId `{}`",
             verification.peer_id
         )
+    }
+}
+
+fn messaging_identity_operation_detail(detail: String, generated_identity: bool) -> String {
+    if generated_identity {
+        format!("{detail}; created an owner-only persistent Messaging peer identity")
+    } else {
+        detail
     }
 }
 
@@ -1491,6 +1599,7 @@ fn node_stop(
             }
         }
         let record = active_topology_mut(state, profile)?;
+        let workspace = record.workspace.clone();
         let config = required_node_config(record, kind)?;
         if policy == NodeActionPolicy::ExecuteDetached {
             if config.lifecycle_state.is_pending() {
@@ -1538,6 +1647,19 @@ fn node_stop(
             ));
         }
         if kind == NodeKind::Messaging {
+            let config_path = Path::new(&config.config_path);
+            let identity_missing =
+                super::messaging_identity::identity_is_missing(Path::new(&workspace), config_path)?;
+            if identity_missing && !request.allow_identity_rotation {
+                return Ok(needs_configuration(
+                    "Messaging uses a legacy config without a persisted peer identity. Confirm Stop with one-time identity rotation acknowledged; the next Initialize will use a new Peer ID and later lifecycle cycles will preserve it",
+                ));
+            }
+            let generated_identity = super::messaging_identity::prepare_existing_config(
+                Path::new(&workspace),
+                config_path,
+            )?
+                == super::messaging_identity::IdentityPreparation::Generated;
             let cli = runtime.cli_runtime()?;
             return match unload_messaging_context(&cli, config.port, control) {
                 Ok(value) => {
@@ -1546,9 +1668,12 @@ fn node_stop(
                     write_devnet_manifest(record)?;
                     Ok(OperationOutcome {
                         status: "stopped".to_owned(),
-                        detail: format!(
-                            "{}; unloaded Delivery and cleared its Messaging context; initialize Messaging before starting it again",
-                            operation_detail_from_value(&value)
+                        detail: messaging_identity_operation_detail(
+                            format!(
+                                "{}; unloaded Delivery and cleared its Messaging context; initialize Messaging before starting it again",
+                                operation_detail_from_value(&value)
+                            ),
+                            generated_identity,
                         ),
                         command: Some("logoscore unload-module delivery_module --json".to_owned()),
                     })
@@ -2161,13 +2286,27 @@ fn generate_topology_files(record: &LocalDevnetRecord, overwrite: bool) -> Resul
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         if !overwrite && config_path.is_file() {
+            if node.kind == NodeKind::Messaging {
+                super::messaging_identity::harden_existing_config_if_keyed(
+                    Path::new(&record.workspace),
+                    &config_path,
+                )?;
+            }
             continue;
         }
         let value = generated_node_config(record, node);
-        let text = serde_json::to_string_pretty(&value)
-            .context("failed to serialize local node config")?;
-        fs::write(&config_path, text)
-            .with_context(|| format!("failed to write {}", config_path.display()))?;
+        if node.kind == NodeKind::Messaging {
+            super::messaging_identity::write_generated_config(
+                Path::new(&record.workspace),
+                &config_path,
+                value,
+            )?;
+        } else {
+            let text = serde_json::to_string_pretty(&value)
+                .context("failed to serialize local node config")?;
+            fs::write(&config_path, text)
+                .with_context(|| format!("failed to write {}", config_path.display()))?;
+        }
     }
     Ok(())
 }
@@ -2323,6 +2462,84 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn generated_messaging_config_persists_a_private_stable_identity() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let record = state.testnet.as_ref().context("missing Testnet topology")?;
+        let messaging = record
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("missing Messaging node")?;
+        let config_path = Path::new(&messaging.config_path);
+        let first: Value = serde_json::from_str(&fs::read_to_string(config_path)?)?;
+        let first_key = first
+            .get("nodekey")
+            .and_then(Value::as_str)
+            .context("generated Messaging config has no persisted nodekey")?;
+        let key_bytes = hex::decode(first_key).context("generated nodekey is not hex")?;
+        k256::SecretKey::from_slice(&key_bytes)
+            .context("generated nodekey is not a valid secp256k1 secret")?;
+        anyhow::ensure!(
+            fs::metadata(config_path)?.permissions().mode() & 0o777 == 0o600,
+            "Messaging config containing nodekey is not owner-only"
+        );
+
+        generate_topology_files(record, true)?;
+        let second: Value = serde_json::from_str(&fs::read_to_string(config_path)?)?;
+        anyhow::ensure!(
+            second.get("nodekey").and_then(Value::as_str) == Some(first_key),
+            "Messaging identity changed while regenerating topology files"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_context_reset_requires_acknowledgement_before_legacy_identity_rotation() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let messaging = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Messaging))
+            .context("missing Messaging node")?;
+        messaging.installed = true;
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        let config_path = PathBuf::from(&messaging.config_path);
+        let mut legacy: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        legacy
+            .as_object_mut()
+            .context("Messaging config is not an object")?
+            .remove("nodekey");
+        fs::write(&config_path, serde_json::to_vec_pretty(&legacy)?)?;
+        let original = fs::read(&config_path)?;
+
+        let blocked = prepare_runtime_context_reset_messaging_identities(&state, false)?;
+        anyhow::ensure!(
+            blocked == RuntimeContextResetIdentityPreparation::AcknowledgementRequired
+                && fs::read(&config_path)? == original,
+            "runtime stop identity guard did not block without mutation"
+        );
+
+        let prepared = prepare_runtime_context_reset_messaging_identities(&state, true)?;
+        let persisted: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        let key = persisted
+            .get("nodekey")
+            .and_then(Value::as_str)
+            .context("runtime stop acknowledgement did not persist nodekey")?;
+        anyhow::ensure!(
+            prepared == RuntimeContextResetIdentityPreparation::Ready { generated: true }
+                && k256::SecretKey::from_slice(&hex::decode(key)?).is_ok(),
+            "runtime stop acknowledgement did not prepare a valid identity"
+        );
+        Ok(())
+    }
+
     #[test]
     fn loading_legacy_manifest_cannot_restore_process_era_indexer() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -2358,6 +2575,7 @@ mod tests {
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
 
@@ -2419,6 +2637,7 @@ mod tests {
             package_root_hash: None,
             channel_id: Some(channel_a.clone()),
             bedrock_endpoint: Some("http://127.0.0.1:8080/".to_owned()),
+            allow_identity_rotation: false,
             label: None,
         };
 
@@ -2489,6 +2708,7 @@ mod tests {
             package_root_hash: None,
             channel_id: Some(channel),
             bedrock_endpoint: Some("http://127.0.0.1:18080".to_owned()),
+            allow_identity_rotation: false,
             label: None,
         };
 
@@ -2577,6 +2797,7 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         anyhow::ensure!(new_network(&mut state, None, &create).report.status == "created");
@@ -2605,6 +2826,7 @@ esac
             package_root_hash: None,
             channel_id: Some("01".repeat(32)),
             bedrock_endpoint: Some("http://127.0.0.1:8080".to_owned()),
+            allow_identity_rotation: false,
             label: None,
         };
 
@@ -2661,6 +2883,7 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         anyhow::ensure!(new_network(&mut state, None, &create).report.status == "created");
@@ -2851,8 +3074,20 @@ esac
         messaging.module_path = Some("delivery_module".to_owned());
         messaging.port = Some(port);
         messaging.lifecycle_state = NodeLifecycleState::Running;
+        let messaging_config_path = PathBuf::from(&messaging.config_path);
+        let mut legacy_config: Value =
+            serde_json::from_str(&fs::read_to_string(&messaging_config_path)?)?;
+        legacy_config
+            .as_object_mut()
+            .context("Messaging config is not an object")?
+            .remove("nodekey");
+        fs::write(
+            &messaging_config_path,
+            serde_json::to_vec_pretty(&legacy_config)?,
+        )?;
+        let legacy_bytes = fs::read(&messaging_config_path)?;
         state.set_module_context_topology_for_profile(NodeKind::Messaging, "default");
-        let request = LocalNodeActionRequest {
+        let mut request = LocalNodeActionRequest {
             action: NodeAction::Stop,
             node: Some(NodeKind::Messaging),
             network_id: None,
@@ -2863,11 +3098,40 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         let mut runtime = Some(profile);
 
+        let blocked = LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            directory.path(),
+            "default",
+            &request,
+            None,
+        );
+        anyhow::ensure!(
+            blocked.report.status == "needs_configuration"
+                && blocked.report.detail.contains("one-time identity rotation")
+                && fs::read(&messaging_config_path)? == legacy_bytes,
+            "keyless Messaging stop was not blocked without mutation: {}",
+            blocked.report.detail
+        );
+        let calls_path = Path::new(
+            &runtime
+                .as_ref()
+                .context("Messaging stop removed the managed runtime")?
+                .config_dir,
+        )
+        .join("calls");
+        anyhow::ensure!(
+            !calls_path.exists(),
+            "blocked Messaging stop called the LogosCore CLI"
+        );
+
         // Act
+        request.allow_identity_rotation = true;
         let result = LocalNodeActionWorkspace::system().apply(
             &mut state,
             &mut runtime,
@@ -2887,7 +3151,11 @@ esac
             result
                 .report
                 .detail
-                .contains("unloaded Delivery and cleared its Messaging context"),
+                .contains("unloaded Delivery and cleared its Messaging context")
+                && result
+                    .report
+                    .detail
+                    .contains("owner-only persistent Messaging peer identity"),
             "Messaging stop did not disclose context teardown: {}",
             result.report.detail
         );
@@ -2913,15 +3181,19 @@ esac
                 .is_none(),
             "Messaging stop retained its topology binding"
         );
-        let calls = fs::read_to_string(
-            Path::new(
-                &runtime
-                    .as_ref()
-                    .context("Messaging stop removed the managed runtime")?
-                    .config_dir,
-            )
-            .join("calls"),
-        )?;
+        let persisted: Value = serde_json::from_str(&fs::read_to_string(&messaging_config_path)?)?;
+        let nodekey = persisted
+            .get("nodekey")
+            .and_then(Value::as_str)
+            .context("acknowledged Messaging stop did not persist nodekey")?;
+        let nodekey_bytes = hex::decode(nodekey)?;
+        k256::SecretKey::from_slice(&nodekey_bytes)
+            .context("acknowledged Messaging stop persisted an invalid nodekey")?;
+        anyhow::ensure!(
+            fs::metadata(&messaging_config_path)?.permissions().mode() & 0o777 == 0o600,
+            "acknowledged Messaging stop did not protect its config"
+        );
+        let calls = fs::read_to_string(calls_path)?;
         anyhow::ensure!(
             calls.lines().eq(["unload-module", "list-modules"]),
             "Messaging stop used unexpected CLI calls: {calls:?}"
@@ -2944,6 +3216,7 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         let created = new_network(&mut state, None, &create);
@@ -2967,6 +3240,7 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         let stopped = node_stop(&mut state, None, "local", &stop, None);
@@ -2996,6 +3270,125 @@ esac
         };
         let repeated_start = node_start(&mut state, None, "local", &start, None);
         anyhow::ensure!(repeated_start.report.status == "needs_configuration");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_runtime_start_guards_legacy_messaging_identity_before_context_reset() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --config-dir|--persistence-path|--modules-dir)
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+case "$1" in
+    daemon)
+        trap 'exit 0' TERM INT
+        while :; do sleep 1; done
+        ;;
+    status)
+        printf '%s\n' '{"daemon":{"status":"running"}}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let messaging = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Messaging))
+            .context("missing Messaging node")?;
+        messaging.installed = true;
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        let config_path = PathBuf::from(&messaging.config_path);
+        let mut legacy: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        legacy
+            .as_object_mut()
+            .context("Messaging config is not an object")?
+            .remove("nodekey");
+        fs::write(&config_path, serde_json::to_vec_pretty(&legacy)?)?;
+        let original_config = fs::read(&config_path)?;
+        let mut runtime = None;
+        let mut request = LocalNodeActionRequest {
+            action: NodeAction::StartRuntime,
+            node: None,
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: Some(directory.path().display().to_string()),
+            runtime_binary_path: Some(cli.display().to_string()),
+            package_version: None,
+            package_root_hash: None,
+            channel_id: None,
+            bedrock_endpoint: None,
+            allow_identity_rotation: false,
+            label: None,
+        };
+
+        let blocked = runtime_start(&mut state, &mut runtime, directory.path(), &request, None);
+        let blocked_messaging = state
+            .testnet
+            .as_ref()
+            .and_then(|record| {
+                record
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("missing Messaging node after blocked runtime start")?;
+        anyhow::ensure!(
+            blocked.report.status == "needs_configuration"
+                && blocked.report.detail.contains("one-time identity rotation")
+                && runtime.is_none()
+                && blocked_messaging.lifecycle_state == NodeLifecycleState::Running
+                && fs::read(&config_path)? == original_config,
+            "first runtime start mutated legacy Messaging context before acknowledgement: {}",
+            blocked.report.detail
+        );
+
+        request.allow_identity_rotation = true;
+        let result = runtime_start(&mut state, &mut runtime, directory.path(), &request, None);
+        anyhow::ensure!(
+            result.report.status == "started",
+            "first runtime start did not complete after acknowledgement: {}",
+            result.report.detail
+        );
+        let process_id = runtime
+            .as_ref()
+            .and_then(|profile| profile.daemon_process_id)
+            .context("first runtime start did not record its daemon")?;
+        let _cleanup = ProcessGroupGuard { process_id };
+        let prepared: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        let prepared_messaging = state
+            .testnet
+            .as_ref()
+            .and_then(|record| {
+                record
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("missing Messaging node after runtime start")?;
+        anyhow::ensure!(
+            prepared.get("nodekey").and_then(Value::as_str).is_some()
+                && prepared_messaging.lifecycle_state == NodeLifecycleState::NotInitialized
+                && process_is_alive(process_id),
+            "first runtime start did not persist identity before resetting Messaging context"
+        );
         Ok(())
     }
 
@@ -3091,7 +3484,22 @@ esac
         profile.daemon_process_id = Some(daemon_process_id);
         let mut runtime = Some(profile);
         let mut state = LocalNodesState::default_for_config_dir(directory.path());
-        let request = LocalNodeActionRequest {
+        ensure_testnet_topology(&mut state)?;
+        let messaging = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Messaging))
+            .context("missing Messaging node")?;
+        messaging.installed = true;
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        let config_path = PathBuf::from(&messaging.config_path);
+        let mut legacy: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        legacy
+            .as_object_mut()
+            .context("Messaging config is not an object")?
+            .remove("nodekey");
+        fs::write(config_path, serde_json::to_vec_pretty(&legacy)?)?;
+        let mut request = LocalNodeActionRequest {
             action: NodeAction::StartRuntime,
             node: None,
             network_id: None,
@@ -3102,8 +3510,19 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
+
+        let blocked = runtime_start(&mut state, &mut runtime, directory.path(), &request, None);
+        anyhow::ensure!(
+            blocked.report.status == "needs_configuration"
+                && blocked.report.detail.contains("one-time identity rotation")
+                && process_is_alive(child_process_id),
+            "runtime start did not block legacy Messaging identity loss: {}",
+            blocked.report.detail
+        );
+        request.allow_identity_rotation = true;
 
         let result = runtime_start(&mut state, &mut runtime, directory.path(), &request, None);
 
@@ -3211,7 +3630,22 @@ fi
         profile.daemon_process_id = Some(daemon_process_id);
         let mut runtime = Some(profile);
         let mut state = LocalNodesState::default_for_config_dir(directory.path());
-        let request = LocalNodeActionRequest {
+        ensure_testnet_topology(&mut state)?;
+        let messaging = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Messaging))
+            .context("missing Messaging node")?;
+        messaging.installed = true;
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        let config_path = PathBuf::from(&messaging.config_path);
+        let mut legacy: Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+        legacy
+            .as_object_mut()
+            .context("Messaging config is not an object")?
+            .remove("nodekey");
+        fs::write(config_path, serde_json::to_vec_pretty(&legacy)?)?;
+        let mut request = LocalNodeActionRequest {
             action: NodeAction::StopRuntime,
             node: None,
             network_id: None,
@@ -3222,8 +3656,19 @@ fi
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
+
+        let blocked = runtime_stop(&mut state, &mut runtime, &request, None);
+        anyhow::ensure!(
+            blocked.report.status == "needs_configuration"
+                && blocked.report.detail.contains("one-time identity rotation")
+                && process_is_alive(child_process_id),
+            "runtime stop did not block legacy Messaging identity loss: {}",
+            blocked.report.detail
+        );
+        request.allow_identity_rotation = true;
 
         // Act
         let result = runtime_stop(&mut state, &mut runtime, &request, None);
@@ -3573,6 +4018,7 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
         let control = CommandControl::new(
@@ -3735,6 +4181,7 @@ esac
             package_root_hash: None,
             channel_id: None,
             bedrock_endpoint: None,
+            allow_identity_rotation: false,
             label: None,
         };
 

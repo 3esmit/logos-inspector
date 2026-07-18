@@ -123,6 +123,8 @@ pub struct LocalNodeActionRequest {
     #[serde(default)]
     pub bedrock_endpoint: Option<String>,
     #[serde(default)]
+    pub allow_identity_rotation: bool,
+    #[serde(default)]
     pub label: Option<String>,
 }
 

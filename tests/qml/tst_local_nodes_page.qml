@@ -145,6 +145,28 @@ Item {
             verify(!installButton.enabled)
         }
 
+        function test_canceling_messaging_stop_clears_identity_acknowledgement() {
+            const page = createPage(sampleReport("running"), samplePackageCatalog(null))
+            const popup = findChild(page, "localNodesConfirmPopup")
+            verify(!!popup, "Object exists")
+
+            page.openNodeConfirm("stop", "messaging")
+            tryCompare(popup, "opened", true)
+            compare(state.pendingAction, "stop")
+            compare(state.pendingNode, "messaging")
+            verify(state.pendingAllowIdentityRotation)
+            verify(popup.message.indexOf("one-time rotation is unavoidable") >= 0)
+
+            popup.close()
+            tryCompare(popup, "opened", false)
+            tryCompare(state, "pendingAction", "")
+            compare(state.pendingNode, "")
+            verify(!state.pendingAllowIdentityRotation)
+            compare(gateway.calls.filter(function (call) {
+                return call.method === "localNodesAction"
+            }).length, 0)
+        }
+
         function createPage(report, catalog) {
             gateway.responses = ({
                 localNodesStatus: {
