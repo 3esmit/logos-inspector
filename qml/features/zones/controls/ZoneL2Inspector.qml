@@ -15,6 +15,7 @@ ColumnLayout {
     property string exactSourceId: ""
 
     signal configureSourcesRequested()
+    signal viewRequested(string view)
 
     objectName: "zoneL2Inspector"
     spacing: root.theme.gapLarge
@@ -60,11 +61,11 @@ ColumnLayout {
         exactSourceId: root.exactSourceId
         Layout.fillWidth: true
         onBlockRequested: function (summary, exactSourceId) {
-            root.currentView = "block"
+            root.requestView("block")
             root.zoneState.openL2Block(summary, exactSourceId)
         }
         onTransactionRequested: function (transactionId, exactSourceId) {
-            root.currentView = "transaction"
+            root.requestView("transaction")
             root.zoneState.openL2Transaction(transactionId, exactSourceId)
         }
         onConfigureSourcesRequested: root.configureSourcesRequested()
@@ -77,10 +78,10 @@ ColumnLayout {
         Layout.fillWidth: true
         onBackRequested: {
             root.zoneState.closeL2BlockDetail()
-            root.currentView = "blocks"
+            root.requestView("blocks")
         }
         onTransactionRequested: function (transactionId, exactSourceId) {
-            root.currentView = "transaction"
+            root.requestView("transaction")
             root.zoneState.openL2Transaction(transactionId, exactSourceId)
         }
         onConfigureSourcesRequested: root.configureSourcesRequested()
@@ -93,7 +94,7 @@ ColumnLayout {
         Layout.fillWidth: true
         onBackRequested: {
             root.zoneState.closeL2Transaction()
-            root.currentView = root.zoneState.l2BlockDetail !== null ? "block" : "blocks"
+            root.requestView(root.hasRetainedBlockView() ? "block" : "blocks")
         }
         onConfigureSourcesRequested: root.configureSourcesRequested()
     }
@@ -113,5 +114,18 @@ ColumnLayout {
                 || String(root.zoneState.l2BlocksExactSourceId || "").length > 0) {
             root.zoneState.refreshL2Blocks()
         }
+    }
+
+    function requestView(view) {
+        const next = String(view || "blocks")
+        root.currentView = next
+        root.viewRequested(next)
+    }
+
+    function hasRetainedBlockView() {
+        return root.zoneState.l2BlockTarget !== null
+            || root.zoneState.l2BlockDetail !== null
+            || root.zoneState.l2BlockDetailInFlight
+            || String(root.zoneState.l2BlockDetailError || "").length > 0
     }
 }
