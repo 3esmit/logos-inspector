@@ -890,6 +890,14 @@ QtObject {
         }
     }
 
+    property Connections programExecutionConnections: Connections {
+        target: programExecutionState
+
+        function onIdlInstructionSubmitted(response, backendTarget) {
+            root.openSubmittedIdlInstruction(response, backendTarget)
+        }
+    }
+
     property Connections zoneInspectionConnections: Connections {
         target: zoneInspectionState
 
@@ -1328,6 +1336,30 @@ QtObject {
     function sendIdlInstruction(request) { return programExecution.sendIdlInstruction(request) }
 
     function idlInstructionOperationDetail(value) { return programExecution.idlInstructionOperationDetail(value) }
+
+    function openSubmittedIdlInstruction(response, backendTarget) {
+        const transactionId = String(response && response.ok === true
+            && response.value && response.value.tx_hash || "").trim()
+        const target = backendTarget || ({})
+        const context = root.zoneInspection.activeZoneContext
+        const sourceId = String(target.source_id || "").trim()
+        if (!transactionId.length || !sourceId.length || !context
+                || root.zoneInspection.l2.scopeKey(target.network_scope)
+                    !== root.zoneInspection.l2.scopeKey(context.network_scope)
+                || String(target.channel_id || "") !== String(context.channel_id || "")
+                || sourceId !== String(context.selected_sequencer_source_id || "")
+                || Number(target.source_config_revision || 0)
+                    !== Number(context.source_config_revision || 0)
+                || Number(target.context_revision || 0)
+                    !== Number(context.context_revision || 0)) {
+            return false
+        }
+        root.zoneInspection.requestedDetailTab = "l2"
+        root.zoneInspection.requestedL2View = "transaction"
+        root.zoneInspection.l2.blocks.openSubmittedL2Transaction(transactionId, sourceId)
+        root.selectView("sequencerDashboard")
+        return true
+    }
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 

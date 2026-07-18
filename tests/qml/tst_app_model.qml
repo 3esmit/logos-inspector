@@ -134,6 +134,7 @@ TestCase {
         model.zoneInspection.networkScope = null
         model.zoneInspection.zoneSummaries = []
         model.zoneInspection.zoneDetail = null
+        model.programExecution.dismissIdlInstructionReceipt()
         model.dashboardNode = null
         model.dashboardProvisionalBlocks = []
         model.metrics.blockchainSourceReport = null
@@ -4419,6 +4420,90 @@ TestCase {
         }).length, 0)
         compare(model.shell.resultIsError, true)
         verify(model.shell.resultText.indexOf("Select a verified Zone") >= 0)
+    }
+
+    function test_confirmed_idl_submission_routes_persistently_to_exact_transaction() {
+        configureReadyWallet()
+        const channelId = setActiveZone("")
+        const context = model.zoneInspection.activeZoneContext
+        const request = {
+            idlJson: JSON.stringify({
+                name: "token",
+                instructions: [{ name: "transfer", accounts: [], args: [] }]
+            }),
+            programIdHex: "33".repeat(32),
+            programBinary: "",
+            dependencyBinaries: [],
+            instruction: "transfer",
+            accounts: {},
+            args: {}
+        }
+        const target = {
+            network_scope: context.network_scope,
+            channel_id: channelId,
+            source_id: "seq-a",
+            source_config_revision: 7,
+            context_revision: 1,
+            request_revision: 41,
+            endpoint: "https://verified.example.test"
+        }
+        fakeHost.responses = {
+            localWalletInstructionPreview: {
+                ok: true,
+                value: { mode: "public", instruction: "transfer" },
+                text: "OK",
+                error: ""
+            },
+            localWalletInstructionSubmit: {
+                ok: true,
+                value: {
+                    mode: "public",
+                    instruction: "transfer",
+                    tx_hash: "ab".repeat(32),
+                    target: target
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.programExecution.reviseIdlInstructionDraft({
+            key: "token-idl",
+            name: "Token",
+            programIdHex: "33".repeat(32)
+        }, request, {
+            channelId: channelId,
+            sourceId: "seq-a",
+            endpoint: "https://verified.example.test",
+            sourceConfigRevision: 7,
+            contextRevision: 1,
+            ready: true
+        })
+        model.programExecution.previewIdlInstructionDraft()
+        tryVerify(function () {
+            return model.programExecution.idlInstructionPreviewCurrent()
+        })
+        verify(model.programExecution.beginIdlInstructionConfirmation())
+        model.selectView("programs")
+        model.programExecution.confirmIdlInstruction()
+
+        tryCompare(model.shell, "currentView", "sequencerDashboard")
+        compare(model.zoneInspection.requestedDetailTab, "l2")
+        compare(model.zoneInspection.requestedL2View, "transaction")
+        compare(model.zoneInspection.l2.blocks.l2TransactionId, "ab".repeat(32))
+        compare(model.zoneInspection.l2.blocks.l2TransactionRequestedSourceId, "seq-a")
+        compare(model.programExecution.idlInstructionReceiptTarget.source_id, "seq-a")
+
+        const wrongScopeTarget = Object.assign({}, target, {
+            network_scope: { kind: "genesis_id", genesis_id: "44".repeat(32) }
+        })
+        model.selectView("programs")
+        verify(!model.openSubmittedIdlInstruction({
+            ok: true,
+            value: { tx_hash: "cd".repeat(32) }
+        }, wrongScopeTarget))
+        compare(model.shell.currentView, "programs")
+        compare(model.zoneInspection.l2.blocks.l2TransactionId, "ab".repeat(32))
     }
 
     function test_create_wallet_account_uses_confirmation_and_logs_operation() {

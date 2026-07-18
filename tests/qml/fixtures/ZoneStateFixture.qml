@@ -4,6 +4,7 @@ import "ZoneFixtureData.js" as FixtureData
 QtObject {
     id: root
 
+    property var appModel: null
     readonly property var l2: root
     readonly property var blocks: root
     readonly property var accounts: root
@@ -256,6 +257,7 @@ QtObject {
     property var lastMutationRequest: null
     property string mutationFailure: ""
     property int retryCount: 0
+    property bool clearTransactionOnBlockRefresh: false
 
     onActiveZoneIdChanged: {
         activeZoneContext = FixtureData.activeZoneContext(activeZoneId)
@@ -374,6 +376,9 @@ QtObject {
     }
 
     function refreshL2BlocksForSource(exactSourceId) {
+        if (clearTransactionOnBlockRefresh) {
+            closeL2Transaction()
+        }
         l2BlocksExactSourceId = String(exactSourceId || "")
         l2RefreshCount += 1
         const rows = FixtureData.l2BlockRows()

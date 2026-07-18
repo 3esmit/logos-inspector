@@ -24,11 +24,74 @@ TestCase {
         id: zoneState
     }
 
+    ListModel {
+        id: registeredIdlRegistry
+    }
+
+    QtObject {
+        id: programExecutionMock
+
+        property var idlInstructionPlanValue: null
+        property string idlInstructionPlanError: ""
+        property bool idlInstructionPlanPending: false
+        property var idlInstructionPreviewValue: null
+        property string idlInstructionError: ""
+        property bool idlInstructionPreviewPending: false
+        property bool idlInstructionSubmitPending: false
+        property var idlInstructionConfirmation: null
+        property var idlInstructionReceipt: null
+        property var idlInstructionReceiptTarget: null
+        property var idlInstructionFrozenArtifact: null
+
+        function reviseIdlInstructionDraft(entry, request, targetDisplay) {
+            return true
+        }
+
+        function planIdlInstruction() {
+            return null
+        }
+
+        function previewIdlInstructionDraft() {
+            return null
+        }
+
+        function idlInstructionPreviewCurrent() {
+            return false
+        }
+
+        function beginIdlInstructionConfirmation() {
+            return false
+        }
+
+        function cancelIdlInstructionConfirmation() {
+            idlInstructionConfirmation = null
+        }
+
+        function confirmIdlInstruction(callback) {
+            return null
+        }
+
+        function syncIdlInstructionContext(targetDisplay) {
+            return false
+        }
+    }
+
     QtObject {
         id: appModel
 
         property var zoneInspection: zoneState
         property string selectedView: ""
+        property string programTab: ""
+        property alias registeredIdls: registeredIdlRegistry
+        property var programExecution: programExecutionMock
+
+        function idlEntryAt(index) {
+            return null
+        }
+
+        function idlEntryForKey(key) {
+            return null
+        }
 
         function selectView(view) {
             selectedView = String(view || "")
@@ -102,7 +165,12 @@ TestCase {
         zoneState.managedIndexerStatusStale = false
         zoneState.managedIndexerError = ""
         zoneState.managedIndexerResult = ""
+        zoneState.closeL2Transaction()
+        zoneState.l2TransactionRequestedSourceId = ""
+        zoneState.appModel = appModel
+        registeredIdlRegistry.clear()
         appModel.selectedView = ""
+        appModel.programTab = ""
         page.filter = "all"
         page.query = ""
         const detail = findChild(page, "zoneDetail")
@@ -661,6 +729,58 @@ TestCase {
         verify(findChild(programs, "zoneL2AccountNoncesTable") !== null)
     }
 
+    function test_l2_program_interact_empty_registry_opens_idl_registry() {
+        const surface = openZoneProgramTools()
+        surface.programs.currentTool = "interact"
+        tryVerify(function () {
+            const interaction = findChild(surface.programs,
+                "zoneL2ProgramInteraction")
+            const button = findChild(surface.programs,
+                "zoneProgramOpenIdlsButton")
+            return interaction !== null && button !== null && button.visible
+        })
+
+        const openButton = findChild(surface.programs,
+            "zoneProgramOpenIdlsButton")
+        openButton.clicked()
+
+        compare(appModel.programTab, "idls")
+        compare(appModel.selectedView, "programs")
+    }
+
+    function test_l2_program_transaction_rejects_wrong_source() {
+        const surface = openZoneProgramTools()
+        const transactionId = FixtureData.identity("e")
+        const selectedSource = zoneState.l2SequencerSourceId()
+
+        surface.programs.transactionRequested(transactionId,
+            selectedSource + "-wrong")
+
+        compare(surface.detail.currentTab, "programs")
+        compare(zoneState.l2TransactionId, "")
+        compare(zoneState.l2TransactionRequestedSourceId, "")
+    }
+
+    function test_l2_program_transaction_opens_exact_selected_source() {
+        const surface = openZoneProgramTools()
+        const transactionId = FixtureData.identity("e")
+        const selectedSource = zoneState.l2SequencerSourceId()
+
+        surface.programs.transactionRequested(transactionId, selectedSource)
+
+        tryCompare(surface.detail, "currentTab", "l2")
+        compare(zoneState.l2TransactionId, transactionId)
+        compare(zoneState.l2TransactionRequestedSourceId, selectedSource)
+        tryVerify(function () {
+            const inspector = findChild(surface.detail, "zoneL2Inspector")
+            return inspector !== null && inspector.currentView === "transaction"
+        })
+        compare(zoneState.l2TransactionDetail.source.source_id,
+            selectedSource)
+        compare(zoneState.l2TransactionTrace.source.source_id,
+            selectedSource)
+    }
+
     function test_l2_transfers_show_page_local_window_and_both_evidence_kinds() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("transfers"))
@@ -699,6 +819,19 @@ TestCase {
         verify(hasVisibleText(inspector, "L2 not applicable"))
         verify(hasVisibleText(inspector, "L2 reads do not apply to this Channel type."))
         compare(zoneState.l2RefreshCount, 0)
+    }
+
+    function openZoneProgramTools() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("programs"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Programs") !== null
+        })
+        return {
+            detail: detail,
+            programs: findChild(detail, "zoneL2Programs")
+        }
     }
 
     function countNamed(item, objectName) {

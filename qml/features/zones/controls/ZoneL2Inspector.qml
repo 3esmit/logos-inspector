@@ -21,6 +21,7 @@ ColumnLayout {
     Layout.fillWidth: true
 
     onInitialViewChanged: root.currentView = root.initialView
+    onCurrentViewChanged: root.ensureLoaded()
     onExactSourceIdChanged: Qt.callLater(root.ensureLoaded)
 
     Component.onCompleted: root.ensureLoaded()
@@ -98,7 +99,8 @@ ColumnLayout {
     }
 
     function ensureLoaded() {
-        if (!root.zoneState.l2ReadEnabled || root.zoneState.l2BlocksInFlight) {
+        if (root.currentView !== "blocks" || !root.zoneState.l2ReadEnabled
+                || root.zoneState.l2BlocksInFlight) {
             return
         }
         if (root.exactSourceId.length > 0) {

@@ -1685,6 +1685,132 @@ TestCase {
         compare(l2BlockState.l2BlockDetail.transactions.length, 1)
     }
 
+    function test_l2_transaction_not_found_is_terminal_for_ordinary_search() {
+        loadConfiguredL2Zone()
+        l2BlockState.l2SubmittedTransactionReadbackIntervalMs = 1
+        l2BlockState.l2SubmittedTransactionReadbackMaxAttempts = 3
+        const transaction = l2Transaction("7".repeat(64))
+
+        verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        const request = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(request, ok(l2Report(request, "lez.transaction", {
+            outcome: "not_found"
+        })))
+
+        compare(l2BlockState.l2TransactionDetailError,
+            "L2 transaction was not found in the Active Zone.")
+        verify(!l2BlockState.l2TransactionDetailInFlight)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackActive)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackPending)
+        compare(gateway.requestCount("zoneL2Transaction"), 1)
+        wait(10)
+        compare(gateway.requestCount("zoneL2Transaction"), 1)
+    }
+
+    function test_submitted_l2_transaction_retries_exact_source_until_found() {
+        loadConfiguredL2Zone()
+        l2BlockState.l2SubmittedTransactionReadbackIntervalMs = 1
+        l2BlockState.l2SubmittedTransactionReadbackMaxAttempts = 3
+        const transaction = l2Transaction("8".repeat(64))
+
+        compare(l2BlockState.openSubmittedL2Transaction(transaction.hash, ""), null)
+        compare(l2BlockState.openSubmittedL2Transaction(transaction.hash, "idx-a"), null)
+        compare(gateway.requestCount("zoneL2Transaction"), 0)
+        verify(l2BlockState.openSubmittedL2Transaction(
+            transaction.hash, "seq-a") !== null)
+        const firstRequest = gateway.lastRequest("zoneL2Transaction")
+        compare(firstRequest.args[0].query.exact_source_id, "seq-a")
+        compare(l2BlockState.l2SubmittedTransactionReadbackAttempt, 1)
+
+        gateway.respond(firstRequest, ok(l2Report(firstRequest, "lez.transaction", {
+            outcome: "not_found"
+        })))
+        compare(l2BlockState.l2TransactionDetailError, "")
+        verify(l2BlockState.l2TransactionDetailInFlight)
+        verify(l2BlockState.l2SubmittedTransactionReadbackActive)
+        verify(l2BlockState.l2SubmittedTransactionReadbackPending)
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2Transaction") === 2
+        })
+
+        const secondRequest = gateway.lastRequest("zoneL2Transaction")
+        compare(secondRequest.args[0].query.transaction_id, transaction.hash)
+        compare(secondRequest.args[0].query.exact_source_id, "seq-a")
+        compare(secondRequest.args[0].request_revision,
+            firstRequest.args[0].request_revision)
+        compare(l2BlockState.l2SubmittedTransactionReadbackAttempt, 2)
+        gateway.respond(secondRequest, ok(l2Report(secondRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [{ title: "Message", rows: [] }],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+
+        compare(l2BlockState.l2TransactionDetail.transaction.hash, transaction.hash)
+        verify(!l2BlockState.l2TransactionDetailInFlight)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackActive)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackPending)
+        compare(gateway.requestCount("zoneL2TransactionTrace"), 1)
+    }
+
+    function test_submitted_l2_transaction_not_found_stops_at_retry_cap() {
+        loadConfiguredL2Zone()
+        l2BlockState.l2SubmittedTransactionReadbackIntervalMs = 1
+        l2BlockState.l2SubmittedTransactionReadbackMaxAttempts = 2
+        const transaction = l2Transaction("6".repeat(64))
+
+        verify(l2BlockState.openSubmittedL2Transaction(
+            transaction.hash, "seq-a") !== null)
+        const firstRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(firstRequest, ok(l2Report(firstRequest, "lez.transaction", {
+            outcome: "not_found"
+        })))
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2Transaction") === 2
+        })
+        const secondRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(secondRequest, ok(l2Report(secondRequest, "lez.transaction", {
+            outcome: "not_found"
+        })))
+
+        compare(l2BlockState.l2SubmittedTransactionReadbackAttempt, 2)
+        compare(l2BlockState.l2TransactionDetailError,
+            "L2 transaction was not found in the Active Zone.")
+        verify(!l2BlockState.l2TransactionDetailInFlight)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackActive)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackPending)
+        wait(10)
+        compare(gateway.requestCount("zoneL2Transaction"), 2)
+    }
+
+    function test_submitted_l2_transaction_retry_stops_when_zone_context_changes() {
+        loadConfiguredL2Zone()
+        l2BlockState.l2SubmittedTransactionReadbackIntervalMs = 1
+        const transaction = l2Transaction("5".repeat(64))
+
+        verify(l2BlockState.openSubmittedL2Transaction(
+            transaction.hash, "seq-a") !== null)
+        const request = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(request, ok(l2Report(request, "lez.transaction", {
+            outcome: "not_found"
+        })))
+        verify(l2BlockState.l2SubmittedTransactionReadbackPending)
+
+        verify(zoneState.clearActiveZone())
+        verify(!l2BlockState.l2SubmittedTransactionReadbackActive)
+        verify(!l2BlockState.l2SubmittedTransactionReadbackPending)
+        compare(l2BlockState.l2TransactionId, "")
+        wait(10)
+        compare(gateway.requestCount("zoneL2Transaction"), 1)
+    }
+
     function test_l2_transaction_detail_auto_traces_same_source_and_fences_trace_race() {
         zoneState.appModel = decodeAppModel
         decodeAppModel.transactionIdlEntries = [{

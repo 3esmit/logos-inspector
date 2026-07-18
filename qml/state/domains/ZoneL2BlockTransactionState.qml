@@ -65,10 +65,24 @@ QtObject {
     property bool l2BlockDetailInFlight: false
     property bool l2TransactionDetailInFlight: false
     property bool l2TransactionTraceInFlight: false
+    property bool l2SubmittedTransactionReadbackActive: false
+    property bool l2SubmittedTransactionReadbackPending: false
+    property int l2SubmittedTransactionReadbackAttempt: 0
+    // Testnet currently produces roughly one block per minute.  Cover three
+    // inclusion windows without making ordinary transaction searches poll.
+    property int l2SubmittedTransactionReadbackMaxAttempts: 37
+    property int l2SubmittedTransactionReadbackIntervalMs: 5000
+    property var l2SubmittedTransactionReadbackContext: null
     property int l2BlocksRequestRevision: 0
     property int l2BlockDetailRequestRevision: 0
     property int l2TransactionDetailRequestRevision: 0
     property int l2TransactionTraceRequestRevision: 0
+
+    property Timer l2SubmittedTransactionReadbackTimer: Timer {
+        interval: Math.max(1, root.l2SubmittedTransactionReadbackIntervalMs)
+        repeat: false
+        onTriggered: root.retrySubmittedL2TransactionReadback()
+    }
 
     onRegisteredIdlCountChanged: {
         l2TransactionIdlRegistryRevision += 1
@@ -108,6 +122,7 @@ QtObject {
     }
 
     function resetL2TransactionInspectionState() {
+        resetSubmittedL2TransactionReadback()
         l2TransactionDetailRequestRevision += 1
         l2TransactionDetailInFlight = false
         l2TransactionId = ""
@@ -118,6 +133,21 @@ QtObject {
         l2TransactionDetailError = ""
         l2TransactionDetailErrorDetails = null
         resetL2TransactionTraceState()
+    }
+
+    function resetSubmittedL2TransactionReadback() {
+        l2SubmittedTransactionReadbackTimer.stop()
+        l2SubmittedTransactionReadbackActive = false
+        l2SubmittedTransactionReadbackPending = false
+        l2SubmittedTransactionReadbackAttempt = 0
+        l2SubmittedTransactionReadbackContext = null
+    }
+
+    function finishSubmittedL2TransactionReadback() {
+        l2SubmittedTransactionReadbackTimer.stop()
+        l2SubmittedTransactionReadbackActive = false
+        l2SubmittedTransactionReadbackPending = false
+        l2SubmittedTransactionReadbackContext = null
     }
 
     function resetL2TransactionTraceState() {
@@ -368,6 +398,19 @@ QtObject {
     }
 
     function openL2Transaction(transactionId, exactSourceId) {
+        return startL2TransactionReadback(transactionId, exactSourceId, false)
+    }
+
+    function openSubmittedL2Transaction(transactionId, exactSourceId) {
+        const sourceId = String(exactSourceId || "").trim()
+        if (!l2Context.l2SequencerReadEnabled || sourceId.length === 0
+                || sourceId !== l2Context.l2SequencerSourceId()) {
+            return null
+        }
+        return startL2TransactionReadback(transactionId, sourceId, true)
+    }
+
+    function startL2TransactionReadback(transactionId, exactSourceId, submitted) {
         const normalizedId = String(transactionId || "").trim()
         if (!l2Context.l2ReadEnabled || normalizedId.length === 0) {
             return null
@@ -379,7 +422,20 @@ QtObject {
         const requestContext = l2Context.l2RequestContext()
         const sourceId = String(exactSourceId || "")
         l2TransactionRequestedSourceId = sourceId
+        l2SubmittedTransactionReadbackActive = submitted === true
+        l2SubmittedTransactionReadbackContext = submitted === true
+            ? requestContext : null
+        return requestL2TransactionDetail(normalizedId, sourceId,
+            requestRevision, requestContext)
+    }
+
+    function requestL2TransactionDetail(normalizedId, sourceId,
+            requestRevision, requestContext) {
         l2TransactionDetailInFlight = true
+        l2SubmittedTransactionReadbackPending = false
+        if (l2SubmittedTransactionReadbackActive) {
+            l2SubmittedTransactionReadbackAttempt += 1
+        }
         return l2Context.dispatch("zoneL2Transaction", {
             context: requestContext,
             request_revision: requestRevision,
@@ -401,6 +457,7 @@ QtObject {
                     l2TransactionDetailErrorDetails = response && response.error_details
                         ? response.error_details : null
                 }
+                finishSubmittedL2TransactionReadback()
                 return
             }
             l2TransactionDetailReport = response.value
@@ -410,9 +467,11 @@ QtObject {
                 if (sourceId.length > 0 && String(outcome.value.source
                         && outcome.value.source.source_id || "") !== sourceId) {
                     l2TransactionDetailError = qsTr("L2 transaction returned different source provenance.")
+                    finishSubmittedL2TransactionReadback()
                     return
                 }
                 l2TransactionDetail = outcome.value
+                finishSubmittedL2TransactionReadback()
                 const source = outcome.value.source || ({})
                 const returnedSourceId = String(source.source_id || sourceId)
                 requestL2TransactionTrace(normalizedId, returnedSourceId)
@@ -420,14 +479,52 @@ QtObject {
             }
             if (kind === "ambiguous") {
                 l2TransactionCandidates = Array.isArray(outcome.candidates) ? outcome.candidates : []
+                finishSubmittedL2TransactionReadback()
                 return
             }
             if (kind === "not_found") {
+                if (scheduleSubmittedL2TransactionReadbackRetry()) {
+                    return
+                }
                 l2TransactionDetailError = qsTr("L2 transaction was not found in the Active Zone.")
+                finishSubmittedL2TransactionReadback()
                 return
             }
             l2TransactionDetailError = qsTr("L2 transaction returned an invalid outcome.")
+            finishSubmittedL2TransactionReadback()
         })
+    }
+
+    function scheduleSubmittedL2TransactionReadbackRetry() {
+        const maxAttempts = Math.max(1,
+            Math.floor(Number(l2SubmittedTransactionReadbackMaxAttempts || 1)))
+        if (!l2SubmittedTransactionReadbackActive
+                || l2TransactionRequestedSourceId.length === 0
+                || l2TransactionRequestedSourceId !== l2Context.l2SequencerSourceId()
+                || l2SubmittedTransactionReadbackAttempt >= maxAttempts
+                || !l2Context.l2RequestContextIsCurrent(
+                    l2SubmittedTransactionReadbackContext)) {
+            return false
+        }
+        l2SubmittedTransactionReadbackPending = true
+        l2TransactionDetailInFlight = true
+        l2SubmittedTransactionReadbackTimer.restart()
+        return true
+    }
+
+    function retrySubmittedL2TransactionReadback() {
+        if (!l2SubmittedTransactionReadbackActive
+                || !l2SubmittedTransactionReadbackPending
+                || !l2Context.l2ReadEnabled
+                || !l2Context.l2RequestContextIsCurrent(
+                    l2SubmittedTransactionReadbackContext)) {
+            l2TransactionDetailInFlight = false
+            finishSubmittedL2TransactionReadback()
+            return null
+        }
+        return requestL2TransactionDetail(l2TransactionId,
+            l2TransactionRequestedSourceId, l2TransactionDetailRequestRevision,
+            l2SubmittedTransactionReadbackContext)
     }
 
     function resolveL2TransactionCandidate(candidate) {
