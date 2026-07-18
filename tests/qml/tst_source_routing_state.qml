@@ -59,6 +59,17 @@ TestCase {
         compare(state.normalizedMessagingNetworkPreset(" custom.network "), "custom.network")
     }
 
+    function test_storage_network_preset_normalization_is_owned_by_source_routing() {
+        compare(state.normalizedStorageNetworkPreset(""), "logos.test")
+        compare(state.normalizedStorageNetworkPreset(" testnet "), "logos.test")
+        compare(state.normalizedStorageNetworkPreset(" custom.network "), "custom.network")
+
+        state.storageNetworkPreset = ""
+        compare(state.storageSourceView().networkPreset, "logos.test")
+        state.storageNetworkPreset = "custom.network"
+        compare(state.storageSourceView().networkPreset, "custom.network")
+    }
+
     function test_connector_config_is_storage_source_of_truth() {
         state.connectorConfig = ({
             scopes: {

@@ -66,7 +66,7 @@ function storageSourceView(root) {
         restEndpoint: root.configuredStorageRestUrl(),
         metricsEndpoint: root.configuredStorageMetricsUrl(),
         moduleName: root.storageModule,
-        networkPreset: root.storageNetworkPreset,
+        networkPreset: root.normalizedStorageNetworkPreset(root.storageNetworkPreset),
         mutatingDiagnosticsEnabled: true,
         reportArgs: function (includeCidProbe) {
             return SourcePolicyProjection.storageSourceReportArgs(
