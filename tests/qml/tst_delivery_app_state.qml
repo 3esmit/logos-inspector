@@ -263,6 +263,33 @@ TestCase {
         compare(gateway.lastArgs[0].args[0], "hash-1")
     }
 
+    function test_watcher_module_event_renders_structured_detail() {
+        const effect = state.applyModuleEvent("moduleReady", [{
+            simulated: true,
+            source: "poll",
+            status: "loaded",
+            timestamp: 1784363339000
+        }], false)
+
+        verify(effect.changed)
+        const row = state.moduleEventRows()[0]
+        compare(row.label, "moduleReady")
+        compare(row.status, "ok")
+        compare(row.detail, "poll / loaded")
+        verify(row.detail.indexOf("[object Object]") < 0)
+
+        state.applyModuleEvent("moduleUnavailable", [{
+            source: { internal: "hidden" },
+            status: "unavailable\n" + "x".repeat(220),
+            message: ["hidden"]
+        }], false)
+        const boundedRow = state.moduleEventRows()[0]
+        verify(boundedRow.detail.length <= 180)
+        verify(boundedRow.detail.indexOf("\n") < 0)
+        verify(boundedRow.detail.indexOf("[object Object]") < 0)
+        verify(boundedRow.detail.indexOf("hidden") < 0)
+    }
+
     function test_connection_event_returns_refresh_effect() {
         const effect = state.applyModuleEvent("connectionStateChanged", [
             JSON.stringify({
