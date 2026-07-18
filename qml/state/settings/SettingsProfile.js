@@ -89,7 +89,7 @@ function settingsStatePayload(root) {
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
             storage_rest_url: String(storageRestUrl || ""),
-            storage_metrics_url: String(storageMetricsUrl || ""),
+            storage_metrics_url: root.sourceRouting.configuredStorageMetricsUrl(),
             storage_network_preset: String(storageNetworkPreset || ""),
             storage_cid_probe: String(storageCidProbe || ""),
             storage_rolling_window: Number(storageRollingWindow || 0),

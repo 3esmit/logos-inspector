@@ -173,7 +173,7 @@ QtObject {
             connectorSourceMode("storage", storageSourceMode),
             {
                 rest_endpoint: configuredStorageRestUrl(),
-                metrics_endpoint: storageMetricsUrl
+                metrics_endpoint: configuredStorageMetricsUrl()
             }
         )
     }
@@ -196,8 +196,20 @@ QtObject {
     }
 
     function configuredStorageRestUrl(value) {
-        const endpoint = String(value === undefined ? connectorEndpoint("storage", storageRestUrl) : (value || "")).trim()
+        const fallback = String(value === undefined ? storageRestUrl : (value || "")).trim()
+        const endpoint = connectorSourceMode("storage", storageSourceMode) === "rest"
+            ? String(connectorEndpoint("storage", fallback)).trim()
+            : fallback
         return endpoint.length ? endpoint : sourcePolicyDefault("storage_rest_endpoint", "http://127.0.0.1:8080/api/storage/v1")
+    }
+
+    function configuredStorageMetricsUrl(value) {
+        const fallback = String(value === undefined ? storageMetricsUrl : (value || "")).trim()
+        const endpoint = connectorSourceMode("storage", storageSourceMode) === "metrics"
+            ? String(connectorEndpoint("storage", fallback)).trim()
+            : fallback
+        return endpoint.length ? endpoint : sourcePolicyDefault(
+            "storage_metrics_endpoint", "http://127.0.0.1:8008/metrics")
     }
 
     function normalizedCoreSourceMode(value) {
@@ -272,7 +284,7 @@ QtObject {
         return sourceTarget("storage", connectorSourceMode("storage", storageSourceMode), {
             module: storageModule,
             rest: configuredStorageRestUrl(),
-            metrics: storageMetricsUrl
+            metrics: configuredStorageMetricsUrl()
         })
     }
 

@@ -195,6 +195,88 @@ TestCase {
                 editedEndpoint)
     }
 
+    function test_metrics_field_edits_canonical_connector_endpoint() {
+        const restEndpoint = "http://configured-storage.example/api/storage/v1"
+        const configuredEndpoint = "http://configured-storage.example/metrics"
+        const fallbackEndpoint = "http://fallback-storage.example/metrics"
+        const editedEndpoint = "http://edited-storage.example/metrics"
+        model.loadNetworkConnectorConfig({
+            network_connector_config: {
+                scopes: {
+                    l1: {
+                        connector_id: "direct_l1_rpc",
+                        provenance: "network_profile"
+                    },
+                    delivery: {
+                        connector_id: "direct_delivery_rest",
+                        provenance: "network_profile"
+                    },
+                    storage: {
+                        connector_id: "storage_metrics",
+                        endpoint: configuredEndpoint,
+                        provenance: "network_profile"
+                    }
+                }
+            }
+        })
+        model.storageRestUrl = restEndpoint
+        model.storageMetricsUrl = fallbackEndpoint
+        wait(0)
+
+        const metricsField = findAccessibleByName(panel, "Metrics URL")
+        verify(metricsField !== null)
+        compare(metricsField.text, configuredEndpoint)
+        metricsField.text = editedEndpoint
+        metricsField.textEdited()
+
+        tryCompare(metricsField, "text", editedEndpoint)
+        compare(model.storageMetricsUrl, editedEndpoint)
+        compare(model.networkConnectorConfig.scopes.storage.endpoint,
+                editedEndpoint)
+        compare(model.sourceRouting.configuredStorageMetricsUrl(), editedEndpoint)
+        compare(model.sourceRouting.configuredStorageRestUrl(), restEndpoint)
+        compare(model.sourceRouting.storageOperationAdapter().inputs.metrics_endpoint,
+                editedEndpoint)
+    }
+
+    function test_rest_optional_metrics_edit_preserves_rest_endpoint() {
+        const restEndpoint = "http://configured-storage.example/api/storage/v1"
+        const metricsEndpoint = "http://edited-storage.example/metrics"
+        model.loadNetworkConnectorConfig({
+            network_connector_config: {
+                scopes: {
+                    l1: {
+                        connector_id: "direct_l1_rpc",
+                        provenance: "network_profile"
+                    },
+                    delivery: {
+                        connector_id: "direct_delivery_rest",
+                        provenance: "network_profile"
+                    },
+                    storage: {
+                        connector_id: "direct_storage_rest",
+                        endpoint: restEndpoint,
+                        provenance: "network_profile"
+                    }
+                }
+            }
+        })
+        wait(0)
+
+        const metricsField = findAccessibleByName(panel, "Metrics URL")
+        verify(metricsField !== null)
+        metricsField.text = metricsEndpoint
+        metricsField.textEdited()
+
+        tryCompare(metricsField, "text", metricsEndpoint)
+        compare(model.storageMetricsUrl, metricsEndpoint)
+        compare(model.networkConnectorConfig.scopes.storage.endpoint,
+                restEndpoint)
+        compare(model.sourceRouting.configuredStorageRestUrl(), restEndpoint)
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0].inputs.metrics_endpoint,
+                metricsEndpoint)
+    }
+
     function test_unavailable_source_names_only_visible_connector_choices() {
         model.sourceRouting.sourcePolicy = ({
             source_modes: {
