@@ -490,6 +490,85 @@ mod tests {
     }
 
     #[test]
+    fn instruction_plan_rejects_unsupported_defined_args_before_preview() -> Result<()> {
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instructions": [{
+                    "name": "create",
+                    "args": [
+                        {
+                            "name": "definition",
+                            "type": {"defined": "NewTokenDefinition"}
+                        },
+                        {"name": "metadata", "type": {"defined": "Box"}}
+                    ]
+                }]
+            })
+            .to_string(),
+            program_id_hex: "11".repeat(32),
+            instruction: "create".to_owned(),
+            args: BTreeMap::from([("definition".to_owned(), "unsafe value".to_owned())]),
+            ..Default::default()
+        };
+
+        let result = local_wallet_instruction_plan(serde_json::to_value(request)?);
+        if result.is_ok() {
+            bail!("unsupported defined argument reached an actionable plan");
+        }
+        let error = result
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        if !error.contains("instruction `create` argument `definition` cannot be used")
+            || !error.contains(
+                "defined IDL arg type `NewTokenDefinition` is not supported for direct interaction",
+            )
+        {
+            bail!("unexpected plan error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn instruction_plan_rejects_args_missing_schema_fields() -> Result<()> {
+        for (arg, expected) in [
+            (
+                json!({"type": "u32"}),
+                "instruction `create` has an IDL argument missing its name",
+            ),
+            (
+                json!({"name": "value"}),
+                "instruction `create` argument `value` is missing its type",
+            ),
+        ] {
+            let request = LocalWalletInstructionRequest {
+                idl_json: json!({
+                    "name": "sample",
+                    "instructions": [{"name": "create", "args": [arg]}]
+                })
+                .to_string(),
+                program_id_hex: "11".repeat(32),
+                instruction: "create".to_owned(),
+                ..Default::default()
+            };
+
+            let result = local_wallet_instruction_plan(serde_json::to_value(request)?);
+            if result.is_ok() {
+                bail!("malformed argument schema reached an actionable plan");
+            }
+            let error = result
+                .err()
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_default();
+            if !error.contains(expected) {
+                bail!("unexpected malformed schema error: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn blank_instruction_plan_bootstraps_instruction_choices() -> Result<()> {
         let mut request = sample_request(&format!("Private/0x{}", "33".repeat(32)));
         request.idl_json = json!({

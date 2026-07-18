@@ -105,6 +105,7 @@ impl serde::Serialize for InstructionData<'_> {
 }
 
 pub(crate) fn parse_typed_value(raw: &str, ty: &Value) -> Result<ParsedValue> {
+    validate_interaction_type(ty)?;
     if let Some(primitive) = ty.as_str() {
         return parse_primitive(raw, primitive);
     }
@@ -133,6 +134,41 @@ pub(crate) fn parse_typed_value(raw: &str, ty: &Value) -> Result<ParsedValue> {
         bail!("defined IDL arg type `{defined}` is not supported for direct interaction");
     }
     bail!("unsupported IDL arg type `{}`", ty);
+}
+
+pub(crate) fn validate_interaction_type(ty: &Value) -> Result<()> {
+    if let Some(primitive) = ty.as_str() {
+        return match primitive {
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64"
+            | "u128" | "string" | "String" | "account_id" | "program_id" => Ok(()),
+            other => bail!("unsupported primitive IDL arg type `{other}`"),
+        };
+    }
+    if let Some((elem, _)) = fixed_array_type(ty)? {
+        return match elem.as_str() {
+            Some("u8" | "u32") => Ok(()),
+            _ => bail!("unsupported array IDL arg type `{ty}`"),
+        };
+    }
+    if let Some(elem) = ty.get("vec") {
+        if let Some((array_elem, _)) = fixed_array_type(elem)? {
+            if array_elem.as_str() == Some("u8") {
+                return Ok(());
+            }
+            bail!("unsupported vector element type `{elem}`");
+        }
+        return match elem.as_str() {
+            Some("u8" | "u32") => Ok(()),
+            _ => bail!("unsupported vector IDL arg type `{elem}`"),
+        };
+    }
+    if let Some(option) = ty.get("option") {
+        return validate_interaction_type(option);
+    }
+    if let Some(defined) = ty.get("defined").and_then(Value::as_str) {
+        bail!("defined IDL arg type `{defined}` is not supported for direct interaction");
+    }
+    bail!("unsupported IDL arg type `{ty}`");
 }
 
 fn parse_primitive(raw: &str, primitive: &str) -> Result<ParsedValue> {

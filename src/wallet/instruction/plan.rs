@@ -4,6 +4,8 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::decode::instruction_codec::validate_interaction_type;
+
 use super::{LocalWalletInstructionRequest, values::type_label};
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,7 +56,7 @@ pub(super) fn instruction_plan(
     }
     let selection = select_instruction(instructions, &request.instruction)?;
     let accounts = account_fields(&selection.instruction);
-    let args = arg_fields(&selection.instruction);
+    let args = arg_fields(&selection.instruction)?;
     let private_mode = request_private_mode(&request.accounts);
     let inputs_complete = fields_complete(&accounts, &request.accounts)
         && fields_complete(&args, &request.args)
@@ -188,27 +190,44 @@ fn account_fields(instruction: &Value) -> Vec<InstructionPlanField> {
     rows
 }
 
-fn arg_fields(instruction: &Value) -> Vec<InstructionPlanField> {
-    instruction
+fn arg_fields(instruction: &Value) -> Result<Vec<InstructionPlanField>> {
+    let mut fields = Vec::new();
+    for arg in instruction
         .get("args")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|arg| {
-            let name = arg.get("name").and_then(Value::as_str)?;
-            let ty = arg.get("type")?;
-            let type_label = type_label(ty);
-            Some(InstructionPlanField {
-                name: name.to_owned(),
-                label: format!("{} ({type_label})", display_label(name)),
-                placeholder: placeholder_for_type(&type_label),
-                required: true,
-                rest: false,
-                kind: "arg".to_owned(),
-                type_label,
-            })
-        })
-        .collect()
+    {
+        let name = arg.get("name").and_then(Value::as_str).with_context(|| {
+            format!(
+                "instruction `{}` has an IDL argument missing its name",
+                instruction_name(instruction)
+            )
+        })?;
+        let ty = arg.get("type").with_context(|| {
+            format!(
+                "instruction `{}` argument `{name}` is missing its type",
+                instruction_name(instruction)
+            )
+        })?;
+        validate_interaction_type(ty).with_context(|| {
+            format!(
+                "instruction `{}` argument `{name}` cannot be used",
+                instruction_name(instruction)
+            )
+        })?;
+        let type_label = type_label(ty);
+        fields.push(InstructionPlanField {
+            name: name.to_owned(),
+            label: format!("{} ({type_label})", display_label(name)),
+            placeholder: placeholder_for_type(&type_label),
+            required: true,
+            rest: false,
+            kind: "arg".to_owned(),
+            type_label,
+        });
+    }
+    Ok(fields)
 }
 
 fn fields_complete(fields: &[InstructionPlanField], values: &BTreeMap<String, String>) -> bool {
