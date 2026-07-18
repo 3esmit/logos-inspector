@@ -376,11 +376,15 @@ function dashboardMetricWindowDelta(root, key) {
             || seen.timestamp > samples[samples.length - 1].timestamp)) {
         samples.push(seen)
     }
-    if (samples.length === 0 || Number(samples[samples.length - 1].value) !== current
-            || Number(samples[samples.length - 1].timestamp) < timestamp) {
-        samples.push({ timestamp: timestamp, value: current })
+    if (samples.length === 0) {
+        return null
     }
-    return windowDeltaFromSamples(samples, timestamp, dashboardMetricWindowMs(root, key))
+    const latest = samples[samples.length - 1]
+    if (Number(latest.value) !== current) {
+        return null
+    }
+    return windowDeltaFromSamples(
+        samples, timestamp, dashboardMetricWindowMs(root, key))
 }
 
 function dashboardMetricWindowMs(root, key) {

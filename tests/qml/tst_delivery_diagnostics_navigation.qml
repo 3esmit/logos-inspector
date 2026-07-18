@@ -73,6 +73,11 @@ TestCase {
     function init() {
         fakeHost.reset()
         model.metrics.messagingRefreshRate = 0
+        model.metrics.messagingMetricsReport = null
+        model.metrics.messagingMetricsRevision += 1
+        model.metrics.dashboardMetricHistory = ({})
+        model.metrics.dashboardMetricLastSeen = ({})
+        model.metrics.dashboardMetricHistoryRevision += 1
         model.deliveryDiagnosticsTab = "overview"
         model.shell.currentView = "diagnosticsDelivery"
         model.navigationBackStack = []
@@ -108,6 +113,68 @@ TestCase {
         tryVerify(function () {
             return findAccessibleByName(pageLoader.item, "Store selected") !== null
         })
+    }
+
+    function test_throughput_requires_two_real_observations() {
+        const key = "messaging.network_ingress_recent"
+        const now = Date.now()
+        model.metrics.messagingMetricsReport = deliveryMetricsReport(11)
+        model.metrics.messagingMetricsRevision += 1
+        model.metrics.dashboardMetricHistory = ({
+            "messaging.network_ingress_recent": [
+                { timestamp: now, value: 11 }
+            ]
+        })
+        model.metrics.dashboardMetricLastSeen = ({
+            "messaging.network_ingress_recent": {
+                timestamp: now,
+                value: 11
+            }
+        })
+        model.metrics.dashboardMetricHistoryRevision += 1
+
+        const throughputTab = findAccessibleByName(pageLoader.item, "Throughput")
+        verify(throughputTab !== null)
+        mouseClick(throughputTab,
+            throughputTab.width / 2, throughputTab.height / 2)
+        tryCompare(model, "deliveryDiagnosticsTab", "throughput")
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Network ingress: n/a. Waiting for another source observation.") !== null
+        })
+
+        model.metrics.dashboardMetricHistory = ({
+            "messaging.network_ingress_recent": [
+                { timestamp: now - 1000, value: 5 },
+                { timestamp: now, value: 11 }
+            ]
+        })
+        model.metrics.dashboardMetricLastSeen = ({
+            "messaging.network_ingress_recent": {
+                timestamp: now,
+                value: 11
+            }
+        })
+        model.metrics.dashboardMetricHistoryRevision += 1
+
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Network ingress: 6. 120 s window") !== null
+        })
+        compare(model.metrics.dashboardMetricValue(key), 6)
+    }
+
+    function deliveryMetricsReport(networkIngress) {
+        return {
+            probes: [{
+                probe_key: "collectOpenMetricsText",
+                label: "delivery.collectOpenMetricsText",
+                source: "delivery collectOpenMetricsText",
+                ok: true,
+                value: "libp2p_network_bytes_total{direction=\"in\"} "
+                    + String(networkIngress) + "\n"
+            }]
+        }
     }
 
     function findAccessibleByName(item, expectedName) {
