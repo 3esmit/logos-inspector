@@ -14,6 +14,8 @@ TestCase {
     property var dashboardBlocks: []
     property var dashboardProvisionalBlocks: []
     property int joinedCompletionCount: 0
+    property int invalidObservationCallbackCount: 0
+    property string invalidObservationCallbackError: ""
 
     QtObject {
         id: sourceRouting
@@ -347,6 +349,8 @@ TestCase {
         testRoot.dashboardBlocks = []
         testRoot.dashboardProvisionalBlocks = []
         joinedCompletionCount = 0
+        invalidObservationCallbackCount = 0
+        invalidObservationCallbackError = ""
         resetMetrics()
     }
 
@@ -370,6 +374,42 @@ TestCase {
         compare(metrics.observationReportRevisions.storage, reportRevision + 1)
         compare(metrics.dashboardSnapshotRevision, snapshotRevision + 1)
         compare(gateway.capabilityRefreshCount, 1)
+    }
+
+    function test_invalid_storage_cid_is_rejected_before_bridge_dispatch() {
+        sourceRouting.storageCid = "cid/child"
+
+        let response = metrics.observeNetworkConnection(
+            "storage", true, true, function (callbackResponse, snapshot) {
+                invalidObservationCallbackCount += 1
+                invalidObservationCallbackError = String(
+                    callbackResponse && callbackResponse.error || "")
+                verify(snapshot !== null)
+            }, "source-inspection")
+
+        verify(!response.ok)
+        compare(
+            response.error,
+            "Storage CID must contain only ASCII letters, digits, `-`, or `_`.")
+        compare(gateway.requests.length, 0)
+        verify(!metrics.networkConnectionIsPending("storage"))
+        compare(gateway.presentationBeginCount, 1)
+        compare(gateway.presentationCompleteCount, 1)
+        verify(gateway.lastPresentationError)
+        compare(gateway.lastPresentationText, response.error)
+        compare(invalidObservationCallbackCount, 1)
+        compare(invalidObservationCallbackError, response.error)
+
+        gateway.reset()
+        sourceRouting.storageCid = "valid-CID_123"
+        response = metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+
+        verify(response)
+        compare(gateway.requests.length, 1)
+        compare(
+            gateway.requests[0].args[0].options.cid,
+            "valid-CID_123")
     }
 
     function test_completed_degraded_report_remains_readable() {

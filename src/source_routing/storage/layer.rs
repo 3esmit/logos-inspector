@@ -383,14 +383,19 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Storage
         privileged_debug_enabled,
         runtime_diagnostics_enabled,
     } = envelope.options;
-    let cid = cid.trim().to_owned();
+    let cid = cid.trim();
+    let cid = if cid.is_empty() {
+        None
+    } else {
+        Some(super::parse_storage_cid(cid.to_owned())?)
+    };
     Ok(StorageReportInputs {
         source_mode: initialization.source_mode().to_owned(),
         rest_endpoint: initialization.input("rest_endpoint").map(ToOwned::to_owned),
         metrics_endpoint: initialization
             .input("metrics_endpoint")
             .map(ToOwned::to_owned),
-        cid: if cid.is_empty() { None } else { Some(cid) },
+        cid,
         privileged_debug_enabled,
         runtime_diagnostics_enabled,
     })
@@ -520,7 +525,7 @@ mod tests {
             "source_mode": "module",
             "inputs": {},
             "options": {
-                "cid": "cid-a",
+                "cid": " cid-a ",
                 "privileged_debug_enabled": true,
                 "runtime_diagnostics_enabled": true
             }
@@ -539,6 +544,38 @@ mod tests {
         {
             anyhow::bail!("compact Storage report inputs were parsed incorrectly");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_report_boundary_rejects_route_breaking_and_oversized_cids() -> Result<()> {
+        for cid in ["cid/child".to_owned(), "a".repeat(257)] {
+            let args = crate::support::args::Args::new(json!([{
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" },
+                "options": { "cid": cid }
+            }]))?;
+            let error = report_inputs(&args)
+                .err()
+                .context("invalid Storage report CID was accepted")?;
+            anyhow::ensure!(
+                error.to_string().contains("storage CID"),
+                "invalid Storage report CID returned unrelated error: {error:#}"
+            );
+        }
+
+        let boundary = crate::support::args::Args::new(json!([{
+            "source_mode": "rest",
+            "inputs": { "rest_endpoint": "http://storage" },
+            "options": { "cid": "a".repeat(256) }
+        }]))?;
+        anyhow::ensure!(
+            report_inputs(&boundary)?
+                .cid
+                .as_deref()
+                .is_some_and(|cid| cid.len() == 256),
+            "exactly 256-byte Storage report CID was rejected"
+        );
         Ok(())
     }
 }

@@ -90,6 +90,7 @@ TestCase {
         model.setNetworkConnectorMode("storage", "logoscore_cli")
         model.metrics.storageRefreshRate = 30
         model.storageRollingWindow = 120
+        model.storageCidProbe = ""
         model.storageLocalDiagnosticsEnabled = false
         model.storagePrivilegedDebugEnabled = false
         fakeHost.reset()
@@ -465,16 +466,44 @@ TestCase {
         tryCompare(model, "storageNetworkPreset", "logos.test")
     }
 
+    function test_invalid_cid_shows_inline_error_and_disables_query() {
+        model.storageCidProbe = "cid/child"
+        wait(0)
+
+        const expected = "Storage CID must contain only ASCII letters, digits, `-`, or `_`."
+        const error = findAccessibleByName(panel, "Invalid CID. " + expected)
+        const query = findAccessibleByName(panel, "Query Storage status")
+        verify(error !== null)
+        verify(query !== null)
+        verify(!query.enabled)
+
+        model.storageCidProbe = "valid-CID_123"
+        wait(0)
+
+        verify(findAccessibleByName(panel, "Invalid CID. " + expected) === null)
+        verify(query.enabled)
+    }
+
     function test_metrics_source_hides_and_suppresses_network_debug() {
         model.storagePrivilegedDebugEnabled = true
+        model.storageCidProbe = "cid/child"
         verify(model.setNetworkConnectorMode("storage", "metrics"))
         wait(0)
 
+        verify(findAccessibleByName(panel, "CID local exists") === null)
+        verify(findAccessibleByName(
+                   panel,
+                   "Invalid CID. Storage CID must contain only ASCII letters, digits, `-`, or `_`.") === null)
+        const query = findAccessibleByName(panel, "Query Storage status")
+        verify(query !== null)
+        verify(query.enabled)
         verify(findAccessibleByName(
                    panel, "Include network debug details") === null)
         verify(!hasVisibleText(panel, "Include network debug details"))
         compare(model.sourceRouting.storageSourceReportArgs(false)[0]
                 .options.privileged_debug_enabled, false)
+        compare(model.sourceRouting.storageSourceReportArgs(true)[0]
+                .options.cid, "")
         compare(model.sourceRouting.storageSourceReportArgs(
                     "metrics",
                     model.sourceRouting.configuredStorageRestUrl(),

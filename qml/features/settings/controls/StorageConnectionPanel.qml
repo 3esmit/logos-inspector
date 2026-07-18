@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
+import "../../../state/storage/StorageCidValidation.js" as StorageCidValidation
 
 SourceSettingsPanel {
     id: root
@@ -11,8 +12,11 @@ SourceSettingsPanel {
     property real pageWidth: 900
     property AppModel modelRef
     property var sourceOptions
+    readonly property string cidValidationError: root.storageDataEnabled()
+        ? StorageCidValidation.optionalError(root.modelRef.storageCidProbe) : ""
 
     busy: root.modelRef ? root.modelRef.shell.busy : false
+    queryEnabled: root.cidValidationError.length === 0
     queryAccessibleName: qsTr("Query Storage status")
 
     StatusMessage {
@@ -78,12 +82,15 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            id: cidField
+
             visible: root.storageDataEnabled()
             theme: root.theme
             label: qsTr("CID local exists")
             sourceText: root.modelRef.storageCidProbe
             syncSourceText: true
             placeholderText: qsTr("Optional CID")
+            errorMessage: root.cidValidationError
             onTextEdited: text => root.modelRef.storageCidProbe = String(text || "").trim()
         }
 
@@ -103,6 +110,15 @@ SourceSettingsPanel {
             value: root.modelRef.storageRollingWindow
             onValueEdited: value => root.modelRef.storageRollingWindow = value
         }
+    }
+
+    StatusMessage {
+        visible: root.cidValidationError.length > 0
+        theme: root.theme
+        tone: "error"
+        title: qsTr("Invalid CID")
+        message: root.cidValidationError
+        Layout.fillWidth: true
     }
 
     Flow {
