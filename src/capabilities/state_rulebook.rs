@@ -50,8 +50,9 @@ pub(super) fn capability_state(
         "l1" => endpoint_backed_state(inputs, "l1", connector, spec.sub_capabilities),
         "storage" => storage_state(inputs, connector, spec.sub_capabilities),
         "delivery" => delivery_state(inputs, connector, spec.sub_capabilities),
-        "wallet" => wallet_state(inputs, spec.sub_capabilities),
-        "wallet.l1" | "wallet.l2" => wallet_state(inputs, spec.sub_capabilities),
+        "wallet" | "wallet.l1" | "wallet.l2" => {
+            wallet_state(inputs, connector, spec.sub_capabilities)
+        }
         "local_nodes" => local_nodes_state(inputs, spec.sub_capabilities),
         "diagnostics" => diagnostics_state(inputs, spec.sub_capabilities),
         _ => available_state(),
@@ -364,11 +365,15 @@ fn adapter_constrained_state(
     merge_state_constraints(state, unavailable, warnings, Vec::new())
 }
 
-fn wallet_state(inputs: &CapabilityRuntimeInputs, sub_capabilities: &[&str]) -> CapabilityState {
+fn wallet_state(
+    inputs: &CapabilityRuntimeInputs,
+    connector: &ResolvedConnector,
+    sub_capabilities: &[&str],
+) -> CapabilityState {
     if !inputs.wallet_profile_configured {
         let unavailable = sub_capabilities
             .iter()
-            .filter(|capability| wallet_sub_capability_needs_profile(capability))
+            .filter(|capability| wallet_sub_capability_needs_profile(inputs, connector, capability))
             .map(|capability| (*capability).to_owned())
             .collect::<Vec<_>>();
         if unavailable.len() >= sub_capabilities.len() {
@@ -382,12 +387,34 @@ fn wallet_state(inputs: &CapabilityRuntimeInputs, sub_capabilities: &[&str]) -> 
         );
     }
     if inputs.wallet_home_configured {
-        return available_state();
+        let unavailable = sub_capabilities
+            .iter()
+            .filter(|capability| {
+                composed_wallet_instruction_submit(connector, capability)
+                    && !inputs.wallet_instruction_submit_ready
+            })
+            .map(|capability| (*capability).to_owned())
+            .collect::<Vec<_>>();
+        let warnings = if unavailable.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                "Wallet config and storage are required for direct instruction submission"
+                    .to_owned(),
+            ]
+        };
+        return state_from_unavailable(sub_capabilities, unavailable, warnings, Vec::new());
     }
 
     let unavailable: Vec<String> = sub_capabilities
         .iter()
-        .filter(|capability| wallet_sub_capability_needs_home(capability))
+        .filter(|capability| {
+            if composed_wallet_instruction_submit(connector, capability) {
+                !inputs.wallet_instruction_submit_ready
+            } else {
+                wallet_sub_capability_needs_home(capability)
+            }
+        })
         .map(|capability| (*capability).to_owned())
         .collect();
     state_from_unavailable(
@@ -398,8 +425,18 @@ fn wallet_state(inputs: &CapabilityRuntimeInputs, sub_capabilities: &[&str]) -> 
     )
 }
 
-fn wallet_sub_capability_needs_profile(capability: &str) -> bool {
+fn wallet_sub_capability_needs_profile(
+    inputs: &CapabilityRuntimeInputs,
+    connector: &ResolvedConnector,
+    capability: &str,
+) -> bool {
     capability != "wallet.l2.instruction.preview"
+        && !(composed_wallet_instruction_submit(connector, capability)
+            && inputs.wallet_instruction_submit_ready)
+}
+
+fn composed_wallet_instruction_submit(connector: &ResolvedConnector, capability: &str) -> bool {
+    connector.id == "composed_wallet" && capability == "wallet.l2.instruction.submit"
 }
 
 fn local_nodes_state(

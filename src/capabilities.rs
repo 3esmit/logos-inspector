@@ -345,6 +345,52 @@ mod tests {
     }
 
     #[test]
+    fn direct_l2_instruction_submit_does_not_require_wallet_binary() -> Result<()> {
+        let inputs = serde_json::json!({
+            "wallet_instruction_submit_ready": true
+        });
+        let value = serde_json::to_value(test_registry_report_with_value(
+            CapabilityBuildMode::Standalone,
+            Some(&inputs),
+        ))?;
+        let Some(wallet_l2) = capability_for(&value, "wallet.l2") else {
+            bail!("wallet.l2 capability missing: {value}");
+        };
+
+        if unavailable_contains(wallet_l2, "wallet.l2.instruction.submit") {
+            bail!("direct instruction submit should not require a wallet binary: {wallet_l2}");
+        }
+        if !unavailable_contains(wallet_l2, "wallet.l2.program.deploy") {
+            bail!("program deployment should still require the wallet CLI profile: {wallet_l2}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_l2_instruction_submit_requires_direct_wallet_storage() -> Result<()> {
+        let inputs = serde_json::json!({
+            "wallet_profile_configured": true,
+            "wallet_home_configured": true,
+            "wallet_instruction_submit_ready": false
+        });
+        let value = serde_json::to_value(test_registry_report_with_value(
+            CapabilityBuildMode::Standalone,
+            Some(&inputs),
+        ))?;
+        let Some(wallet_l2) = capability_for(&value, "wallet.l2") else {
+            bail!("wallet.l2 capability missing: {value}");
+        };
+
+        if !unavailable_contains(wallet_l2, "wallet.l2.instruction.submit") {
+            bail!("direct instruction submit should require wallet storage: {wallet_l2}");
+        }
+        if unavailable_contains(wallet_l2, "wallet.l2.program.deploy") {
+            bail!("program deployment should remain available with a CLI profile: {wallet_l2}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_inputs_use_l1_provider_probe_for_availability() -> Result<()> {
         let loading_inputs = serde_json::json!({
             "node_url": "http://127.0.0.1:8545"
