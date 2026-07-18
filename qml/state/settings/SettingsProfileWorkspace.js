@@ -32,6 +32,12 @@ function connectionStatusColor(root, kind) {
     return status.ok ? root.theme.success : root.theme.warning
 }
 
+function queryStorageStatus(root) {
+    const cid = String(root.model.storageCidProbe || "").trim()
+    return root.model.metrics.queryNetworkConnection(
+        "storage", true, cid.length > 0)
+}
+
 function walletSourceStatusText(root) {
     const status = root.model.localWalletStatus || null
     if (!status) {
