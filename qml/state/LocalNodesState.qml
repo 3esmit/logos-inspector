@@ -34,6 +34,7 @@ QtObject {
     property string pendingRuntimeBinaryPath: ""
     property string pendingPackageVersion: ""
     property string pendingPackageRootHash: ""
+    property bool pendingAllowIdentityRotation: false
 
     onBusyChanged: {
         if (!busy) {
@@ -156,7 +157,7 @@ QtObject {
         return true
     }
 
-    function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath, packageVersion, packageRootHash) {
+    function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath, packageVersion, packageRootHash, allowIdentityRotation) {
         if (busy) {
             gateway.setResult(qsTr("Local nodes"), qsTr("Another inspection is already running."), true, null);
             return null;
@@ -191,6 +192,9 @@ QtObject {
         const selectedPackageRootHash = String(packageRootHash || "").trim();
         if (selectedPackageRootHash.length) {
             request.package_root_hash = selectedPackageRootHash;
+        }
+        if (allowIdentityRotation === true) {
+            request.allow_identity_rotation = true;
         }
 
         const operationLabel = String(label || actionLabel(action));
@@ -355,6 +359,7 @@ QtObject {
         pendingRuntimeBinaryPath = "";
         pendingPackageVersion = String(packageVersion || "").trim();
         pendingPackageRootHash = String(packageRootHash || "").trim();
+        pendingAllowIdentityRotation = pendingAction === "stop" && pendingNode === "messaging";
     }
 
     function beginNetworkAction(action, networkId, workspacePath) {
@@ -366,6 +371,7 @@ QtObject {
         pendingRuntimeBinaryPath = "";
         pendingPackageVersion = "";
         pendingPackageRootHash = "";
+        pendingAllowIdentityRotation = false;
     }
 
     function beginRuntimeAction(action, modulesDir, binaryPath) {
@@ -379,6 +385,8 @@ QtObject {
         pendingRuntimeBinaryPath = String(binaryPath || "").trim();
         pendingPackageVersion = "";
         pendingPackageRootHash = "";
+        pendingAllowIdentityRotation = pendingAction === "start_runtime"
+            || pendingAction === "stop_runtime";
     }
 
     function clearActionDraft() {
@@ -390,6 +398,7 @@ QtObject {
         pendingRuntimeBinaryPath = "";
         pendingPackageVersion = "";
         pendingPackageRootHash = "";
+        pendingAllowIdentityRotation = false;
     }
 
     function runPendingAction() {
@@ -404,9 +413,10 @@ QtObject {
         const runtimeBinaryPath = pendingRuntimeBinaryPath;
         const packageVersion = pendingPackageVersion;
         const packageRootHash = pendingPackageRootHash;
+        const allowIdentityRotation = pendingAllowIdentityRotation;
         const label = actionDraftTitle();
         clearActionDraft();
-        return runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath, packageVersion, packageRootHash);
+        return runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath, packageVersion, packageRootHash, allowIdentityRotation);
     }
 
     function actionDraftTitle() {
@@ -439,10 +449,10 @@ QtObject {
             return qsTr("This loads the Local Devnet manifest from %1 and sets it as Active Devnet.").arg(pendingWorkspace);
         }
         if (action === "start_runtime") {
-            return qsTr("This starts an Inspector-managed LogosCore runtime using modules from %1.").arg(pendingRuntimeModulesDir.length ? pendingRuntimeModulesDir : runtimeModulesDir());
+            return qsTr("This starts an Inspector-managed LogosCore runtime using modules from %1. If it must replace a stopped runtime with remaining module contexts, Inspector first verifies persisted Messaging peer identity. A legacy Messaging context without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity.").arg(pendingRuntimeModulesDir.length ? pendingRuntimeModulesDir : runtimeModulesDir());
         }
         if (action === "stop_runtime") {
-            return qsTr("This stops only the Inspector-managed LogosCore runtime and clears its module contexts.");
+            return qsTr("This stops only the Inspector-managed LogosCore runtime and clears its module contexts. Inspector first verifies persisted Messaging peer identity. A legacy Messaging context without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity.");
         }
         const node = nodeByKind(pendingNode) || {};
         if (action === "purge") {
@@ -455,7 +465,7 @@ QtObject {
             return qsTr("This starts %1 using config %2.").arg(nodeLabel(pendingNode)).arg(String(node.config_path || "-"));
         }
         if (action === "stop" && pendingNode === "messaging") {
-            return qsTr("This stops Messaging by unloading its Delivery context. Its data and config remain, but you must initialize Messaging before starting it again.");
+            return qsTr("This stops Messaging by unloading its Delivery context. Inspector first verifies a persisted peer identity. A legacy node without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity. Its data and config remain, but you must initialize Messaging before starting it again.");
         }
         if (action === "stop") {
             return qsTr("This stops %1 and keeps its data and config.").arg(nodeLabel(pendingNode));

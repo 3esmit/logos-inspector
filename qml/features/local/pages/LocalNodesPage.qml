@@ -20,6 +20,8 @@ ColumnLayout {
     property string runtimeModulesDir: root.model.runtimeModulesDir()
     property string runtimeBinaryPath: ""
     property var selectedIndexerPackage: root.model.defaultPackageSelection()
+    property bool confirmationAccepted: false
+    property int confirmationGeneration: 0
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -649,7 +651,22 @@ ColumnLayout {
         message: root.confirmMessage()
         confirmText: root.model.actionLabel(root.model.pendingAction)
         confirmEnabled: !root.model.busy && root.model.pendingAction.length > 0
-        onAccepted: root.acceptPendingAction()
+        onAccepted: {
+            root.confirmationAccepted = true
+            root.acceptPendingAction()
+        }
+        onClosed: {
+            const generation = root.confirmationGeneration
+            Qt.callLater(function () {
+                if (generation !== root.confirmationGeneration) {
+                    return
+                }
+                if (!root.confirmationAccepted) {
+                    root.model.clearActionDraft()
+                }
+                root.confirmationAccepted = false
+            })
+        }
     }
 
     function activeNetworkId() {
@@ -843,7 +860,7 @@ ColumnLayout {
             String(release.version || ""),
             String(release.root_hash || ""),
             root.runtimeModulesDir.trim())
-        confirmPopup.open()
+        root.showConfirmation()
     }
 
     function nodeTableRows() {
@@ -995,18 +1012,24 @@ ColumnLayout {
 
     function openNodeConfirm(action, node) {
         root.model.beginNodeAction(action, node);
-        confirmPopup.open();
+        root.showConfirmation();
     }
 
     function openNetworkConfirm(action) {
         const actionKey = String(action || "");
         root.model.beginNetworkAction(actionKey, actionKey === "new_network" ? root.newNetworkId.trim() : root.activeNetworkId(), actionKey === "load_network" ? root.loadWorkspace.trim() : "");
-        confirmPopup.open();
+        root.showConfirmation();
     }
 
     function openRuntimeConfirm(action) {
         root.model.beginRuntimeAction(action, root.runtimeModulesDir.trim(), root.runtimeBinaryPath.trim());
-        confirmPopup.open();
+        root.showConfirmation();
+    }
+
+    function showConfirmation() {
+        root.confirmationGeneration += 1
+        root.confirmationAccepted = false
+        confirmPopup.open()
     }
 
     function acceptPendingAction() {

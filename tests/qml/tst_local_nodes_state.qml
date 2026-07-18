@@ -706,12 +706,33 @@ TestCase {
         verify(state.actionDraftMessage().indexOf("This starts Bedrock") === 0)
     }
 
-    function test_messaging_stop_action_draft_explains_reinitialization() {
+    function test_messaging_stop_action_draft_acknowledges_legacy_identity_rotation() {
         state.beginNodeAction("stop", "messaging")
 
         compare(state.actionDraftTitle(), "Stop Messaging")
-        compare(state.actionDraftMessage(),
-                "This stops Messaging by unloading its Delivery context. Its data and config remain, but you must initialize Messaging before starting it again.")
+        verify(state.actionDraftMessage().indexOf("one-time rotation is unavoidable") >= 0)
+        verify(state.pendingAllowIdentityRotation)
+
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: testnetReport(),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+        state.runPendingAction()
+
+        compare(gateway.calls[0].args[1].action, "stop")
+        compare(gateway.calls[0].args[1].node, "messaging")
+        verify(gateway.calls[0].args[1].allow_identity_rotation)
+        verify(!state.pendingAllowIdentityRotation)
     }
 
     function test_network_action_draft_runs_pending_request() {
@@ -764,14 +785,44 @@ TestCase {
         })
 
         compare(state.actionDraftTitle(), "Start Local Runtime")
-        compare(state.actionDraftMessage(), "This starts an Inspector-managed LogosCore runtime using modules from /tmp/modules.")
+        verify(state.actionDraftMessage().indexOf("This starts an Inspector-managed LogosCore runtime using modules from /tmp/modules.") === 0)
+        verify(state.actionDraftMessage().indexOf("one-time rotation is unavoidable") >= 0)
+        verify(state.pendingAllowIdentityRotation)
 
         state.runPendingAction()
 
         compare(gateway.calls[0].args[1].action, "start_runtime")
         compare(gateway.calls[0].args[1].runtime_modules_dir, "/tmp/modules")
         compare(gateway.calls[0].args[1].runtime_binary_path, "/tmp/logoscore")
+        verify(gateway.calls[0].args[1].allow_identity_rotation)
         compare(gateway.history[0].operation.label, "Start Local Runtime")
+    }
+
+    function test_stop_runtime_confirmation_acknowledges_legacy_messaging_identity_rotation() {
+        state.beginRuntimeAction("stop_runtime", "/tmp/modules", "/tmp/logoscore")
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: sampleReport(),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        compare(state.actionDraftTitle(), "Stop Local Runtime")
+        verify(state.actionDraftMessage().indexOf("one-time rotation is unavoidable") >= 0)
+        verify(state.pendingAllowIdentityRotation)
+        state.runPendingAction()
+
+        compare(gateway.calls[0].args[1].action, "stop_runtime")
+        verify(gateway.calls[0].args[1].allow_identity_rotation)
+        verify(!state.pendingAllowIdentityRotation)
     }
 
     function test_package_catalog_loads_exact_releases_for_modules_directory() {

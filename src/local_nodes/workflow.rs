@@ -57,6 +57,18 @@ impl LocalNodeWorkflow {
             bail!("local devnet actions require local operations mode");
         }
 
+        if request.allow_identity_rotation
+            && !matches!(
+                (request.action, request.node),
+                (NodeAction::Stop, Some(NodeKind::Messaging))
+                    | (NodeAction::StartRuntime | NodeAction::StopRuntime, None)
+            )
+        {
+            bail!(
+                "identity rotation acknowledgement only applies to Messaging Stop or managed runtime lifecycle"
+            );
+        }
+
         Ok(())
     }
 
