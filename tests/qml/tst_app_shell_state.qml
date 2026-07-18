@@ -40,6 +40,7 @@ TestCase {
         model.shell.settingsSection = "general"
         model.shell.settingsNetworkSection = "blockchain"
         model.shell.settingsUiSection = "footer"
+        model.deliveryDiagnosticsTab = "overview"
         model.zoneInspection.verification = "empty"
         model.zoneInspection.activeZoneContext = null
     }
@@ -74,6 +75,18 @@ TestCase {
         model.shell.navigateBack()
 
         compare(model.shell.currentView, "storage")
+    }
+
+    function test_delivery_diagnostics_tab_is_part_of_navigation_history() {
+        model.shell.currentView = "diagnosticsDelivery"
+        model.deliveryDiagnosticsTab = "store"
+
+        model.shell.openSettings("network", "messaging")
+        model.deliveryDiagnosticsTab = "overview"
+        model.shell.navigateBack()
+
+        compare(model.shell.currentView, "diagnosticsDelivery")
+        compare(model.deliveryDiagnosticsTab, "store")
     }
 
     function test_zones_route_has_l1_metadata_and_nav_entry() {

@@ -261,6 +261,7 @@ function navigationSnapshot(root) {
         storageAppTab: String(root.storageAppTab || ""),
         storageDiagnosticsTab: String(root.storageDiagnosticsTab || ""),
         deliveryAppTab: String(root.deliveryAppTab || ""),
+        deliveryDiagnosticsTab: String(root.deliveryDiagnosticsTab || ""),
         programTab: String(root.programTab || ""),
         localWalletTab: String(root.localWalletTab || ""),
         localWalletLookupTarget: String(root.localWalletLookupTarget || ""),
@@ -351,6 +352,8 @@ function restoreNavigationSnapshot(root, snapshot) {
         root.storageDiagnosticsTab = String(values.storageDiagnosticsTab
             || root.storageDiagnosticsTab)
         root.deliveryAppTab = String(values.deliveryAppTab || root.deliveryAppTab)
+        root.deliveryDiagnosticsTab = String(values.deliveryDiagnosticsTab
+            || root.deliveryDiagnosticsTab)
         root.programTab = String(values.programTab || root.programTab)
         root.localWalletTab = String(values.localWalletTab || root.localWalletTab)
         root.localWalletLookupTarget = String(values.localWalletLookupTarget || "")

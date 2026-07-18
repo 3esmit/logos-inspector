@@ -21,7 +21,7 @@ ColumnLayout {
         family: "delivery"
     }
     readonly property var sourceView: sourceSession.view
-    property string currentTab: "overview"
+    readonly property string currentTab: root.model.deliveryDiagnosticsTab
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -102,7 +102,7 @@ ColumnLayout {
         current: root.currentTab
         options: deliveryTabs
         Layout.fillWidth: true
-        onSelected: value => root.currentTab = value
+        onSelected: value => root.model.deliveryDiagnosticsTab = value
     }
 
     Loader {
