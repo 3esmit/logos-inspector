@@ -11,6 +11,7 @@ QtObject {
 
     property var idlInstructionPreviewValue: null
     property string idlInstructionError: ""
+    property int instructionTargetRequestRevision: 0
 
     function deployProgramBinary(programPath) {
         const path = String(programPath || "").trim()
@@ -89,11 +90,16 @@ QtObject {
             setResult(qsTr("IDL instruction"), walletGateProblem("l2.submit"), true, null)
             return null
         }
+        const target = nextInstructionTarget()
+        if (!target) {
+            setResult(qsTr("IDL instruction"), qsTr("Select a verified Zone with a Sequencer source before sending an instruction."), true, null)
+            return null
+        }
 
         idlInstructionPreviewValue = null
         idlInstructionError = ""
         setBusy(true)
-        return request("localWalletInstructionSubmit", [walletProfile(), requestPayload || {}, ConfirmationPolicy.token("wallet-instruction-submit")], qsTr("IDL instruction"), true, function (response) {
+        return request("localWalletInstructionSubmit", [walletProfile(), requestPayload || {}, target, ConfirmationPolicy.token("wallet-instruction-submit")], qsTr("IDL instruction"), true, function (response) {
             setBusy(false)
             const detail = response.ok
                 ? idlInstructionOperationDetail(response.value)
@@ -114,6 +120,23 @@ QtObject {
                 error: response.ok ? "" : detail
             }, detail)
         })
+    }
+
+    function nextInstructionTarget() {
+        const context = gateway && typeof gateway.activeZoneContext === "function"
+            ? gateway.activeZoneContext() : null
+        if (!context
+                || !String(context.channel_id || "").length
+                || !String(context.selected_sequencer_source_id || "").length
+                || Number(context.source_config_revision || 0) <= 0
+                || Number(context.context_revision || 0) <= 0) {
+            return null
+        }
+        instructionTargetRequestRevision += 1
+        return {
+            context: JSON.parse(JSON.stringify(context)),
+            request_revision: instructionTargetRequestRevision
+        }
     }
 
     function deployProgramOperationDetail(value) {

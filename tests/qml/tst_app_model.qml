@@ -252,6 +252,7 @@ TestCase {
         model.accountIdlSelectionRevision = 0
         model.idlInstructionPreviewValue = null
         model.idlInstructionError = ""
+        model.programExecution.instructionTargetRequestRevision = 0
         model.walletPublicKeyProbe = ""
         model.bedrockWalletBalanceTip = ""
         model.bedrockWalletBalanceValue = null
@@ -4357,6 +4358,7 @@ TestCase {
 
     function test_send_idl_instruction_uses_execution_confirmation_and_logs_operation() {
         configureReadyWallet()
+        const channelId = setActiveZone("")
         fakeHost.responses = {
             localWalletInstructionSubmit: {
                 ok: true,
@@ -4384,7 +4386,12 @@ TestCase {
         compare(instructionCalls[0].args[0].wallet_binary, "/usr/bin/lee-wallet")
         compare(instructionCalls[0].args[0].wallet_home, "/tmp/wallet-home")
         compare(instructionCalls[0].args[1].instruction, "transfer")
-        compare(instructionCalls[0].args[2], "confirm-idl-instruction")
+        compare(instructionCalls[0].args[2].context.channel_id, channelId)
+        compare(instructionCalls[0].args[2].context.selected_sequencer_source_id, "seq-a")
+        compare(instructionCalls[0].args[2].context.source_config_revision, 7)
+        verify(instructionCalls[0].args[2].request_revision > 0)
+        compare(instructionCalls[0].args[2].endpoint, undefined)
+        compare(instructionCalls[0].args[3], "confirm-idl-instruction")
         compare(model.localWalletOperations.length, 0)
         compare(model.idlInstructionPreviewValue.mode, "tx")
         compare(model.idlInstructionError, "")
@@ -4392,6 +4399,26 @@ TestCase {
         compare(history.length, 1)
         compare(history[0].label, "IDL instruction")
         compare(history[0].status, "completed")
+    }
+
+    function test_send_idl_instruction_requires_active_sequencer_zone() {
+        configureReadyWallet()
+        fakeHost.responses = {
+            localWalletInstructionSubmit: {
+                ok: true,
+                value: { mode: "tx", instruction: "transfer" },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.sendIdlInstruction({ instruction: "transfer" })
+
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletInstructionSubmit"
+        }).length, 0)
+        compare(model.shell.resultIsError, true)
+        verify(model.shell.resultText.indexOf("Select a verified Zone") >= 0)
     }
 
     function test_create_wallet_account_uses_confirmation_and_logs_operation() {

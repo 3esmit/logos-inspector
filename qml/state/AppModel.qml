@@ -850,6 +850,10 @@ QtObject {
             function appendOperationHistory(operation, detail) {
                 return root.appendOperationHistory(operation, detail)
             }
+
+            function activeZoneContext() {
+                return root.zoneInspection.activeZoneContext
+            }
         }
     }
     property alias idlInstructionPreviewValue: programExecutionState.idlInstructionPreviewValue

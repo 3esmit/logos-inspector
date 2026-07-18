@@ -9,6 +9,8 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
+    inspection::l2::ActiveZoneContext,
+    inspector::commands::zone_catalog::ZoneCatalogCommandInterface,
     modules::logos_core::{LogoscoreCliTransport, ModuleTransportKind, SharedModuleTransport},
     source_routing::ModuleEventEnvelope,
     support::time::now_millis,
@@ -46,10 +48,37 @@ use spec::normalized_operation_method;
 use supervisor::RuntimeOperationSupervisor;
 use transition::RuntimeOperationTransition;
 
+trait InstructionTargetResolver: Send + Sync {
+    fn resolve(
+        &self,
+        runtime: &Runtime,
+        context: &ActiveZoneContext,
+        request_revision: u64,
+    ) -> Result<lez::BoundInstructionTarget>;
+}
+
+struct UnavailableInstructionTargetResolver;
+
+impl InstructionTargetResolver for UnavailableInstructionTargetResolver {
+    fn resolve(
+        &self,
+        _runtime: &Runtime,
+        _context: &ActiveZoneContext,
+        _request_revision: u64,
+    ) -> Result<lez::BoundInstructionTarget> {
+        bail!("Active Zone target could not be verified")
+    }
+}
+
+fn unavailable_instruction_target_resolver() -> Arc<dyn InstructionTargetResolver> {
+    Arc::new(UnavailableInstructionTargetResolver)
+}
+
 pub(crate) struct RuntimeOperations {
     registry: RuntimeOperationRegistry,
     next_operation_id: AtomicU64,
     backup_import: Arc<BackupImportCoordinator>,
+    instruction_target_resolver: Arc<dyn InstructionTargetResolver>,
     module_transport: SharedModuleTransport,
     supervisor: RuntimeOperationSupervisor,
 }
@@ -59,6 +88,7 @@ impl Default for RuntimeOperations {
         Self::new(
             Arc::new(LocalBackupImportStore),
             Arc::new(LogoscoreCliTransport::default()),
+            unavailable_instruction_target_resolver(),
         )
     }
 }
@@ -66,7 +96,11 @@ impl Default for RuntimeOperations {
 impl RuntimeOperations {
     #[cfg(test)]
     pub(crate) fn with_test_module_transport(module_transport: SharedModuleTransport) -> Self {
-        Self::new(Arc::new(LocalBackupImportStore), module_transport)
+        Self::new(
+            Arc::new(LocalBackupImportStore),
+            module_transport,
+            unavailable_instruction_target_resolver(),
+        )
     }
 
     pub(crate) fn start_from_value(&self, runtime: &Runtime, value: Value) -> Result<Value> {
@@ -93,7 +127,16 @@ impl RuntimeOperations {
         self.start_admitted(runtime, request)
     }
 
-    fn start_admitted(&self, runtime: &Runtime, request: RuntimeOperationRequest) -> Result<Value> {
+    fn start_admitted(
+        &self,
+        runtime: &Runtime,
+        mut request: RuntimeOperationRequest,
+    ) -> Result<Value> {
+        lez::bind_instruction_target(
+            runtime,
+            self.instruction_target_resolver.as_ref(),
+            &mut request,
+        )?;
         let operation_id = RuntimeOperationId::allocated(
             request.domain_name(),
             &normalized_operation_method(request.method_name()),
@@ -310,7 +353,11 @@ impl RuntimeOperations {
 
     #[cfg(test)]
     fn with_backup_import_store(store: Arc<dyn backup_import::BackupImportStore>) -> Self {
-        Self::new(store, Arc::new(LogoscoreCliTransport::default()))
+        Self::new(
+            store,
+            Arc::new(LogoscoreCliTransport::default()),
+            unavailable_instruction_target_resolver(),
+        )
     }
 
     #[cfg(test)]
@@ -336,6 +383,7 @@ impl RuntimeOperations {
     fn new(
         backup_import_store: Arc<dyn backup_import::BackupImportStore>,
         module_transport: SharedModuleTransport,
+        instruction_target_resolver: Arc<dyn InstructionTargetResolver>,
     ) -> Self {
         let registry = RuntimeOperationRegistry::default();
         Self {
@@ -343,6 +391,7 @@ impl RuntimeOperations {
             registry,
             next_operation_id: AtomicU64::new(1),
             backup_import: Arc::new(BackupImportCoordinator::new(backup_import_store)),
+            instruction_target_resolver,
             module_transport,
         }
     }
@@ -386,7 +435,13 @@ impl RuntimeOperationCloseHandle {
 
 impl Default for RuntimeOperationInterface {
     fn default() -> Self {
-        Self::new(Arc::new(LogoscoreCliTransport::default()))
+        Self {
+            operations: RuntimeOperations::new(
+                Arc::new(LocalBackupImportStore),
+                Arc::new(LogoscoreCliTransport::default()),
+                unavailable_instruction_target_resolver(),
+            ),
+        }
     }
 }
 
@@ -454,9 +509,16 @@ impl OperationRunner for RuntimeOperationRunner<'_> {
 }
 
 impl RuntimeOperationInterface {
-    pub(crate) fn new(module_transport: SharedModuleTransport) -> Self {
+    pub(crate) fn new(
+        module_transport: SharedModuleTransport,
+        zone_catalog: Arc<ZoneCatalogCommandInterface>,
+    ) -> Self {
         Self {
-            operations: RuntimeOperations::new(Arc::new(LocalBackupImportStore), module_transport),
+            operations: RuntimeOperations::new(
+                Arc::new(LocalBackupImportStore),
+                module_transport,
+                Arc::new(lez::ZoneCatalogInstructionTargetResolver::new(zone_catalog)),
+            ),
         }
     }
 
