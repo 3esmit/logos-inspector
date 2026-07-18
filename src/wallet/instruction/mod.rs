@@ -364,6 +364,83 @@ mod tests {
     }
 
     #[test]
+    fn preview_serializes_u16_with_risc0_wire_parity() -> Result<()> {
+        #[derive(Serialize)]
+        enum ReferenceInstruction {
+            SetLimit(u16, u32),
+        }
+
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instructions": [{
+                    "name": "set_limit",
+                    "args": [
+                        {"name": "limit", "type": "u16"},
+                        {"name": "following", "type": "u32"}
+                    ]
+                }]
+            })
+            .to_string(),
+            program_id_hex: "11".repeat(32),
+            instruction: "set_limit".to_owned(),
+            args: BTreeMap::from([
+                ("limit".to_owned(), u16::MAX.to_string()),
+                ("following".to_owned(), "42".to_owned()),
+            ]),
+            ..Default::default()
+        };
+
+        let report = local_wallet_instruction_preview(serde_json::to_value(request)?)?;
+        let expected_words =
+            risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetLimit(u16::MAX, 42)).map_err(
+                |error| anyhow::anyhow!("failed to serialize reference instruction: {error}"),
+            )?;
+        if report.instruction_words != expected_words {
+            bail!(
+                "u16 words differ from RISC0 serialization: {:?} != {:?}",
+                report.instruction_words,
+                expected_words
+            );
+        }
+        if report.args.first().map(|arg| arg.value.as_str()) != Some("65535") {
+            bail!("u16 report value was not canonical decimal");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preview_rejects_out_of_range_u16() -> Result<()> {
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instructions": [{
+                    "name": "set_limit",
+                    "args": [{"name": "limit", "type": "u16"}]
+                }]
+            })
+            .to_string(),
+            program_id_hex: "11".repeat(32),
+            instruction: "set_limit".to_owned(),
+            args: BTreeMap::from([("limit".to_owned(), "65536".to_owned())]),
+            ..Default::default()
+        };
+
+        let result = local_wallet_instruction_preview(serde_json::to_value(request)?);
+        if result.is_ok() {
+            bail!("out-of-range u16 was accepted");
+        }
+        let error = result
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        if !error.contains("invalid u16") {
+            bail!("unexpected u16 range error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn private_instruction_requires_program_binary() -> Result<()> {
         let account = format!("Private/0x{}", "33".repeat(32));
         let request = serde_json::to_value(sample_request(&account))?;
