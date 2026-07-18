@@ -717,6 +717,7 @@ QtObject {
         managedNodes: localNodesState
     }
     property alias deliveryAppTab: deliveryAppState.currentTab
+    property string deliveryDiagnosticsTab: "overview"
     property alias deliveryActiveTopic: deliveryAppState.activeTopic
     property alias deliveryModuleEvents: deliveryAppState.deliveryModuleEvents
     property alias deliveryModuleEventRevision: deliveryAppState.deliveryModuleEventRevision
