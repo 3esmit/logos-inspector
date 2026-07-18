@@ -44,7 +44,18 @@ function eventTimeText(timestamp) {
     if (text.length > 0 && /^[0-9]+$/.test(text)) {
         const number = Number(text)
         if (Number.isFinite(number) && number > 0) {
-            return Qt.formatTime(new Date(number > 100000000000 ? number : number * 1000), "HH:mm:ss")
+            let milliseconds = number * 1000
+            if (number >= 100000000000000000) {
+                milliseconds = number / 1000000
+            } else if (number >= 100000000000000) {
+                milliseconds = number / 1000
+            } else if (number >= 100000000000) {
+                milliseconds = number
+            }
+            const date = new Date(milliseconds)
+            if (Number.isFinite(date.getTime())) {
+                return Qt.formatTime(date, "HH:mm:ss")
+            }
         }
     }
     return Qt.formatTime(new Date(), "HH:mm:ss")
@@ -75,7 +86,7 @@ function shortText(value, max) {
     if (text.length <= limit) {
         return text
     }
-    return text.slice(0, limit - 1) + "..."
+    return text.slice(0, limit - 3) + "..."
 }
 
 function valueContainsText(value, needle) {
