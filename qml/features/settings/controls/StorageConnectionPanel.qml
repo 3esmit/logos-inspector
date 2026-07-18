@@ -82,6 +82,8 @@ SourceSettingsPanel {
 
         RefreshRateField {
             theme: root.theme
+            accessibleName: qsTr("Storage auto refresh")
+            accessibleDescription: qsTr("Automatic Storage status refresh interval in seconds. Set to 0 to turn it off.")
             value: root.modelRef.metrics.storageRefreshRate
             onRateEdited: value => root.modelRef.metrics.setNetworkConnectionRate("storage", value)
         }
@@ -89,6 +91,8 @@ SourceSettingsPanel {
         SecondsField {
             theme: root.theme
             label: qsTr("Rolling window")
+            accessibleName: qsTr("Storage rolling window")
+            accessibleDescription: qsTr("Storage metrics rolling window in seconds.")
             value: root.modelRef.storageRollingWindow
             onValueEdited: value => root.modelRef.storageRollingWindow = value
         }

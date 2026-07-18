@@ -55,6 +55,12 @@ SourceSettingsPanel {
 
         RefreshRateField {
             theme: root.theme
+            accessibleName: root.title.length
+                ? qsTr("%1 auto refresh").arg(root.title)
+                : qsTr("Auto refresh")
+            accessibleDescription: root.title.length
+                ? qsTr("Automatic %1 status refresh interval in seconds. Set to 0 to turn it off.").arg(root.title)
+                : qsTr("Automatic status refresh interval in seconds. Set to 0 to turn it off.")
             value: root.refreshRate
             onRateEdited: value => root.refreshRateEdited(value)
         }

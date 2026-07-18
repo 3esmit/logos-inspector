@@ -10,6 +10,8 @@ ColumnLayout {
 
     required property Theme theme
     property int value: 30
+    property string accessibleName: qsTr("Auto refresh")
+    property string accessibleDescription: qsTr("Automatic refresh interval in seconds. Set to 0 to turn it off.")
     signal rateEdited(int value)
 
     spacing: 6
@@ -33,6 +35,21 @@ ColumnLayout {
         value: root.value
         editable: true
         hoverEnabled: true
+        focusPolicy: Qt.StrongFocus
+        Accessible.name: root.accessibleName
+        Accessible.description: root.accessibleDescription
+        Keys.onUpPressed: event => {
+            root.rateEdited(Math.min(
+                refreshSpin.to,
+                refreshSpin.value + refreshSpin.stepSize))
+            event.accepted = true
+        }
+        Keys.onDownPressed: event => {
+            root.rateEdited(Math.max(
+                refreshSpin.from,
+                refreshSpin.value - refreshSpin.stepSize))
+            event.accepted = true
+        }
         Layout.fillWidth: true
         Layout.preferredHeight: root.theme.controlHeight
         textFromValue: function (value, locale) {
