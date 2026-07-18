@@ -556,6 +556,37 @@ QtObject {
         }, sourceObservation(target))
     }
 
+    function passiveStorageCidProbeRequested(origin) {
+        if (!passiveSourceObservation(origin)) {
+            return false
+        }
+        const retainedCid = observationReportStorageCid("storage")
+        if (!retainedCid.length) {
+            return false
+        }
+        const candidateArgs = sourceRouting.storageSourceReportArgs(true)
+        const candidateCid = observationRequestStorageCid("storage", {
+            args: candidateArgs
+        })
+        if (!candidateCid.length || candidateCid !== retainedCid) {
+            return false
+        }
+        const request = candidateArgs.length > 0 ? candidateArgs[0] : null
+        const sourceMode = String(request && request.source_mode || "")
+            .trim()
+            .toLowerCase()
+        const moduleSource = sourceMode === "module"
+            || sourceMode === "logoscore_cli"
+            || sourceMode === "logoscore-cli"
+        if (!moduleSource) {
+            return true
+        }
+        return String(origin || "") === "module-event"
+            && request.options
+            && typeof request.options === "object"
+            && request.options.runtime_diagnostics_enabled === true
+    }
+
     function networkConnectionRequest(kind, includeSensitiveProbe, origin) {
         switch (String(kind || "")) {
         case "blockchain":
@@ -574,11 +605,13 @@ QtObject {
                 origin
             )
         case "storage":
+            const includeStorageCid = includeSensitiveProbe === true
+                || passiveStorageCidProbeRequested(origin)
             return sourceNetworkConnectionRequest(
                 "storage",
                 "storageSourceReport",
                 sourceRouting.storageSourceReportArgs(
-                    includeSensitiveProbe === true
+                    includeStorageCid
                 ),
                 qsTr("Storage source"),
                 origin
@@ -643,10 +676,15 @@ QtObject {
         const moduleSource = sourceMode === "module"
             || sourceMode === "logoscore_cli"
             || sourceMode === "logoscore-cli"
+        const options = request.options
+            && typeof request.options === "object" ? request.options : null
+        const moduleEventCidRefresh = String(origin || "") === "module-event"
+            && options
+            && String(options.cid || "").trim().length > 0
         return moduleSource
-            && request.options
-            && typeof request.options === "object"
-            && request.options.runtime_diagnostics_enabled === true
+            && !moduleEventCidRefresh
+            && options
+            && options.runtime_diagnostics_enabled === true
     }
 
     function observationArgsWithGeneration(kind, args) {
