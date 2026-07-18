@@ -279,6 +279,8 @@ TestCase {
         verify(row.detail.indexOf("[object Object]") < 0)
 
         state.applyModuleEvent("moduleUnavailable", [{
+            node: "messaging-" + "n".repeat(80),
+            network_id: "logos.test-" + "i".repeat(80),
             source: { internal: "hidden" },
             status: "unavailable\n" + "x".repeat(220),
             message: ["hidden"]
@@ -288,6 +290,120 @@ TestCase {
         verify(boundedRow.detail.indexOf("\n") < 0)
         verify(boundedRow.detail.indexOf("[object Object]") < 0)
         verify(boundedRow.detail.indexOf("hidden") < 0)
+    }
+
+    function test_native_event_signatures_map_fields_and_nanosecond_time() {
+        const timestampMs = 1784363339000
+        const timestampNs = String(timestampMs) + "000000"
+        const expectedTime = Qt.formatTime(new Date(timestampMs), "HH:mm:ss")
+
+        const timestampVariants = [
+            String(timestampMs / 1000),
+            String(timestampMs),
+            String(timestampMs) + "000",
+            timestampNs
+        ]
+        for (let i = 0; i < timestampVariants.length; ++i) {
+            state.applyModuleEvent("connectionStateChanged", [
+                "unit-" + String(i), timestampVariants[i]
+            ], false)
+            compare(state.moduleEventRows()[0].time, expectedTime)
+        }
+
+        state.applyModuleEvent("connectionStateChanged", ["connected", timestampNs], false)
+        compare(state.moduleEventRows()[0].detail, "connected")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+        compare(state.deliveryConnectionStatus, "connected")
+
+        state.applyModuleEvent("messageSent", ["request-1", "hash-1", timestampNs], false)
+        compare(state.moduleEventRows()[0].detail, "request-1 / hash-1")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+
+        state.applyModuleEvent("messagePropagated", ["request-2", "hash-2", timestampNs], false)
+        compare(state.moduleEventRows()[0].detail, "request-2 / hash-2")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+
+        state.applyModuleEvent("messageError", ["request-3", "hash-3", "rejected", timestampNs], false)
+        compare(state.moduleEventRows()[0].detail, "request-3 / hash-3 / rejected")
+        compare(state.moduleEventRows()[0].status, "error")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+
+        const effect = state.applyModuleEvent("messageReceived", [
+            "hash-4", "/logos/1/chat/proto", "hello", timestampNs
+        ], false)
+        compare(state.moduleEventRows()[0].detail, "/logos/1/chat/proto / hash-4 / hello")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+        compare(effect.deliveryMessage.messageHash, "hash-4")
+        compare(effect.deliveryMessage.topic, "/logos/1/chat/proto")
+        compare(effect.deliveryMessage.payload, "hello")
+
+        state.applyModuleEvent("nodeStarted", [true, "started", timestampNs], false)
+        compare(state.moduleEventRows()[0].detail, "started")
+        compare(state.moduleEventRows()[0].status, "ok")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+
+        state.applyModuleEvent("nodeStopped", [true, "stopped", timestampNs], false)
+        compare(state.moduleEventRows()[0].detail, "stopped")
+        compare(state.moduleEventRows()[0].status, "ok")
+        compare(state.moduleEventRows()[0].time, expectedTime)
+
+        state.applyModuleEvent("connectionStateChanged", [
+            "connected\n" + "c".repeat(220), timestampNs
+        ], false)
+        verify(state.deliveryConnectionStatus.length <= 180)
+        verify(state.deliveryConnectionStatus.indexOf("\n") < 0)
+        verify(state.moduleEventRows()[0].detail.length <= 180)
+        verify(state.moduleEventRows()[0].detail.indexOf("\n") < 0)
+
+        state.applyModuleEvent("messageError", [
+            "request\n" + "r".repeat(220),
+            "hash-5",
+            "failure\n" + "e".repeat(300),
+            timestampNs
+        ], false)
+        verify(state.moduleEventRows()[0].detail.length <= 180)
+        verify(state.moduleEventRows()[0].detail.indexOf("\n") < 0)
+    }
+
+    function test_successful_structured_node_event_keeps_success_tone() {
+        const effect = state.applyModuleEvent("nodeStarted", [{
+            node: "messaging",
+            network_id: "logos.test",
+            success: true,
+            simulated: true,
+            source: "poll",
+            message: "Messaging health is READY",
+            timestamp: 1784363339000
+        }], false)
+
+        verify(effect.refreshMessagingConnection)
+        compare(state.deliveryNodeStatus, "ok: Messaging health is READY")
+        const row = state.moduleEventRows()[0]
+        compare(row.status, "ok")
+        compare(row.detail, "messaging / logos.test / poll / Messaging health is READY")
+
+        state.applyModuleEvent("nodeStopped", [{
+            node: "messaging",
+            success: false,
+            source: "poll",
+            message: "Messaging stop failed",
+            timestamp: 1784363339000
+        }], false)
+        compare(state.deliveryNodeStatus, "error: Messaging stop failed")
+        compare(state.moduleEventRows()[0].status, "error")
+
+        state.applyModuleEvent("nodeStarted", [
+            false,
+            "Messaging unavailable\n" + "u".repeat(220),
+            "1784363339000000000"
+        ], false)
+        verify(state.deliveryNodeStatus.length <= 180)
+        verify(state.deliveryNodeStatus.indexOf("\n") < 0)
+        verify(state.deliveryNodeStatus.indexOf("error: Messaging unavailable") === 0)
+        compare(state.moduleEventRows()[0].status, "error")
+        verify(state.moduleEventRows()[0].detail.indexOf("Messaging unavailable") === 0)
+        verify(state.moduleEventRows()[0].detail.length <= 180)
+        verify(state.moduleEventRows()[0].detail.indexOf("\n") < 0)
     }
 
     function test_connection_event_returns_refresh_effect() {

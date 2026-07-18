@@ -207,24 +207,31 @@ QtObject {
     function deliveryEventRecord(eventName, args) {
         const values = ModuleEventUtils.eventValues(args)
         const object = ModuleEventUtils.eventObject(args)
-        const timestamp = ModuleEventUtils.fieldText(object, ["timestamp", "time"]) || ModuleEventUtils.scalarText(values[3])
-        const topic = ModuleEventUtils.fieldText(object, ["contentTopic", "content_topic", "topic"]) || ModuleEventUtils.scalarText(values[1])
-        const payload = object.payload !== undefined ? object.payload : values[2]
-        const hash = ModuleEventUtils.fieldText(object, ["messageHash", "message_hash", "hash"]) || ModuleEventUtils.scalarText(values[0])
-        const requestId = ModuleEventUtils.fieldText(object, ["requestId", "request_id"]) || ModuleEventUtils.scalarText(values[0])
-        let error = ModuleEventUtils.fieldText(object, ["error", "message"])
+        const timestamp = ModuleEventUtils.fieldText(object, ["timestamp", "time"]) || positionalEventTimestamp(eventName, values)
+        const topic = ModuleEventUtils.fieldText(object, ["contentTopic", "content_topic", "topic"]) || positionalEventTopic(eventName, values)
+        const payload = object.payload !== undefined ? object.payload : positionalEventPayload(eventName, values)
+        const hash = ModuleEventUtils.fieldText(object, ["messageHash", "message_hash", "hash"]) || positionalEventHash(eventName, values)
+        const requestId = ModuleEventUtils.fieldText(object, ["requestId", "request_id"]) || positionalEventRequestId(eventName, values)
+        const lifecycleMessage = ModuleEventUtils.singleLineText(
+            ModuleEventUtils.fieldText(object, ["message"]) || positionalLifecycleMessage(eventName, values),
+            160
+        )
+        let error = ModuleEventUtils.fieldText(object, ["error"])
         if (!error.length && eventName === "messageError") {
-            error = ModuleEventUtils.scalarText(values[2])
+            error = lifecycleMessage || ModuleEventUtils.scalarText(values[2])
         }
+        error = ModuleEventUtils.singleLineText(error, 160)
         let statusValue = ""
         if (eventName === "connectionStateChanged") {
-            statusValue = ModuleEventUtils.fieldText(object, ["connectionStatus", "connection_status", "status"]) || ModuleEventUtils.scalarText(values[0])
+            statusValue = ModuleEventUtils.singleLineText(
+                ModuleEventUtils.fieldText(object, ["connectionStatus", "connection_status", "status"]) || ModuleEventUtils.scalarText(values[0]),
+                160
+            )
         } else if (eventName === "nodeStarted" || eventName === "nodeStopped") {
             const ok = object.success !== undefined ? object.success : values[0]
             statusValue = (ok === true || String(ok).toLowerCase() === "true") ? qsTr("ok") : qsTr("error")
-            const text = ModuleEventUtils.fieldText(object, ["message"]) || ModuleEventUtils.scalarText(values[1])
-            if (text.length > 0) {
-                statusValue += ": " + text
+            if (lifecycleMessage.length > 0) {
+                statusValue += ": " + lifecycleMessage
             }
         }
         return {
@@ -235,10 +242,58 @@ QtObject {
             messageHash: hash,
             requestId: requestId,
             error: error,
-            status: moduleEventTone(eventName, error),
+            status: moduleEventTone(eventName, error, statusValue),
             statusValue: statusValue,
-            detail: moduleEventDetail(eventName, requestId, hash, topic, error, payload, object)
+            detail: moduleEventDetail(eventName, requestId, hash, topic, error, payload, object, statusValue, lifecycleMessage)
         }
+    }
+
+    function positionalEventTimestamp(eventName, values) {
+        if (eventName === "connectionStateChanged") {
+            return ModuleEventUtils.scalarText(values[1])
+        }
+        if (eventName === "messageSent" || eventName === "messagePropagated") {
+            return ModuleEventUtils.scalarText(values[2])
+        }
+        if (eventName === "nodeStarted" || eventName === "nodeStopped") {
+            return ModuleEventUtils.scalarText(values[2])
+        }
+        if (eventName === "messageReceived" || eventName === "messageError") {
+            return ModuleEventUtils.scalarText(values[3])
+        }
+        return ""
+    }
+
+    function positionalEventTopic(eventName, values) {
+        return eventName === "messageReceived" ? ModuleEventUtils.scalarText(values[1]) : ""
+    }
+
+    function positionalEventPayload(eventName, values) {
+        return eventName === "messageReceived" ? values[2] : undefined
+    }
+
+    function positionalEventHash(eventName, values) {
+        if (eventName === "messageReceived") {
+            return ModuleEventUtils.scalarText(values[0])
+        }
+        if (eventName === "messageSent" || eventName === "messagePropagated" || eventName === "messageError") {
+            return ModuleEventUtils.scalarText(values[1])
+        }
+        return ""
+    }
+
+    function positionalEventRequestId(eventName, values) {
+        if (eventName === "messageSent" || eventName === "messagePropagated" || eventName === "messageError") {
+            return ModuleEventUtils.scalarText(values[0])
+        }
+        return ""
+    }
+
+    function positionalLifecycleMessage(eventName, values) {
+        if (eventName === "nodeStarted" || eventName === "nodeStopped") {
+            return ModuleEventUtils.scalarText(values[1])
+        }
+        return ""
     }
 
     function appendModuleEvent(record) {
@@ -253,27 +308,42 @@ QtObject {
         deliveryModuleEventRevision += 1
     }
 
-    function moduleEventDetail(eventName, requestId, hash, topic, error, payload, object) {
+    function moduleEventDetail(eventName, requestId, hash, topic, error, payload, object, statusValue, lifecycleMessage) {
         if (eventName === "messageError") {
-            return ModuleEventUtils.compactParts([requestId, ModuleEventUtils.shortText(hash, 20), error]).join(" / ")
+            return boundedEventDetail([requestId, ModuleEventUtils.shortText(hash, 20), error])
         }
         if (eventName === "messageReceived") {
-            return ModuleEventUtils.compactParts([ModuleEventUtils.shortText(topic, 44), ModuleEventUtils.shortText(hash, 20), ModuleEventUtils.payloadSummary(payload)]).join(" / ")
+            return boundedEventDetail([ModuleEventUtils.shortText(topic, 44), ModuleEventUtils.shortText(hash, 20), ModuleEventUtils.payloadSummary(payload)])
         }
         if (eventName === "connectionStateChanged") {
-            return ModuleEventUtils.compactParts([requestId || hash]).join(" / ")
+            return boundedEventDetail([statusValue])
         }
-        const structured = ModuleEventUtils.compactParts([
-            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["node"]), 64),
-            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["networkId", "network_id"]), 64),
-            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["source"]), 64),
-            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["status"]), 64),
-            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["message"]), 64)
-        ]).join(" / ")
+        if (eventName === "messageSent" || eventName === "messagePropagated") {
+            return boundedEventDetail([requestId, ModuleEventUtils.shortText(hash, 20)])
+        }
+        const structured = boundedEventDetail([
+            ModuleEventUtils.fieldText(object, ["node"]),
+            ModuleEventUtils.fieldText(object, ["networkId", "network_id"]),
+            ModuleEventUtils.fieldText(object, ["source"]),
+            ModuleEventUtils.fieldText(object, ["status"]),
+            ModuleEventUtils.fieldText(object, ["message"])
+        ])
         if (structured.length > 0) {
-            return ModuleEventUtils.shortText(structured, 180)
+            return structured
         }
-        return ModuleEventUtils.compactParts([requestId, ModuleEventUtils.shortText(hash, 20), ModuleEventUtils.shortText(topic, 44)]).join(" / ")
+        if (eventName === "nodeStarted" || eventName === "nodeStopped") {
+            return boundedEventDetail([lifecycleMessage])
+        }
+        return boundedEventDetail([requestId, ModuleEventUtils.shortText(hash, 20), ModuleEventUtils.shortText(topic, 44)])
+    }
+
+    function boundedEventDetail(parts) {
+        const values = ModuleEventUtils.compactParts(parts)
+        const normalized = []
+        for (let i = 0; i < values.length; ++i) {
+            normalized.push(ModuleEventUtils.singleLineText(values[i], 120))
+        }
+        return ModuleEventUtils.singleLineText(normalized.join(" / "), 180)
     }
 
     function deliveryMessageEffect(record) {
@@ -285,8 +355,12 @@ QtObject {
         }
     }
 
-    function moduleEventTone(eventName, error) {
-        if (eventName === "messageError" || String(error || "").length > 0) {
+    function moduleEventTone(eventName, error, statusValue) {
+        const failedLifecycle = (eventName === "nodeStarted" || eventName === "nodeStopped")
+            && String(statusValue || "").indexOf(qsTr("error")) === 0
+        if (eventName === "messageError" || eventName === "moduleUnavailable"
+                || eventName === "nodeUnavailable" || failedLifecycle
+                || String(error || "").length > 0) {
             return qsTr("error")
         }
         if (eventName === "messageReceived" || eventName === "messagePropagated") {
