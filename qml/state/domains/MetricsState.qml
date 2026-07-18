@@ -47,6 +47,12 @@ QtObject {
     property var messagingModuleReport: null
     property var storageSourceReport: null
     property var messagingSourceReport: null
+    property var messagingMetricsReport: null
+    property double messagingMetricsCheckedAtMs: 0
+    property int messagingMetricsRequestGeneration: 0
+    property int messagingMetricsRevision: 0
+    property var activeMessagingMetricsLease: null
+    property var messagingMetricsAttempt: null
 
     property var observationConfigurationGenerations: ({
         blockchain: 0,
@@ -84,6 +90,7 @@ QtObject {
         interval: Math.max(1, Math.min(root.observationTimeoutMs, 1000))
         repeat: true
         running: Object.keys(root.activeObservationLeases).length > 0
+            || root.activeMessagingMetricsLease !== null
         onTriggered: root.expireTimedOutObservations()
     }
 
@@ -282,6 +289,10 @@ QtObject {
             }
         }
 
+        if (request.runtimeMetricsOnly === true) {
+            return observeMessagingMetrics(request)
+        }
+
         const storageCid = observationRequestStorageCid(target, request)
         const interactive = showResult === true
         const waiter = observationWaiter(
@@ -451,6 +462,7 @@ QtObject {
                 const options = copyMap(head.options)
                 delete options.cid
                 delete options.runtime_diagnostics_enabled
+                delete options.runtime_metrics_enabled
                 head.options = options
             }
             delete head.include_sensitive_probe
@@ -641,6 +653,8 @@ QtObject {
     }
 
     function sourceNetworkConnectionRequest(kind, method, args, label, origin) {
+        const runtimeMetricsRequested = sourceObservationRequestsRuntimeMetrics(
+            kind, args, origin)
         const runtimeDiagnosticsReduced =
             sourceObservationReducesRuntimeDiagnostics(
                 kind, method, args, origin)
@@ -652,7 +666,9 @@ QtObject {
                 sourceObservationArgs(kind, method, args, origin)
             ),
             label: label,
-            runtimeDiagnosticsReduced: runtimeDiagnosticsReduced
+            runtimeDiagnosticsReduced: runtimeDiagnosticsReduced,
+            runtimeMetricsOnly: runtimeMetricsRequested
+                && runtimeDiagnosticsReduced
         }
     }
 
@@ -678,9 +694,29 @@ QtObject {
         const request = copyMap(values[0])
         const options = copyMap(request.options)
         options.runtime_diagnostics_enabled = false
+        if (sourceObservationRequestsRuntimeMetrics(kind, args, origin)) {
+            options.runtime_metrics_enabled = true
+        } else {
+            delete options.runtime_metrics_enabled
+        }
         request.options = options
         values[0] = request
         return values
+    }
+
+    function sourceObservationRequestsRuntimeMetrics(kind, args, origin) {
+        if (String(kind || "") !== "messaging"
+                || String(origin || "") !== "scheduler"
+                || !Array.isArray(args) || args.length === 0
+                || !args[0] || typeof args[0] !== "object") {
+            return false
+        }
+        const sourceMode = String(args[0].source_mode || "")
+            .trim()
+            .toLowerCase()
+        return sourceMode === "module"
+            || sourceMode === "logoscore_cli"
+            || sourceMode === "logoscore-cli"
     }
 
     function sourceObservationReducesRuntimeDiagnostics(
@@ -748,6 +784,176 @@ QtObject {
         return values
     }
 
+    function messagingMetricsLeaseCurrent(lease) {
+        const active = activeMessagingMetricsLease
+        return lease && active
+            && Number(active.sequence || 0) === Number(lease.sequence || 0)
+            && Number(active.configurationGeneration || 0)
+                === Number(lease.configurationGeneration || 0)
+            && familyConfigurationGeneration("messaging")
+                === Number(lease.configurationGeneration || 0)
+    }
+
+    function messagingAcceptedRequestGeneration() {
+        const status = networkConnectionStatus.messaging || null
+        return Math.max(
+            messagingMetricsRequestGeneration,
+            Number(status && status.requestGeneration || 0)
+        )
+    }
+
+    function observeMessagingMetrics(request) {
+        const fullObservation = activeObservationLeases.messaging
+        if (fullObservation
+                && fullObservation.runtimeDiagnosticsEnabled === true) {
+            return {
+                ok: true,
+                pending: true,
+                joined: true,
+                skipped: true,
+                text: "",
+                error: ""
+            }
+        }
+        if (activeMessagingMetricsLease !== null) {
+            return {
+                ok: true,
+                pending: true,
+                joined: true,
+                text: "",
+                error: ""
+            }
+        }
+        const lease = {
+            kind: "messaging",
+            configurationGeneration: familyConfigurationGeneration("messaging"),
+            sequence: nextFamilyRequestSequence("messaging"),
+            origin: "scheduler",
+            deadlineMs: Date.now() + Math.max(1, root.observationTimeoutMs)
+        }
+        activeMessagingMetricsLease = lease
+        const complete = function (response) {
+            root.completeMessagingMetricsObservation(lease, response)
+            return false
+        }
+        const dispatch = gateway.requestModuleAsyncUnobserved(
+            request.module,
+            request.method,
+            request.args,
+            request.label,
+            false,
+            complete,
+            function () { return root.messagingMetricsLeaseCurrent(lease) }
+        )
+        if (messagingMetricsLeaseCurrent(lease)
+                && (dispatch === false || dispatch === null)) {
+            completeMessagingMetricsObservation(lease, {
+                ok: false,
+                text: "",
+                error: qsTr("Metrics request was not admitted.")
+            })
+        }
+        return dispatch
+    }
+
+    function completeMessagingMetricsObservation(lease, response) {
+        if (!messagingMetricsLeaseCurrent(lease)) {
+            return false
+        }
+        activeMessagingMetricsLease = null
+        const checkedAtMs = Date.now()
+        const requestGeneration = Number(lease.sequence || 0)
+        const currentStatus = networkConnectionStatus.messaging || null
+        const projectStatus = requestGeneration
+            >= Number(currentStatus && currentStatus.requestGeneration || 0)
+        const successfulTransport = response && response.ok === true
+        const report = successfulTransport && response.value !== undefined
+            ? response.value : null
+        const probe = reportProbe(report, "collectOpenMetricsText")
+        const probeOk = probe && probe.ok === true
+            && probe.value !== undefined && probe.value !== null
+        const attempt = {
+            ok: probeOk,
+            transportOk: successfulTransport,
+            error: successfulTransport
+                ? String(probe && probe.error ? probe.error
+                    : (probeOk ? "" : qsTr("OpenMetrics evidence is unavailable.")))
+                : String(response && response.error
+                    ? response.error : qsTr("No response")),
+            checkedAtMs: checkedAtMs,
+            configurationGeneration: Number(lease.configurationGeneration || 0),
+            requestGeneration: requestGeneration,
+            origin: "scheduler",
+            runtimeDiagnosticsReduced: true,
+            runtimeMetricsOnly: true
+        }
+        const priorMetricsAttemptGeneration = Number(
+            messagingMetricsAttempt
+                && messagingMetricsAttempt.requestGeneration || 0)
+        if (requestGeneration >= priorMetricsAttemptGeneration) {
+            messagingMetricsAttempt = attempt
+        }
+        if (projectStatus) {
+            const attempts = copyMap(observationAttempts)
+            attempts.messaging = attempt
+            observationAttempts = attempts
+            const storedReport = sourceReport("messaging")
+            const nextStatus = copyMap(networkConnectionStatus)
+            const preserveHealth = probeOk && currentStatus !== null
+                && currentStatus.healthAuthoritative === true
+            nextStatus.messaging = {
+                known: preserveHealth
+                    ? currentStatus.known === true : !probeOk,
+                ok: preserveHealth
+                    ? currentStatus.ok === true : false,
+                transportOk: successfulTransport,
+                healthAuthoritative: preserveHealth
+                    || (!probeOk && currentStatus !== null
+                        && currentStatus.healthAuthoritative === true),
+                text: preserveHealth
+                    ? String(currentStatus.text || qsTr("Unknown"))
+                    : (probeOk ? qsTr("Unknown") : qsTr("Error")),
+                detail: preserveHealth
+                    ? String(currentStatus.detail || "")
+                    : (probeOk
+                        ? qsTr("Metrics reachable; Delivery readiness not queried.")
+                        : attempt.error),
+                value: preserveHealth ? currentStatus.value
+                    : (probeOk ? null : (storedReport || report)),
+                checkedAt: preserveHealth
+                    ? String(currentStatus.checkedAt || "")
+                    : (probeOk ? "" : new Date(checkedAtMs).toLocaleTimeString(
+                        Qt.locale(), "hh:mm:ss")),
+                checkedAtMs: preserveHealth
+                    ? Number(currentStatus.checkedAtMs || 0)
+                    : (probeOk ? 0 : checkedAtMs),
+                transportCheckedAtMs: checkedAtMs,
+                stale: preserveHealth
+                    ? currentStatus.stale === true
+                    : (!probeOk && storedReport !== null
+                        && storedReport !== undefined),
+                configurationGeneration: Number(
+                    lease.configurationGeneration || 0),
+                requestGeneration: requestGeneration,
+                origin: preserveHealth
+                    ? String(currentStatus.origin || "scheduler") : "scheduler"
+            }
+            networkConnectionStatus = nextStatus
+            networkConnectionStatusRevision += 1
+            incrementStatusRevision("messaging")
+        }
+        const metricsCached = probeOk && cacheMessagingMetricsReport(
+                report,
+                checkedAtMs,
+                lease.configurationGeneration,
+                lease.sequence)
+        if (metricsCached) {
+            recordDashboardSnapshot(["messaging."])
+        }
+        observationRevision += 1
+        return true
+    }
+
     function completeObservation(lease, response) {
         if (!observationLeaseCurrent(lease)) {
             return false
@@ -777,10 +983,22 @@ QtObject {
                 error: qsTr("Source observation timed out.")
             })
         }
+        const metricsLease = activeMessagingMetricsLease
+        if (metricsLease && Number(metricsLease.deadlineMs || 0) <= now) {
+            completeMessagingMetricsObservation(metricsLease, {
+                ok: false,
+                text: "",
+                error: qsTr("Metrics observation timed out.")
+            })
+        }
     }
 
     function commitObservation(kind, response, lease) {
         const target = String(kind || "")
+        if (target === "messaging" && Number(lease.sequence || 0)
+                < messagingAcceptedRequestGeneration()) {
+            return
+        }
         const preserveFullReport =
             reducedObservationPreservesFullReport(target, lease)
         const checkedAtMs = Date.now()
@@ -824,15 +1042,15 @@ QtObject {
             return
         }
 
-        if (successfulTransport && !preserveFullReport) {
-            cacheObservationValue(target, value, lease, checkedAtMs)
-        }
+        const metricEvidenceUpdated = successfulTransport && !preserveFullReport
+            ? cacheObservationValue(target, value, lease, checkedAtMs) : false
 
         const nextStatus = copyMap(networkConnectionStatus)
         nextStatus[target] = {
             known: true,
             ok: healthy,
             transportOk: successfulTransport,
+            healthAuthoritative: target === "messaging",
             text: healthy ? qsTr("OK") : qsTr("Error"),
             detail: successfulTransport
                 ? networkConnectionSummary(target, statusValue)
@@ -849,8 +1067,23 @@ QtObject {
         networkConnectionStatusRevision += 1
         incrementStatusRevision(target)
         observationRevision += 1
-        recordDashboardSnapshot()
+        if (metricEvidenceUpdated) {
+            recordDashboardSnapshot(observationMetricPrefixes(target))
+        }
         gateway.refreshCapabilityRegistryIfLoaded()
+    }
+
+    function observationMetricPrefixes(kind) {
+        switch (String(kind || "")) {
+        case "blockchain":
+            return ["bedrock.", "lez.", "indexer."]
+        case "storage":
+            return ["storage."]
+        case "messaging":
+            return ["messaging."]
+        default:
+            return []
+        }
     }
 
     function reducedObservationPreservesFullReport(kind, lease) {
@@ -893,8 +1126,34 @@ QtObject {
 
     function cacheObservationValue(kind, value, lease, checkedAtMs) {
         const target = String(kind || "")
+        let metricEvidenceUpdated = false
         if (target === "blockchain") {
             gateway.cacheBlockchainResult("blockchainNode", value)
+            metricEvidenceUpdated = true
+        } else if (target === "storage") {
+            metricEvidenceUpdated = true
+        } else if (target === "messaging") {
+            const metricsCached = cacheMessagingMetricsReport(
+                value,
+                checkedAtMs,
+                lease.configurationGeneration,
+                lease.sequence
+            )
+            metricEvidenceUpdated = metricsCached
+            if (metricsCached) {
+                messagingMetricsAttempt = {
+                    ok: true,
+                    transportOk: true,
+                    error: "",
+                    checkedAtMs: Number(checkedAtMs || Date.now()),
+                    configurationGeneration: Number(
+                        lease.configurationGeneration || 0),
+                    requestGeneration: Number(lease.sequence || 0),
+                    origin: String(lease.origin || "manual"),
+                    runtimeDiagnosticsReduced: false,
+                    runtimeMetricsOnly: false
+                }
+            }
         }
         setSourceReport(target, value || null, {
             configurationGeneration: Number(lease.configurationGeneration || 0),
@@ -902,6 +1161,25 @@ QtObject {
             origin: String(lease.origin || "manual"),
             checkedAtMs: checkedAtMs
         }, lease)
+        return metricEvidenceUpdated
+    }
+
+    function cacheMessagingMetricsReport(
+            report, checkedAtMs, configurationGeneration, requestGeneration) {
+        const probe = reportProbe(report, "collectOpenMetricsText")
+        if (!probe || probe.ok !== true
+                || probe.value === undefined || probe.value === null
+                || Number(configurationGeneration || 0)
+                    !== familyConfigurationGeneration("messaging")
+                || Number(requestGeneration || 0)
+                    < messagingMetricsRequestGeneration) {
+            return false
+        }
+        messagingMetricsReport = report
+        messagingMetricsCheckedAtMs = Number(checkedAtMs || Date.now())
+        messagingMetricsRequestGeneration = Number(requestGeneration || 0)
+        messagingMetricsRevision += 1
+        return true
     }
 
     function observationReportCompatible(kind, lease) {
@@ -1021,6 +1299,15 @@ QtObject {
         delete attempts[target]
         observationAttempts = attempts
 
+        if (target === "messaging") {
+            activeMessagingMetricsLease = null
+            messagingMetricsReport = null
+            messagingMetricsCheckedAtMs = 0
+            messagingMetricsRequestGeneration = 0
+            messagingMetricsAttempt = null
+            messagingMetricsRevision += 1
+        }
+
         clearObservationReport(target)
         if (target === "blockchain") {
             clearDashboardMetricHistoryForPrefixes([
@@ -1104,7 +1391,15 @@ QtObject {
             reportCheckedAtMs: provenance && provenance.checkedAtMs
                 ? Number(provenance.checkedAtMs) : 0,
             stale: status && status.stale === true,
-            provenance: provenance
+            provenance: provenance,
+            metricsReport: target === "messaging"
+                ? messagingMetricsReport : null,
+            metricsAttempt: target === "messaging"
+                ? messagingMetricsAttempt : null,
+            metricsCheckedAtMs: target === "messaging"
+                ? messagingMetricsCheckedAtMs : 0,
+            metricsCheckedAt: target === "messaging"
+                ? observationTimeText(messagingMetricsCheckedAtMs) : ""
         }
     }
 
@@ -1275,7 +1570,6 @@ QtObject {
             gateway.projectZoneDashboard()
             root.dashboardRefreshing = false
             root.dashboardError = errors.join("\n")
-            root.recordDashboardSnapshot()
             const value = {
                 overview: root.dashboardOverview || null,
                 node: root.dashboardNode || null,
@@ -1468,8 +1762,8 @@ QtObject {
     function dashboardMetricWindowDelta(key) { return AppModelMetrics.dashboardMetricWindowDelta(root, key) }
     function dashboardMetricWindowMs(key) { return AppModelMetrics.dashboardMetricWindowMs(root, key) }
     function dashboardMetricText(key) { return AppModelMetrics.dashboardMetricText(root, key) }
-    function recordDashboardSnapshot() {
-        const result = AppModelMetrics.recordDashboardSnapshot(root)
+    function recordDashboardSnapshot(prefixes) {
+        const result = AppModelMetrics.recordDashboardSnapshot(root, prefixes)
         dashboardSnapshotRevision += 1
         return result
     }

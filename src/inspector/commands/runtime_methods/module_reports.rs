@@ -8,7 +8,7 @@ use crate::{
         logoscore_status_report, modules_report,
     },
     source_routing::{
-        bedrock_layer, delivery_source_report as inspect_delivery_source_report, messaging_layer,
+        bedrock_layer, delivery_source_report_with_runtime_metrics, messaging_layer,
         source_policy_report, storage_layer,
         storage_source_report as inspect_storage_source_report,
     },
@@ -120,6 +120,7 @@ pub(super) fn delivery_report(
         args.optional_string(0),
         args.optional_bool(1),
         false,
+        false,
     )))
 }
 
@@ -130,11 +131,14 @@ pub(super) fn delivery_source_report(
 ) -> Result<Value> {
     let args = Args::new(args)?;
     let inputs = messaging_layer::report_inputs(&args)?;
-    to_value(runtime.block_on(inspect_delivery_source_report(
-        &inputs.source_mode,
-        inputs.rest_endpoint.as_deref(),
-        inputs.metrics_endpoint.as_deref(),
-        inputs.runtime_diagnostics_enabled,
-        &module_transport,
-    )))
+    to_value(
+        runtime.block_on(delivery_source_report_with_runtime_metrics(
+            &inputs.source_mode,
+            inputs.rest_endpoint.as_deref(),
+            inputs.metrics_endpoint.as_deref(),
+            inputs.runtime_diagnostics_enabled,
+            inputs.runtime_metrics_enabled,
+            &module_transport,
+        )),
+    )
 }

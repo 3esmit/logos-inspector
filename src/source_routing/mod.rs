@@ -25,7 +25,7 @@ pub(crate) use delivery as messaging_layer;
 pub use delivery::delivery_source_report;
 pub(crate) use delivery::{
     delivery_advertised_health_identity_probe_plan, delivery_advertised_identity_probe_plan,
-    delivery_module_probe_plan,
+    delivery_module_probe_plan, delivery_source_report_with_runtime_metrics,
 };
 pub use network_profiles::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,

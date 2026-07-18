@@ -59,14 +59,36 @@ pub async fn delivery_source_report(
     runtime_diagnostics_enabled: bool,
     module_transport: &SharedModuleTransport,
 ) -> SourceReport {
+    delivery_source_report_with_runtime_metrics(
+        source_mode,
+        rest_endpoint,
+        metrics_endpoint,
+        runtime_diagnostics_enabled,
+        false,
+        module_transport,
+    )
+    .await
+}
+
+pub(crate) async fn delivery_source_report_with_runtime_metrics(
+    source_mode: &str,
+    rest_endpoint: Option<&str>,
+    metrics_endpoint: Option<&str>,
+    runtime_diagnostics_enabled: bool,
+    runtime_metrics_enabled: bool,
+    module_transport: &SharedModuleTransport,
+) -> SourceReport {
     match MessagingAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
         MessagingAdapter::Module { transport } => {
-            let health_endpoint =
-                if transport == crate::modules::logos_core::ModuleTransportKind::LogoscoreCli {
-                    optional(rest_endpoint)
-                } else {
-                    None
-                };
+            let metrics_only = runtime_metrics_enabled && !runtime_diagnostics_enabled;
+            let health_endpoint = if transport
+                == crate::modules::logos_core::ModuleTransportKind::LogoscoreCli
+                && !metrics_only
+            {
+                optional(rest_endpoint)
+            } else {
+                None
+            };
             module_source_report(
                 SourceReportKind::Delivery(DeliverySourceReportKind::Module),
                 layer::module_report(
@@ -74,6 +96,7 @@ pub async fn delivery_source_report(
                     transport,
                     None,
                     runtime_diagnostics_enabled,
+                    runtime_metrics_enabled,
                     health_endpoint.is_some(),
                 )
                 .await,
@@ -539,6 +562,10 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct MetricsOnlyTransport {
+        calls: Arc<AtomicUsize>,
+    }
+
     impl ModuleTransport for ReducedHealthTransport {
         fn kind(&self) -> ModuleTransportKind {
             ModuleTransportKind::LogoscoreCli
@@ -558,6 +585,27 @@ mod tests {
                 Ok(ModuleCallReply::new(
                     ModuleTransportKind::LogoscoreCli,
                     value,
+                ))
+            })
+        }
+    }
+
+    impl ModuleTransport for MetricsOnlyTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let method = call.method().to_owned();
+            Box::pin(async move {
+                ensure!(
+                    method == "collectOpenMetricsText",
+                    "unexpected metrics-only call `{method}`"
+                );
+                Ok(ModuleCallReply::new(
+                    ModuleTransportKind::LogoscoreCli,
+                    json!("libp2p_peers 1\n"),
                 ))
             })
         }
@@ -746,6 +794,39 @@ mod tests {
                     && fact.value.as_ref() == Some(&expected_protocols)
             }),
             "reduced Delivery facts omitted protocol health"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn metrics_only_cli_report_skips_health_endpoint() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(MetricsOnlyTransport {
+            calls: Arc::clone(&calls),
+        });
+
+        let report = delivery_source_report_with_runtime_metrics(
+            "logoscore_cli",
+            Some("http://127.0.0.1:9"),
+            None,
+            false,
+            true,
+            &transport,
+        )
+        .await;
+        let keys = report
+            .probes
+            .iter()
+            .filter_map(|probe| probe.probe_key.as_deref())
+            .collect::<Vec<_>>();
+
+        ensure!(
+            calls.load(Ordering::Relaxed) == 1,
+            "metrics-only Delivery source dispatched unexpected module calls"
+        );
+        ensure!(
+            keys == [SourceProbeKey::DeliveryCollectOpenMetricsText.as_str()],
+            "metrics-only Delivery source returned unexpected probes: {keys:?}"
         );
         Ok(())
     }

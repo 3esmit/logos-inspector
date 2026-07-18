@@ -5,6 +5,7 @@ mod plan;
 mod transport;
 
 pub use inspection::delivery_source_report;
+pub(crate) use inspection::delivery_source_report_with_runtime_metrics;
 pub(crate) use layer::{
     MESSAGING_SOURCE_MODES, managed_config, managed_contract, module_report, report_inputs,
 };

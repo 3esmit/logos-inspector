@@ -126,9 +126,25 @@ function moduleLastError(root, kind) {
 
 function openMetricsText(root, kind) {
     with (root) {
-        const value = root.observationProbeValue(kind,
-            kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        const value = openMetricsValue(root, kind)
         return root.openMetricsTextFromValue(value)
+    }
+}
+
+function openMetricsValue(root, kind) {
+    with (root) {
+        const target = String(kind || "")
+        if (target === "messaging" || target === "delivery") {
+            const revision = root.messagingMetricsRevision
+            const report = root.messagingMetricsReport || null
+            const probe = root.reportProbe(report, "collectOpenMetricsText")
+            if (probe && probe.ok === true
+                    && probe.value !== undefined && probe.value !== null) {
+                return probe.value
+            }
+        }
+        return root.observationProbeValue(kind,
+            target === "storage" ? "collectMetrics" : "collectOpenMetricsText")
     }
 }
 
@@ -145,8 +161,7 @@ function openMetricsTextFromValue(root, value) {
 function openMetricValue(root, kind, names) {
     with (root) {
         const wanted = Array.isArray(names) ? names : [names]
-        const value = root.observationProbeValue(kind,
-            kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        const value = openMetricsValue(root, kind)
         const jsonMetric = root.metricJsonValue(value, wanted)
         if (jsonMetric !== null) {
             return jsonMetric
@@ -473,8 +488,8 @@ function dashboardMetricText(root, key) {
     return DashboardMetricCatalog.dashboardMetricTextForKey(root, key)
 }
 
-function recordDashboardSnapshot(root) {
-    return DashboardMetricCatalog.recordDashboardSnapshot(root)
+function recordDashboardSnapshot(root, prefixes) {
+    return DashboardMetricCatalog.recordDashboardSnapshot(root, prefixes)
 }
 
 function dashboardMetricSampleUpdate(root, stored, lastSeen, now, value) {

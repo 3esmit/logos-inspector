@@ -52,6 +52,7 @@ pub async fn delivery_report(
         info_id,
         runtime_diagnostics_enabled,
         false,
+        false,
     )
     .await
 }
@@ -61,12 +62,14 @@ pub(crate) async fn delivery_report_with_identity_binding(
     adapter: ModuleTransportKind,
     info_id: Option<&str>,
     runtime_diagnostics_enabled: bool,
+    runtime_metrics_enabled: bool,
     health_identity_required: bool,
 ) -> ModuleReport {
     let mut probes = Vec::new();
     for step in delivery_module_probe_plan(
         optional(info_id),
         runtime_diagnostics_enabled,
+        runtime_metrics_enabled,
         health_identity_required,
     ) {
         probes.push(delivery_probe(module_transport, adapter, &step).await);
@@ -209,6 +212,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metrics_only_report_dispatches_one_runtime_call() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let module_info_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(RecordingTransport {
+            calls: Arc::clone(&calls),
+            module_info_calls: Arc::clone(&module_info_calls),
+        });
+
+        let report = delivery_report_with_identity_binding(
+            &transport,
+            ModuleTransportKind::Module,
+            Some("MyPeerId"),
+            false,
+            true,
+            true,
+        )
+        .await;
+
+        if calls.load(Ordering::Relaxed) != 1 {
+            bail!("metrics-only Delivery report did not dispatch exactly one module call");
+        }
+        if module_info_calls.load(Ordering::Relaxed) != 0 {
+            bail!("metrics-only Delivery report queried module metadata");
+        }
+        if report.probes.len() != 1
+            || report
+                .probes
+                .first()
+                .and_then(|probe| probe.probe_key.as_deref())
+                != Some(SourceProbeKey::DeliveryCollectOpenMetricsText.as_str())
+        {
+            bail!("metrics-only Delivery report returned unexpected probes");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn full_report_probes_advertised_identity_without_duplicates() {
         let identity_calls = Arc::new(AtomicUsize::new(0));
         let transport: SharedModuleTransport = Arc::new(AdvertisedIdentityTransport {
@@ -262,6 +302,7 @@ mod tests {
             &transport,
             ModuleTransportKind::Module,
             None,
+            false,
             false,
             true,
         )

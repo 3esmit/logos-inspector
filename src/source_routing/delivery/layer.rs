@@ -304,6 +304,7 @@ pub(crate) struct MessagingReportInputs {
     pub(crate) rest_endpoint: Option<String>,
     pub(crate) metrics_endpoint: Option<String>,
     pub(crate) runtime_diagnostics_enabled: bool,
+    pub(crate) runtime_metrics_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -316,6 +317,8 @@ struct MessagingReportEnvelope {
 struct MessagingReportOptions {
     #[serde(default)]
     runtime_diagnostics_enabled: bool,
+    #[serde(default)]
+    runtime_metrics_enabled: bool,
     #[serde(default)]
     health_endpoint: Option<String>,
 }
@@ -403,6 +406,7 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Messagi
             .input("metrics_endpoint")
             .map(ToOwned::to_owned),
         runtime_diagnostics_enabled: envelope.options.runtime_diagnostics_enabled,
+        runtime_metrics_enabled: envelope.options.runtime_metrics_enabled,
     })
 }
 
@@ -415,6 +419,7 @@ pub(crate) async fn module_report(
     transport: ModuleTransportKind,
     content_topic: Option<&str>,
     runtime_diagnostics_enabled: bool,
+    runtime_metrics_enabled: bool,
     health_identity_required: bool,
 ) -> ModuleReport {
     crate::modules::delivery_report_with_identity_binding(
@@ -422,6 +427,7 @@ pub(crate) async fn module_report(
         transport,
         content_topic,
         runtime_diagnostics_enabled,
+        runtime_metrics_enabled,
         health_identity_required,
     )
     .await
@@ -581,7 +587,10 @@ mod tests {
         let module = crate::support::args::Args::new(json!([{
             "source_mode": "module",
             "inputs": {},
-            "options": { "runtime_diagnostics_enabled": true }
+            "options": {
+                "runtime_diagnostics_enabled": true,
+                "runtime_metrics_enabled": true
+            }
         }]))?;
         let metrics = crate::support::args::Args::new(json!([{
             "source_mode": "metrics",
@@ -599,10 +608,13 @@ mod tests {
         if report_inputs(&module)?.rest_endpoint.is_some()
             || report_inputs(&module)?.metrics_endpoint.is_some()
             || !report_inputs(&module)?.runtime_diagnostics_enabled
+            || !report_inputs(&module)?.runtime_metrics_enabled
             || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
             || report_inputs(&metrics)?.runtime_diagnostics_enabled
+            || report_inputs(&metrics)?.runtime_metrics_enabled
             || report_inputs(&cli)?.rest_endpoint.as_deref() != Some("http://delivery")
             || !report_inputs(&cli)?.runtime_diagnostics_enabled
+            || report_inputs(&cli)?.runtime_metrics_enabled
         {
             anyhow::bail!("compact Messaging report inputs were parsed incorrectly");
         }

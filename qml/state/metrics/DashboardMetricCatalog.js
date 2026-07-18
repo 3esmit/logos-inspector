@@ -394,8 +394,9 @@ function dashboardMetricTextForKey(root, key) {
     return root.valueText(dashboardMetricValue(root, key))
 }
 
-function recordDashboardSnapshot(root) {
+function recordDashboardSnapshot(root, prefixes) {
     const keys = dashboardGraphKeys()
+    const wantedPrefixes = Array.isArray(prefixes) ? prefixes : []
     const next = root.copyMap(root.dashboardMetricHistory)
     const nextSeen = root.copyMap(root.dashboardMetricLastSeen)
     const now = Date.now()
@@ -403,6 +404,9 @@ function recordDashboardSnapshot(root) {
     let seenChanged = false
     for (let i = 0; i < keys.length; ++i) {
         const key = keys[i]
+        if (!dashboardSnapshotIncludesKey(key, wantedPrefixes)) {
+            continue
+        }
         const value = dashboardMetricNumber(dashboardMetricRawValue(root, key))
         if (value === null) {
             continue
@@ -422,6 +426,19 @@ function recordDashboardSnapshot(root) {
         root.dashboardMetricHistory = next
         root.dashboardMetricHistoryRevision += 1
     }
+}
+
+function dashboardSnapshotIncludesKey(key, prefixes) {
+    if (!Array.isArray(prefixes) || prefixes.length === 0) {
+        return true
+    }
+    const metricKey = String(key || "")
+    for (let i = 0; i < prefixes.length; ++i) {
+        if (metricKey.indexOf(String(prefixes[i] || "")) === 0) {
+            return true
+        }
+    }
+    return false
 }
 
 function dashboardMetricSampleUpdate(root, stored, lastSeen, now, value) {

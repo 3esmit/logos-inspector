@@ -273,6 +273,18 @@ TestCase {
         }
     }
 
+    function deliveryMetricsReport(ready, marker, peerCount) {
+        const report = sourceReport(ready, marker)
+        report.probes = [{
+            probe_key: "collectOpenMetricsText",
+            label: "delivery.collectOpenMetricsText",
+            source: "delivery collectOpenMetricsText",
+            ok: true,
+            value: "libp2p_peers " + String(peerCount) + "\n"
+        }]
+        return report
+    }
+
     function success(value) {
         return { ok: true, value: value, text: "ok", error: "" }
     }
@@ -302,6 +314,12 @@ TestCase {
         metrics.messagingModuleReport = null
         metrics.storageSourceReport = null
         metrics.messagingSourceReport = null
+        metrics.messagingMetricsReport = null
+        metrics.messagingMetricsCheckedAtMs = 0
+        metrics.messagingMetricsRequestGeneration = 0
+        metrics.messagingMetricsRevision = 0
+        metrics.activeMessagingMetricsLease = null
+        metrics.messagingMetricsAttempt = null
         metrics.observationConfigurationGenerations = ({
             blockchain: 0,
             storage: 0,
@@ -533,7 +551,7 @@ TestCase {
     }
 
     function test_interactive_observer_supersedes_passive_lease_and_presents() {
-        metrics.queryNetworkConnection("messaging", false, false, "scheduler")
+        metrics.queryNetworkConnection("messaging", false, false, "dashboard")
         metrics.queryNetworkConnection(
             "messaging", true, false, "source-inspection")
 
@@ -711,15 +729,15 @@ TestCase {
     }
 
     function test_observation_origin_is_preserved() {
-        metrics.queryNetworkConnection("messaging", false, false, "scheduler")
+        metrics.queryNetworkConnection("messaging", false, false, "dashboard")
         gateway.completeRequest(0, success(sourceReport(true, "scheduled")))
 
         const observation = metrics.sourceObservation("messaging")
-        compare(observation.provenance.origin, "scheduler")
-        compare(observation.status.origin, "scheduler")
+        compare(observation.provenance.origin, "dashboard")
+        compare(observation.status.origin, "dashboard")
     }
 
-    function test_passive_observations_skip_runtime_module_calls() {
+    function test_passive_observations_bound_scheduled_delivery_to_metrics() {
         const passiveOrigins = [
             "scheduler",
             "dashboard",
@@ -740,6 +758,11 @@ TestCase {
                 messaging.args[0].options.runtime_diagnostics_enabled,
                 false
             )
+            compare(
+                messaging.args[0].options.runtime_metrics_enabled === true,
+                origin === "scheduler"
+            )
+            compare(messaging.runtimeMetricsOnly, origin === "scheduler")
         }
 
         const fullOrigins = ["manual", "source-inspection", "entity-open"]
@@ -757,7 +780,254 @@ TestCase {
                 messaging.args[0].options.runtime_diagnostics_enabled,
                 true
             )
+            verify(messaging.args[0].options.runtime_metrics_enabled !== true)
+            verify(!messaging.runtimeMetricsOnly)
         }
+    }
+
+    function test_scheduled_delivery_metrics_use_independent_lease_and_cache() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+
+        compare(gateway.requests.length, 1)
+        verify(gateway.requests[0].args[0].options
+            .runtime_metrics_enabled)
+        verify(!gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(metrics.activeMessagingMetricsLease !== null)
+        compare(metrics.activeObservationLeases.messaging, undefined)
+        verify(!metrics.networkConnectionIsPending("messaging"))
+
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "metrics-only", 7)))
+
+        const observation = metrics.sourceObservation("messaging")
+        compare(observation.sourceReport, null)
+        compare(observation.metricsReport.marker, "metrics-only")
+        verify(observation.metricsAttempt.ok)
+        compare(observation.metricsAttempt.origin, "scheduler")
+        verify(observation.metricsCheckedAtMs > 0)
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 7)
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].value, 7)
+        verify(!observation.status.known)
+        verify(!observation.status.ok)
+        verify(observation.status.transportOk)
+        compare(observation.status.origin, "scheduler")
+        verify(observation.latestAttempt.runtimeMetricsOnly)
+    }
+
+    function test_scheduled_metrics_preserve_full_delivery_observation() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "explicit-full", 4)))
+        const reportRevision = metrics.observationReportRevisions.messaging
+        const statusRevision = metrics.networkConnectionStatusRevision
+        const metricsRevision = metrics.messagingMetricsRevision
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "metrics-only", 9)))
+
+        const observation = metrics.sourceObservation("messaging")
+        compare(observation.sourceReport.marker, "explicit-full")
+        compare(observation.provenance.origin, "source-inspection")
+        compare(observation.reportRevision, reportRevision)
+        compare(metrics.networkConnectionStatusRevision, statusRevision + 1)
+        compare(metrics.messagingMetricsRevision, metricsRevision + 1)
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 9)
+    }
+
+    function test_scheduled_metrics_never_upgrade_degraded_delivery_health() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(false, "degraded-full", 2)))
+        verify(!metrics.networkConnectionState("messaging").ok)
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "metrics-only", 15)))
+
+        const status = metrics.networkConnectionState("messaging")
+        verify(status.known)
+        verify(!status.ok)
+        verify(status.transportOk)
+        compare(metrics.sourceReport("messaging").marker, "degraded-full")
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 15)
+    }
+
+    function test_newer_full_delivery_metrics_reject_older_scheduler_sample() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        const schedulerSequence = metrics.activeMessagingMetricsLease.sequence
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        verify(metrics.activeMessagingMetricsLease !== null)
+        verify(metrics.activeObservationLeases.messaging !== undefined)
+        verify(metrics.activeObservationLeases.messaging.sequence
+            > schedulerSequence)
+        gateway.completeRequest(
+            1, success(deliveryMetricsReport(true, "explicit-full", 10)))
+        const metricsGeneration = metrics.messagingMetricsRequestGeneration
+
+        const statusGeneration = metrics.networkConnectionState(
+            "messaging").requestGeneration
+        gateway.completeRequest(0, failure("older scheduler failure"))
+
+        compare(metrics.sourceReport("messaging").marker, "explicit-full")
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 10)
+        compare(metrics.messagingMetricsRequestGeneration, metricsGeneration)
+        verify(metrics.messagingMetricsAttempt.ok)
+        compare(metrics.messagingMetricsAttempt.origin, "source-inspection")
+        verify(metrics.networkConnectionState("messaging").known)
+        verify(metrics.networkConnectionState("messaging").ok)
+        verify(metrics.networkConnectionState("messaging").transportOk)
+        compare(metrics.networkConnectionState(
+            "messaging").requestGeneration, statusGeneration)
+        compare(metrics.sourceObservation(
+            "messaging").latestAttempt.origin, "source-inspection")
+    }
+
+    function test_full_delivery_observation_satisfies_scheduler_tick() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        const result = metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+
+        verify(result.skipped)
+        verify(result.joined)
+        compare(gateway.requests.length, 1)
+        compare(metrics.activeMessagingMetricsLease, null)
+
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "explicit-full", 5)))
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 5)
+    }
+
+    function test_messaging_invalidation_cancels_metrics_and_rejects_late_reply() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "metrics-first", 6)))
+        verify(metrics.messagingMetricsReport !== null)
+        verify(metrics.dashboardMetricHistory[
+            "messaging.peer_count"] !== undefined)
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        verify(metrics.activeMessagingMetricsLease !== null)
+        metrics.invalidateConfiguration("messaging", "source changed")
+
+        compare(metrics.activeMessagingMetricsLease, null)
+        compare(metrics.messagingMetricsReport, null)
+        compare(metrics.messagingMetricsCheckedAtMs, 0)
+        compare(metrics.dashboardMetricHistory[
+            "messaging.peer_count"], undefined)
+        verify(!gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "late", 99))))
+        compare(metrics.messagingMetricsReport, null)
+    }
+
+    function test_blockchain_completion_does_not_refresh_delivery_sample_time() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "metrics", 8)))
+        const lastSeen = metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"]
+
+        metrics.queryNetworkConnection(
+            "blockchain", false, false, "dashboard")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "blockchain")))
+
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].timestamp, lastSeen.timestamp)
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].value, lastSeen.value)
+    }
+
+    function test_older_dashboard_reply_cannot_rollback_delivery_metrics_status() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "dashboard")
+        const dashboardSequence = metrics.activeObservationLeases
+            .messaging.sequence
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        verify(metrics.activeMessagingMetricsLease.sequence
+            > dashboardSequence)
+
+        gateway.completeRequest(
+            1, success(deliveryMetricsReport(true, "metrics", 12)))
+        const statusGeneration = metrics.networkConnectionState(
+            "messaging").requestGeneration
+        gateway.completeRequest(
+            0, success(sourceReport(false, "older-dashboard")))
+
+        compare(metrics.sourceReport("messaging"), null)
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 12)
+        verify(!metrics.networkConnectionState("messaging").known)
+        verify(!metrics.networkConnectionState("messaging").ok)
+        verify(metrics.networkConnectionState("messaging").transportOk)
+        compare(metrics.networkConnectionState(
+            "messaging").requestGeneration, statusGeneration)
+        verify(metrics.sourceObservation(
+            "messaging").latestAttempt.runtimeMetricsOnly)
+    }
+
+    function test_delivery_reports_without_new_metrics_do_not_refresh_sample_time() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "metrics", 13)))
+        const lastSeen = metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"]
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "dashboard")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "no-metrics")))
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].timestamp, lastSeen.timestamp)
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "dashboard")
+        gateway.completeRequest(0, failure("dashboard failed"))
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].timestamp, lastSeen.timestamp)
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].value, lastSeen.value)
+    }
+
+    function test_newer_health_status_does_not_discard_older_valid_metrics() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        const metricsSequence = metrics.activeMessagingMetricsLease.sequence
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "dashboard")
+        const healthSequence = metrics.activeObservationLeases
+            .messaging.sequence
+        verify(healthSequence > metricsSequence)
+
+        gateway.completeRequest(
+            1, success(sourceReport(true, "newer-health")))
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "older-metrics", 14)))
+
+        compare(metrics.sourceReport("messaging").marker, "newer-health")
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 14)
+        compare(metrics.messagingMetricsRequestGeneration, metricsSequence)
+        compare(metrics.messagingMetricsAttempt.requestGeneration,
+            metricsSequence)
+        compare(metrics.networkConnectionState(
+            "messaging").requestGeneration, healthSequence)
+        compare(metrics.sourceObservation(
+            "messaging").latestAttempt.requestGeneration, healthSequence)
     }
 
     function test_passive_completion_preserves_explicit_full_report() {
@@ -943,8 +1213,7 @@ TestCase {
 
         metrics.queryNetworkConnection(
             "messaging", false, false, "scheduler")
-        verify(metrics.activeObservationLeases.messaging
-            .runtimeDiagnosticsReduced)
+        verify(metrics.activeMessagingMetricsLease !== null)
         gateway.completeRequest(0, failure("delivery refresh failed"))
         verify(metrics.sourceObservation("messaging").status.stale)
 
@@ -952,8 +1221,12 @@ TestCase {
             "messaging", false, false, "scheduler")
         verify(gateway.requests[0].args[0].options
             .runtime_diagnostics_enabled)
+        verify(!gateway.requests[0].args[0].options
+            .runtime_metrics_enabled)
+        verify(!gateway.requests[0].runtimeMetricsOnly)
         verify(!metrics.activeObservationLeases.messaging
             .runtimeDiagnosticsReduced)
+        compare(metrics.activeMessagingMetricsLease, null)
         gateway.completeRequest(
             0, success(sourceReport(true, "recovered-delivery")))
 
