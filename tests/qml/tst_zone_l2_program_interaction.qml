@@ -321,6 +321,16 @@ TestCase {
                 name: "mint",
                 accounts: [],
                 args: []
+            }, {
+                name: "new_definition_with_metadata",
+                accounts: [],
+                args: [{
+                    name: "definition",
+                    type: { defined: "NewTokenDefinition" }
+                }, {
+                    name: "metadata",
+                    type: { defined: "Box" }
+                }]
             }]
         })
     }
@@ -355,7 +365,7 @@ TestCase {
     function planValue(selected, complete, privateMode) {
         return {
             instruction: String(selected || ""),
-            instructions: ["transfer", "mint"],
+            instructions: ["transfer", "mint", "new_definition_with_metadata"],
             accounts: selected ? [{
                 name: "sender",
                 label: "Sender signer",
@@ -391,7 +401,7 @@ TestCase {
     function zeroFieldPlanValue() {
         return {
             instruction: "mint",
-            instructions: ["transfer", "mint"],
+            instructions: ["transfer", "mint", "new_definition_with_metadata"],
             accounts: [],
             args: [],
             private_mode: false,
@@ -686,6 +696,50 @@ TestCase {
         tryVerify(function () {
             return interaction.previewCurrent() && sendButton.enabled
         })
+    }
+
+    function test_unsupported_instruction_fails_closed_and_recovers() {
+        prepareInstructionFields()
+        verify(interaction.selectInstruction(2))
+        const unsupportedPlan = gateway.pendingCall("localWalletInstructionPlan")
+        verify(unsupportedPlan !== null)
+        compare(unsupportedPlan.args[0].instruction,
+            "new_definition_with_metadata")
+        verify(gateway.completeCall(unsupportedPlan, {
+            ok: false,
+            value: null,
+            text: "",
+            error: "instruction `new_definition_with_metadata` argument `definition` cannot be used: defined IDL arg type `NewTokenDefinition` is not supported for direct interaction"
+        }))
+
+        tryVerify(function () {
+            return execution.idlInstructionPlanValue === null
+                && execution.idlInstructionPlanError.indexOf(
+                    "NewTokenDefinition") >= 0
+        })
+        compare(interaction.renderedPlan, null)
+        const fieldsGrid = findChild(interaction, "zoneProgramFieldsGrid")
+        const previewButton = findChild(interaction, "zoneProgramPreviewButton")
+        verify(fieldsGrid !== null && !fieldsGrid.visible)
+        verify(previewButton !== null && !previewButton.enabled)
+        verify(hasVisibleText(interaction, "Instruction plan unavailable"))
+        compare(gateway.callsFor("localWalletInstructionPreview").length, 0)
+        compare(gateway.callsFor("localWalletInstructionSubmit").length, 0)
+
+        verify(interaction.selectInstruction(0))
+        const supportedPlan = gateway.pendingCall("localWalletInstructionPlan")
+        verify(supportedPlan !== null)
+        compare(supportedPlan.args[0].instruction, "transfer")
+        verify(gateway.completeCall(
+            supportedPlan, success(planValue("transfer", false, false))))
+        tryVerify(function () {
+            return interaction.renderedPlan !== null
+                && interaction.renderedPlan.instruction === "transfer"
+                && execution.idlInstructionPlanError.length === 0
+        })
+        verify(fieldsGrid.visible)
+        compare(gateway.callsFor("localWalletInstructionPreview").length, 0)
+        compare(gateway.callsFor("localWalletInstructionSubmit").length, 0)
     }
 
     function test_submit_receipt_survives_interaction_destruction_and_reopens_exact_source() {
