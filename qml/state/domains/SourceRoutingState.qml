@@ -113,13 +113,8 @@ QtObject {
         return SourcePolicyProjection.sourceModeSupportsMutatingDiagnostics(root, family, value)
     }
 
-    function runtimeDiagnosticsEnabled(family, sourceMode) {
-        const descriptor = sourceModeDescriptor(family, sourceMode)
-        if (descriptor.connectionType !== "logoscore_cli") {
-            return true
-        }
-        return !gateway || typeof gateway.runtimeDiagnosticsEnabled !== "function"
-            || gateway.runtimeDiagnosticsEnabled(family) !== false
+    function runtimeDiagnosticsEnabled(_family, _sourceMode) {
+        return true
     }
 
     function coreSourceArgs(sourceMode, endpoint, extra) {
