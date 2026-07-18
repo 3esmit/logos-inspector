@@ -750,6 +750,39 @@ TestCase {
         compare(gateway.capabilityRefreshCount, capabilityRefreshCount)
     }
 
+    function test_first_reduced_passive_report_stays_unqueried() {
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        verify(metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+
+        const reducedReport = sourceReport(false, "passive-no-evidence")
+        reducedReport.health.reachable = true
+        reducedReport.module_info = {
+            ok: true,
+            value: { supported: false }
+        }
+        gateway.completeRequest(0, success(reducedReport))
+
+        let observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport, null)
+        verify(!observation.status.known)
+        verify(observation.latestAttempt.transportOk)
+        verify(observation.latestAttempt.runtimeDiagnosticsReduced)
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        verify(metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsEnabled)
+        gateway.completeRequest(
+            0, success(sourceReport(true, "explicit-full")))
+
+        observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "explicit-full")
+        verify(observation.status.known)
+        verify(observation.status.ok)
+    }
+
     function test_passive_failure_marks_preserved_full_report_stale() {
         metrics.queryNetworkConnection(
             "storage", false, false, "source-inspection")
