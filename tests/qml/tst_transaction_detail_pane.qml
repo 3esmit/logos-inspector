@@ -123,4 +123,61 @@ TestCase {
         tryCompare(hashLink, "text", transactionValue.hash)
         compare(pane.primaryHashReferenceKind(), "transaction")
     }
+
+    function test_block_slot_renders_without_scientific_notation() {
+        transactionValue = JSON.parse(JSON.stringify({
+            type: "blockchain_transaction",
+            hash: transactionHash,
+            block: transactionValue.block,
+            slot: 1486580,
+            index: 0,
+            ops: [],
+            raw: {}
+        }))
+        const expected = pane.shortHash(transactionValue.block)
+            + " (slot " + pane.valueText(transactionValue.slot) + ")"
+        let blockLink = null
+        tryVerify(function () {
+            blockLink = findAccessibleByName(pane, expected)
+            return blockLink !== null
+        })
+
+        compare(blockLink.text, expected)
+        compare(blockLink.link, true)
+        compare(blockLink.copyText, transactionValue.block)
+        verify(!/[eE][+-][0-9]+/.test(blockLink.text))
+    }
+
+    function test_block_slot_preserves_zero_and_numeric_strings() {
+        const block = transactionValue.block
+        const largestSafeInteger = Number.MAX_SAFE_INTEGER
+
+        compare(pane.blockText({ block: "", slot: 0 }), "slot 0")
+        compare(pane.blockText({ block: block, slot: 0 }),
+                pane.shortHash(block) + " (slot 0)")
+        compare(pane.blockText({ block: "", slot: largestSafeInteger }),
+                "slot " + pane.valueText(largestSafeInteger))
+        verify(!/[eE][+-][0-9]+/.test(
+                   pane.blockText({ block: "", slot: largestSafeInteger })))
+        compare(pane.blockText({ block: block, slot: "9007199254740993" }),
+                pane.shortHash(block) + " (slot 9007199254740993)")
+        compare(pane.blockText({ block: block, slot: null }), block)
+    }
+
+    function findAccessibleByName(item, expectedName) {
+        if (!item) {
+            return null
+        }
+        if (item.Accessible && String(item.Accessible.name) === expectedName) {
+            return item
+        }
+        const children = item.children || []
+        for (let index = 0; index < children.length; ++index) {
+            const match = findAccessibleByName(children[index], expectedName)
+            if (match) {
+                return match
+            }
+        }
+        return null
+    }
 }
