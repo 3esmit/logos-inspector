@@ -44,7 +44,8 @@ function applySettingsState(root, value) {
         messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
         storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
         storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
-        storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
+        storageNetworkPreset = root.sourceRouting.normalizedStorageNetworkPreset(
+            root.stringSetting(value, "storage_network_preset", storageNetworkPreset))
         storageCidProbe = root.stringSetting(value, "storage_cid_probe", storageCidProbe)
         storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
@@ -90,7 +91,8 @@ function settingsStatePayload(root) {
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
             storage_rest_url: String(storageRestUrl || ""),
             storage_metrics_url: root.sourceRouting.configuredStorageMetricsUrl(),
-            storage_network_preset: String(storageNetworkPreset || ""),
+            storage_network_preset: root.sourceRouting.normalizedStorageNetworkPreset(
+                storageNetworkPreset),
             storage_cid_probe: String(storageCidProbe || ""),
             storage_rolling_window: Number(storageRollingWindow || 0),
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,

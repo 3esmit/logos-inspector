@@ -443,6 +443,28 @@ TestCase {
         tryCompare(model, "storagePrivilegedDebugEnabled", true)
     }
 
+    function test_network_preset_preserves_custom_value_and_rejects_empty_identity() {
+        const field = findAccessibleByName(panel, "Network preset")
+        verify(field !== null)
+        compare(field.text, "logos.test")
+
+        field.text = "logos.test/custom"
+        field.textEdited()
+        tryCompare(model, "storageNetworkPreset", "logos.test/custom")
+        compare(model.settingsStatePayload().storage_network_preset,
+                "logos.test/custom")
+
+        field.text = ""
+        field.textEdited()
+        tryCompare(model, "storageNetworkPreset", "logos.test")
+        tryCompare(field, "text", "logos.test")
+        compare(model.settingsStatePayload().storage_network_preset,
+                "logos.test")
+
+        model.storageNetworkPreset = "testnet"
+        tryCompare(model, "storageNetworkPreset", "logos.test")
+    }
+
     function test_metrics_source_hides_and_suppresses_network_debug() {
         model.storagePrivilegedDebugEnabled = true
         verify(model.setNetworkConnectorMode("storage", "metrics"))

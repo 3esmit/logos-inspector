@@ -997,7 +997,15 @@ QtObject {
     onStorageSourceModeChanged: handleStorageConfigurationChanged()
     onStorageRestUrlChanged: handleStorageConfigurationChanged()
     onStorageMetricsUrlChanged: handleStorageConfigurationChanged()
-    onStorageNetworkPresetChanged: handleStorageConfigurationChanged()
+    onStorageNetworkPresetChanged: {
+        const normalized = sourceRouting.normalizedStorageNetworkPreset(
+            storageNetworkPreset)
+        if (storageNetworkPreset !== normalized) {
+            storageNetworkPreset = normalized
+        } else {
+            handleStorageConfigurationChanged()
+        }
+    }
     onStorageCidProbeChanged: saveSettingsState()
     onStorageRollingWindowChanged: saveSettingsState()
     onStorageLocalDiagnosticsEnabledChanged: saveSettingsState()
