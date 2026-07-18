@@ -260,10 +260,21 @@ fn delivery_source_health(
                 )
         }
         DeliverySourceReportKind::Module => {
+            let health_probe = source_probe_fact(facts, SourceProbeKey::DeliveryHealth);
             let node_health = source_probe_fact(facts, SourceProbeKey::DeliveryNodeHealth);
             let connection_status =
                 source_probe_fact(facts, SourceProbeKey::DeliveryConnectionStatus);
-            if node_health.is_none() && connection_status.is_none() {
+            if health_probe.is_some() {
+                source_probe_ok(facts, SourceProbeKey::DeliveryHealth)
+                    && health_value_ok(
+                        source_probe_value(facts, SourceProbeKey::DeliveryNodeHealth),
+                        false,
+                    )
+                    && health_value_ok(
+                        source_probe_value(facts, SourceProbeKey::DeliveryConnectionStatus),
+                        false,
+                    )
+            } else if node_health.is_none() && connection_status.is_none() {
                 delivery_module_runtime_healthy(facts)
             } else {
                 health_value_ok(
@@ -481,7 +492,9 @@ fn source_ready_summary(fallback: &str, facts: &[SourceProbeFact]) -> String {
 }
 
 fn delivery_ready_detail(kind: DeliverySourceReportKind, facts: &[SourceProbeFact]) -> String {
-    if kind == DeliverySourceReportKind::Rest {
+    if kind == DeliverySourceReportKind::Rest
+        || source_probe_fact(facts, SourceProbeKey::DeliveryHealth).is_some()
+    {
         let node = source_probe_value(facts, SourceProbeKey::DeliveryNodeHealth)
             .map(value_summary)
             .unwrap_or_else(|| "unknown".to_owned());
@@ -929,6 +942,39 @@ mod tests {
             delivery_source_facts(DeliverySourceReportKind::Rest, &module_info, &connected)
                 .health
                 .ready
+        );
+    }
+
+    #[test]
+    fn delivery_module_attempted_health_probe_is_authoritative() {
+        let module_info = probe_ok(SourceProbeKey::DeliveryNodeInfoVersion, "1.0.0");
+        let metrics = probe_ok(
+            SourceProbeKey::DeliveryCollectOpenMetricsText,
+            "waku_store_queries_total 3\n",
+        );
+        let failed = vec![
+            metrics.clone(),
+            probe_err(SourceProbeKey::DeliveryHealth, "health unavailable"),
+        ];
+        let ready = vec![
+            metrics,
+            probe_ok(SourceProbeKey::DeliveryHealth, json!({ "status": "ok" })),
+            probe_ok(SourceProbeKey::DeliveryNodeHealth, "READY"),
+            probe_ok(SourceProbeKey::DeliveryConnectionStatus, "Connected"),
+        ];
+
+        let failed_facts =
+            delivery_source_facts(DeliverySourceReportKind::Module, &module_info, &failed);
+        assert!(failed_facts.health.reachable);
+        assert!(!failed_facts.health.ready);
+        assert_eq!(failed_facts.health.status, SourceHealthStatus::Degraded);
+
+        let ready_facts =
+            delivery_source_facts(DeliverySourceReportKind::Module, &module_info, &ready);
+        assert!(ready_facts.health.ready);
+        assert_eq!(
+            ready_facts.health.detail,
+            "node health READY; connection Connected"
         );
     }
 

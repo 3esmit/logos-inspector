@@ -1,8 +1,8 @@
 use crate::ProbeReport;
 use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
-    ModuleProbeStep, SourceProbeKey, delivery_advertised_identity_probe_plan,
-    delivery_module_probe_plan,
+    ModuleProbeStep, SourceProbeKey, delivery_advertised_health_identity_probe_plan,
+    delivery_advertised_identity_probe_plan, delivery_module_probe_plan,
 };
 
 use super::base::{
@@ -46,8 +46,29 @@ pub async fn delivery_report(
     info_id: Option<&str>,
     runtime_diagnostics_enabled: bool,
 ) -> ModuleReport {
+    delivery_report_with_identity_binding(
+        module_transport,
+        adapter,
+        info_id,
+        runtime_diagnostics_enabled,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn delivery_report_with_identity_binding(
+    module_transport: &SharedModuleTransport,
+    adapter: ModuleTransportKind,
+    info_id: Option<&str>,
+    runtime_diagnostics_enabled: bool,
+    health_identity_required: bool,
+) -> ModuleReport {
     let mut probes = Vec::new();
-    for step in delivery_module_probe_plan(optional(info_id), runtime_diagnostics_enabled) {
+    for step in delivery_module_probe_plan(
+        optional(info_id),
+        runtime_diagnostics_enabled,
+        health_identity_required,
+    ) {
         probes.push(delivery_probe(module_transport, adapter, &step).await);
     }
     let identity_steps = probes
@@ -57,7 +78,15 @@ pub async fn delivery_report(
                 == Some(SourceProbeKey::DeliveryAvailableNodeInfoIds.as_str())
         })
         .and_then(|probe| probe.value.as_ref())
-        .map(delivery_advertised_identity_probe_plan)
+        .map(|available| {
+            if runtime_diagnostics_enabled {
+                delivery_advertised_identity_probe_plan(available)
+            } else if health_identity_required {
+                delivery_advertised_health_identity_probe_plan(available)
+            } else {
+                Vec::new()
+            }
+        })
         .unwrap_or_default();
     for step in identity_steps {
         let already_probed = step.key.is_some_and(|key| {
@@ -220,5 +249,36 @@ mod tests {
         assert_eq!(peer_id_probes, 1);
         assert_eq!(enr_probes, 1);
         assert_eq!(multiaddress_probes, 0);
+    }
+
+    #[tokio::test]
+    async fn reduced_health_report_probes_only_advertised_enr() {
+        let identity_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(AdvertisedIdentityTransport {
+            identity_calls: Arc::clone(&identity_calls),
+        });
+
+        let report = delivery_report_with_identity_binding(
+            &transport,
+            ModuleTransportKind::Module,
+            None,
+            false,
+            true,
+        )
+        .await;
+        let keys = report
+            .probes
+            .iter()
+            .filter_map(|probe| probe.probe_key.as_deref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(identity_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            keys,
+            [
+                SourceProbeKey::DeliveryAvailableNodeInfoIds.as_str(),
+                SourceProbeKey::DeliveryMyEnr.as_str(),
+            ]
+        );
     }
 }

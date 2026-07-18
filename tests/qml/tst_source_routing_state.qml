@@ -262,4 +262,45 @@ TestCase {
         compare(args[0].options.privileged_debug_enabled, true)
     }
 
+    function test_logoscore_cli_delivery_report_includes_health_endpoint() {
+        state.connectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "build_default"
+                }
+            }
+        })
+        const sourceMode = state.connectorSourceMode(
+            "delivery", state.messagingSourceMode)
+        const source = state.sourceModeDescriptor("delivery", sourceMode)
+        const args = state.deliverySourceReportArgs(
+            sourceMode,
+            "http://delivery",
+            "http://unused-metrics"
+        )
+
+        compare(sourceMode, "logoscore_cli")
+        compare(source.usesRestEndpoint, false)
+        compare(source.inputs.length, 0)
+        compare(state.deliverySourceView().usesHealthEndpoint, true)
+        compare(args.length, 1)
+        compare(args[0].source_mode, "logoscore_cli")
+        compare(args[0].inputs.rest_endpoint, undefined)
+        compare(args[0].inputs.metrics_endpoint, undefined)
+        compare(args[0].options.health_endpoint, "http://delivery")
+
+        const actionArgs = state.deliverySourceView().actionArgs(["topic", "payload"])
+        compare(actionArgs.length, 3)
+        compare(actionArgs[0], "module")
+        compare(actionArgs[1], "topic")
+        compare(actionArgs[2], "payload")
+
+        state.messagingRestUrl = ""
+        const clearedArgs = state.deliverySourceReportArgs()
+        compare(clearedArgs[0].source_mode, "logoscore_cli")
+        compare(clearedArgs[0].inputs.rest_endpoint, undefined)
+        compare(clearedArgs[0].options.health_endpoint, "")
+    }
+
 }
