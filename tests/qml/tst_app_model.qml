@@ -2328,14 +2328,14 @@ TestCase {
         verify(payload.storage_mutating_diagnostics_enabled === undefined)
     }
 
-    function test_managed_logoscore_runtime_probes_wait_for_running_node_context() {
+    function test_interactive_runtime_probes_do_not_depend_on_cached_node_status() {
         installSourceModePolicy(model)
         model.setNetworkConnectorMode("delivery", "logoscore_cli")
         model.setNetworkConnectorMode("storage", "logoscore_cli")
 
-        verify(!model.sourceRouting.deliverySourceReportArgs()[0]
+        verify(model.sourceRouting.deliverySourceReportArgs()[0]
             .options.runtime_diagnostics_enabled)
-        verify(!model.sourceRouting.storageSourceReportArgs(false)[0]
+        verify(model.sourceRouting.storageSourceReportArgs(false)[0]
             .options.runtime_diagnostics_enabled)
 
         model.localNodesReport = {
@@ -2366,7 +2366,7 @@ TestCase {
 
         verify(model.sourceRouting.deliverySourceReportArgs()[0]
             .options.runtime_diagnostics_enabled)
-        verify(!model.sourceRouting.storageSourceReportArgs(false)[0]
+        verify(model.sourceRouting.storageSourceReportArgs(false)[0]
             .options.runtime_diagnostics_enabled)
 
         model.localNodesReport = {

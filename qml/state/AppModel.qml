@@ -49,11 +49,6 @@ QtObject {
                 return root.prefersBasecampModules()
             }
 
-            function runtimeDiagnosticsEnabled(family) {
-                const kind = String(family || "") === "delivery"
-                    ? "messaging" : String(family || "")
-                return localNodesState.runtimeDiagnosticsReady(kind)
-            }
         }
     }
     property Domains.ZoneInspectionState zoneInspection: Domains.ZoneInspectionState {
