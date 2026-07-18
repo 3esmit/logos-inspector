@@ -84,6 +84,8 @@ TestCase {
     function init() {
         fakeHost.reset()
         model.storageApp.operationSession.clearActive()
+        model.sourceRouting.sourcePolicy = ({})
+        model.loadNetworkConnectorConfig({})
         model.setNetworkConnectorMode("storage", "logoscore_cli")
         model.storageLocalDiagnosticsEnabled = false
         model.storagePrivilegedDebugEnabled = false
@@ -187,6 +189,45 @@ TestCase {
         compare(model.sourceRouting.configuredStorageRestUrl(), editedEndpoint)
         compare(model.sourceRouting.storageOperationAdapter().inputs.rest_endpoint,
                 editedEndpoint)
+    }
+
+    function test_unavailable_source_names_only_visible_connector_choices() {
+        model.sourceRouting.sourcePolicy = ({
+            source_modes: {
+                storage: [{
+                    key: "unsupported",
+                    effective: "unsupported",
+                    label: "Retired connector",
+                    implemented: false,
+                    adapter: {
+                        connector_id: "removed_storage_connector",
+                        connection_type: "retired",
+                        target: "none",
+                        inputs: []
+                    }
+                }]
+            }
+        })
+        model.networkConnectorConfig = ({
+            scopes: {
+                storage: {
+                    connector_id: "removed_storage_connector",
+                    source_mode: "unsupported",
+                    provenance: "network_profile"
+                }
+            }
+        })
+        model.storageSourceMode = "unsupported"
+        wait(0)
+
+        compare(panel.storageSourceMode(), "unsupported")
+        verify(hasVisibleText(panel, "Source unavailable"))
+        verify(hasVisibleText(
+                   panel,
+                   "The configured connector no longer has an adapter. Select LogosCore CLI, Standalone REST, or Metrics only."))
+        verify(!hasVisibleText(
+                   panel,
+                   "The configured connector no longer has an adapter. Select Storage module, Standalone REST, or Metrics only."))
     }
 
     function test_path_privacy_control_is_truthful_and_has_no_fake_path_editor() {
