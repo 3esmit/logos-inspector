@@ -1157,7 +1157,7 @@ ColumnLayout {
             statusDetail: settingsRoot.connectionStatusDetail("storage")
             statusColor: settingsRoot.connectionStatusColor("storage")
             sourceOptions: storageSourceOptions
-            onQueryClicked: settingsRoot.model.metrics.queryNetworkConnection("storage", true)
+            onQueryClicked: SettingsProfileWorkspace.queryStorageStatus(settingsRoot)
         }
     }
 

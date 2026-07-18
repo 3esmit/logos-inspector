@@ -26,6 +26,31 @@ TestCase {
     }
 
     QtObject {
+        id: metricsStub
+
+        property string lastQueryKind: ""
+        property bool lastQueryShowResult: false
+        property bool lastQueryIncludeSensitiveProbe: false
+        property int queryCount: 0
+
+        function networkConnectionState(kind) {
+            return kind === "ok"
+                ? { known: true, ok: true, detail: "ready", checkedAt: "now" }
+                : { known: false }
+        }
+
+        function networkConnectionRate(kind) { return kind === "slow" ? 15 : 0 }
+
+        function queryNetworkConnection(kind, showResult, includeSensitiveProbe) {
+            lastQueryKind = String(kind || "")
+            lastQueryShowResult = showResult === true
+            lastQueryIncludeSensitiveProbe = includeSensitiveProbe === true
+            queryCount += 1
+            return true
+        }
+    }
+
+    QtObject {
         id: model
 
         property string nodeUrl: "https://node/"
@@ -34,15 +59,8 @@ TestCase {
         property var localWalletStatus: null
         property string localWalletStatusError: ""
         property bool settingsBackupEncrypted: false
-        property QtObject metrics: QtObject {
-            function networkConnectionState(kind) {
-                return kind === "ok"
-                    ? { known: true, ok: true, detail: "ready", checkedAt: "now" }
-                    : { known: false }
-            }
-
-            function networkConnectionRate(kind) { return kind === "slow" ? 15 : 0 }
-        }
+        property string storageCidProbe: ""
+        property QtObject metrics: metricsStub
 
         function inferNetworkProfileFromEndpoint(node) {
             return String(node || "").indexOf("custom") >= 0
@@ -86,6 +104,11 @@ TestCase {
         model.localWalletStatus = null
         model.localWalletStatusError = ""
         model.settingsBackupEncrypted = false
+        model.storageCidProbe = ""
+        metricsStub.lastQueryKind = ""
+        metricsStub.lastQueryShowResult = false
+        metricsStub.lastQueryIncludeSensitiveProbe = false
+        metricsStub.queryCount = 0
     }
 
     function test_profile_and_source_options_are_populated() {
@@ -113,5 +136,19 @@ TestCase {
         compare(SettingsProfileWorkspace.walletSourceStatusText(root), "Unknown")
         compare(SettingsProfileWorkspace.walletBackupHint(root), "Plain backup. Use wallet encryption for private or portable profiles.")
         compare(SettingsProfileWorkspace.shortEndpoint("https://example.test/"), "example.test")
+    }
+
+    function test_storage_status_query_includes_only_configured_cid_probe() {
+        verify(SettingsProfileWorkspace.queryStorageStatus(root))
+        compare(metricsStub.lastQueryKind, "storage")
+        verify(metricsStub.lastQueryShowResult)
+        verify(!metricsStub.lastQueryIncludeSensitiveProbe)
+
+        model.storageCidProbe = "  z-cid-probe  "
+        verify(SettingsProfileWorkspace.queryStorageStatus(root))
+        compare(metricsStub.queryCount, 2)
+        compare(metricsStub.lastQueryKind, "storage")
+        verify(metricsStub.lastQueryShowResult)
+        verify(metricsStub.lastQueryIncludeSensitiveProbe)
     }
 }
