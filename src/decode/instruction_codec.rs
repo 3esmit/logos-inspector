@@ -192,6 +192,15 @@ fn parse_primitive(raw: &str, primitive: &str) -> Result<ParsedValue> {
                 seed_bytes,
             ))
         }
+        "account_id" => {
+            let account_id = parse_instruction_account_id(raw)?;
+            let canonical = account_id.to_string();
+            Ok(parsed_value(
+                canonical.clone(),
+                DynamicValue::Str(canonical),
+                Some(*account_id.value()),
+            ))
+        }
         "program_id" => {
             let program_id_hex = normalize_program_id_hex(raw)?;
             let program_id = program_id_from_hex(&program_id_hex)?;
@@ -203,6 +212,18 @@ fn parse_primitive(raw: &str, primitive: &str) -> Result<ParsedValue> {
         }
         other => bail!("unsupported primitive IDL arg type `{other}`"),
     }
+}
+
+fn parse_instruction_account_id(raw: &str) -> Result<AccountId> {
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix("Private/")
+        .or_else(|| raw.strip_prefix("private/"))
+        .or_else(|| raw.strip_prefix("Public/"))
+        .or_else(|| raw.strip_prefix("public/"))
+        .unwrap_or(raw)
+        .trim();
+    crate::parse_account_id(raw)
 }
 
 fn parse_array(raw: &str, ty: &Value) -> Result<ParsedValue> {
@@ -485,18 +506,14 @@ fn decode_instruction_primitive(
             .to_string()
             .into_pair(4),
         "account_id" => {
-            account_id_base58(&words_to_le_bytes(words_range(words, offset, 8)?)).into_pair(8)
+            let (value, consumed) = decode_risc0_string(words, offset)?;
+            let account_id = value
+                .parse::<AccountId>()
+                .with_context(|| format!("invalid account_id wire string `{value}`"))?;
+            account_id.to_string().into_pair(consumed)
         }
         "program_id" => hex::encode(words_to_le_bytes(words_range(words, offset, 8)?)).into_pair(8),
-        "string" | "String" => {
-            let len = usize::try_from(word_at(words, offset)?)
-                .context("string byte length does not fit usize")?;
-            let word_len = len.div_ceil(4);
-            let mut bytes = words_to_le_bytes(words_range(words, offset + 1, word_len)?);
-            bytes.truncate(len);
-            let value = String::from_utf8(bytes).context("string arg is not valid UTF-8")?;
-            value.into_pair(1 + word_len)
-        }
+        "string" | "String" => decode_risc0_string(words, offset)?,
         other => bail!("unsupported primitive instruction type `{other}`"),
     };
 
@@ -505,6 +522,16 @@ fn decode_instruction_primitive(
         consumed,
         type_label: ty.to_owned(),
     })
+}
+
+fn decode_risc0_string(words: &[u32], offset: usize) -> Result<(String, usize)> {
+    let len = usize::try_from(word_at(words, offset)?)
+        .context("string byte length does not fit usize")?;
+    let word_len = len.div_ceil(4);
+    let mut bytes = words_to_le_bytes(words_range(words, offset + 1, word_len)?);
+    bytes.truncate(len);
+    let value = String::from_utf8(bytes).context("string arg is not valid UTF-8")?;
+    Ok((value, 1 + word_len))
 }
 
 trait IntoPair {
@@ -577,10 +604,4 @@ fn read_words_signed(words: &[u32], offset: usize, count: usize) -> Result<i128>
 
 fn words_to_le_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
-}
-
-fn account_id_base58(bytes: &[u8]) -> String {
-    let mut fixed = [0_u8; 32];
-    fixed.copy_from_slice(bytes);
-    AccountId::new(fixed).to_string()
 }
