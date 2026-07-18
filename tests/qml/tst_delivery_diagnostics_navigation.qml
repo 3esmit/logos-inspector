@@ -164,6 +164,39 @@ TestCase {
         compare(model.metrics.dashboardMetricValue(key), 6)
     }
 
+    function test_throughput_accumulates_counter_reset() {
+        const key = "messaging.network_ingress_recent"
+        const now = Date.now()
+        model.metrics.messagingMetricsReport = deliveryMetricsReport(8)
+        model.metrics.messagingMetricsRevision += 1
+        model.metrics.dashboardMetricHistory = ({
+            "messaging.network_ingress_recent": [
+                { timestamp: now - 3000, value: 100 },
+                { timestamp: now - 2000, value: 110 },
+                { timestamp: now - 1000, value: 3 },
+                { timestamp: now, value: 8 }
+            ]
+        })
+        model.metrics.dashboardMetricLastSeen = ({
+            "messaging.network_ingress_recent": {
+                timestamp: now,
+                value: 8
+            }
+        })
+        model.metrics.dashboardMetricHistoryRevision += 1
+
+        const throughputTab = findAccessibleByName(pageLoader.item, "Throughput")
+        verify(throughputTab !== null)
+        mouseClick(throughputTab,
+            throughputTab.width / 2, throughputTab.height / 2)
+        tryCompare(model, "deliveryDiagnosticsTab", "throughput")
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Network ingress: 18. 120 s window") !== null
+        })
+        compare(model.metrics.dashboardMetricValue(key), 18)
+    }
+
     function deliveryMetricsReport(networkIngress) {
         return {
             probes: [{

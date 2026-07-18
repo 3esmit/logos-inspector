@@ -584,21 +584,25 @@ function windowDeltaFromSamples(samples, timestamp, windowMs) {
         return null
     }
     const cutoff = timestamp - windowMs
-    let baseline = null
+    let baselineIndex = 0
     for (let i = rows.length - 1; i >= 0; --i) {
         if (rows[i].timestamp <= cutoff) {
-            baseline = rows[i]
+            baselineIndex = i
             break
-        }
-        if (i === 0) {
-            baseline = rows[i]
         }
     }
     const latest = rows[rows.length - 1]
-    if (!baseline || latest.timestamp === baseline.timestamp) {
+    if (latest.timestamp === rows[baselineIndex].timestamp) {
         return null
     }
-    return Math.max(0, latest.value - baseline.value)
+    let delta = 0
+    let previous = rows[baselineIndex].value
+    for (let i = baselineIndex + 1; i < rows.length; ++i) {
+        const current = rows[i].value
+        delta += current >= previous ? current - previous : Math.max(0, current)
+        previous = current
+    }
+    return delta
 }
 
 function clearDashboardMetricHistoryForPrefixes(root, prefixes) {

@@ -246,9 +246,60 @@ TestCase {
     function test_window_metric_uses_sample_delta() {
         const now = Date.now()
         model.dashboardMetricHistory = ({ "storage.failed_transfers_recent": [{ timestamp: now - 1000, value: 2 }, { timestamp: now, value: 7 }] })
+        model.dashboardMetricLastSeen = ({
+            "storage.failed_transfers_recent": { timestamp: now, value: 7 }
+        })
+        model.storageFailures = 7
 
         compare(DashboardMetricCatalog.dashboardMetricValue(model, "storage.failed_transfers_recent"), 5)
         compare(DashboardMetricCatalog.windowDeltaFromSamples([{ timestamp: 0, value: 1 }, { timestamp: 1000, value: 4 }], 1000, 1000), 3)
+    }
+
+    function test_window_metric_accumulates_activity_across_counter_reset() {
+        const now = Date.now()
+        const samples = [
+            { timestamp: now - 3000, value: 100 },
+            { timestamp: now - 2000, value: 110 },
+            { timestamp: now - 1000, value: 3 },
+            { timestamp: now, value: 8 }
+        ]
+
+        compare(DashboardMetricCatalog.windowDeltaFromSamples(
+            samples, now, 3000), 18)
+        compare(samples[0].value, 100)
+        compare(samples[2].value, 3)
+
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": samples
+        })
+        model.dashboardMetricLastSeen = ({
+            "storage.failed_transfers_recent": samples[3]
+        })
+        model.storageFailures = 8
+        const graph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "storage.failed_transfers_recent")
+        compare(graph.length, 3)
+        compare(graph[0].value, 10)
+        compare(graph[1].value, 13)
+        compare(graph[2].value, 18)
+    }
+
+    function test_window_metric_accumulates_multiple_counter_resets() {
+        compare(DashboardMetricCatalog.windowDeltaFromSamples([
+            { timestamp: 0, value: 10 },
+            { timestamp: 1000, value: 2 },
+            { timestamp: 2000, value: 7 },
+            { timestamp: 3000, value: 1 },
+            { timestamp: 4000, value: 4 }
+        ], 4000, 4000), 11)
+    }
+
+    function test_window_metric_excludes_reset_before_selected_baseline() {
+        compare(DashboardMetricCatalog.windowDeltaFromSamples([
+            { timestamp: 0, value: 100 },
+            { timestamp: 1000, value: 3 },
+            { timestamp: 2000, value: 8 }
+        ], 2000, 1000), 5)
     }
 
     function test_one_observed_window_sample_stays_unknown() {
