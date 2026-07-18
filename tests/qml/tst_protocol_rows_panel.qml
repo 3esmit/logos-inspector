@@ -104,12 +104,16 @@ TestCase {
     function test_delivery_health_row_without_protocol_id_has_no_copy() {
         const row = findAccessibleByName(
                 deliveryPanel, "Relay: healthy. 6 connected peers")
+        const hiddenCopy = findAnyAccessibleByName(
+                deliveryPanel, "Copy Relay protocol ID")
 
         verify(row !== null)
         compare(row.Accessible.role, Accessible.StaticText)
         compare(row.copyText, "")
         compare(findAccessibleByName(
                 deliveryPanel, "Copy Relay protocol ID"), null)
+        verify(hiddenCopy !== null)
+        verify(hiddenCopy.Accessible.ignored)
     }
 
     function test_multiline_evidence_is_normalized_and_bounded() {
@@ -201,6 +205,24 @@ TestCase {
         const children = item.children || []
         for (let i = 0; i < children.length; ++i) {
             const match = findAccessibleByName(children[i], expectedName)
+            if (match) {
+                return match
+            }
+        }
+        return null
+    }
+
+    function findAnyAccessibleByName(item, expectedName) {
+        if (!item) {
+            return null
+        }
+        if (item.Accessible
+                && String(item.Accessible.name || "") === expectedName) {
+            return item
+        }
+        const children = item.children || []
+        for (let i = 0; i < children.length; ++i) {
+            const match = findAnyAccessibleByName(children[i], expectedName)
             if (match) {
                 return match
             }

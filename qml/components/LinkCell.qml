@@ -142,6 +142,7 @@ Control {
             Accessible.role: Accessible.Button
             Accessible.name: root.copyAccessibleName
             Accessible.description: root.copyAccessibleDescription
+            Accessible.ignored: !visible
         }
     }
 
