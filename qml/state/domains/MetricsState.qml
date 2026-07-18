@@ -560,6 +560,9 @@ QtObject {
         if (!passiveSourceObservation(origin)) {
             return false
         }
+        if (String(origin || "") === "storage-mutation") {
+            return false
+        }
         const retainedCid = observationReportStorageCid("storage")
         if (!retainedCid.length) {
             return false
@@ -585,6 +588,18 @@ QtObject {
             && request.options
             && typeof request.options === "object"
             && request.options.runtime_diagnostics_enabled === true
+    }
+
+    function queryStorageAfterMutation(operationCid) {
+        const expectedCid = String(operationCid || "").trim()
+        const candidateArgs = sourceRouting.storageSourceReportArgs(true)
+        const candidateCid = observationRequestStorageCid("storage", {
+            args: candidateArgs
+        })
+        const includeCid = expectedCid.length > 0
+            && candidateCid === expectedCid
+        return queryNetworkConnection(
+            "storage", false, includeCid, "storage-mutation")
     }
 
     function networkConnectionRequest(kind, includeSensitiveProbe, origin) {
@@ -642,6 +657,7 @@ QtObject {
         case "dashboard":
         case "module-event":
         case "storage-refresh":
+        case "storage-mutation":
             return true
         default:
             return false
@@ -678,11 +694,13 @@ QtObject {
             || sourceMode === "logoscore-cli"
         const options = request.options
             && typeof request.options === "object" ? request.options : null
-        const moduleEventCidRefresh = String(origin || "") === "module-event"
+        const cidRefreshOrigin = String(origin || "") === "module-event"
+            || String(origin || "") === "storage-mutation"
+        const fullModuleCidRefresh = cidRefreshOrigin
             && options
             && String(options.cid || "").trim().length > 0
         return moduleSource
-            && !moduleEventCidRefresh
+            && !fullModuleCidRefresh
             && options
             && options.runtime_diagnostics_enabled === true
     }

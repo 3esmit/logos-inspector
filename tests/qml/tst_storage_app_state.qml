@@ -458,6 +458,7 @@ TestCase {
         verify(state.appendTerminalStorageOperation(state.operation.active))
 
         compare(gateway.storageRefreshCount, 1)
+        compare(gateway.lastStorageRefreshCid, "cid-remove-race")
         compare(gateway.requestCount, 1)
         compare(gateway.lastMethod, "runtimeOperationStart")
         compare(gateway.lastArgs[0].method, "storageManifests")

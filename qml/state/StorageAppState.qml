@@ -409,7 +409,7 @@ QtObject {
         setStorageOperationResult(operation)
         if (terminalRefreshesStorageObservations(operation)
                 && gateway && typeof gateway.refreshStorageObservations === "function") {
-            gateway.refreshStorageObservations()
+            gateway.refreshStorageObservations(storageOperationCid(operation))
         }
         lastOperation = String(operation && operation.status || "") === "dispatched"
             ? qsTr("Dispatched")
@@ -629,6 +629,24 @@ QtObject {
         }
         const method = String(operation && operation.method || "")
         return method === "storageRemove" || method === "storageUploadUrl"
+    }
+
+    function storageOperationCid(operation) {
+        const value = operation && typeof operation === "object"
+            ? operation : ({})
+        const result = value.result && typeof value.result === "object"
+            ? value.result : ({})
+        const acknowledgement = value.acknowledgement
+                && typeof value.acknowledgement === "object"
+            ? value.acknowledgement : ({})
+        const candidates = [value.cid, result.cid, acknowledgement.cid]
+        for (let i = 0; i < candidates.length; ++i) {
+            const cid = String(candidates[i] || "").trim()
+            if (cid.length > 0) {
+                return cid
+            }
+        }
+        return ""
     }
 
     function operationStatusText(operation) {
