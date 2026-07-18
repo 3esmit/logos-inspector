@@ -94,6 +94,7 @@ TestCase {
             cidTools = findAccessibleByName(pageLoader.item, "Open Storage CID tools")
             transferTools = findAccessibleByName(pageLoader.item, "Open Storage transfer tools")
             return cidTools !== null && transferTools !== null
+                && controlsAreSeparated(cidTools, transferTools)
         })
 
         verify(cidTools.enabled)
@@ -118,9 +119,12 @@ TestCase {
         compare(model.storageDiagnosticsTab, "diagnostics")
 
         tryVerify(function () {
+            cidTools = findAccessibleByName(
+                pageLoader.item, "Open Storage CID tools")
             transferTools = findAccessibleByName(
                 pageLoader.item, "Open Storage transfer tools")
-            return transferTools !== null
+            return cidTools !== null && transferTools !== null
+                && controlsAreSeparated(cidTools, transferTools)
         })
 
         mouseClick(transferTools, transferTools.width / 2, transferTools.height / 2)
@@ -220,6 +224,21 @@ TestCase {
             }
         }
         return null
+    }
+
+    function controlsAreSeparated(leftControl, rightControl) {
+        if (!leftControl || !rightControl
+                || leftControl.width <= 0 || leftControl.height <= 0
+                || rightControl.width <= 0 || rightControl.height <= 0) {
+            return false
+        }
+        const left = leftControl.mapToItem(testWindow.contentItem, 0, 0)
+        const right = rightControl.mapToItem(testWindow.contentItem, 0, 0)
+        const horizontalOverlap = left.x < right.x + rightControl.width
+            && right.x < left.x + leftControl.width
+        const verticalOverlap = left.y < right.y + rightControl.height
+            && right.y < left.y + leftControl.height
+        return !(horizontalOverlap && verticalOverlap)
     }
 
 }
