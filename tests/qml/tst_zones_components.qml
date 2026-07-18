@@ -781,6 +781,33 @@ TestCase {
             selectedSource)
     }
 
+    function test_l2_account_transaction_opens_exact_configured_indexer_source() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("accounts"))
+        let accounts = null
+        tryVerify(function () {
+            accounts = findChild(detail, "zoneL2Accounts")
+            return accounts !== null
+        })
+        const transactionId = FixtureData.identity("d")
+        const indexerSource = zoneState.l2IndexerSourceId()
+        verify(indexerSource.length > 0)
+
+        accounts.transactionRequested(transactionId, indexerSource)
+
+        tryCompare(detail, "currentTab", "l2")
+        compare(zoneState.l2TransactionId, transactionId)
+        compare(zoneState.l2TransactionRequestedSourceId, indexerSource)
+        tryVerify(function () {
+            const inspector = findChild(detail, "zoneL2Inspector")
+            return inspector !== null && inspector.currentView === "transaction"
+        })
+        compare(zoneState.l2TransactionDetail.source.source_id,
+            indexerSource)
+        compare(zoneState.l2TransactionTrace.source.source_id,
+            indexerSource)
+    }
+
     function test_l2_transfers_show_page_local_window_and_both_evidence_kinds() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("transfers"))
