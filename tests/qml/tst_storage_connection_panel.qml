@@ -230,6 +230,29 @@ TestCase {
                    "The configured connector no longer has an adapter. Select Storage module, Standalone REST, or Metrics only."))
     }
 
+    function test_connector_popup_exposes_option_semantics() {
+        const connector = findAccessibleByName(panel, "Storage connector")
+        verify(connector !== null)
+        mouseClick(connector, connector.width / 2, connector.height / 2)
+        tryVerify(function () { return connector.popup.visible })
+
+        const expected = [
+            ["LogosCore CLI", "Call storage_module with logoscore call"],
+            ["Standalone REST", "Inspect Storage through its REST API"],
+            ["Metrics only", "Scrape a Prometheus endpoint"]
+        ]
+        for (let i = 0; i < expected.length; ++i) {
+            let option = null
+            tryVerify(function () {
+                option = connector.popup.contentItem.itemAtIndex(i)
+                return option !== null
+            })
+            compare(String(option.Accessible.name), expected[i][0])
+            compare(option.Accessible.role, Accessible.ListItem)
+            compare(String(option.Accessible.description), expected[i][1])
+        }
+    }
+
     function test_path_privacy_control_is_truthful_and_has_no_fake_path_editor() {
         compare(
             model.storageDisplayPath("/tmp/legacy-storage-data"),

@@ -62,6 +62,9 @@ ComboBox {
         implicitHeight: 54
         hoverEnabled: true
         highlighted: root.highlightedIndex === index
+        Accessible.role: Accessible.ListItem
+        Accessible.name: delegateRoot.label
+        Accessible.description: delegateRoot.summary
 
         contentItem: ColumnLayout {
             spacing: root.theme.gapTiny
