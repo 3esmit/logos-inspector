@@ -170,7 +170,7 @@ TestCase {
         compare(DashboardMetricCatalog.dashboardMetricRawValue(model, "messaging.network_ingress_recent"), 11)
     }
 
-    function test_messaging_peer_count_prefers_total_unique_peers_from_live_payload() {
+    function test_messaging_peer_count_prefers_connected_libp2p_gauge_from_live_payload() {
         const root = liveMetricRoot("messaging", [
             {
                 name: "waku_connected_peers",
@@ -180,14 +180,23 @@ TestCase {
                 },
                 value: 10
             },
+            { name: "libp2p_peers", labels: {}, value: 14 },
             { name: "waku_total_unique_peers", labels: {}, value: 30 }
         ])
 
-        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), 30)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), 14)
     }
 
-    function test_messaging_peer_count_falls_back_to_connected_peers_from_live_payload() {
+    function test_messaging_peer_count_rejects_unaggregated_protocol_peer_series() {
         const root = liveMetricRoot("messaging", [
+            {
+                name: "waku_connected_peers",
+                labels: {
+                    direction: "In",
+                    protocol: "/vac/waku/relay/2.0.0"
+                },
+                value: 0
+            },
             {
                 name: "waku_connected_peers",
                 labels: {
@@ -198,7 +207,23 @@ TestCase {
             }
         ])
 
-        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), 10)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), null)
+    }
+
+    function test_messaging_peer_count_rejects_total_unique_peer_gauge() {
+        const root = liveMetricRoot("messaging", [
+            { name: "waku_total_unique_peers", labels: {}, value: 30 }
+        ])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), null)
+    }
+
+    function test_messaging_peer_count_rejects_peer_store_size() {
+        const root = liveMetricRoot("messaging", [
+            { name: "waku_peer_store_size", labels: {}, value: 12 }
+        ])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), null)
     }
 
     function test_storage_peer_count_prefers_dht_routing_nodes_from_live_payload() {
