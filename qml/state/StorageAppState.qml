@@ -49,6 +49,7 @@ QtObject {
     property string activeCid: cidProbe
     readonly property var pendingOperation: storageOperations.confirmation
     readonly property var operation: storageOperations.view
+    readonly property bool sourceSettingsLocked: operation.busy === true
 
     property SourceOperationSession operationSession: SourceOperationSession {
         id: storageOperations
@@ -119,7 +120,9 @@ QtObject {
         manifestBusyShowLog = false
         diagnosticRequestGeneration += 1
         manifestRefreshContext = null
-        storageOperations.clearActive()
+        if (!storageOperations.view.running) {
+            storageOperations.clearActive()
+        }
     }
 
     function resultVisible() {

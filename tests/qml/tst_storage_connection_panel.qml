@@ -42,8 +42,21 @@ TestCase {
         id: sourceOptions
 
         ListElement {
-            value: "logoscore_cli_storage_module"
+            key: "logoscore_cli"
             label: "LogosCore CLI"
+            summary: "Call storage_module with logoscore call"
+        }
+
+        ListElement {
+            key: "rest"
+            label: "Standalone REST"
+            summary: "Inspect Storage through its REST API"
+        }
+
+        ListElement {
+            key: "metrics"
+            label: "Metrics only"
+            summary: "Scrape a Prometheus endpoint"
         }
     }
 
@@ -70,9 +83,67 @@ TestCase {
 
     function init() {
         fakeHost.reset()
+        model.storageApp.operationSession.clearActive()
+        model.setNetworkConnectorMode("storage", "logoscore_cli")
         model.storageLocalDiagnosticsEnabled = false
         model.storagePrivilegedDebugEnabled = false
         wait(0)
+    }
+
+    function test_source_controls_lock_while_storage_operation_runs() {
+        model.setNetworkConnectorMode("storage", "rest")
+        tryCompare(model, "storageSourceMode", "rest")
+
+        verify(model.storageApp.operationSession.acceptUpdate({
+            operationId: "storage-download-lock",
+            domain: "storage",
+            method: "storageDownloadToUrl",
+            status: "running",
+            label: "Download",
+            cancellable: true
+        }))
+        tryVerify(function () { return model.storageApp.operation.busy })
+
+        const lockedControls = [
+            "Storage connector",
+            "REST URL",
+            "Metrics URL",
+            "Network preset",
+            "Include network debug details"
+        ]
+        for (let i = 0; i < lockedControls.length; ++i) {
+            const control = findAccessibleByName(panel, lockedControls[i])
+            verify(control !== null, "Missing source control " + lockedControls[i])
+            verify(!control.enabled, lockedControls[i] + " remained enabled")
+        }
+
+        const safeControls = [
+            "CID local exists",
+            "Show local paths",
+            "Query Storage status"
+        ]
+        for (let j = 0; j < safeControls.length; ++j) {
+            const control = findAccessibleByName(panel, safeControls[j])
+            verify(control !== null, "Missing safe control " + safeControls[j])
+            verify(control.enabled, safeControls[j] + " was unnecessarily disabled")
+        }
+        verify(hasVisibleText(panel, "Storage source locked"))
+
+        compare(model.setNetworkConnectorMode("storage", "metrics"), false)
+        compare(model.storageSourceMode, "rest")
+        model.storageRestUrl = "http://storage-changed.example/api/storage/v1"
+        wait(0)
+        verify(model.storageApp.operation.busy)
+        compare(model.storageApp.operation.active.operationId,
+                "storage-download-lock")
+        verify(model.storageApp.operation.cancelable)
+
+        model.storageApp.operationSession.clearActive()
+        model.storageRestUrl = "http://127.0.0.1:8080/api/storage/v1"
+        tryVerify(function () {
+            const connector = findAccessibleByName(panel, "Storage connector")
+            return connector !== null && connector.enabled
+        })
     }
 
     function test_path_privacy_control_is_truthful_and_has_no_fake_path_editor() {

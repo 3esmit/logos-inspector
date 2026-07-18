@@ -15,6 +15,15 @@ SourceSettingsPanel {
     busy: root.modelRef ? root.modelRef.shell.busy : false
     queryAccessibleName: qsTr("Query Storage status")
 
+    StatusMessage {
+        visible: root.sourceSettingsLocked()
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Storage source locked")
+        message: qsTr("Connector, endpoint, network preset, and network debug settings stay locked until the Storage operation finishes or cancellation is confirmed. Manage it from Storage > Operations.")
+        Layout.fillWidth: true
+    }
+
     SourceSettingsGrid {
         theme: root.theme
         pageWidth: root.pageWidth
@@ -25,6 +34,7 @@ SourceSettingsPanel {
             accessibleName: qsTr("Storage connector")
             options: root.sourceOptions
             currentIndex: root.sourceIndexFor(root.modelRef.currentConnectorSourceMode("storage", "rest"))
+            enabled: !root.sourceSettingsLocked()
             onActivated: index => root.modelRef.setNetworkConnectorMode("storage", root.sourceModeAt(index))
         }
 
@@ -35,6 +45,7 @@ SourceSettingsPanel {
             sourceText: root.modelRef.storageRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8080/api/storage/v1")
+            enabled: !root.sourceSettingsLocked()
             onTextEdited: text => root.modelRef.storageRestUrl = String(text || "").trim()
         }
 
@@ -45,6 +56,7 @@ SourceSettingsPanel {
             sourceText: root.modelRef.storageMetricsUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")
+            enabled: !root.sourceSettingsLocked()
             onTextEdited: text => root.modelRef.storageMetricsUrl = String(text || "").trim()
         }
 
@@ -54,6 +66,7 @@ SourceSettingsPanel {
             sourceText: root.modelRef.storageNetworkPreset
             syncSourceText: true
             placeholderText: qsTr("logos.test")
+            enabled: !root.sourceSettingsLocked()
             onTextEdited: text => root.modelRef.storageNetworkPreset = String(text || "").trim()
         }
 
@@ -98,6 +111,7 @@ SourceSettingsPanel {
             text: qsTr("Include network debug details")
             detail: qsTr("Queries peer identity, addresses, public records, and the DHT routing table during Storage status checks. Read-only; may expose network topology.")
             checked: root.modelRef.storagePrivilegedDebugEnabled
+            enabled: !root.sourceSettingsLocked()
             onToggled: root.modelRef.storagePrivilegedDebugEnabled = checked
         }
     }
@@ -137,5 +151,9 @@ SourceSettingsPanel {
 
     function storageDataEnabled() {
         return root.storageSource().supportsCidProbe
+    }
+
+    function sourceSettingsLocked() {
+        return root.modelRef && root.modelRef.storageApp.sourceSettingsLocked
     }
 }
