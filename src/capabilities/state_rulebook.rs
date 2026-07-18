@@ -366,7 +366,20 @@ fn adapter_constrained_state(
 
 fn wallet_state(inputs: &CapabilityRuntimeInputs, sub_capabilities: &[&str]) -> CapabilityState {
     if !inputs.wallet_profile_configured {
-        return input_required_state(sub_capabilities, "wallet profile is required".to_owned());
+        let unavailable = sub_capabilities
+            .iter()
+            .filter(|capability| wallet_sub_capability_needs_profile(capability))
+            .map(|capability| (*capability).to_owned())
+            .collect::<Vec<_>>();
+        if unavailable.len() >= sub_capabilities.len() {
+            return input_required_state(sub_capabilities, "wallet profile is required".to_owned());
+        }
+        return state_from_unavailable(
+            sub_capabilities,
+            unavailable,
+            vec!["Wallet profile is required for signing and wallet-backed actions".to_owned()],
+            Vec::new(),
+        );
     }
     if inputs.wallet_home_configured {
         return available_state();
@@ -383,6 +396,10 @@ fn wallet_state(inputs: &CapabilityRuntimeInputs, sub_capabilities: &[&str]) -> 
         vec!["Wallet home is required for signing and mutating wallet actions".to_owned()],
         Vec::new(),
     )
+}
+
+fn wallet_sub_capability_needs_profile(capability: &str) -> bool {
+    capability != "wallet.l2.instruction.preview"
 }
 
 fn local_nodes_state(

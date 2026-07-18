@@ -322,6 +322,29 @@ mod tests {
     }
 
     #[test]
+    fn static_l2_instruction_preview_does_not_require_wallet_profile() -> Result<()> {
+        let inputs = serde_json::json!({});
+        let value = serde_json::to_value(test_registry_report_with_value(
+            CapabilityBuildMode::Standalone,
+            Some(&inputs),
+        ))?;
+        let Some(wallet_l2) = capability_for(&value, "wallet.l2") else {
+            bail!("wallet.l2 capability missing: {value}");
+        };
+
+        if wallet_l2.get("status").and_then(Value::as_str) != Some("degraded") {
+            bail!("wallet.l2 should retain static preview without a wallet profile: {wallet_l2}");
+        }
+        if unavailable_contains(wallet_l2, "wallet.l2.instruction.preview") {
+            bail!("static instruction preview should remain available: {wallet_l2}");
+        }
+        if !unavailable_contains(wallet_l2, "wallet.l2.instruction.submit") {
+            bail!("instruction submit should still require a wallet profile: {wallet_l2}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_inputs_use_l1_provider_probe_for_availability() -> Result<()> {
         let loading_inputs = serde_json::json!({
             "node_url": "http://127.0.0.1:8545"
