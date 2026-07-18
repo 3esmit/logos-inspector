@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../../../theme"
 import "../ZonePresentation.js" as Presentation
@@ -47,9 +48,14 @@ Rectangle {
                     required property var modelData
                     required property int index
 
-                    implicitHeight: 40
+                    objectName: "zoneCatalogFact_" + factItem.index
+                    implicitHeight: Math.max(40, factRow.implicitHeight)
+                    activeFocusOnTab: factLabel.truncated || factValue.truncated
                     Layout.fillWidth: true
                     Layout.minimumWidth: 110
+
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: root.factAccessibleName(factItem.modelData)
 
                     Rectangle {
                         visible: factItem.index % statusGrid.columns !== 0
@@ -58,9 +64,12 @@ Rectangle {
                         anchors.bottom: parent.bottom
                         width: 1
                         color: root.theme.outlineMuted
+                        Accessible.ignored: true
                     }
 
                     RowLayout {
+                        id: factRow
+
                         anchors.fill: parent
                         anchors.leftMargin: factItem.index % statusGrid.columns === 0 ? root.theme.gapTiny : root.theme.gap
                         anchors.rightMargin: root.theme.gap
@@ -73,6 +82,7 @@ Rectangle {
                             Layout.preferredHeight: 7
                             Layout.alignment: Qt.AlignTop
                             Layout.topMargin: 5
+                            Accessible.ignored: true
                         }
 
                         ColumnLayout {
@@ -80,25 +90,43 @@ Rectangle {
                             Layout.fillWidth: true
 
                             Text {
+                                id: factLabel
+
                                 text: factItem.modelData.label
                                 color: root.theme.textDim
                                 textFormat: Text.PlainText
                                 elide: Text.ElideRight
                                 font.pixelSize: root.theme.labelText
                                 Layout.fillWidth: true
+                                Accessible.ignored: true
                             }
 
                             Text {
+                                id: factValue
+
+                                objectName: "zoneCatalogFactValue_" + factItem.index
                                 text: factItem.modelData.value
                                 color: root.theme.text
                                 textFormat: Text.PlainText
                                 elide: Text.ElideRight
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
                                 font.pixelSize: root.theme.secondaryText
                                 font.weight: Font.DemiBold
                                 Layout.fillWidth: true
+                                Accessible.ignored: true
                             }
                         }
                     }
+
+                    HoverHandler {
+                        id: factHover
+                    }
+
+                    ToolTip.visible: (factHover.hovered || factItem.activeFocus)
+                        && (factLabel.truncated || factValue.truncated)
+                    ToolTip.delay: 350
+                    ToolTip.text: root.factAccessibleName(factItem.modelData)
                 }
             }
         }
@@ -106,6 +134,7 @@ Rectangle {
         Text {
             id: catalogError
 
+            objectName: "zoneCatalogError"
             visible: text.length > 0
             text: String(root.zoneState && (root.zoneState.currentError
                 || root.zoneState.statusError
@@ -115,6 +144,8 @@ Rectangle {
             wrapMode: Text.Wrap
             font.pixelSize: root.theme.dataText
             Layout.fillWidth: true
+            Accessible.role: Accessible.StaticText
+            Accessible.name: root.errorAccessibleName(text)
         }
     }
 
@@ -147,5 +178,20 @@ Rectangle {
                 .arg(Presentation.numberText(coverage.gap_count)),
             tone: Number(coverage.gap_count || 0) > 0 ? "warning" : root.tone
         }]
+    }
+
+    function factAccessibleName(fact) {
+        return qsTr("%1: %2")
+            .arg(String(fact && fact.label || ""))
+            .arg(String(fact && fact.value || ""))
+    }
+
+    function errorAccessibleName(errorText) {
+        const normalized = String(errorText || "").replace(/\s+/g, " ").trim()
+        const limit = 240
+        if (normalized.length <= limit) {
+            return normalized
+        }
+        return normalized.slice(0, limit - 3) + "..."
     }
 }

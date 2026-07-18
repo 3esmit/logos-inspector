@@ -67,8 +67,25 @@ TestCase {
         ZoneFactSection {}
     }
 
+    Component {
+        id: catalogStatusFactory
+
+        ZoneCatalogStatus {}
+    }
+
     function init() {
         zoneState.verification = "verified"
+        zoneState.coverage = {
+            status: "complete",
+            coverage_floor: 0,
+            scanned_through_slot: 187085,
+            observed_lib_slot: 187085,
+            prefix_status: "complete",
+            gap_count: 0
+        }
+        zoneState.currentError = ""
+        zoneState.statusError = ""
+        zoneState.configureError = ""
         zoneState.summaryStale = false
         zoneState.activeZoneId = FixtureData.identity("1")
         zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
@@ -94,6 +111,68 @@ TestCase {
             detail.currentTab = "overview"
         }
         wait(0)
+    }
+
+    function test_catalog_status_exposes_complete_fact_and_error_text() {
+        zoneState.verification = "source_behind"
+        zoneState.coverage = {
+            status: "partial",
+            coverage_floor: 1008,
+            scanned_through_slot: 691337,
+            observed_lib_slot: 0,
+            prefix_status: "unavailable",
+            gap_count: 0
+        }
+        const errorText = "L1 source LIB 0 is behind catalog checkpoint 691337"
+        zoneState.currentError = errorText
+        const status = catalogStatusFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: zoneState,
+            width: 900
+        })
+        verify(status !== null)
+        try {
+            const coverageFact = findChild(status, "zoneCatalogFact_1")
+            const coverageValue = findChild(status, "zoneCatalogFactValue_1")
+            const error = findChild(status, "zoneCatalogError")
+
+            verify(coverageFact !== null)
+            compare(coverageFact.Accessible.role, Accessible.StaticText)
+            compare(coverageFact.Accessible.name,
+                    "Coverage: Partial / prefix Unavailable")
+            verify(coverageValue !== null)
+            compare(coverageValue.text, "Partial / prefix Unavailable")
+            tryCompare(coverageValue, "truncated", false)
+            verify(error !== null)
+            compare(error.Accessible.role, Accessible.StaticText)
+            compare(error.Accessible.name, errorText)
+        } finally {
+            status.destroy()
+        }
+    }
+
+    function test_catalog_status_bounds_multiline_error_accessibility() {
+        const errorText = "first line\n" + "x".repeat(300)
+        const normalized = errorText.replace(/\s+/g, " ").trim()
+        const bounded = normalized.slice(0, 237) + "..."
+        zoneState.currentError = errorText
+        const status = catalogStatusFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: zoneState,
+            width: 900
+        })
+        verify(status !== null)
+        try {
+            const error = findChild(status, "zoneCatalogError")
+
+            verify(error !== null)
+            compare(error.text, errorText)
+            compare(error.Accessible.name, bounded)
+            compare(error.Accessible.name.length, 240)
+            verify(String(error.Accessible.name).indexOf("\n") < 0)
+        } finally {
+            status.destroy()
+        }
     }
 
     function test_variant_d_hierarchy_full_identity_and_single_kind_tag() {
