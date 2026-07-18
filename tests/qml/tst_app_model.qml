@@ -1730,6 +1730,40 @@ TestCase {
         verify(view.capabilityAvailable("space"))
     }
 
+    function test_probe_evidence_normalizes_lines_and_summarizes_oversized_strings() {
+        const session = {
+            sourceLabel: function () { return "LogosCore CLI" },
+            status: function () {
+                return { known: true, checkedAt: "09:42:00" }
+            }
+        }
+        const boundary = "x".repeat(1024)
+        const oversized = "y".repeat(1025)
+        const multiline = "first\r\nsecond\nthird"
+
+        const boundaryRow = SourceDiagnostics.probeRow(session, {
+            label: "Boundary",
+            ok: true,
+            value: boundary
+        }, "Probe")
+        const oversizedRow = SourceDiagnostics.probeRow(session, {
+            label: "Metrics",
+            ok: true,
+            value: oversized
+        }, "Probe")
+        const multilineRow = SourceDiagnostics.probeRow(session, {
+            label: "Lines",
+            ok: true,
+            value: multiline
+        }, "Probe")
+
+        compare(boundaryRow.evidence, boundary)
+        compare(oversizedRow.evidence, "1025 character(s)")
+        compare(multilineRow.evidence, "first second third")
+        compare(SourceDiagnostics.copyValue(oversized), oversized)
+        compare(SourceDiagnostics.copyValue(multiline), multiline)
+    }
+
     function test_delivery_source_throughput_metric_aliases() {
         model.metrics.messagingSourceReport = {
             module: "delivery_metrics",
