@@ -86,9 +86,13 @@ TestCase {
         model.storageApp.operationSession.clearActive()
         model.sourceRouting.sourcePolicy = ({})
         model.loadNetworkConnectorConfig({})
+        model.loadSettingsState()
         model.setNetworkConnectorMode("storage", "logoscore_cli")
+        model.metrics.storageRefreshRate = 30
+        model.storageRollingWindow = 120
         model.storageLocalDiagnosticsEnabled = false
         model.storagePrivilegedDebugEnabled = false
+        fakeHost.reset()
         wait(0)
     }
 
@@ -251,6 +255,60 @@ TestCase {
             compare(option.Accessible.role, Accessible.ListItem)
             compare(String(option.Accessible.description), expected[i][1])
         }
+        connector.popup.close()
+        tryVerify(function () { return !connector.popup.visible })
+    }
+
+    function test_numeric_controls_expose_semantics_and_persist_interactions() {
+        const refresh = findAccessibleByName(panel, "Storage auto refresh")
+        const rolling = findAccessibleByName(panel, "Storage rolling window")
+        verify(refresh !== null)
+        verify(rolling !== null)
+        compare(
+            String(refresh.Accessible.description),
+            "Automatic Storage status refresh interval in seconds. Set to 0 to turn it off.")
+        compare(
+            String(rolling.Accessible.description),
+            "Storage metrics rolling window in seconds.")
+        compare(refresh.value, 30)
+        compare(refresh.from, 0)
+        compare(refresh.to, 3600)
+        compare(refresh.stepSize, 5)
+        compare(refresh.focusPolicy, Qt.StrongFocus)
+        compare(rolling.value, 120)
+        compare(rolling.from, 5)
+        compare(rolling.to, 3600)
+        compare(rolling.stepSize, 5)
+        compare(rolling.focusPolicy, Qt.StrongFocus)
+
+        fakeHost.reset()
+        mouseClick(
+            refresh.up.indicator,
+            refresh.up.indicator.width / 2,
+            refresh.up.indicator.height / 2)
+        tryCompare(model.metrics, "storageRefreshRate", 35)
+        compare(latestSavedSetting("storage_refresh_rate"), 35)
+
+        mouseClick(
+            refresh.down.indicator,
+            refresh.down.indicator.width / 2,
+            refresh.down.indicator.height / 2)
+        tryCompare(model.metrics, "storageRefreshRate", 30)
+        compare(latestSavedSetting("storage_refresh_rate"), 30)
+
+        mouseClick(
+            rolling.down.indicator,
+            rolling.down.indicator.width / 2,
+            rolling.down.indicator.height / 2)
+        tryCompare(model, "storageRollingWindow", 115)
+        compare(latestSavedSetting("storage_rolling_window"), 115)
+
+        mouseClick(
+            rolling.up.indicator,
+            rolling.up.indicator.width / 2,
+            rolling.up.indicator.height / 2)
+        tryCompare(model, "storageRollingWindow", 120)
+        compare(latestSavedSetting("storage_rolling_window"), 120)
     }
 
     function test_path_privacy_control_is_truthful_and_has_no_fake_path_editor() {
@@ -320,6 +378,17 @@ TestCase {
             }
         }
         return null
+    }
+
+    function latestSavedSetting(key) {
+        for (let i = fakeHost.calls.length - 1; i >= 0; --i) {
+            const call = fakeHost.calls[i]
+            if (call.method === "saveSettingsState"
+                    && call.args.length > 0) {
+                return call.args[0][key]
+            }
+        }
+        return undefined
     }
 
     function hasVisibleText(item, expectedText) {

@@ -58,6 +58,8 @@ SourceSettingsPanel {
 
         RefreshRateField {
             theme: root.theme
+            accessibleName: qsTr("Delivery auto refresh")
+            accessibleDescription: qsTr("Automatic Delivery status refresh interval in seconds. Set to 0 to turn it off.")
             value: root.modelRef.metrics.messagingRefreshRate
             onRateEdited: value => root.modelRef.metrics.setNetworkConnectionRate("messaging", value)
         }
@@ -65,6 +67,8 @@ SourceSettingsPanel {
         SecondsField {
             theme: root.theme
             label: qsTr("Rolling window")
+            accessibleName: qsTr("Delivery rolling window")
+            accessibleDescription: qsTr("Delivery metrics rolling window in seconds.")
             value: root.modelRef.messagingRollingWindow
             onValueEdited: value => root.modelRef.messagingRollingWindow = value
         }

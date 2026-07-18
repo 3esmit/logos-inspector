@@ -11,6 +11,8 @@ ColumnLayout {
     required property Theme theme
     property string label: ""
     property int value: 120
+    property string accessibleName: label
+    property string accessibleDescription: qsTr("Value in seconds.")
     signal valueEdited(int value)
 
     spacing: 6
@@ -34,6 +36,21 @@ ColumnLayout {
         value: root.value
         editable: true
         hoverEnabled: true
+        focusPolicy: Qt.StrongFocus
+        Accessible.name: root.accessibleName
+        Accessible.description: root.accessibleDescription
+        Keys.onUpPressed: event => {
+            root.valueEdited(Math.min(
+                secondsSpin.to,
+                secondsSpin.value + secondsSpin.stepSize))
+            event.accepted = true
+        }
+        Keys.onDownPressed: event => {
+            root.valueEdited(Math.max(
+                secondsSpin.from,
+                secondsSpin.value - secondsSpin.stepSize))
+            event.accepted = true
+        }
         Layout.fillWidth: true
         Layout.preferredHeight: root.theme.controlHeight
         textFromValue: function (value, locale) {
