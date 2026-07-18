@@ -158,6 +158,12 @@ function sourceModeSupportsMutatingDiagnostics(root, family, value) {
     return sourceModeDescriptor(root, family, value).supportsMutatingDiagnostics
 }
 
+function storageSourceSupportsNetworkDebug(root, sourceMode) {
+    const effective = sourceModeDescriptor(
+        root, "storage", sourceMode).effective
+    return effective === "module" || effective === "rest"
+}
+
 function coreSourceArgs(root, sourceMode, endpoint, extra) {
     const rest = Array.isArray(extra) ? extra : []
     const descriptor = sourceModeDescriptor(root, "core", sourceMode)
@@ -185,7 +191,8 @@ function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint
     })
     initialization.options = {
         cid: includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
-        privileged_debug_enabled: privilegedDebugEnabled === true,
+        privileged_debug_enabled: privilegedDebugEnabled === true
+            && storageSourceSupportsNetworkDebug(root, sourceMode),
         runtime_diagnostics_enabled: runtimeDiagnosticsEnabled !== false
     }
     return [initialization]

@@ -242,6 +242,11 @@ QtObject {
         return String(source.effective || "rest")
     }
 
+    function storageSourceSupportsNetworkDebug() {
+        return SourcePolicyProjection.storageSourceSupportsNetworkDebug(
+            root, connectorSourceMode("storage", storageSourceMode))
+    }
+
     function blockchainSourceLabel() {
         return coreSourceLabel(connectorSourceMode("l1", blockchainSourceMode), qsTr("Bedrock RPC"))
     }
