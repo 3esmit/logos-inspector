@@ -53,11 +53,18 @@ SourceSettingsPanel {
             visible: root.storageMetricsEnabled()
             theme: root.theme
             label: qsTr("Metrics URL")
-            sourceText: root.modelRef.storageMetricsUrl
+            sourceText: root.modelRef.sourceRouting.configuredStorageMetricsUrl()
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")
             enabled: !root.sourceSettingsLocked()
-            onTextEdited: text => root.modelRef.storageMetricsUrl = String(text || "").trim()
+            onTextEdited: text => {
+                const value = String(text || "").trim()
+                if (root.storageSourceMode() === "metrics") {
+                    root.modelRef.setNetworkConnectorEndpoint("storage", value)
+                } else {
+                    root.modelRef.storageMetricsUrl = value
+                }
+            }
         }
 
         FieldRow {

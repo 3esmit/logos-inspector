@@ -1155,6 +1155,135 @@ TestCase {
         compare(model.sourceRouting.configuredStorageRestUrl(), editedEndpoint)
     }
 
+    function test_storage_metrics_edit_synchronizes_canonical_scoped_endpoint() {
+        const restEndpoint = "http://configured-storage.example/api/storage/v1"
+        const fallbackEndpoint = "http://fallback-storage.example/metrics"
+        const configuredEndpoint = "http://configured-storage.example/metrics"
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    network_connector_config: {
+                        scopes: {
+                            l1: {
+                                connector_id: "direct_l1_rpc",
+                                provenance: "network_profile"
+                            },
+                            delivery: {
+                                connector_id: "direct_delivery_rest",
+                                provenance: "network_profile"
+                            },
+                            storage: {
+                                connector_id: "storage_metrics",
+                                endpoint: configuredEndpoint,
+                                provenance: "network_profile"
+                            }
+                        }
+                    },
+                    storage_rest_url: restEndpoint,
+                    storage_metrics_url: fallbackEndpoint
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        compare(model.storageMetricsUrl, fallbackEndpoint)
+        compare(model.networkConnectorConfig.scopes.storage.endpoint,
+                configuredEndpoint)
+        compare(model.sourceRouting.configuredStorageMetricsUrl(),
+                configuredEndpoint)
+        compare(model.sourceRouting.configuredStorageRestUrl(), restEndpoint)
+        compare(model.sourceRouting.storageOperationAdapter().inputs.metrics_endpoint,
+                configuredEndpoint)
+        compare(model.sourceRouting.storageSourceView().target, configuredEndpoint)
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0].inputs.metrics_endpoint,
+                configuredEndpoint)
+        const initialRuntimeInputs = model.capabilityRegistryRuntimeInputs()
+        compare(initialRuntimeInputs.storage_rest_url, restEndpoint)
+        compare(initialRuntimeInputs.storage_metrics_url, configuredEndpoint)
+        compare(initialRuntimeInputs.network_connector_config.scopes.storage.endpoint,
+                configuredEndpoint)
+
+        const editedEndpoint = "http://edited-storage.example/metrics"
+        fakeHost.calls = []
+        verify(model.setNetworkConnectorEndpoint("storage", editedEndpoint))
+        compare(model.storageMetricsUrl, editedEndpoint)
+        compare(model.networkConnectorConfig.scopes.storage.endpoint,
+                editedEndpoint)
+        compare(model.sourceRouting.configuredStorageMetricsUrl(), editedEndpoint)
+        compare(model.sourceRouting.storageOperationAdapter().inputs.metrics_endpoint,
+                editedEndpoint)
+        compare(model.sourceRouting.storageSourceView().target, editedEndpoint)
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0].inputs.metrics_endpoint,
+                editedEndpoint)
+        const runtimeInputs = model.capabilityRegistryRuntimeInputs()
+        compare(runtimeInputs.storage_rest_url, restEndpoint)
+        compare(runtimeInputs.storage_metrics_url, editedEndpoint)
+        compare(runtimeInputs.network_connector_config.scopes.storage.endpoint,
+                editedEndpoint)
+        const saved = model.settingsStatePayload()
+        compare(saved.storage_rest_url, restEndpoint)
+        compare(saved.storage_metrics_url, editedEndpoint)
+        compare(saved.network_connector_config.scopes.storage.endpoint,
+                editedEndpoint)
+        verify(fakeHost.calls.some(function (call) {
+            return call.method === "saveSettingsState"
+                && call.args[0].storage_metrics_url === editedEndpoint
+                && call.args[0].network_connector_config.scopes.storage.endpoint
+                    === editedEndpoint
+        }))
+
+        model.settingsStateLoaded = false
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: saved,
+                text: "OK",
+                error: ""
+            }
+        }
+        model.loadSettingsState()
+        compare(model.storageMetricsUrl, editedEndpoint)
+        compare(model.networkConnectorConfig.scopes.storage.endpoint,
+                editedEndpoint)
+        compare(model.sourceRouting.configuredStorageMetricsUrl(), editedEndpoint)
+    }
+
+    function test_rest_optional_metrics_endpoint_does_not_use_rest_scope() {
+        const restEndpoint = "http://configured-storage.example/api/storage/v1"
+        const metricsEndpoint = "http://configured-storage.example/metrics"
+        model.loadNetworkConnectorConfig({
+            network_connector_config: {
+                scopes: {
+                    l1: {
+                        connector_id: "direct_l1_rpc",
+                        provenance: "network_profile"
+                    },
+                    delivery: {
+                        connector_id: "direct_delivery_rest",
+                        provenance: "network_profile"
+                    },
+                    storage: {
+                        connector_id: "direct_storage_rest",
+                        endpoint: restEndpoint,
+                        provenance: "network_profile"
+                    }
+                }
+            }
+        })
+        model.storageMetricsUrl = metricsEndpoint
+
+        compare(model.sourceRouting.configuredStorageRestUrl(), restEndpoint)
+        compare(model.sourceRouting.configuredStorageMetricsUrl(), metricsEndpoint)
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0].inputs.rest_endpoint,
+                restEndpoint)
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0].inputs.metrics_endpoint,
+                metricsEndpoint)
+    }
+
     function test_local_network_profile_remains_selectable_when_endpoint_matches_default() {
         const options = model.networkProfileOptions()
         const local = options.find(function (option) { return option.key === "local" })

@@ -1496,7 +1496,7 @@ QtObject {
             wallet_connector_config: walletConnectorConfigPayload(),
             node_url: String(nodeUrl || ""),
             storage_rest_url: sourceRouting.configuredStorageRestUrl(),
-            storage_metrics_url: String(storageMetricsUrl || ""),
+            storage_metrics_url: sourceRouting.configuredStorageMetricsUrl(),
             messaging_rest_url: sourceRouting.configuredMessagingRestUrl(),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
             storage_mutating_diagnostics_enabled: true,
