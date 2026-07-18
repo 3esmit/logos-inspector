@@ -37,6 +37,7 @@ Item {
             elide: Text.ElideRight
             Layout.preferredWidth: root.layoutWidth < 720 ? 0 : 150
             Layout.fillWidth: root.layoutWidth < 720
+            Accessible.ignored: true
         }
 
         LinkCell {
@@ -46,6 +47,10 @@ Item {
             copyText: root.copyText
             link: false
             wrap: root.layoutWidth < 720
+            accessibleName: root.rowAccessibleName()
+            accessibleDescription: root.source
+            copyAccessibleName: root.copyActionAccessibleName()
+            copyAccessibleDescription: root.copyActionAccessibleDescription()
             Layout.fillWidth: true
         }
 
@@ -57,6 +62,7 @@ Item {
             font.pixelSize: root.theme.dataText
             elide: Text.ElideRight
             Layout.preferredWidth: 180
+            Accessible.ignored: true
         }
     }
 
@@ -67,5 +73,30 @@ Item {
         height: 1
         color: root.theme.outlineMuted
         Accessible.ignored: true
+    }
+
+    function rowAccessibleName() {
+        const labelText = root.label.trim()
+        const valueText = root.value.trim()
+        if (labelText.length > 0 && valueText.length > 0) {
+            return qsTr("%1: %2").arg(labelText).arg(valueText)
+        }
+        return labelText.length > 0 ? labelText : valueText
+    }
+
+    function copyActionAccessibleName() {
+        const field = root.label.trim()
+        const valueText = root.value.trim()
+        const target = field.length > 0 ? field
+            : (valueText.length > 0 ? valueText : qsTr("detail"))
+        return qsTr("Copy %1").arg(target)
+    }
+
+    function copyActionAccessibleDescription() {
+        const field = root.label.trim().length > 0 ? root.label.trim() : qsTr("detail")
+        const sourceText = root.source.trim()
+        return sourceText.length > 0
+            ? qsTr("Copies exact %1 value from %2.").arg(field).arg(sourceText)
+            : qsTr("Copies exact %1 value.").arg(field)
     }
 }

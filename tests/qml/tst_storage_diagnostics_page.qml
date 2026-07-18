@@ -179,18 +179,29 @@ TestCase {
         tryVerify(function () {
             return findAccessibleByName(
                 pageLoader.item,
-                "Copy 9 field(s); 1 routing node(s)") !== null
+                "Network snapshot: 9 field(s); 1 routing node(s)") !== null
         })
-        verify(findAccessibleByName(pageLoader.item, "Copy debug-peer-id") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item, "Copy Network snapshot") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item, "Network peer ID: debug-peer-id") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item, "Copy Network peer ID") !== null)
         verify(findAccessibleByName(
             pageLoader.item,
-            "Copy /ip4/127.0.0.1/tcp/8070") !== null)
+            "Listen address 1: /ip4/127.0.0.1/tcp/8070") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item, "Copy Listen address 1") !== null)
         verify(findAccessibleByName(
             pageLoader.item,
-            "Copy 1 node(s); showing 1") !== null)
+            "DHT routing nodes: 1 node(s); showing 1") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item, "Copy DHT routing nodes") !== null)
         verify(findAccessibleByName(
             pageLoader.item,
-            "Copy routing-peer-1 | /ip4/10.0.0.1/tcp/3000 | routing-node-1") !== null)
+            "Routing node 1: routing-peer-1 | /ip4/10.0.0.1/tcp/3000 | routing-node-1") !== null)
+        verify(findAccessibleByName(
+            pageLoader.item, "Copy Routing node 1") !== null)
     }
 
     function findAccessibleByName(item, expectedName) {
