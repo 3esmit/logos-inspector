@@ -118,6 +118,9 @@ function dashboardMetricGroup(key) {
 
 function dashboardMetricLabel(key) {
     switch (String(key || "")) {
+    // Keep the legacy key for persisted graph/footer selections and history.
+    case "lez.blocks_produced_recent":
+        return qsTr("provisional block records available")
     case "messaging.message_received_events_recent":
         return qsTr("messages in window")
     case "messaging.message_error_events_recent":

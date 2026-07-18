@@ -40,4 +40,15 @@ TestCase {
         verify(StatusFieldCatalog.usesColorOnly("overall.status"))
         verify(StatusFieldCatalog.showsDot("network.network"))
     }
+
+    function test_available_provisional_block_labels_do_not_claim_a_time_window() {
+        const key = "lez.blocks_produced_recent"
+
+        compare(StatusFieldCatalog.fieldLabel(key), "provisional_block_records_available")
+        compare(StatusFieldCatalog.shortLabel(key), "Prov recs")
+        compare(StatusFieldCatalog.fieldDetail(key),
+                "Provisional block records available for the active Zone from loaded Sequencer rows or the latest head summary; not a time-window production count")
+        compare(StatusFieldCatalog.fieldDetail(key, "dashboard"),
+                "Provisional block records available for the active Zone from loaded Sequencer rows or the latest head summary; not a time-window production count")
+    }
 }
