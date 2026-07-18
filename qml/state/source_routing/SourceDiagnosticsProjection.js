@@ -166,13 +166,25 @@ function statusRow(session, label, state, evidence, tone) {
 
 function probeRow(session, probe, fallbackLabel) {
     const ok = probe && probe.ok === true
+    const evidence = ok ? probeEvidenceSummary(probe.value)
+        : String(probe && probe.error ? probe.error : qsTr("No response"))
     return statusRow(
         session,
         String(probe && probe.label ? probe.label : fallbackLabel),
         ok ? qsTr("ok") : qsTr("problem"),
-        ok ? valueSummary(probe.value) : String(probe && probe.error ? probe.error : qsTr("No response")),
+        evidence,
         ok ? "success" : "error"
     )
+}
+
+function probeEvidenceSummary(value) {
+    if (typeof value !== "string") {
+        return valueSummary(value)
+    }
+    if (value.length > 1024) {
+        return qsTr("%1 character(s)").arg(value.length)
+    }
+    return value.replace(/[\r\n]+/g, " ")
 }
 
 function detailRow(session, label, value, extraCopySkips) {
