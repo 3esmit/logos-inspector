@@ -38,18 +38,6 @@ ColumnLayout {
         focusPolicy: Qt.StrongFocus
         Accessible.name: root.accessibleName
         Accessible.description: root.accessibleDescription
-        Keys.onUpPressed: event => {
-            root.rateEdited(Math.min(
-                refreshSpin.to,
-                refreshSpin.value + refreshSpin.stepSize))
-            event.accepted = true
-        }
-        Keys.onDownPressed: event => {
-            root.rateEdited(Math.max(
-                refreshSpin.from,
-                refreshSpin.value - refreshSpin.stepSize))
-            event.accepted = true
-        }
         Layout.fillWidth: true
         Layout.preferredHeight: root.theme.controlHeight
         textFromValue: function (value, locale) {
