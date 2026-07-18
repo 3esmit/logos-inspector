@@ -219,6 +219,14 @@ async fn append_module_health(
             value,
             &["connectionStatus"],
         );
+        push_delivery_probe(
+            report,
+            SourceProbeKey::DeliveryProtocolsHealth,
+            "protocolsHealth",
+            &health_source,
+            value,
+            &["protocolsHealth"],
+        );
     }
 }
 
@@ -555,10 +563,25 @@ mod tests {
         }
     }
 
-    fn spawn_health_server() -> Result<(String, thread::JoinHandle<Result<usize>>)> {
+    fn spawn_health_server(rest_enr: &str) -> Result<(String, thread::JoinHandle<Result<usize>>)> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let endpoint = format!("http://{}", listener.local_addr()?);
+        let info_body = json!({ "enrUri": rest_enr }).to_string();
+        let health_body = json!({
+            "nodeHealth": "READY",
+            "connectionStatus": "Connected",
+            "protocolsHealth": [
+                { "Relay": "READY" },
+                { "Store": "NOT_MOUNTED" },
+                {
+                    "Rendezvous": "NOT_READY",
+                    "desc": "No Rendezvous peers are available yet"
+                },
+                { "Store Client": "READY" }
+            ]
+        })
+        .to_string();
         let server = thread::spawn(move || -> Result<usize> {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut served = 0;
@@ -580,9 +603,9 @@ mod tests {
                         .context("Delivery status request exceeded read buffer")?,
                 );
                 let body = if request.starts_with("GET /info ") {
-                    r#"{"enrUri":"enr:test"}"#
+                    info_body.as_str()
                 } else if request.starts_with("GET /health ") {
-                    r#"{"nodeHealth":"READY","connectionStatus":"Connected"}"#
+                    health_body.as_str()
                 } else {
                     bail!("unexpected Delivery status request")
                 };
@@ -663,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn reduced_cli_report_binds_and_reports_live_health() -> Result<()> {
-        let (endpoint, server) = spawn_health_server()?;
+        let (endpoint, server) = spawn_health_server("enr:test")?;
         let calls = Arc::new(AtomicUsize::new(0));
         let transport: SharedModuleTransport = Arc::new(ReducedHealthTransport {
             calls: Arc::clone(&calls),
@@ -679,6 +702,9 @@ mod tests {
         });
         let connection = report.probes.iter().find(|probe| {
             probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryConnectionStatus.as_str())
+        });
+        let protocols = report.probes.iter().find(|probe| {
+            probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryProtocolsHealth.as_str())
         });
 
         ensure!(
@@ -699,6 +725,80 @@ mod tests {
             connection.and_then(|probe| probe.value.as_ref())
                 == Some(&Value::String("Connected".into())),
             "reduced Delivery report omitted connection status"
+        );
+        let expected_protocols = json!([
+            { "Relay": "READY" },
+            { "Store": "NOT_MOUNTED" },
+            {
+                "Rendezvous": "NOT_READY",
+                "desc": "No Rendezvous peers are available yet"
+            },
+            { "Store Client": "READY" }
+        ]);
+        ensure!(
+            protocols.and_then(|probe| probe.value.as_ref()) == Some(&expected_protocols),
+            "reduced Delivery report omitted protocol health"
+        );
+        ensure!(
+            report.probe_facts.iter().any(|fact| {
+                fact.key == SourceProbeKey::DeliveryProtocolsHealth.as_str()
+                    && fact.ok
+                    && fact.value.as_ref() == Some(&expected_protocols)
+            }),
+            "reduced Delivery facts omitted protocol health"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_report_rejects_protocol_health_from_mismatched_identity() -> Result<()> {
+        let (endpoint, server) = spawn_health_server("enr:other")?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(ReducedHealthTransport {
+            calls: Arc::clone(&calls),
+        });
+
+        let report =
+            delivery_source_report("logoscore_cli", Some(&endpoint), None, false, &transport).await;
+        let served = server
+            .join()
+            .map_err(|_| anyhow!("Delivery health server thread panicked"))??;
+        let derived_keys = [
+            SourceProbeKey::DeliveryNodeHealth,
+            SourceProbeKey::DeliveryConnectionStatus,
+            SourceProbeKey::DeliveryProtocolsHealth,
+        ];
+
+        ensure!(
+            served == 2,
+            "Delivery health server received {served} requests"
+        );
+        ensure!(
+            calls.load(Ordering::Relaxed) == 2,
+            "mismatched health binding dispatched unexpected module calls"
+        );
+        ensure!(!report.health.ready, "mismatched health report was ready");
+        ensure!(
+            report.probes.iter().any(|probe| {
+                probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryHealth.as_str())
+                    && !probe.ok
+                    && probe.error.as_deref()
+                        == Some("Delivery REST health endpoint does not match the module identity")
+            }),
+            "mismatched health report omitted identity failure"
+        );
+        ensure!(
+            derived_keys.iter().all(|key| {
+                report
+                    .probes
+                    .iter()
+                    .all(|probe| probe.probe_key.as_deref() != Some(key.as_str()))
+                    && report
+                        .probe_facts
+                        .iter()
+                        .all(|fact| fact.key != key.as_str())
+            }),
+            "mismatched health report exposed identity-bound fields"
         );
         Ok(())
     }
