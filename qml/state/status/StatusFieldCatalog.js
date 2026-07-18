@@ -219,7 +219,7 @@ function shortLabel(key) {
         "lez.pending_tx_count": qsTr("Pending"),
         "lez.mempool_tx_count": qsTr("Mempool"),
         "lez.rejected_tx_count_recent": qsTr("Rejects"),
-        "lez.blocks_produced_recent": qsTr("Blocks"),
+        "lez.blocks_produced_recent": qsTr("Prov recs"),
         "lez.publish_to_bedrock_status": qsTr("Publish"),
         "lez.last_published_channel_update": qsTr("Channel"),
         "lez.last_finalized_callback_height": qsTr("Final"),
@@ -357,7 +357,7 @@ function selectorLabels() {
         "lez.pending_tx_count": qsTr("pending_tx_count"),
         "lez.mempool_tx_count": qsTr("mempool_tx_count"),
         "lez.rejected_tx_count_recent": qsTr("rejected_tx_count_recent"),
-        "lez.blocks_produced_recent": qsTr("blocks_produced_recent"),
+        "lez.blocks_produced_recent": qsTr("provisional_block_records_available"),
         "lez.publish_to_bedrock_status": qsTr("publish_to_bedrock_status"),
         "lez.last_published_channel_update": qsTr("last_published_channel_update"),
         "lez.last_finalized_callback_height": qsTr("last_finalized_callback_height"),
@@ -433,7 +433,7 @@ function footerDetails() {
         "lez.pending_tx_count": qsTr("Pending sequencer transactions"),
         "lez.mempool_tx_count": qsTr("Mempool transaction count"),
         "lez.rejected_tx_count_recent": qsTr("Recent rejected transactions"),
-        "lez.blocks_produced_recent": qsTr("Recent LEZ blocks produced"),
+        "lez.blocks_produced_recent": qsTr("Provisional block records available for the active Zone from loaded Sequencer rows or the latest head summary; not a time-window production count"),
         "lez.publish_to_bedrock_status": qsTr("Bedrock publish state"),
         "lez.last_published_channel_update": qsTr("Last channel update publication"),
         "lez.last_finalized_callback_height": qsTr("Last finalized callback height"),
@@ -486,7 +486,6 @@ function footerDetails() {
 function dashboardDetails() {
     const details = footerDetails()
     details["bedrock.tip_minus_lib"] = qsTr("Tip to LIB distance")
-    details["lez.blocks_produced_recent"] = qsTr("Recent produced blocks")
     details["storage.manifest_count"] = qsTr("Manifests")
     details["messaging.content_topics"] = qsTr("Content topics")
     details["messaging.outbound_queue"] = qsTr("Outbound queue")

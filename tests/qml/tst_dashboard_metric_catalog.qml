@@ -139,7 +139,25 @@ TestCase {
         verify(keys.indexOf("messaging.store_errors_recent") >= 0)
         compare(DashboardMetricCatalog.dashboardMetricGroup("storage.failed_transfers_recent"), "Storage")
         compare(DashboardMetricCatalog.dashboardMetricLabel("storage.failed_transfers_recent"), "transfer failures in window")
+        compare(DashboardMetricCatalog.dashboardMetricLabel(
+            "lez.blocks_produced_recent"
+        ), "provisional block records available")
         compare(DashboardMetricCatalog.dashboardMetricTone("storage.failed_transfers_recent", 1), "error")
+    }
+
+    function test_available_provisional_block_metric_describes_its_exact_value() {
+        const item = DashboardMetricCatalog.dashboardGraphItem(
+            model,
+            "lez.blocks_produced_recent"
+        )
+
+        compare(item.title, "provisional block records available")
+        compare(item.group, "LEZ Sequencer")
+        compare(item.value, "5")
+        compare(item.numericValue, 5)
+        verify(!DashboardMetricCatalog.dashboardMetricUsesWindow(
+            "lez.blocks_produced_recent"
+        ))
     }
 
     function test_raw_values_are_resolved_from_model_facade() {
