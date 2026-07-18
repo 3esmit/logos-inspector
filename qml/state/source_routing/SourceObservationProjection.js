@@ -527,10 +527,6 @@ function deliveryHealthRows(page) {
     const nodeHealth = page.probeValue("nodeHealth")
     const connectionStatus = page.probeValue("connectionStatus")
     const nodeTone = page.combinedHealthTone(nodeHealth, connectionStatus)
-    const relayKnown = page.metricKnown("messaging.pubsub_peers")
-    const storeKnown = page.metricKnown("messaging.store_peers")
-    const filterKnown = page.metricKnown("messaging.filter_peers")
-    const lightpushKnown = page.metricKnown("messaging.lightpush_peers")
     const discovered = page.networkMonitorPeerCount()
     const discoveryKnown = discovered !== null
     return [
@@ -539,13 +535,63 @@ function deliveryHealthRows(page) {
         page.statusRow(qsTr("Node health"), nodeHealth !== null ? page.valueSummary(nodeHealth) : qsTr("unknown"), page.valueSummary(connectionStatus), nodeTone),
         page.statusRow(qsTr("Preset, cluster, shards"), page.sourceNetworkPreset().length ? qsTr("configured") : qsTr("unknown"), page.sourceNetworkPreset() || qsTr("No preset"), page.sourceNetworkPreset().length ? "success" : "neutral"),
         page.statusRow(qsTr("REST and metrics access"), page.restMetricsState(), page.restMetricsEvidence(), page.restMetricsTone()),
-        page.statusRow(qsTr("Relay"), page.sourceFactObservedState("relay", relayKnown), relayKnown ? page.metricDisplay("messaging.pubsub_peers") : page.sourceFactEvidence("relay", qsTr("No relay fact.")), page.sourceFactObservedTone("relay", relayKnown)),
-        page.statusRow(qsTr("Store"), page.sourceFactObservedState("store", storeKnown), storeKnown ? page.metricDisplay("messaging.store_peers") : page.sourceFactEvidence("store", qsTr("No Store fact.")), page.sourceFactObservedTone("store", storeKnown)),
-        page.statusRow(qsTr("Filter"), page.sourceFactObservedState("filter", filterKnown), filterKnown ? page.metricDisplay("messaging.filter_peers") : page.sourceFactEvidence("filter", qsTr("No Filter fact.")), page.sourceFactObservedTone("filter", filterKnown)),
-        page.statusRow(qsTr("Lightpush"), page.sourceFactObservedState("lightpush", lightpushKnown), lightpushKnown ? page.metricDisplay("messaging.lightpush_peers") : page.sourceFactEvidence("lightpush", qsTr("No Lightpush fact.")), page.sourceFactObservedTone("lightpush", lightpushKnown)),
-        page.statusRow(qsTr("Discovery"), page.sourceFactObservedState("network_monitor", discoveryKnown), discoveryKnown ? qsTr("%1 peer(s)").arg(discovered) : page.sourceFactEvidence("network_monitor", qsTr("No Delivery Network Monitor peer snapshot.")), page.sourceFactObservedTone("network_monitor", discoveryKnown)),
-        page.statusRow(qsTr("RLN / spam protection"), qsTr("unknown"), qsTr("No passive metric selected"), "neutral")
+        deliveryHealthProtocolRow(page, qsTr("Relay"), "Relay", "messaging.pubsub_peers", "relay", qsTr("No relay fact.")),
+        deliveryHealthProtocolRow(page, qsTr("Store"), "Store", "messaging.store_peers", "store", qsTr("No Store fact.")),
+        deliveryHealthProtocolRow(page, qsTr("Filter"), "Filter", "messaging.filter_peers", "filter", qsTr("No Filter fact.")),
+        deliveryHealthProtocolRow(page, qsTr("Lightpush"), "Lightpush", "messaging.lightpush_peers", "lightpush", qsTr("No Lightpush fact.")),
+        deliveryHealthProtocolRow(page, qsTr("Discovery"), "Rendezvous", "", "network_monitor", qsTr("No Delivery Network Monitor peer snapshot."), discoveryKnown, discoveryKnown ? qsTr("%1 peer(s)").arg(discovered) : ""),
+        deliveryHealthProtocolRow(page, qsTr("RLN / spam protection"), "Rln Relay", "", "", qsTr("No passive metric selected"))
     ]
+}
+
+function deliveryHealthProtocolRow(page, label, protocolName, metricKey, factKey, fallbackEvidence, fallbackKnown, fallbackObservedEvidence) {
+    const protocolRow = deliveryExactProtocolHealthRow(page, protocolName)
+    if (protocolRow !== null) {
+        return page.statusRow(
+            label,
+            protocolRow.state,
+            deliveryHealthProtocolEvidence(page, protocolRow, metricKey),
+            protocolRow.tone)
+    }
+    const metricKnown = metricKey.length > 0 && page.metricKnown(metricKey)
+    const factKnown = factKey.length > 0 && page.sourceFactAvailable(factKey)
+    const observedKnown = fallbackKnown === true
+    const known = metricKnown || observedKnown || factKnown
+    const evidence = metricKnown
+        ? page.metricDisplay(metricKey)
+        : (observedKnown ? fallbackObservedEvidence
+            : (factKey.length > 0 ? page.sourceFactEvidence(factKey, fallbackEvidence) : fallbackEvidence))
+    return page.statusRow(label, known ? qsTr("observed") : qsTr("unknown"), evidence, known ? "success" : "neutral")
+}
+
+function deliveryExactProtocolHealthRow(page, protocolName) {
+    const wanted = normalizedDeliveryProtocolName(protocolName)
+    const rows = page.protocolHealthRows()
+    for (let i = 0; i < rows.length; ++i) {
+        if (normalizedDeliveryProtocolName(rows[i].protocolName) === wanted) {
+            return rows[i]
+        }
+    }
+    return null
+}
+
+function deliveryHealthProtocolEvidence(page, row, metricKey) {
+    const values = []
+    if (metricKey.length > 0 && page.metricKnown(metricKey)) {
+        values.push(qsTr("%1 peer(s)").arg(page.metricDisplay(metricKey)))
+    }
+    const description = String(row.protocolDescription || "").trim()
+    if (description.length > 0) {
+        values.push(description)
+    }
+    if (values.length === 0) {
+        values.push(String(row.protocolName || row.evidence || qsTr("No passive evidence")))
+    }
+    return values.join("; ")
+}
+
+function normalizedDeliveryProtocolName(value) {
+    return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "")
 }
 
 function deliveryTopologyRows(page) {
@@ -608,14 +654,14 @@ function deliveryProtocolHealthRows(page) {
         for (let i = 0; i < value.length; ++i) {
             const item = page.protocolHealthEntry(value[i])
             if (item) {
-                rows.push(page.statusRow(page.protocolLabel(item.protocol), page.valueSummary(item.health), item.detail, page.healthValueTone(item.health)))
+                rows.push(deliveryProtocolHealthStatusRow(page, item))
             }
         }
         return rows
     }
     if (value.protocol !== undefined || value.name !== undefined || value.health !== undefined || value.status !== undefined) {
         const single = page.protocolHealthEntry(value)
-        rows.push(page.statusRow(page.protocolLabel(single.protocol), page.valueSummary(single.health), single.detail, page.healthValueTone(single.health)))
+        rows.push(deliveryProtocolHealthStatusRow(page, single))
         return rows
     }
     const keys = Object.keys(value).sort()
@@ -625,9 +671,26 @@ function deliveryProtocolHealthRows(page) {
             continue
         }
         const state = value[key]
-        rows.push(page.statusRow(page.protocolLabel(key), page.valueSummary(state), key, page.healthValueTone(state)))
+        rows.push(deliveryProtocolHealthStatusRow(page, {
+            protocol: key,
+            health: state,
+            description: null,
+            detail: key
+        }))
     }
     return rows
+}
+
+function deliveryProtocolHealthStatusRow(page, item) {
+    const row = page.statusRow(
+        page.protocolLabel(item.protocol),
+        page.valueSummary(item.health),
+        item.detail,
+        page.healthValueTone(item.health))
+    row.protocolName = String(item.protocol || "")
+    row.protocolDescription = item.description === undefined || item.description === null
+        ? "" : String(item.description)
+    return row
 }
 
 function deliveryProtocolHealthEntry(page, item) {
@@ -638,10 +701,12 @@ function deliveryProtocolHealthEntry(page, item) {
     const explicitHealth = item.health !== undefined ? item.health : item.status
     if (explicitProtocol !== undefined || explicitHealth !== undefined) {
         const protocol = explicitProtocol !== undefined ? explicitProtocol : qsTr("Protocol")
+        const description = item.desc !== undefined ? item.desc : item.description
         return {
             protocol: protocol,
             health: explicitHealth,
-            detail: page.protocolHealthDetail(protocol, item.desc !== undefined ? item.desc : item.description)
+            description: description,
+            detail: page.protocolHealthDetail(protocol, description)
         }
     }
     const keys = Object.keys(item).filter(key => key !== "desc" && key !== "description").sort()
@@ -649,10 +714,12 @@ function deliveryProtocolHealthEntry(page, item) {
         return null
     }
     const protocolKey = keys[0]
+    const description = item.desc !== undefined ? item.desc : item.description
     return {
         protocol: protocolKey,
         health: item[protocolKey],
-        detail: page.protocolHealthDetail(protocolKey, item.desc !== undefined ? item.desc : item.description)
+        description: description,
+        detail: page.protocolHealthDetail(protocolKey, description)
     }
 }
 
@@ -692,6 +759,13 @@ function deliveryHealthValueTone(page, value) {
     if (value === undefined || value === null) {
         return "neutral"
     }
+    const normalized = String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, "")
+    if (normalized === "notmounted" || normalized === "disabled") {
+        return "neutral"
+    }
+    if (normalized === "notready" || normalized === "initializing" || normalized === "synchronizing") {
+        return "warning"
+    }
     return page.model.metrics.deliveryHealthValueOk(value, false) ? "success" : "error"
 }
 
@@ -700,6 +774,9 @@ function deliveryCombinedHealthTone(page, left, right) {
     const rightTone = page.healthValueTone(right)
     if (leftTone === "error" || rightTone === "error") {
         return "error"
+    }
+    if (leftTone === "warning" || rightTone === "warning") {
+        return "warning"
     }
     if (leftTone === "success" || rightTone === "success") {
         return "success"

@@ -10,6 +10,9 @@ TestCase {
     property bool storageMetricsConfigured: false
     property string storageDataDirProbe: ""
     property var storageDebugProbe: null
+    property var deliveryProtocolsHealth: [
+        { protocol: "relay", health: "ready", desc: "ok" }
+    ]
 
     QtObject {
         id: sourceRoutingStub
@@ -144,7 +147,7 @@ TestCase {
         }
         function dashboardMetricUsesWindow(key) { return true }
         function deliveryHealthValueOk(value, fallback) {
-            return String(value || "") === "ready"
+            return String(value || "").toLowerCase() === "ready"
         }
         function sourceCapabilityAvailable(report, key) { return false }
         function valueText(value) { return String(value) }
@@ -177,7 +180,7 @@ TestCase {
         function sourceFactAvailable(key) { return false }
         function probeValue(method) {
             if (method === "protocolsHealth") {
-                return [{ protocol: "relay", health: "ready", desc: "ok" }]
+                return testRoot.deliveryProtocolsHealth
             }
             if (method === "allPeersInfo") {
                 return { peers: ["a", "b"] }
@@ -210,6 +213,9 @@ TestCase {
         testRoot.storageDataDirProbe = ""
         testRoot.storageDebugProbe = null
         storageModel.storageLocalDiagnosticsEnabled = false
+        testRoot.deliveryProtocolsHealth = [
+            { protocol: "relay", health: "ready", desc: "ok" }
+        ]
     }
 
     function storageDebugFixture(nodeCount) {
@@ -400,11 +406,68 @@ TestCase {
         compare(SourceObservation.deliveryServicePeerCount(deliveryPage), 6)
     }
 
+    function test_delivery_health_prefers_exact_protocol_state_over_peer_metrics() {
+        testRoot.deliveryProtocolsHealth = [
+            { "Store Client": "READY" },
+            { "Store": "NOT_MOUNTED" },
+            { "Lightpush Client": "READY" },
+            { "Lightpush": "READY" },
+            { "Relay": "READY" },
+            { "Rendezvous": "NOT_READY", desc: "No Rendezvous peers are available yet" },
+            { "Rln Relay": "NOT_MOUNTED" }
+        ]
+
+        const relay = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "Relay", "Relay", "messaging.pubsub_peers", "relay", "No relay fact.")
+        const store = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "Store", "Store", "messaging.store_peers", "store", "No Store fact.")
+        const lightpush = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "Lightpush", "Lightpush", "messaging.lightpush_peers", "lightpush", "No Lightpush fact.")
+        const discovery = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "Discovery", "Rendezvous", "", "network_monitor", "No network monitor fact.")
+        const rln = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "RLN / spam protection", "Rln Relay", "", "", "No passive metric selected")
+
+        compare(relay.state, "READY")
+        compare(relay.tone, "success")
+        compare(store.state, "NOT_MOUNTED")
+        compare(store.evidence, "2 peer(s)")
+        compare(store.tone, "neutral")
+        compare(lightpush.state, "READY")
+        compare(lightpush.evidence, "3 peer(s)")
+        compare(discovery.state, "NOT_READY")
+        compare(discovery.evidence, "No Rendezvous peers are available yet")
+        compare(discovery.tone, "warning")
+        compare(rln.state, "NOT_MOUNTED")
+        compare(rln.evidence, "Rln Relay")
+        compare(rln.tone, "neutral")
+    }
+
+    function test_delivery_health_keeps_metric_fallback_without_protocol_health() {
+        testRoot.deliveryProtocolsHealth = []
+
+        const store = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "Store", "Store", "messaging.store_peers", "store", "No Store fact.")
+        const discovery = SourceObservation.deliveryHealthProtocolRow(
+            deliveryPage, "Discovery", "Rendezvous", "", "network_monitor",
+            "No network monitor fact.", true, "2 peer(s)")
+
+        compare(store.state, "observed")
+        compare(store.evidence, "2")
+        compare(store.tone, "success")
+        compare(discovery.state, "observed")
+        compare(discovery.evidence, "2 peer(s)")
+        compare(discovery.tone, "success")
+    }
+
     function test_projection_reads_focused_metrics_interface() {
         testRoot.storageMetricsConfigured = true
 
         compare(SourceObservation.storageRestMetricsTone(storagePage), "warning")
         compare(SourceObservation.deliveryHealthValueTone(deliveryPage, "ready"), "success")
+        compare(SourceObservation.deliveryHealthValueTone(deliveryPage, "NOT_READY"), "warning")
+        compare(SourceObservation.deliveryHealthValueTone(deliveryPage, "NOT_MOUNTED"), "neutral")
+        compare(SourceObservation.deliveryCombinedHealthTone(deliveryPage, "NOT_READY", null), "warning")
         compare(SourceObservation.deliveryMetricEvidence(deliveryPage, "messaging.store_peers"), "45 s window")
         compare(SourceObservation.deliveryRestMetricsTone(deliveryPage), "warning")
     }
