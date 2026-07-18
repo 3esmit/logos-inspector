@@ -267,8 +267,10 @@ ColumnLayout {
     function inspectL2Transaction(transactionId, exactSourceId) {
         const transaction = String(transactionId || "").trim()
         const source = String(exactSourceId || "").trim()
+        const indexerSource = String(root.l2Context.l2IndexerSourceId() || "")
+        const sequencerSource = String(root.l2Context.l2SequencerSourceId() || "")
         if (!transaction.length || !source.length
-                || source !== root.l2Context.l2SequencerSourceId()) {
+                || (source !== indexerSource && source !== sequencerSource)) {
             return false
         }
         l2BlockState.openL2Transaction(transaction, source)
