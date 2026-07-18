@@ -843,6 +843,129 @@ TestCase {
         compare(metrics.observationReportRevisions.storage, reportRevision)
     }
 
+    function test_stale_module_source_escalates_next_passive_poll_to_full() {
+        metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+        const fullReport = sourceReport(true, "explicit-full")
+        fullReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+        gateway.completeRequest(0, success(fullReport))
+        const reportRevision = metrics.observationReportRevisions.storage
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        verify(metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+        gateway.completeRequest(0, failure("scheduler refresh failed"))
+
+        let observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "explicit-full")
+        verify(observation.status.stale)
+        compare(observation.status.detail, "scheduler refresh failed")
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        compare(gateway.requests[0].args[0].options.cid, "z-test-cid")
+        verify(gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(!metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+        const recoveredReport = sourceReport(true, "recovered-full")
+        recoveredReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+        gateway.completeRequest(0, success(recoveredReport))
+
+        observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "recovered-full")
+        compare(observation.provenance.origin, "scheduler")
+        compare(observation.reportRevision, reportRevision + 1)
+        compare(metrics.observationReportStorageCid("storage"), "z-test-cid")
+        compare(metrics.reportProbeValue(
+            observation.sourceReport, "exists"), false)
+        verify(observation.status.known)
+        verify(observation.status.ok)
+        verify(!observation.status.stale)
+        compare(observation.status.origin, "scheduler")
+        compare(observation.latestAttempt.origin, "scheduler")
+        verify(observation.latestAttempt.transportOk)
+        verify(!observation.latestAttempt.runtimeDiagnosticsReduced)
+    }
+
+    function test_stale_storage_recovery_does_not_probe_edited_cid() {
+        sourceRouting.storageCid = "cid-a"
+        metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+        const fullReport = sourceReport(true, "explicit-cid-a")
+        fullReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+        gateway.completeRequest(0, success(fullReport))
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        gateway.completeRequest(0, failure("scheduler refresh failed"))
+        verify(metrics.sourceObservation("storage").status.stale)
+
+        sourceRouting.storageCid = "cid-b"
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        compare(gateway.requests[0].args[0].options.cid, "")
+        verify(gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(!metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+        gateway.completeRequest(
+            0, success(sourceReport(true, "recovered-without-cid")))
+
+        const observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "recovered-without-cid")
+        compare(metrics.observationReportStorageCid("storage"), "")
+        compare(metrics.reportProbe(
+            observation.sourceReport, "exists"), null)
+        verify(observation.status.ok)
+        verify(!observation.status.stale)
+    }
+
+    function test_stale_messaging_source_escalates_passive_poll_to_full() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "explicit-delivery")))
+        const reportRevision = metrics.observationReportRevisions.messaging
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        verify(metrics.activeObservationLeases.messaging
+            .runtimeDiagnosticsReduced)
+        gateway.completeRequest(0, failure("delivery refresh failed"))
+        verify(metrics.sourceObservation("messaging").status.stale)
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        verify(gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(!metrics.activeObservationLeases.messaging
+            .runtimeDiagnosticsReduced)
+        gateway.completeRequest(
+            0, success(sourceReport(true, "recovered-delivery")))
+
+        const observation = metrics.sourceObservation("messaging")
+        compare(observation.sourceReport.marker, "recovered-delivery")
+        compare(observation.provenance.origin, "scheduler")
+        compare(observation.reportRevision, reportRevision + 1)
+        verify(observation.status.ok)
+        verify(!observation.status.stale)
+        verify(!observation.latestAttempt.runtimeDiagnosticsReduced)
+    }
+
     function test_passive_blockchain_completion_replaces_explicit_report() {
         metrics.queryNetworkConnection(
             "blockchain", false, false, "manual")

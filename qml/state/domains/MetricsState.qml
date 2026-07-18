@@ -584,6 +584,10 @@ QtObject {
         if (!moduleSource) {
             return true
         }
+        if (staleObservationNeedsFullRecovery(
+                "storage", "storageSourceReport", candidateArgs, origin)) {
+            return true
+        }
         return String(origin || "") === "module-event"
             && request.options
             && typeof request.options === "object"
@@ -638,13 +642,14 @@ QtObject {
 
     function sourceNetworkConnectionRequest(kind, method, args, label, origin) {
         const runtimeDiagnosticsReduced =
-            sourceObservationReducesRuntimeDiagnostics(args, origin)
+            sourceObservationReducesRuntimeDiagnostics(
+                kind, method, args, origin)
         return {
             module: inspectorModule,
             method: method,
             args: observationArgsWithGeneration(
                 kind,
-                sourceObservationArgs(args, origin)
+                sourceObservationArgs(kind, method, args, origin)
             ),
             label: label,
             runtimeDiagnosticsReduced: runtimeDiagnosticsReduced
@@ -664,9 +669,10 @@ QtObject {
         }
     }
 
-    function sourceObservationArgs(args, origin) {
+    function sourceObservationArgs(kind, method, args, origin) {
         const values = Array.isArray(args) ? args.slice(0) : []
-        if (!sourceObservationReducesRuntimeDiagnostics(values, origin)) {
+        if (!sourceObservationReducesRuntimeDiagnostics(
+                kind, method, values, origin)) {
             return values
         }
         const request = copyMap(values[0])
@@ -677,7 +683,8 @@ QtObject {
         return values
     }
 
-    function sourceObservationReducesRuntimeDiagnostics(args, origin) {
+    function sourceObservationReducesRuntimeDiagnostics(
+            kind, method, args, origin) {
         if (!passiveSourceObservation(origin)
                 || !Array.isArray(args)
                 || args.length === 0
@@ -700,9 +707,34 @@ QtObject {
             && options
             && String(options.cid || "").trim().length > 0
         return moduleSource
+            && !staleObservationNeedsFullRecovery(
+                kind, method, args, origin)
             && !fullModuleCidRefresh
             && options
             && options.runtime_diagnostics_enabled === true
+    }
+
+    function staleObservationNeedsFullRecovery(kind, method, args, origin) {
+        const target = String(kind || "")
+        if ((target !== "storage" && target !== "messaging")
+                || !passiveSourceObservation(origin)) {
+            return false
+        }
+        const status = networkConnectionState(target)
+        const report = sourceReport(target)
+        const identity = observationReportRequestIdentities[target] || null
+        if (status.stale !== true || report === null || report === undefined
+                || identity === null
+                || Number(identity.configurationGeneration || 0)
+                    !== familyConfigurationGeneration(target)) {
+            return false
+        }
+        const request = {
+            method: String(method || ""),
+            args: observationArgsWithGeneration(target, args)
+        }
+        return String(identity.requestBaseKey || "")
+            === observationRequestBaseKey(target, request)
     }
 
     function observationArgsWithGeneration(kind, args) {
