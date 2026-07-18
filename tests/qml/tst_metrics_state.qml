@@ -891,6 +891,137 @@ TestCase {
         )
     }
 
+    function test_endpoint_background_refresh_repeats_current_cid_data() {
+        return [
+            { tag: "scheduler", origin: "scheduler" },
+            { tag: "dashboard", origin: "dashboard" },
+            { tag: "module event", origin: "module-event" },
+            { tag: "storage refresh", origin: "storage-refresh" }
+        ]
+    }
+
+    function test_endpoint_background_refresh_repeats_current_cid(data) {
+        sourceRouting.storageSourceMode = "rest"
+        sourceRouting.storageCid = "cid-a"
+        const explicitReport = sourceReport(true, "explicit-cid")
+        explicitReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+
+        metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+        gateway.completeRequest(0, success(explicitReport))
+        compare(metrics.observationReportStorageCid("storage"), "cid-a")
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, data.origin)
+        compare(gateway.requests[0].args[0].options.cid, "cid-a")
+        const refreshedReport = sourceReport(true, "background-cid")
+        refreshedReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: true
+        }]
+        gateway.completeRequest(0, success(refreshedReport))
+
+        compare(metrics.sourceReport("storage").marker, "background-cid")
+        compare(metrics.observationReportStorageCid("storage"), "cid-a")
+        const exists = metrics.reportProbe(
+            metrics.sourceReport("storage"), "exists")
+        verify(exists !== null)
+        compare(exists.value, true)
+    }
+
+    function test_endpoint_background_refresh_omits_edited_cid() {
+        sourceRouting.storageSourceMode = "rest"
+        sourceRouting.storageCid = "cid-a"
+        const explicitReport = sourceReport(true, "explicit-cid-a")
+        explicitReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+        metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+        gateway.completeRequest(0, success(explicitReport))
+
+        sourceRouting.storageCid = "cid-b"
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        compare(gateway.requests[0].args[0].options.cid, "")
+        gateway.completeRequest(
+            0, success(sourceReport(true, "background-without-cid")))
+
+        compare(metrics.sourceReport("storage").marker,
+                "background-without-cid")
+        compare(metrics.observationReportStorageCid("storage"), "")
+        compare(metrics.reportProbe(
+            metrics.sourceReport("storage"), "exists"), null)
+    }
+
+    function test_reduced_module_background_keeps_cid_out_of_request() {
+        sourceRouting.storageSourceMode = "logoscore_cli"
+        sourceRouting.storageCid = "cid-a"
+        const explicitReport = sourceReport(true, "explicit-module-cid")
+        explicitReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+        metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+        gateway.completeRequest(0, success(explicitReport))
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "scheduler")
+        compare(gateway.requests[0].args[0].options.cid, "")
+        verify(!gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        gateway.completeRequest(0, failure("module status unavailable"))
+
+        const observation = metrics.sourceObservation("storage")
+        compare(observation.sourceReport.marker, "explicit-module-cid")
+        compare(metrics.observationReportStorageCid("storage"), "cid-a")
+        verify(observation.status.stale)
+        compare(observation.status.detail, "module status unavailable")
+    }
+
+    function test_module_event_refreshes_current_cid_after_mutation() {
+        sourceRouting.storageSourceMode = "logoscore_cli"
+        sourceRouting.storageCid = "cid-a"
+        const explicitReport = sourceReport(true, "before-remove")
+        explicitReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: true
+        }]
+        metrics.queryNetworkConnection(
+            "storage", false, true, "source-inspection")
+        gateway.completeRequest(0, success(explicitReport))
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "module-event")
+        compare(gateway.requests[0].args[0].options.cid, "cid-a")
+        verify(gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(!metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+        const refreshedReport = sourceReport(true, "after-remove")
+        refreshedReport.probes = [{
+            probe_key: "exists",
+            ok: true,
+            value: false
+        }]
+        gateway.completeRequest(0, success(refreshedReport))
+
+        compare(metrics.sourceReport("storage").marker, "after-remove")
+        compare(metrics.observationReportStorageCid("storage"), "cid-a")
+        compare(metrics.reportProbeValue(
+            metrics.sourceReport("storage"), "exists"), false)
+    }
+
     function test_compatibility_projection_replaces_full_report() {
         metrics.queryNetworkConnection(
             "storage", false, false, "source-inspection")
