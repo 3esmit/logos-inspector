@@ -1,4 +1,6 @@
 use super::*;
+use lee::AccountId;
+use serde::Serialize;
 
 #[test]
 fn decode_event_data_hex_with_idl_decodes_single_event_without_name() {
@@ -228,6 +230,91 @@ fn decode_instruction_words_with_idl_decodes_fixed_array_args() {
         Some(&DecodedField {
             path: "values: array<u32, 3>".to_owned(),
             value: "[10, 20, 30]".to_owned()
+        })
+    );
+}
+
+#[test]
+fn decode_instruction_words_with_idl_matches_risc0_account_id_wire() {
+    #[derive(Serialize)]
+    enum ReferenceInstruction {
+        SetOwner(AccountId, u64),
+    }
+
+    let account_id = AccountId::new([7_u8; 32]);
+    let words = risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetOwner(account_id, 42));
+    assert!(words.is_ok(), "{words:?}");
+    let Ok(words) = words else {
+        return;
+    };
+    let idl = r#"{
+        "name": "test_program",
+        "instructions": [{
+            "name": "set_owner",
+            "args": [
+                { "name": "owner", "type": "account_id" },
+                { "name": "value", "type": "u64" }
+            ]
+        }]
+    }"#;
+
+    let report = decode_instruction_words_with_idl(idl, "program", &words, &[]);
+
+    assert!(report.is_ok(), "{report:?}");
+    let Ok(report) = report else {
+        return;
+    };
+    assert_eq!(report.decode_error, None);
+    assert_eq!(report.remaining_words, Vec::<u32>::new());
+    assert_eq!(
+        report.args,
+        vec![
+            DecodedField {
+                path: "owner: account_id".to_owned(),
+                value: account_id.to_string(),
+            },
+            DecodedField {
+                path: "value: u64".to_owned(),
+                value: "42".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn decode_instruction_words_with_idl_matches_risc0_optional_account_id_wire() {
+    #[derive(Serialize)]
+    enum ReferenceInstruction {
+        SetAuthority(Option<AccountId>),
+    }
+
+    let account_id = AccountId::new([9_u8; 32]);
+    let words = risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetAuthority(Some(account_id)));
+    assert!(words.is_ok(), "{words:?}");
+    let Ok(words) = words else {
+        return;
+    };
+    let idl = r#"{
+        "name": "test_program",
+        "instructions": [{
+            "name": "set_authority",
+            "args": [{ "name": "authority", "type": { "option": "account_id" } }]
+        }]
+    }"#;
+
+    let report = decode_instruction_words_with_idl(idl, "program", &words, &[]);
+
+    assert!(report.is_ok(), "{report:?}");
+    let Ok(report) = report else {
+        return;
+    };
+    assert_eq!(report.decode_error, None);
+    assert_eq!(report.remaining_words, Vec::<u32>::new());
+    assert_eq!(
+        report.args.first(),
+        Some(&DecodedField {
+            path: "authority: option<account_id>".to_owned(),
+            value: format!("Some({account_id})"),
         })
     );
 }

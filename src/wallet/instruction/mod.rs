@@ -135,6 +135,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use anyhow::{Result, bail};
+    use lee::AccountId;
+    use serde::Serialize;
     use serde_json::json;
 
     use super::*;
@@ -182,6 +184,74 @@ mod tests {
             .map(|account| account.privacy.as_str());
         if privacy != Some("public") {
             bail!("unexpected account privacy: {privacy:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preview_serializes_account_id_as_canonical_risc0_string() -> Result<()> {
+        #[derive(Serialize)]
+        enum ReferenceInstruction {
+            SetOwner(AccountId, u64),
+        }
+
+        let account_id = AccountId::new([7_u8; 32]);
+        let program_id_hex = "11".repeat(32);
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instructions": [{
+                    "name": "set_owner",
+                    "accounts": [{
+                        "name": "derived",
+                        "pda": {"seeds": [{"kind": "arg", "path": "owner"}]}
+                    }],
+                    "args": [
+                        {"name": "owner", "type": "account_id"},
+                        {"name": "value", "type": "u64"}
+                    ]
+                }]
+            })
+            .to_string(),
+            program_id_hex: program_id_hex.clone(),
+            instruction: "set_owner".to_owned(),
+            args: BTreeMap::from([
+                ("owner".to_owned(), format!("Private/{account_id}")),
+                ("value".to_owned(), "9".to_owned()),
+            ]),
+            ..Default::default()
+        };
+
+        let report = local_wallet_instruction_preview(serde_json::to_value(request)?)?;
+        let expected_words = risc0_zkvm::serde::to_vec(&ReferenceInstruction::SetOwner(
+            account_id, 9,
+        ))
+        .map_err(|error| anyhow::anyhow!("failed to serialize reference instruction: {error}"))?;
+        if report.instruction_words != expected_words {
+            bail!(
+                "account_id words differ from deployed RISC0 serialization: {:?} != {:?}",
+                report.instruction_words,
+                expected_words
+            );
+        }
+        if report.args.first().map(|arg| arg.value.as_str())
+            != Some(account_id.to_string().as_str())
+        {
+            bail!("account_id report value was not canonical Base58");
+        }
+
+        let program_id = crate::decode::instruction_codec::program_id_from_hex(&program_id_hex)?;
+        let expected_pda = AccountId::for_public_pda(
+            &program_id,
+            &lee_core::program::PdaSeed::new(*account_id.value()),
+        );
+        if report
+            .accounts
+            .first()
+            .map(|account| account.account_id.as_str())
+            != Some(expected_pda.to_string().as_str())
+        {
+            bail!("account_id arg bytes were not used as the PDA seed");
         }
         Ok(())
     }
