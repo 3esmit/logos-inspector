@@ -535,10 +535,16 @@ ColumnLayout {
     }
 
     function blockText(detail) {
+        const hasSlot = detail.slot !== undefined
+            && detail.slot !== null
+            && detail.slot !== ""
+        const slotText = root.valueText(detail.slot)
         if (!detail.block) {
-            return detail.slot ? qsTr("slot %1").arg(detail.slot) : "-"
+            return hasSlot ? qsTr("slot %1").arg(slotText) : "-"
         }
-        return detail.slot ? qsTr("%1 (slot %2)").arg(root.shortHash(detail.block)).arg(detail.slot) : detail.block
+        return hasSlot
+            ? qsTr("%1 (slot %2)").arg(root.shortHash(detail.block)).arg(slotText)
+            : detail.block
     }
 
     function fieldCount(value) {
