@@ -118,6 +118,7 @@ SourceSettingsPanel {
         }
 
         SafetyToggle {
+            visible: root.storageNetworkDebugAvailable()
             theme: root.theme
             text: qsTr("Include network debug details")
             detail: qsTr("Queries peer identity, addresses, public records, and the DHT routing table during Storage status checks. Read-only; may expose network topology.")
@@ -162,6 +163,11 @@ SourceSettingsPanel {
 
     function storageDataEnabled() {
         return root.storageSource().supportsCidProbe
+    }
+
+    function storageNetworkDebugAvailable() {
+        return root.modelRef
+            && root.modelRef.sourceRouting.storageSourceSupportsNetworkDebug()
     }
 
     function sourceSettingsLocked() {

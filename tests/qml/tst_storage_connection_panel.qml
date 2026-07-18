@@ -443,6 +443,36 @@ TestCase {
         tryCompare(model, "storagePrivilegedDebugEnabled", true)
     }
 
+    function test_metrics_source_hides_and_suppresses_network_debug() {
+        model.storagePrivilegedDebugEnabled = true
+        verify(model.setNetworkConnectorMode("storage", "metrics"))
+        wait(0)
+
+        verify(findAccessibleByName(
+                   panel, "Include network debug details") === null)
+        verify(!hasVisibleText(panel, "Include network debug details"))
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0]
+                .options.privileged_debug_enabled, false)
+        compare(model.sourceRouting.storageSourceReportArgs(
+                    "metrics",
+                    model.sourceRouting.configuredStorageRestUrl(),
+                    model.sourceRouting.configuredStorageMetricsUrl(),
+                    "",
+                    false,
+                    true)[0].options.privileged_debug_enabled, false)
+        compare(model.settingsStatePayload()
+                .storage_privileged_debug_enabled, true)
+
+        verify(model.setNetworkConnectorMode("storage", "rest"))
+        wait(0)
+        const restored = findAccessibleByName(
+                panel, "Include network debug details")
+        verify(restored !== null)
+        verify(restored.checked)
+        compare(model.sourceRouting.storageSourceReportArgs(false)[0]
+                .options.privileged_debug_enabled, true)
+    }
+
     function findAccessibleByName(item, expectedName) {
         if (!item) {
             return null

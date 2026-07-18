@@ -1150,7 +1150,7 @@ ColumnLayout {
         StorageConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Storage")
-            subtitle: qsTr("Configure the Storage inspection source. Status checks are read-only; optional network debug details may expose peer and DHT topology.")
+            subtitle: qsTr("Configure the Storage inspection source. Status checks are read-only.")
             pageWidth: settingsRoot.width
             modelRef: settingsRoot.model
             statusText: settingsRoot.connectionStatusText("storage")
