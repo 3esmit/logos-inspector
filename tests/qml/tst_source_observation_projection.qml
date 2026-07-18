@@ -23,8 +23,14 @@ TestCase {
     QtObject {
         id: storageMetrics
 
+        function dashboardMetricRawValue(key) {
+            return storageModel.metricValues[String(key || "")]
+        }
         function dashboardMetricValue(key) {
             return storageModel.metricValues[String(key || "")]
+        }
+        function dashboardMetricUsesWindow(key) {
+            return key === "storage.failed_transfers_recent"
         }
         function sourceCapabilityAvailable(report, key) { return false }
         function valueText(value) { return String(value) }
@@ -142,6 +148,9 @@ TestCase {
     QtObject {
         id: deliveryMetrics
 
+        function dashboardMetricRawValue(key) {
+            return deliveryModel.metricValues[String(key || "")]
+        }
         function dashboardMetricValue(key) {
             return deliveryModel.metricValues[String(key || "")]
         }

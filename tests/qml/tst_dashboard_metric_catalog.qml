@@ -251,6 +251,65 @@ TestCase {
         compare(DashboardMetricCatalog.windowDeltaFromSamples([{ timestamp: 0, value: 1 }, { timestamp: 1000, value: 4 }], 1000, 1000), 3)
     }
 
+    function test_one_observed_window_sample_stays_unknown() {
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": [
+                { timestamp: 1000, value: 7 }
+            ]
+        })
+        model.dashboardMetricLastSeen = ({
+            "storage.failed_transfers_recent": { timestamp: 1000, value: 7 }
+        })
+        model.storageFailures = 7
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), null)
+        compare(DashboardMetricCatalog.dashboardMetricSamples(
+            model, "storage.failed_transfers_recent").length, 0)
+    }
+
+    function test_current_counter_change_requires_recorded_observation() {
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": [
+                { timestamp: 1000, value: 2 }
+            ]
+        })
+        model.dashboardMetricLastSeen = ({
+            "storage.failed_transfers_recent": { timestamp: 1000, value: 2 }
+        })
+        model.storageFailures = 7
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), null)
+        compare(model.dashboardMetricHistory[
+            "storage.failed_transfers_recent"].length, 1)
+
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), 5)
+    }
+
+    function test_stale_observed_window_is_unknown() {
+        const now = Date.now()
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": [
+                { timestamp: now - 120000, value: 2 },
+                { timestamp: now - 119000, value: 7 }
+            ]
+        })
+        model.dashboardMetricLastSeen = ({
+            "storage.failed_transfers_recent": {
+                timestamp: now - 119000,
+                value: 7
+            }
+        })
+        model.storageFailures = 7
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), null)
+    }
+
     function test_stable_counter_older_than_window_reports_zero() {
         const now = Date.now()
         model.dashboardMetricHistory = ({

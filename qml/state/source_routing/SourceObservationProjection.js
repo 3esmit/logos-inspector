@@ -65,6 +65,16 @@ function storageTransferFailureTone(page) {
     return Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? page.theme.error : page.theme.success
 }
 
+function metricUnavailableEvidence(page, key) {
+    const metrics = page.model.metrics
+    const raw = metrics.dashboardMetricRawValue(key)
+    if (metrics.dashboardMetricUsesWindow(key)
+            && raw !== null && raw !== undefined) {
+        return qsTr("Waiting for another source observation.")
+    }
+    return qsTr("Metric not exposed by current source.")
+}
+
 function storageHealthRows(page) {
     const status = page.status()
     const identityKnown = page.sourceFactAvailable("identity") || page.probeKnown("peerId") || page.probeKnown("spr")
@@ -77,7 +87,7 @@ function storageHealthRows(page) {
         page.statusRow(qsTr("DHT / discovery"), debugKnown ? qsTr("observed") : qsTr("unknown"), debugKnown ? page.sourceFactEvidence("debug", page.valueSummary(page.probeValue("debug"))) : qsTr("Debug source unavailable."), debugKnown ? "success" : "neutral"),
         page.statusRow(qsTr("Connected peers"), page.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), page.metricDisplay("storage.peer_count"), page.metricKnown("storage.peer_count") ? "success" : "neutral"),
         page.statusRow(qsTr("Repository and host disk"), spaceKnown ? qsTr("observed") : qsTr("unknown"), storageCapacitySummary(page), spaceKnown ? "success" : "neutral"),
-        page.statusRow(qsTr("Recent transfer failures"), page.metricKnown("storage.failed_transfers_recent") ? page.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), page.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(page.rollingWindow()) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.failed_transfers_recent") ? (Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
+        page.statusRow(qsTr("Recent transfer failures"), page.metricKnown("storage.failed_transfers_recent") ? page.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), page.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(page.rollingWindow()) : metricUnavailableEvidence(page, "storage.failed_transfers_recent"), page.metricKnown("storage.failed_transfers_recent") ? (Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
         page.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
     ]
 }
@@ -356,7 +366,7 @@ function storageIdentityRows(page) {
 function storageMetricRow(page, label, key) {
     const known = page.metricKnown(key)
     const tone = known && String(key || "") === "storage.failed_transfers_recent" && Number(page.model.metrics.dashboardMetricValue(key)) > 0 ? "error" : (known ? "success" : "neutral")
-    return page.statusRow(label, known ? page.metricDisplay(key) : qsTr("n/a"), known ? page.metricEvidence(key) : qsTr("Metric not exposed by current source."), tone)
+    return page.statusRow(label, known ? page.metricDisplay(key) : qsTr("n/a"), known ? page.metricEvidence(key) : metricUnavailableEvidence(page, key), tone)
 }
 
 function storageMetricEvidence(page, key) {
@@ -832,7 +842,7 @@ function deliveryIdentityValue(page, kind) {
 
 function deliveryMetricRow(page, label, key) {
     const known = page.metricKnown(key)
-    return page.statusRow(label, known ? page.metricDisplay(key) : qsTr("n/a"), known ? page.metricEvidence(key) : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+    return page.statusRow(label, known ? page.metricDisplay(key) : qsTr("n/a"), known ? page.metricEvidence(key) : metricUnavailableEvidence(page, key), known ? "success" : "neutral")
 }
 
 function deliveryMetricEvidence(page, key) {
