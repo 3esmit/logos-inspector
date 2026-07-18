@@ -531,6 +531,133 @@ mod tests {
     }
 
     #[test]
+    fn instruction_plan_rejects_external_type_without_complete_variant_map() -> Result<()> {
+        let request = LocalWalletInstructionRequest {
+            idl_json: json!({
+                "name": "sample",
+                "instruction_type": "external::Instruction",
+                "instructions": [
+                    {"name": "first", "variant_index": 0, "args": []},
+                    {"name": "second", "args": []}
+                ]
+            })
+            .to_string(),
+            program_id_hex: "11".repeat(32),
+            instruction: "first".to_owned(),
+            ..Default::default()
+        };
+
+        let result = local_wallet_instruction_plan(serde_json::to_value(request)?);
+        if result.is_ok() {
+            bail!("partial external variant map reached an actionable plan");
+        }
+        let error = result
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        if !error.contains("instruction `second` must declare a u32 variant_index") {
+            bail!("unexpected external variant map error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preview_uses_explicit_external_variant_indices() -> Result<()> {
+        #[derive(Serialize)]
+        enum ReferenceInstruction {
+            Transfer,
+            NewFungibleDefinition,
+            NewDefinitionWithMetadata,
+            InitializeAccount,
+            Burn,
+            Mint,
+            MintWithAuthority,
+            PrintNft,
+            SetAuthority(Option<AccountId>),
+            SetAuthorityWithAuthority(Option<AccountId>),
+        }
+
+        let prefix = [
+            ReferenceInstruction::Transfer,
+            ReferenceInstruction::NewFungibleDefinition,
+            ReferenceInstruction::NewDefinitionWithMetadata,
+            ReferenceInstruction::InitializeAccount,
+            ReferenceInstruction::Burn,
+            ReferenceInstruction::Mint,
+            ReferenceInstruction::MintWithAuthority,
+        ];
+        for (expected, instruction) in prefix.into_iter().enumerate() {
+            let words = risc0_zkvm::serde::to_vec(&instruction).map_err(|error| {
+                anyhow::anyhow!("failed to serialize reference instruction: {error}")
+            })?;
+            if words.first().copied() != Some(expected as u32) {
+                bail!("unexpected reference variant index for prefix instruction {expected}");
+            }
+        }
+
+        let idl = json!({
+            "name": "token",
+            "instruction_type": "token_core::Instruction",
+            "instructions": [
+                {"name": "transfer", "variant_index": 0, "args": []},
+                {"name": "new_fungible_definition", "variant_index": 1, "args": []},
+                {"name": "new_definition_with_metadata", "variant_index": 2, "args": []},
+                {"name": "initialize_account", "variant_index": 3, "args": []},
+                {"name": "burn", "variant_index": 4, "args": []},
+                {"name": "mint", "variant_index": 5, "args": []},
+                {"name": "mint_with_authority", "variant_index": 6, "args": []},
+                {
+                    "name": "set_authority",
+                    "variant_index": 8,
+                    "args": [{"name": "new_authority", "type": {"option": "account_id"}}]
+                },
+                {
+                    "name": "set_authority_with_authority",
+                    "variant_index": 9,
+                    "args": [{"name": "new_authority", "type": {"option": "account_id"}}]
+                },
+                {"name": "print_nft", "variant_index": 7, "args": []}
+            ]
+        })
+        .to_string();
+        let cases = [
+            ("print_nft", BTreeMap::new(), ReferenceInstruction::PrintNft),
+            (
+                "set_authority",
+                BTreeMap::from([("new_authority".to_owned(), "none".to_owned())]),
+                ReferenceInstruction::SetAuthority(None),
+            ),
+            (
+                "set_authority_with_authority",
+                BTreeMap::from([("new_authority".to_owned(), "none".to_owned())]),
+                ReferenceInstruction::SetAuthorityWithAuthority(None),
+            ),
+        ];
+
+        for (instruction, args, expected) in cases {
+            let request = LocalWalletInstructionRequest {
+                idl_json: idl.clone(),
+                program_id_hex: "11".repeat(32),
+                instruction: instruction.to_owned(),
+                args,
+                ..Default::default()
+            };
+            let report = local_wallet_instruction_preview(serde_json::to_value(request)?)?;
+            let expected_words = risc0_zkvm::serde::to_vec(&expected).map_err(|error| {
+                anyhow::anyhow!("failed to serialize reference instruction: {error}")
+            })?;
+            if report.instruction_words != expected_words {
+                bail!(
+                    "{instruction} words differ from explicit external variant mapping: {:?} != {:?}",
+                    report.instruction_words,
+                    expected_words
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn instruction_plan_rejects_args_missing_schema_fields() -> Result<()> {
         for (arg, expected) in [
             (
@@ -573,6 +700,7 @@ mod tests {
         let mut request = sample_request(&format!("Private/0x{}", "33".repeat(32)));
         request.idl_json = json!({
             "name": "sample",
+            "instruction_type": "external::Instruction",
             "instructions": [
                 {
                     "name": "set_value",

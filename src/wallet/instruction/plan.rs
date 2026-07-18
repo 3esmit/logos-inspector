@@ -4,7 +4,9 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::decode::instruction_codec::validate_interaction_type;
+use crate::decode::{
+    instruction_codec::validate_interaction_type, instruction_variant::InstructionVariantMap,
+};
 
 use super::{LocalWalletInstructionRequest, values::type_label};
 
@@ -33,7 +35,7 @@ pub struct InstructionPlanField {
 
 pub(super) struct InstructionSelection {
     pub(super) name: String,
-    pub(super) variant_index: usize,
+    pub(super) variant_index: u32,
     pub(super) instruction: Value,
 }
 
@@ -54,7 +56,7 @@ pub(super) fn instruction_plan(
             inputs_complete: false,
         });
     }
-    let selection = select_instruction(instructions, &request.instruction)?;
+    let selection = select_instruction(&idl, &request.instruction)?;
     let accounts = account_fields(&selection.instruction);
     let args = arg_fields(&selection.instruction)?;
     let private_mode = request_private_mode(&request.accounts);
@@ -84,15 +86,14 @@ pub(super) fn instruction_rows(idl: &Value) -> Result<&[Value]> {
         .context("IDL has no instructions array")
 }
 
-pub(super) fn select_instruction(
-    instructions: &[Value],
-    selected: &str,
-) -> Result<InstructionSelection> {
+pub(super) fn select_instruction(idl: &Value, selected: &str) -> Result<InstructionSelection> {
     let selected = selected.trim();
     if selected.is_empty() {
         bail!("instruction is required");
     }
-    let (variant_index, instruction) = instructions
+    let variants = InstructionVariantMap::from_idl(idl)?;
+    let (row_index, instruction) = variants
+        .instructions()
         .iter()
         .enumerate()
         .find(|(_, instruction)| {
@@ -102,7 +103,7 @@ pub(super) fn select_instruction(
         .with_context(|| format!("IDL instruction `{selected}` not found"))?;
     Ok(InstructionSelection {
         name: instruction_name(instruction).to_owned(),
-        variant_index,
+        variant_index: variants.variant_index(row_index)?,
         instruction: instruction.clone(),
     })
 }
