@@ -714,6 +714,7 @@ QtObject {
         moduleName: root.deliverySource.moduleName
         networkPreset: root.deliverySource.networkPreset
         mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
+        managedNodes: localNodesState
     }
     property alias deliveryAppTab: deliveryAppState.currentTab
     property alias deliveryActiveTopic: deliveryAppState.activeTopic

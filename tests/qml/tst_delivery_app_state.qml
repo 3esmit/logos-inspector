@@ -12,6 +12,79 @@ TestCase {
         id: gateway
     }
 
+    QtObject {
+        id: managedNodesFixture
+
+        property bool busy: false
+        property bool statusLoading: false
+        property string error: ""
+        property var report: null
+        property var operations: []
+        property int revision: 0
+        property string pendingAction: ""
+        property string pendingNode: ""
+        property int runCount: 0
+        property int refreshCount: 0
+
+        function nodeByKind(kind) {
+            const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
+            for (let i = 0; i < nodes.length; ++i) {
+                if (String(nodes[i].key || "") === String(kind || "")) {
+                    return nodes[i]
+                }
+            }
+            return null
+        }
+
+        function actionAvailable(kind, action) {
+            const node = nodeByKind(kind)
+            const actions = node && Array.isArray(node.available_actions)
+                ? node.available_actions : []
+            return actions.indexOf(String(action || "")) >= 0
+        }
+
+        function beginNodeAction(action, node) {
+            pendingAction = String(action || "")
+            pendingNode = String(node || "")
+        }
+
+        function clearActionDraft() {
+            pendingAction = ""
+            pendingNode = ""
+        }
+
+        function actionLabel(action) {
+            switch (String(action || "")) {
+            case "initialize": return "Initialize"
+            case "start": return "Start"
+            case "stop": return "Stop"
+            default: return "Action"
+            }
+        }
+
+        function actionDraftTitle() {
+            return actionLabel(pendingAction) + " Messaging"
+        }
+
+        function actionDraftMessage() {
+            if (pendingAction === "stop") {
+                return "Unload Delivery and require Initialize before Start."
+            }
+            return actionLabel(pendingAction) + " the managed Messaging context."
+        }
+
+        function runPendingAction() {
+            runCount += 1
+            clearActionDraft()
+            return { started: true }
+        }
+
+        function refresh(showResult) {
+            refreshCount += 1
+            return { requested: true, showResult: showResult === true }
+        }
+    }
+
     DeliveryAppState {
         id: state
 
@@ -26,10 +99,22 @@ TestCase {
         moduleName: "delivery_module"
         networkPreset: "logos.test"
         mutatingDiagnosticsEnabled: true
+        managedNodes: managedNodesFixture
     }
 
     function init() {
         gateway.reset()
+        managedNodesFixture.busy = false
+        managedNodesFixture.statusLoading = false
+        managedNodesFixture.error = ""
+        managedNodesFixture.report = null
+        managedNodesFixture.operations = []
+        managedNodesFixture.revision = 0
+        managedNodesFixture.pendingAction = ""
+        managedNodesFixture.pendingNode = ""
+        managedNodesFixture.runCount = 0
+        managedNodesFixture.refreshCount = 0
+        state.sourceMode = "rest"
         state.effectiveSourceMode = "rest"
         state.sourceTargetKind = "rest_endpoint"
         state.usesRestEndpoint = true
@@ -41,6 +126,238 @@ TestCase {
         state.deliveryConnectionStatus = ""
         state.deliveryNodeStatus = ""
         state.operationSession.reset()
+        state.lastOperationOwner = "delivery"
+        state.managedNodeBaselineOperationFingerprint = ""
+    }
+
+    function setManagedMessaging(actions, runState) {
+        managedNodesFixture.report = {
+            nodes: [{
+                key: "messaging",
+                run_state: runState,
+                available_actions: actions
+            }]
+        }
+        managedNodesFixture.revision += 1
+    }
+
+    function useManagedDeliverySource() {
+        state.sourceMode = "logoscore_cli"
+        state.effectiveSourceMode = "module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+    }
+
+    function test_managed_running_node_exposes_only_verified_stop_workflow() {
+        useManagedDeliverySource()
+        setManagedMessaging(["stop"], "running")
+
+        verify(!state.nodeActionAvailable("create"))
+        verify(!state.nodeActionAvailable("start"))
+        verify(state.nodeActionAvailable("stop"))
+        verify(state.nodeActionEnabled("stop"))
+        compare(state.nodeActionLabel("create"), "Initialize")
+
+        verify(state.confirmNodeAction("stop", ""))
+        verify(state.managedNodeConfirmationPending)
+        compare(managedNodesFixture.pendingAction, "stop")
+        compare(managedNodesFixture.pendingNode, "messaging")
+        compare(state.nodeConfirmationTitle(), "Stop Messaging")
+        compare(
+            state.nodeConfirmationMessage(),
+            "Unload Delivery and require Initialize before Start.")
+        compare(state.nodeConfirmationText(), "Stop")
+        verify(state.nodeConfirmationEnabled())
+
+        const started = state.runPendingNodeAction()
+        verify(started.started)
+        compare(managedNodesFixture.runCount, 1)
+        compare(gateway.requestCount, 0)
+        compare(state.currentTab, "operations")
+        verify(!state.managedNodeConfirmationPending)
+    }
+
+    function test_managed_stopped_node_maps_create_to_initialize() {
+        useManagedDeliverySource()
+        setManagedMessaging(["initialize"], "stopped")
+
+        verify(state.nodeActionAvailable("create"))
+        verify(!state.nodeActionAvailable("start"))
+        verify(!state.nodeActionAvailable("stop"))
+        verify(state.confirmNodeAction("create", "ignored raw config"))
+        compare(managedNodesFixture.pendingAction, "initialize")
+        compare(state.nodeConfirmationTitle(), "Initialize Messaging")
+        compare(state.nodeConfirmationText(), "Initialize")
+    }
+
+    function test_managed_initialized_node_exposes_only_start() {
+        useManagedDeliverySource()
+        setManagedMessaging(["start"], "initialized")
+
+        verify(!state.nodeActionAvailable("create"))
+        verify(state.nodeActionAvailable("start"))
+        verify(!state.nodeActionAvailable("stop"))
+        verify(state.nodeActionEnabled("start"))
+    }
+
+    function test_host_module_never_exposes_nonterminal_native_stop() {
+        state.sourceMode = "module"
+        state.effectiveSourceMode = "module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+
+        verify(state.nodeActionAvailable("create"))
+        verify(state.nodeActionAvailable("start"))
+        verify(!state.nodeActionAvailable("stop"))
+        verify(!state.confirmNodeAction("stop", ""))
+        compare(state.pendingOperation.method, "")
+
+        verify(state.confirmNodeAction("start", ""))
+        compare(state.pendingOperation.method, "deliveryStart")
+        compare(state.nodeConfirmationTitle(), "Start node")
+        state.clearNodeConfirmation()
+    }
+
+    function test_managed_operation_rows_filter_and_project_messaging_lifecycle() {
+        useManagedDeliverySource()
+        managedNodesFixture.operations = [{
+            node: "storage",
+            action: "stop",
+            status: "stopped",
+            detail: "storage stopped",
+            timestamp_millis: 1000
+        }, {
+            node: "messaging",
+            action: "stop",
+            status: "stopped",
+            detail: "Delivery unloaded",
+            timestamp_millis: 2000
+        }]
+        managedNodesFixture.revision += 1
+
+        const rows = state.managedNodeOperationRows()
+        compare(rows.length, 1)
+        compare(rows[0].label, "Stop Messaging")
+        compare(rows[0].status, "stopped")
+        compare(rows[0].detail, "Delivery unloaded")
+        state.lastOperationOwner = "managed"
+        compare(state.displayedLastOperation(), "Stop Messaging: stopped")
+    }
+
+    function test_canceled_managed_confirmation_cannot_replace_message_send() {
+        useManagedDeliverySource()
+        setManagedMessaging(["stop"], "running")
+        verify(state.confirmNodeAction("stop", ""))
+
+        state.clearNodeConfirmation()
+        verify(!state.managedNodeConfirmationPending)
+        compare(managedNodesFixture.pendingAction, "")
+
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "delivery-send-after-cancel",
+                    domain: "delivery",
+                    method: "deliverySend",
+                    status: "running",
+                    label: "Send message",
+                    cancellable: true
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+        state.confirmDelivery("deliverySend", ["/logos/1/chat/proto", "hello"], "Send message")
+        state.runPendingNodeAction()
+
+        compare(managedNodesFixture.runCount, 0)
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(state.operation.active.method, "deliverySend")
+    }
+
+    function test_managed_confirmation_revalidates_lifecycle_before_accept() {
+        useManagedDeliverySource()
+        setManagedMessaging(["stop"], "running")
+        verify(state.confirmNodeAction("stop", ""))
+
+        setManagedMessaging(["start"], "initialized")
+
+        verify(!state.nodeConfirmationEnabled())
+        const response = state.runPendingNodeAction()
+        verify(!response.ok)
+        compare(managedNodesFixture.runCount, 0)
+        verify(gateway.resultIsError)
+        compare(gateway.resultTitle, "Messaging lifecycle")
+    }
+
+    function test_delivery_operation_supersedes_historical_managed_operation() {
+        useManagedDeliverySource()
+        managedNodesFixture.operations = [{
+            node: "messaging",
+            action: "start",
+            status: "running",
+            detail: "Delivery started",
+            timestamp_millis: 1000
+        }]
+        managedNodesFixture.revision += 1
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "delivery-send-newer",
+                    domain: "delivery",
+                    method: "deliverySend",
+                    status: "running",
+                    label: "Send message",
+                    cancellable: true
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runDelivery("deliverySend", ["/logos/1/chat/proto", "hello"], "Send message")
+
+        compare(state.lastOperationOwner, "delivery")
+        compare(state.displayedLastOperation(), "Started")
+    }
+
+    function test_managed_action_ignores_older_history_until_new_outcome_arrives() {
+        useManagedDeliverySource()
+        setManagedMessaging(["stop"], "running")
+        managedNodesFixture.operations = [{
+            node: "messaging",
+            action: "start",
+            status: "running",
+            detail: "old",
+            timestamp_millis: 1000
+        }]
+        managedNodesFixture.revision += 1
+
+        verify(state.confirmNodeAction("stop", ""))
+        state.runPendingNodeAction()
+        compare(state.displayedLastOperation(), "Starting")
+
+        managedNodesFixture.operations = managedNodesFixture.operations.concat([{
+            node: "messaging",
+            action: "stop",
+            status: "stopped",
+            detail: "new",
+            timestamp_millis: 2000
+        }])
+        managedNodesFixture.revision += 1
+        compare(state.displayedLastOperation(), "Stop Messaging: stopped")
+    }
+
+    function test_managed_status_failure_is_actionable() {
+        useManagedDeliverySource()
+        managedNodesFixture.error = "logoscore unavailable"
+
+        compare(
+            state.managedNodeStatusText(),
+            "Messaging lifecycle status failed: logoscore unavailable")
+        compare(state.managedNodeStatusTone(), "error")
     }
 
     function test_store_query_uses_runtime_operation_and_projects_result() {

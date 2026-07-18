@@ -28,6 +28,11 @@ TestCase {
         state.error = ""
         state.operations = []
         state.revision = 0
+        state.statusLoading = false
+        state.statusGeneration = 0
+        state.statusRefreshDeferred = false
+        state.statusRefreshShowResult = false
+        state.statusRefreshIncludePackageCatalog = false
         state.devnets = []
         state.packageCatalog = null
         state.packageCatalogError = ""
@@ -210,6 +215,102 @@ TestCase {
         compare(state.revision, 1)
     }
 
+    function test_refresh_coalesces_and_applies_newest_requested_status() {
+        gateway.deferRequests = true
+        const first = sampleReport()
+        first.summary = { total: 2, running: 1, needs_configuration: 0 }
+        const second = sampleReport()
+        second.summary = { total: 2, running: 2, needs_configuration: 0 }
+
+        state.refresh(false)
+        state.refresh(true)
+
+        compare(gateway.requestCount, 1)
+        verify(state.statusLoading)
+        verify(state.statusRefreshDeferred)
+
+        verify(gateway.completeRequestAt(0, {
+            ok: true, value: first, text: "OK", error: ""
+        }))
+
+        compare(gateway.requestCount, 2)
+        verify(state.statusLoading)
+        verify(!state.statusRefreshDeferred)
+        verify(gateway.requests[1].showResult)
+
+        verify(gateway.completeRequestAt(0, {
+            ok: true, value: second, text: "OK", error: ""
+        }))
+
+        verify(!state.statusLoading)
+        compare(state.report.summary.running, 2)
+    }
+
+    function test_action_invalidates_older_status_response() {
+        state.networkProfile = "local"
+        gateway.deferRequests = true
+        const actionReport = sampleReport()
+        actionReport.summary = { total: 2, running: 2, needs_configuration: 0 }
+        const staleReport = sampleReport()
+        staleReport.summary = { total: 2, running: 0, needs_configuration: 0 }
+
+        state.refresh(false)
+        state.runAction("start", "bedrock", "", "", "Start Bedrock")
+
+        compare(gateway.requestCount, 2)
+        verify(gateway.completeRequestAt(1, {
+            ok: true, value: actionReport, text: "OK", error: ""
+        }))
+        compare(state.report.summary.running, 2)
+
+        verify(gateway.completeRequestAt(0, {
+            ok: true, value: staleReport, text: "OK", error: ""
+        }))
+        compare(state.report.summary.running, 2)
+    }
+
+    function test_profile_change_rejects_previous_status_response() {
+        gateway.deferRequests = true
+        const staleDefault = sampleReport()
+        staleDefault.profile = "default"
+        const currentLocal = sampleReport()
+        currentLocal.profile = "local"
+
+        state.refresh(false)
+        state.networkProfile = "local"
+        state.refresh(false)
+
+        compare(gateway.requestCount, 2)
+        verify(gateway.completeRequestAt(0, {
+            ok: true, value: staleDefault, text: "OK", error: ""
+        }))
+        compare(state.report, null)
+
+        verify(gateway.completeRequestAt(0, {
+            ok: true, value: currentLocal, text: "OK", error: ""
+        }))
+        compare(state.report.profile, "local")
+        compare(state.networkProfile, "local")
+    }
+
+    function test_refresh_retries_after_shared_busy_state_clears() {
+        gateway.deferRequests = true
+        gateway.busy = true
+
+        compare(state.refresh(false), null)
+        compare(gateway.requestCount, 0)
+        verify(state.statusRefreshDeferred)
+
+        gateway.busy = false
+
+        tryCompare(gateway, "requestCount", 1)
+        verify(state.statusLoading)
+        verify(gateway.completeRequestAt(0, {
+            ok: true, value: sampleReport(), text: "OK", error: ""
+        }))
+        verify(!state.statusLoading)
+    }
+
     function test_run_action_dispatches_confirmation_token_and_history() {
         state.networkProfile = "local"
         gateway.responses = ({
@@ -274,6 +375,8 @@ TestCase {
 
         compare(state.error, "start failed")
         compare(state.operations.length, 1)
+        compare(state.operations[0].action, "start")
+        compare(state.operations[0].node, "bedrock")
         compare(state.operations[0].status, "failed")
         compare(gateway.history.length, 1)
         compare(gateway.history[0].operation.status, "failed")
