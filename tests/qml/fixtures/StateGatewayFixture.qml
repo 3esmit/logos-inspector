@@ -35,6 +35,7 @@ QtObject {
     property string openedSubSection: ""
     property int storageObservationCount: 0
     property int storageRefreshCount: 0
+    property string lastStorageRefreshCid: ""
     property var storageRefreshCallback: null
     property bool deferStorageObservations: false
     property var storageObservationResponse: ({
@@ -74,6 +75,7 @@ QtObject {
         openedSubSection = ""
         storageObservationCount = 0
         storageRefreshCount = 0
+        lastStorageRefreshCid = ""
         storageRefreshCallback = null
         deferStorageObservations = false
         storageObservationResponse = ({
@@ -226,10 +228,11 @@ QtObject {
         return storageObservationResponse
     }
 
-    function refreshStorageObservations() {
+    function refreshStorageObservations(cid) {
         storageRefreshCount += 1
+        lastStorageRefreshCid = String(cid || "")
         return typeof storageRefreshCallback === "function"
-            ? storageRefreshCallback()
+            ? storageRefreshCallback(lastStorageRefreshCid)
             : null
     }
 

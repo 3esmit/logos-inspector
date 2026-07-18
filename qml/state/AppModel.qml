@@ -618,9 +618,8 @@ QtObject {
                 return root.runtimeOperationModuleEvent(event, showResult === true, callback)
             }
 
-            function refreshStorageObservations() {
-                metricsState.queryNetworkConnection(
-                    "storage", false, false, "storage-refresh")
+            function refreshStorageObservations(cid) {
+                metricsState.queryStorageAfterMutation(cid)
                 return root.storageApp.refreshManifests(false)
             }
 

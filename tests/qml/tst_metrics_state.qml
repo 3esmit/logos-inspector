@@ -1022,6 +1022,34 @@ TestCase {
             metrics.sourceReport("storage"), "exists"), false)
     }
 
+    function test_storage_mutation_refreshes_matching_current_module_cid() {
+        sourceRouting.storageSourceMode = "logoscore_cli"
+        sourceRouting.storageCid = "cid-a"
+
+        metrics.queryStorageAfterMutation("cid-a")
+
+        compare(gateway.requests.length, 1)
+        compare(gateway.requests[0].args[0].options.cid, "cid-a")
+        verify(gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(!metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+    }
+
+    function test_storage_mutation_omits_edited_module_cid() {
+        sourceRouting.storageSourceMode = "logoscore_cli"
+        sourceRouting.storageCid = "cid-b"
+
+        metrics.queryStorageAfterMutation("cid-a")
+
+        compare(gateway.requests.length, 1)
+        compare(gateway.requests[0].args[0].options.cid, "")
+        verify(!gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(metrics.activeObservationLeases.storage
+            .runtimeDiagnosticsReduced)
+    }
+
     function test_compatibility_projection_replaces_full_report() {
         metrics.queryNetworkConnection(
             "storage", false, false, "source-inspection")
