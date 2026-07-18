@@ -41,6 +41,17 @@ pub(super) fn instruction_plan(
     let idl = parse_idl(&request.idl_json)?;
     let instructions = instruction_rows(&idl)?;
     let names = instruction_names(instructions);
+    if request.instruction.trim().is_empty() {
+        return Ok(LocalWalletInstructionPlanReport {
+            instruction: String::new(),
+            instructions: names,
+            accounts: Vec::new(),
+            args: Vec::new(),
+            private_mode: false,
+            program_binary_required: false,
+            inputs_complete: false,
+        });
+    }
     let selection = select_instruction(instructions, &request.instruction)?;
     let accounts = account_fields(&selection.instruction);
     let args = arg_fields(&selection.instruction);
