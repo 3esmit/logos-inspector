@@ -130,6 +130,8 @@ TestCase {
         verify(hasVisibleText(panel, "Storage source locked"))
 
         compare(model.setNetworkConnectorMode("storage", "metrics"), false)
+        compare(model.setNetworkConnectorEndpoint(
+                    "storage", "http://locked-storage.example/api/storage/v1"), false)
         compare(model.storageSourceMode, "rest")
         model.storageRestUrl = "http://storage-changed.example/api/storage/v1"
         wait(0)
@@ -144,6 +146,47 @@ TestCase {
             const connector = findAccessibleByName(panel, "Storage connector")
             return connector !== null && connector.enabled
         })
+    }
+
+    function test_rest_field_edits_canonical_connector_endpoint() {
+        const configuredEndpoint = "http://configured-storage.example/api/storage/v1"
+        const fallbackEndpoint = "http://fallback-storage.example/api/storage/v1"
+        const editedEndpoint = "http://edited-storage.example/api/storage/v1"
+        model.loadNetworkConnectorConfig({
+            network_connector_config: {
+                scopes: {
+                    l1: {
+                        connector_id: "direct_l1_rpc",
+                        provenance: "network_profile"
+                    },
+                    delivery: {
+                        connector_id: "direct_delivery_rest",
+                        provenance: "network_profile"
+                    },
+                    storage: {
+                        connector_id: "direct_storage_rest",
+                        endpoint: configuredEndpoint,
+                        provenance: "network_profile"
+                    }
+                }
+            }
+        })
+        model.storageRestUrl = fallbackEndpoint
+        wait(0)
+
+        const restField = findAccessibleByName(panel, "REST URL")
+        verify(restField !== null)
+        compare(restField.text, configuredEndpoint)
+        restField.text = editedEndpoint
+        restField.textEdited()
+
+        tryCompare(restField, "text", editedEndpoint)
+        compare(model.storageRestUrl, editedEndpoint)
+        compare(model.networkConnectorConfig.scopes.storage.endpoint,
+                editedEndpoint)
+        compare(model.sourceRouting.configuredStorageRestUrl(), editedEndpoint)
+        compare(model.sourceRouting.storageOperationAdapter().inputs.rest_endpoint,
+                editedEndpoint)
     }
 
     function test_path_privacy_control_is_truthful_and_has_no_fake_path_editor() {

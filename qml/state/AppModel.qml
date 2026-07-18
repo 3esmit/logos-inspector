@@ -1629,6 +1629,43 @@ QtObject {
         return true
     }
 
+    function setNetworkConnectorEndpoint(scope, endpoint) {
+        const key = String(scope || "")
+        if (key !== "storage" || storageApp.sourceSettingsLocked) {
+            return false
+        }
+        const mode = currentConnectorSourceMode("storage", storageSourceMode)
+        if (mode !== "rest" && mode !== "metrics") {
+            return false
+        }
+        const value = String(endpoint || "").trim()
+        const next = normalizedNetworkConnectorConfig(networkConnectorConfig)
+        const current = next.scopes.storage || {}
+        const configChanged = String(current.endpoint || "") !== value
+            || String(current.provenance || "") !== "network_profile"
+        const fallbackChanged = mode === "metrics"
+            ? storageMetricsUrl !== value : storageRestUrl !== value
+        if (configChanged) {
+            next.scopes.storage = {
+                connector_id: String(current.connector_id || ""),
+                endpoint: value,
+                provenance: "network_profile"
+            }
+            networkConnectorConfig = next
+        }
+        if (mode === "metrics") {
+            if (fallbackChanged) {
+                storageMetricsUrl = value
+            }
+        } else if (fallbackChanged) {
+            storageRestUrl = value
+        }
+        if (configChanged && !fallbackChanged) {
+            handleStorageConfigurationChanged()
+        }
+        return true
+    }
+
     function setSourceModeProperty(scope, mode) {
         const value = String(mode || "")
         switch (String(scope || "")) {
