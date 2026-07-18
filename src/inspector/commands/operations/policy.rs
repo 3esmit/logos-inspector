@@ -191,7 +191,23 @@ mod tests {
     fn policy_marks_wallet_submission_operations_manual() -> Result<()> {
         let request = RuntimeOperationRequest::from_call(
             OperationMethod::LocalWalletInstructionSubmit,
-            json!([]),
+            json!([
+                {},
+                {},
+                {
+                    "network_scope": {
+                        "kind": "genesis_id",
+                        "genesis_id": "11".repeat(32)
+                    },
+                    "channel_id": "22".repeat(32),
+                    "source_id": "src_verified",
+                    "source_config_revision": 7,
+                    "context_revision": 9,
+                    "request_revision": 11,
+                    "endpoint": "https://sequencer.example.test/"
+                },
+                "confirm-idl-instruction"
+            ]),
             "IDL instruction",
         )?;
         let context = runtime_operation_context(&request)?;
@@ -201,6 +217,21 @@ mod tests {
             || policy.get("restartPolicy").and_then(Value::as_str) != Some("manual_required")
         {
             bail!("unexpected wallet submission policy: {policy}");
+        }
+        let inputs = policy
+            .get("affectedInputs")
+            .and_then(Value::as_array)
+            .context("wallet submission affected inputs must be an array")?;
+        for (key, value) in [
+            ("source", "src_verified"),
+            ("endpoint", "https://sequencer.example.test/"),
+        ] {
+            if !inputs.iter().any(|input| {
+                input.get("key").and_then(Value::as_str) == Some(key)
+                    && input.get("value").and_then(Value::as_str) == Some(value)
+            }) {
+                bail!("wallet submission policy omitted verified {key}: {policy}");
+            }
         }
         Ok(())
     }

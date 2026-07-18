@@ -18,6 +18,7 @@ mod profile;
 mod runner;
 
 use crate::support::command_runner::CommandControl;
+pub(crate) use instruction::local_wallet_instruction_submit_to;
 pub use instruction::{
     InstructionPlanField, LocalWalletInstructionPlanReport, LocalWalletInstructionReport,
     LocalWalletInstructionRequest, ResolvedInstructionAccount, ResolvedInstructionArg,

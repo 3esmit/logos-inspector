@@ -332,6 +332,9 @@ pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Re
         OperationCommand::Blockchain(command) => {
             blockchain::add_operation_context(command, request, &mut context)?;
         }
+        OperationCommand::Execution(_) => {
+            super::lez::add_operation_context(request, &mut context)?;
+        }
         _ => {}
     }
     Ok(Value::Object(context))

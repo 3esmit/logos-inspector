@@ -95,12 +95,33 @@ pub async fn local_wallet_instruction_submit(
     profile: Value,
     request: Value,
 ) -> Result<LocalWalletInstructionReport> {
+    local_wallet_instruction_submit_inner(profile, request, None).await
+}
+
+pub(crate) async fn local_wallet_instruction_submit_to(
+    profile: Value,
+    request: Value,
+    sequencer_endpoint: String,
+) -> Result<LocalWalletInstructionReport> {
+    local_wallet_instruction_submit_inner(profile, request, Some(sequencer_endpoint)).await
+}
+
+async fn local_wallet_instruction_submit_inner(
+    profile: Value,
+    request: Value,
+    sequencer_endpoint: Option<String>,
+) -> Result<LocalWalletInstructionReport> {
     let wallet_home = resolve_instruction_wallet_home(profile)?;
     let request: LocalWalletInstructionRequest =
         serde_json::from_value(request).context("failed to parse IDL instruction request")?;
     let prepared = prepare_instruction(&request)?;
-    let (tx_hash, shared_secret_count) =
-        submit_instruction(wallet_home, &request, &prepared).await?;
+    let (tx_hash, shared_secret_count) = submit_instruction(
+        wallet_home,
+        &request,
+        &prepared,
+        sequencer_endpoint.as_deref(),
+    )
+    .await?;
     Ok(report_from_prepared(
         prepared,
         "submitted",

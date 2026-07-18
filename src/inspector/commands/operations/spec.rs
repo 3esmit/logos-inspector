@@ -1158,6 +1158,13 @@ mod tests {
                 ],
             ),
             (
+                OperationMethod::LocalWalletInstructionSubmit,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::required(AffectedContextKey::Endpoint),
+                ],
+            ),
+            (
                 OperationMethod::BlockchainNode,
                 &[
                     AffectedContextField::required(AffectedContextKey::Source),

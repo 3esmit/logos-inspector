@@ -152,7 +152,10 @@ impl InspectorCommandSurface {
             module_transport_kind,
         );
         Ok(Self {
-            operations: RuntimeOperationInterface::new(Arc::clone(&module_transport)),
+            operations: RuntimeOperationInterface::new(
+                Arc::clone(&module_transport),
+                Arc::clone(&zone_catalog),
+            ),
             module_transport,
             zone_catalog,
             zone_l2,
