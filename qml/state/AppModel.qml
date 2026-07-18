@@ -1510,6 +1510,7 @@ QtObject {
             messaging_mutating_diagnostics_enabled: true,
             wallet_profile_configured: walletProfileConfigured(),
             wallet_home_configured: walletHomeConfigured(),
+            wallet_instruction_submit_ready: wallet.actionReady("instruction_submit"),
             local_nodes_enabled: localNodesEnabled === true,
             local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true
         }

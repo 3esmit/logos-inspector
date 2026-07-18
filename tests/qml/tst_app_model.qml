@@ -2502,6 +2502,29 @@ TestCase {
         compare(basecamp.scopes["wallet.l2"].connector_id, "lez_core")
     }
 
+    function test_wallet_runtime_inputs_expose_direct_instruction_readiness_without_binary() {
+        model.walletStateLoaded = true
+        model.walletBinary = ""
+        model.walletHome = "/tmp/direct-wallet"
+        model.localWalletStatus = ({
+            status: "ok",
+            readiness: {
+                wallet_binary_ready: false,
+                wallet_home_ready: true,
+                wallet_config_ready: true,
+                wallet_storage_ready: true,
+                command_ready: false,
+                accounts_ready: false,
+                instruction_submit_ready: true,
+                backup_encryption_ready: true
+            }
+        })
+
+        const inputs = model.capabilityRegistryRuntimeInputs()
+        compare(inputs.wallet_profile_configured, false)
+        compare(inputs.wallet_instruction_submit_ready, true)
+    }
+
     function test_source_routing_does_not_fabricate_shared_idl_capabilities() {
         model.storageSourceMode = "rest"
         model.capabilityRegistryLoaded = true
