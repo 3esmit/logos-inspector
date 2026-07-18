@@ -207,22 +207,22 @@ QtObject {
     function deliveryEventRecord(eventName, args) {
         const values = ModuleEventUtils.eventValues(args)
         const object = ModuleEventUtils.eventObject(args)
-        const timestamp = ModuleEventUtils.fieldText(object, ["timestamp", "time"]) || String(values[3] || "")
-        const topic = ModuleEventUtils.fieldText(object, ["contentTopic", "content_topic", "topic"]) || String(values[1] || "")
+        const timestamp = ModuleEventUtils.fieldText(object, ["timestamp", "time"]) || ModuleEventUtils.scalarText(values[3])
+        const topic = ModuleEventUtils.fieldText(object, ["contentTopic", "content_topic", "topic"]) || ModuleEventUtils.scalarText(values[1])
         const payload = object.payload !== undefined ? object.payload : values[2]
-        const hash = ModuleEventUtils.fieldText(object, ["messageHash", "message_hash", "hash"]) || String(values[0] || "")
-        const requestId = ModuleEventUtils.fieldText(object, ["requestId", "request_id"]) || String(values[0] || "")
+        const hash = ModuleEventUtils.fieldText(object, ["messageHash", "message_hash", "hash"]) || ModuleEventUtils.scalarText(values[0])
+        const requestId = ModuleEventUtils.fieldText(object, ["requestId", "request_id"]) || ModuleEventUtils.scalarText(values[0])
         let error = ModuleEventUtils.fieldText(object, ["error", "message"])
         if (!error.length && eventName === "messageError") {
-            error = String(values[2] || "")
+            error = ModuleEventUtils.scalarText(values[2])
         }
         let statusValue = ""
         if (eventName === "connectionStateChanged") {
-            statusValue = ModuleEventUtils.fieldText(object, ["connectionStatus", "connection_status", "status"]) || String(values[0] || "")
+            statusValue = ModuleEventUtils.fieldText(object, ["connectionStatus", "connection_status", "status"]) || ModuleEventUtils.scalarText(values[0])
         } else if (eventName === "nodeStarted" || eventName === "nodeStopped") {
             const ok = object.success !== undefined ? object.success : values[0]
             statusValue = (ok === true || String(ok).toLowerCase() === "true") ? qsTr("ok") : qsTr("error")
-            const text = ModuleEventUtils.fieldText(object, ["message"]) || String(values[1] || "")
+            const text = ModuleEventUtils.fieldText(object, ["message"]) || ModuleEventUtils.scalarText(values[1])
             if (text.length > 0) {
                 statusValue += ": " + text
             }
@@ -237,7 +237,7 @@ QtObject {
             error: error,
             status: moduleEventTone(eventName, error),
             statusValue: statusValue,
-            detail: moduleEventDetail(eventName, requestId, hash, topic, error, payload)
+            detail: moduleEventDetail(eventName, requestId, hash, topic, error, payload, object)
         }
     }
 
@@ -253,7 +253,7 @@ QtObject {
         deliveryModuleEventRevision += 1
     }
 
-    function moduleEventDetail(eventName, requestId, hash, topic, error, payload) {
+    function moduleEventDetail(eventName, requestId, hash, topic, error, payload, object) {
         if (eventName === "messageError") {
             return ModuleEventUtils.compactParts([requestId, ModuleEventUtils.shortText(hash, 20), error]).join(" / ")
         }
@@ -262,6 +262,16 @@ QtObject {
         }
         if (eventName === "connectionStateChanged") {
             return ModuleEventUtils.compactParts([requestId || hash]).join(" / ")
+        }
+        const structured = ModuleEventUtils.compactParts([
+            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["node"]), 64),
+            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["networkId", "network_id"]), 64),
+            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["source"]), 64),
+            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["status"]), 64),
+            ModuleEventUtils.singleLineText(ModuleEventUtils.fieldText(object, ["message"]), 64)
+        ]).join(" / ")
+        if (structured.length > 0) {
+            return ModuleEventUtils.shortText(structured, 180)
         }
         return ModuleEventUtils.compactParts([requestId, ModuleEventUtils.shortText(hash, 20), ModuleEventUtils.shortText(topic, 44)]).join(" / ")
     }

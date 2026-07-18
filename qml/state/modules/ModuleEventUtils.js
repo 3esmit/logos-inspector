@@ -17,12 +17,23 @@ function parsedPayload(value) {
     return ModuleEventEnvelope.payload(value)
 }
 
+function scalarText(value) {
+    if (value === undefined || value === null || typeof value === "object") {
+        return ""
+    }
+    return String(value)
+}
+
+function singleLineText(value, max) {
+    return shortText(scalarText(value).replace(/\s+/g, " ").trim(), max)
+}
+
 function fieldText(object, keys) {
     const row = object || {}
     for (let i = 0; i < keys.length; ++i) {
-        const value = row[keys[i]]
-        if (value !== undefined && value !== null && String(value).length > 0) {
-            return String(value)
+        const text = scalarText(row[keys[i]])
+        if (text.length > 0) {
+            return text
         }
     }
     return ""
