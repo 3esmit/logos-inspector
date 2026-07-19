@@ -1009,6 +1009,152 @@ TestCase {
             "messaging.peer_exchange_requests_recent"), 5)
     }
 
+    function test_delivery_json_labeled_series_preserve_topic_identity() {
+        const rows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 100
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 200
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "gross", direction: "in", topic: "alpha" },
+                value: 900
+            }
+        ]
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-labeled-json", rows)))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.relay_ingress_recent"), 300)
+        const series = metrics.moduleMetricSeries("messaging", {
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in" }
+        })
+        compare(series.length, 2)
+        compare(series[0].labels.topic, "alpha")
+        compare(series[1].labels.topic, "beta")
+    }
+
+    function test_delivery_text_labeled_series_sum_all_matching_states() {
+        const value = [
+            "waku_service_requests_total{service=\"/vac/waku/store-query/3.0.0\",state=\"served\"} 10",
+            "waku_service_requests_total{service=\"/vac/waku/store-query/3.0.0\",state=\"rejected\"} 2"
+        ].join("\n")
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-labeled-text", value)))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.store_query_requests_recent"), 12)
+        const series = metrics.moduleMetricSeries("messaging", {
+            name: "waku_service_requests_total",
+            labels: { service: "/vac/waku/store-query/3.0.0" }
+        })
+        compare(series.length, 2)
+    }
+
+    function test_duplicate_labeled_series_fail_closed() {
+        const value = [
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} 10",
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} 20"
+        ].join("\n")
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-duplicate-series", value)))
+
+        const series = metrics.moduleMetricSeries("messaging", {
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in" }
+        })
+        compare(series, null)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.relay_ingress_recent"), null)
+    }
+
+    function test_invalid_canonical_json_series_cannot_fall_through_to_alias() {
+        const rows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: null
+            },
+            {
+                name: "waku_relay_network_bytes_in_total",
+                value: 99
+            }
+        ]
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-invalid-series", rows)))
+
+        compare(metrics.moduleMetricSeries("messaging", {
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in" }
+        }), null)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.relay_ingress_recent"), null)
+    }
+
+    function test_duplicate_canonical_series_cannot_fall_through_to_alias() {
+        const value = [
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} 10",
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} 20",
+            "waku_relay_network_bytes_in_total 99"
+        ].join("\n")
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-duplicate-with-alias", value)))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.relay_ingress_recent"), null)
+    }
+
+    function test_malformed_canonical_text_cannot_fall_through_to_alias() {
+        const invalidValues = ["not-a-number", "10garbage"]
+        for (let i = 0; i < invalidValues.length; ++i) {
+            const value = [
+                "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} "
+                    + invalidValues[i],
+                "waku_relay_network_bytes_in_total 99"
+            ].join("\n")
+            metrics.queryNetworkConnection(
+                "messaging", false, false, "scheduler")
+            gateway.completeRequest(0, success(reportWithMetrics(
+                "messaging", "delivery-malformed-series-" + String(i), value)))
+
+            compare(metrics.dashboardMetricRawValue(
+                "messaging.relay_ingress_recent"), null)
+        }
+    }
+
+    function test_positive_signed_text_series_are_accepted() {
+        const value = [
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} +1",
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"beta\"} +2e1",
+            "libp2p_peers +3"
+        ].join("\n")
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-positive-series", value)))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.relay_ingress_recent"), 21)
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 3)
+    }
+
     function test_delivery_aggregate_graph_matches_headline_across_reset_sequence() {
         const observations = [
             [100, 50],

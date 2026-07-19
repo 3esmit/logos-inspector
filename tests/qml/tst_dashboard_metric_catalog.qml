@@ -127,6 +127,34 @@ TestCase {
             return null
         }
 
+        function moduleMetricSeries(kind, spec) {
+            const name = spec && typeof spec === "object"
+                ? String(spec.name || "") : String(spec || "")
+            const labels = spec && typeof spec === "object"
+                ? (spec.labels || {}) : {}
+            const rows = []
+            if (metricRows.length > 0) {
+                for (let i = 0; i < metricRows.length; ++i) {
+                    const row = metricRows[i]
+                    if (String(row.name || "") === name
+                            && labelsMatch(row.labels || {}, labels)) {
+                        rows.push({
+                            name: name,
+                            labels: row.labels || {},
+                            value: row.value
+                        })
+                    }
+                }
+                return rows
+            }
+            const value = moduleMetricValue(kind, spec)
+            return value === null ? [] : [{
+                name: name,
+                labels: labels,
+                value: value
+            }]
+        }
+
         function metricNames(values) {
             const rows = []
             const raw = Array.isArray(values) ? values : [values]
@@ -605,6 +633,355 @@ TestCase {
             model, "messaging.store_errors_recent"), 8)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
             model, "messaging.message_error_events_recent"), 22)
+        model.metricRows = []
+    }
+
+    function test_labeled_relay_bytes_sum_net_topics_and_ignore_gross() {
+        model.metricRows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 100
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 200
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "gross", direction: "in", topic: "alpha" },
+                value: 900
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "out", topic: "alpha" },
+                value: 40
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "out", topic: "beta" },
+                value: 60
+            }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.relay_ingress_recent"), 300)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.relay_egress_recent"), 100)
+        model.metricRows = []
+    }
+
+    function test_labeled_series_window_handles_partial_reset_and_new_topic() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricSeriesHistory = ({})
+        model.dashboardMetricSeriesLastSeen = ({})
+        model.metricRows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 100
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 50
+            }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        model.metricRows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 3
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 55
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "gamma" },
+                value: 1000
+            }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.relay_ingress_recent"), 1058)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 8)
+
+        model.metricRows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 8
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 60
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "gamma" },
+                value: 1005
+            }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 23)
+        model.metricRows = []
+    }
+
+    function test_labeled_series_reordering_does_not_change_identity() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricSeriesHistory = ({})
+        model.dashboardMetricSeriesLastSeen = ({})
+        model.metricRows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 100
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 50
+            }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        model.metricRows = [
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "beta" },
+                value: 55
+            },
+            {
+                name: "waku_relay_network_bytes_total",
+                labels: { type: "net", direction: "in", topic: "alpha" },
+                value: 107
+            }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 12)
+        model.metricRows = []
+    }
+
+    function test_disjoint_topics_keep_prior_activity_for_same_source_family() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricSeriesHistory = ({})
+        model.dashboardMetricSeriesLastSeen = ({})
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "alpha" },
+            value: 100
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "alpha" },
+            value: 105
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 5)
+
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "beta" },
+            value: 200
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 5)
+
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "beta" },
+            value: 203
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 8)
+        const samples = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "messaging.relay_ingress_recent")
+        compare(samples[samples.length - 1].value, 8)
+        model.metricRows = []
+    }
+
+    function test_labeled_series_absence_breaks_only_that_series_continuity() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricSeriesHistory = ({})
+        model.dashboardMetricSeriesLastSeen = ({})
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "alpha" },
+            value: 100
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        model.metricRows = []
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "alpha" },
+            value: 105
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), null)
+
+        model.metricRows = [{
+            name: "waku_relay_network_bytes_total",
+            labels: { type: "net", direction: "in", topic: "alpha" },
+            value: 108
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.relay_ingress_recent"), 3)
+        model.metricRows = []
+    }
+
+    function test_labeled_fallback_and_error_families_sum_all_matching_series() {
+        model.metricRows = [
+            {
+                name: "waku_service_requests_total",
+                labels: {
+                    service: "/vac/waku/store-query/3.0.0",
+                    state: "served"
+                },
+                value: 10
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: {
+                    service: "/vac/waku/store-query/3.0.0",
+                    state: "rejected"
+                },
+                value: 2
+            },
+            {
+                name: "waku_node_errors_total",
+                labels: { type: "keep_alive_failure" },
+                value: 3
+            },
+            {
+                name: "waku_node_errors_total",
+                labels: { type: "dial_failure" },
+                value: 4
+            }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.store_query_requests_recent"), 12)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_error_events_recent"), 7)
+        model.metricRows = []
+    }
+
+    function test_labeled_canonical_families_sum_types_before_service_fallbacks() {
+        model.metricRows = [
+            {
+                name: "waku_filter_requests_total",
+                labels: { type: "PING" },
+                value: 3
+            },
+            {
+                name: "waku_filter_requests_total",
+                labels: { type: "SUBSCRIBE" },
+                value: 4
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: {
+                    service: "/vac/waku/filter-subscribe/2.0.0-beta1",
+                    state: "served"
+                },
+                value: 100
+            },
+            {
+                name: "waku_lightpush_messages_total",
+                labels: { type: "request" },
+                value: 5
+            },
+            {
+                name: "waku_lightpush_messages_total",
+                labels: { type: "response" },
+                value: 6
+            },
+            {
+                name: "waku_lightpush_v3_messages_total",
+                labels: { type: "request" },
+                value: 7
+            },
+            {
+                name: "waku_lightpush_v3_messages_total",
+                labels: { type: "response" },
+                value: 8
+            },
+            {
+                name: "waku_node_messages_total",
+                labels: { type: "relay" },
+                value: 10
+            },
+            {
+                name: "waku_node_messages_total",
+                labels: { type: "store" },
+                value: 2
+            }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.filter_requests_recent"), 7)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.lightpush_requests_recent"), 26)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_sent_events_recent"), 26)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_received_events_recent"), 12)
+        model.metricRows = []
+    }
+
+    function test_service_bytes_sum_each_direction_across_services() {
+        model.metricRows = [
+            {
+                name: "waku_service_network_bytes_total",
+                labels: { service: "store", direction: "in" },
+                value: 10
+            },
+            {
+                name: "waku_service_network_bytes_total",
+                labels: { service: "filter", direction: "in" },
+                value: 20
+            },
+            {
+                name: "waku_service_network_bytes_total",
+                labels: { service: "store", direction: "out" },
+                value: 7
+            },
+            {
+                name: "waku_service_network_bytes_total",
+                labels: { service: "filter", direction: "out" },
+                value: 9
+            }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.service_ingress_recent"), 30)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.service_egress_recent"), 16)
         model.metricRows = []
     }
 
