@@ -32,6 +32,7 @@ QtObject {
     property bool summaryStale: false
 
     property var activeZoneContext: null
+    property var sourceEditorResetContext: null
     readonly property string activeZoneId: activeZoneContext
         ? String(activeZoneContext.channel_id || "")
         : ""
@@ -136,8 +137,13 @@ QtObject {
     }
 
     onActiveZoneContextChanged: {
+        const preserveSourceWarning = sourceEditorResetContext !== null
+            && activeZoneContext !== null
+            && sameContextRoute(sourceEditorResetContext, activeZoneContext)
+        sourceEditorResetContext = activeZoneContext
+            ? copyObject(activeZoneContext) : null
         l2.resetL2InspectionState()
-        sourceEditor.resetSourceEditorState()
+        sourceEditor.resetSourceEditorState(preserveSourceWarning)
         resetTargetResolution()
     }
 
