@@ -89,6 +89,15 @@ TestCase {
     }
 
     QtObject {
+        id: shellMock
+
+        property string resultText: ""
+        property var resultValue: null
+        property bool resultIsError: false
+        property string resultOwner: ""
+    }
+
+    QtObject {
         id: appModel
 
         property var zoneInspection: zoneState
@@ -98,6 +107,7 @@ TestCase {
         property alias registeredIdls: registeredIdlRegistry
         property var programExecution: programExecutionMock
         property var favoriteStore: favoriteState
+        property var shell: shellMock
 
         function idlEntryAt(index) {
             return null
@@ -172,6 +182,14 @@ TestCase {
         zoneState.summaryStale = false
         zoneState.activeZoneId = FixtureData.identity("1")
         zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
+        zoneState.targetResolutionReport = null
+        zoneState.targetResolutionCandidates = []
+        zoneState.targetResolutionStatus = ""
+        zoneState.targetResolutionError = ""
+        shellMock.resultText = ""
+        shellMock.resultValue = null
+        shellMock.resultIsError = false
+        shellMock.resultOwner = ""
         zoneState.resetL2Fixture()
         zoneState.l2BlocksError = ""
         zoneState.l2BlocksErrorDetails = null
@@ -205,6 +223,32 @@ TestCase {
             detail.currentTab = "overview"
         }
         wait(0)
+    }
+
+    function test_target_recovery_renders_actionable_guidance() {
+        const message = "The configured L2 source is unavailable. Check Sources, then retry the search."
+        const report = {
+            report_kind: "inspection.target_resolution",
+            status: "recovery",
+            recovery: "retry",
+            warnings: [{ code: "source_unavailable", recovery: "retry" }]
+        }
+        zoneState.targetResolutionReport = report
+        zoneState.targetResolutionStatus = "recovery"
+        shellMock.resultText = message
+        shellMock.resultValue = report
+        shellMock.resultIsError = true
+        shellMock.resultOwner = "zones"
+
+        const recovery = findChild(page, "inspectionTargetRecovery")
+        verify(recovery !== null)
+        tryCompare(recovery, "visible", true)
+        compare(recovery.title, "Search needs attention")
+        compare(recovery.message, message)
+        compare(recovery.Accessible.name, "Search needs attention. " + message)
+
+        shellMock.resultValue = { report_kind: "unrelated.result" }
+        tryCompare(recovery, "visible", false)
     }
 
     function test_catalog_status_exposes_complete_fact_and_error_text() {

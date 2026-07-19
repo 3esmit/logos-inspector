@@ -34,6 +34,13 @@ ColumnLayout {
     readonly property bool stacked: width < 900
     readonly property bool hasDirtyDraft: detailLoader.detailItem !== null
         && detailLoader.detailItem.hasDirtyDraft
+    readonly property bool hasTargetRecovery: root.zoneState
+        && String(root.zoneState.targetResolutionStatus || "") === "recovery"
+        && root.model && root.model.shell
+        && String(root.model.shell.resultOwner || "") === "zones"
+        && root.model.shell.resultIsError === true
+        && root.model.shell.resultValue === root.zoneState.targetResolutionReport
+        && String(root.model.shell.resultText || "").length > 0
 
     onHasDirtyDraftChanged: {
         if (hasDirtyDraft) {
@@ -76,6 +83,16 @@ ColumnLayout {
     ZoneCatalogStatus {
         theme: root.theme
         zoneState: root.zoneState
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        objectName: "inspectionTargetRecovery"
+        visible: root.hasTargetRecovery
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Search needs attention")
+        message: root.hasTargetRecovery ? String(root.model.shell.resultText || "") : ""
         Layout.fillWidth: true
     }
 
