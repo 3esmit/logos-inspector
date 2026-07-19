@@ -2412,6 +2412,56 @@ TestCase {
         compare(model.favoriteStore.count("all"), 1)
     }
 
+    function test_l1_transaction_favorite_preserves_slot_navigation_context() {
+        const entry = model.favoriteStore.transactionEntry({
+            mode: "blockchain",
+            hash: "tx-at-slot-41",
+            block: "block-41",
+            slot: 41,
+            index: 2
+        })
+
+        verify(entry !== null)
+        compare(entry.navigation_context.kind, "l1_transaction")
+        compare(entry.navigation_context.slot, 41)
+        verify(model.favoriteStore.add(entry))
+
+        const payload = model.favoriteStore.payload()
+        compare(payload.length, 1)
+        compare(payload[0].navigation_context.kind, "l1_transaction")
+        compare(payload[0].navigation_context.slot, 41)
+
+        model.favoriteStore.load(payload)
+        compare(model.favoriteStore.entries.length, 1)
+        compare(model.favoriteStore.entries[0].navigation_context.kind,
+            "l1_transaction")
+        compare(model.favoriteStore.entries[0].navigation_context.slot, 41)
+
+        const legacy = model.favoriteStore.normalizedEntry({
+            kind: "transaction",
+            layer: "l1",
+            value: "legacy-tx",
+            open_kind: "mantleTransaction",
+            title: "Legacy transaction"
+        })
+        verify(legacy !== null)
+        verify(legacy.navigation_context === undefined)
+
+        const malformed = model.favoriteStore.normalizedEntry({
+            kind: "transaction",
+            layer: "l1",
+            value: "malformed-tx",
+            open_kind: "mantleTransaction",
+            title: "Malformed transaction",
+            navigation_context: {
+                kind: "l1_transaction",
+                slot: "41"
+            }
+        })
+        verify(malformed !== null)
+        verify(malformed.navigation_context === undefined)
+    }
+
     function test_favorites_persist_in_settings_state() {
         fakeHost.responses = {
             loadSettingsState: {
@@ -2458,19 +2508,22 @@ TestCase {
         fakeHost.callCount = 0
         fakeHost.lastMethod = ""
         fakeHost.lastArgs = []
-        const txEntry = {
-            kind: "transaction",
-            layer: "l1",
-            value: "tx-1",
-            open_kind: "mantleTransaction",
-            title: "Mantle transaction tx-1",
-            created_at: "2026-07-05T00:01:00.000Z"
-        }
+        const txEntry = model.favoriteStore.transactionEntry({
+            mode: "blockchain",
+            hash: "tx-1",
+            block: "block-41",
+            slot: 41,
+            index: 2
+        })
 
+        verify(txEntry !== null)
         verify(model.favoriteStore.add(txEntry))
 
         compare(fakeHost.lastMethod, "saveSettingsState")
         compare(fakeHost.lastArgs[0].favorites.length, 2)
+        compare(fakeHost.lastArgs[0].favorites[0].navigation_context.kind,
+            "l1_transaction")
+        compare(fakeHost.lastArgs[0].favorites[0].navigation_context.slot, 41)
     }
 
     function test_metrics_preferences_round_trip_settings_state() {
@@ -6573,6 +6626,169 @@ TestCase {
         compare(callCountFor("blockchainBlocks"), 0)
         compare(callCountFor("blockchainBlock"), 0)
         compare(callCountFor("blockchainTransaction"), 0)
+    }
+
+    function test_l1_transaction_favorite_reopens_from_exact_saved_slot() {
+        const transactionHash = "favorite-transaction"
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainBlocks: [{
+                    header: { slot: 41, id: "block-41" },
+                    transactions: [
+                        { mantle_tx: { hash: "unrelated-transaction", ops: [] } },
+                        { mantle_tx: { hash: transactionHash, ops: [] } }
+                    ]
+                }],
+                blockchainTransaction: {
+                    mantle_tx: { hash: "wrong-fallback", ops: [] },
+                    slot: 99,
+                    index: 0
+                }
+            })
+        }
+        const entry = model.favoriteStore.transactionEntry({
+            mode: "blockchain",
+            hash: transactionHash,
+            block: "block-41",
+            slot: 41,
+            index: 1
+        })
+        verify(entry !== null)
+        verify(model.favoriteStore.add(entry))
+        fakeHost.calls = []
+
+        model.favoriteStore.open(model.favoriteStore.payload()[0])
+
+        tryVerify(function () {
+            return model.transactionDetailValue
+                && model.transactionDetailValue.hash === transactionHash
+        })
+        compare(model.transactionDetailValue.block, "block-41")
+        compare(model.transactionDetailValue.slot, 41)
+        compare(model.transactionDetailValue.index, 1)
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        compare(runtimeOperationCallCount("blockchainTransaction"), 0)
+        const call = fakeHost.calls.filter(function (candidate) {
+            const request = candidate.method === "runtimeOperationStart"
+                && candidate.args ? candidate.args[0] || null : null
+            return request && request.method === "blockchainBlocks"
+        })[0]
+        const context = chainOperationContext(call.args[0])
+        compare(context.slotFrom, 41)
+        compare(context.slotTo, 41)
+        compare(context.limit, 10)
+    }
+
+    function test_l1_transaction_favorite_falls_back_once_when_saved_slot_misses() {
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainBlocks: [],
+                blockchainTransaction: {
+                    mantle_tx: { hash: "moved-favorite", ops: [] },
+                    block_hash: "current-block",
+                    slot: 43,
+                    index: 0
+                }
+            })
+        }
+        const entry = model.favoriteStore.transactionEntry({
+            mode: "blockchain",
+            hash: "moved-favorite",
+            block: "saved-block",
+            slot: 41,
+            index: 0
+        })
+
+        model.favoriteStore.open(entry)
+
+        tryVerify(function () {
+            return model.transactionDetailValue
+                && model.transactionDetailValue.hash === "moved-favorite"
+        })
+        compare(model.transactionDetailValue.block, "current-block")
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        compare(runtimeOperationCallCount("blockchainTransaction"), 1)
+    }
+
+    function test_l1_transaction_favorite_source_invalidation_does_not_fallback() {
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                const context = chainOperationContext(request)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "pending-" + request.clientRequestId,
+                        clientRequestId: request.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: request.method,
+                        label: request.label,
+                        status: "awaiting_external",
+                        eventCursor: 1,
+                        context: context,
+                        result: null,
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+        const entry = model.favoriteStore.transactionEntry({
+            mode: "blockchain",
+            hash: "stale-favorite",
+            block: "saved-block",
+            slot: 41,
+            index: 0
+        })
+
+        model.favoriteStore.open(entry)
+        tryVerify(function () {
+            return model.chainPages.operationPending("detail.transaction")
+        })
+        tryVerify(function () {
+            return runtimeOperationCallCount("blockchainBlocks") === 1
+        })
+        compare(runtimeOperationCallCount("blockchainTransaction"), 0)
+        model.nodeUrl = "http://127.0.0.1:18080/"
+
+        tryVerify(function () {
+            return !model.chainPages.operationPending("detail.transaction")
+        })
+        compare(runtimeOperationCallCount("blockchainTransaction"), 0)
+        verify(model.transactionDetailValue === null)
+        model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
+    function test_legacy_l1_transaction_favorite_keeps_hash_lookup() {
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainTransaction: {
+                    mantle_tx: { hash: "legacy-favorite", ops: [] },
+                    block_hash: "legacy-block",
+                    slot: 12,
+                    index: 0
+                }
+            })
+        }
+        const entry = {
+            kind: "transaction",
+            layer: "l1",
+            value: "legacy-favorite",
+            open_kind: "mantleTransaction",
+            title: "Legacy favorite",
+            created_at: "2026-07-05T00:01:00.000Z"
+        }
+
+        model.favoriteStore.open(entry)
+
+        tryVerify(function () {
+            return model.transactionDetailValue
+                && model.transactionDetailValue.hash === "legacy-favorite"
+        })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 0)
+        compare(runtimeOperationCallCount("blockchainTransaction"), 1)
     }
 
     function test_block_lookup_normalizes_prefixed_id_without_duplicate_retry() {

@@ -1,6 +1,6 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 
-function openMantleTransaction(root, hash) {
+function openMantleTransaction(root, hash, navigationContext) {
     with (root) {
         const value = String(hash || "").trim()
         if (!value.length) {
@@ -27,26 +27,104 @@ function openMantleTransaction(root, hash) {
         }
         const presentation = root.chainPages.beginPresentation(
             qsTr("Mantle transaction"), "transactionDetail")
+        const slot = l1TransactionNavigationSlot(navigationContext)
+        if (slot !== null) {
+            return root.chainPages.startOperation("detail.transaction",
+                "blockchainBlocks", [slot, slot, 10],
+                qsTr("Mantle transaction block"), function (response) {
+                    if (response && response.ok) {
+                        const fetched = transactionDetailFromBlocks(root,
+                            response.value, value)
+                        if (fetched) {
+                            completeMantleTransaction(root, presentation,
+                                fetched)
+                            return false
+                        }
+                    }
+                    if (response && response.invalidated) {
+                        failMantleTransaction(root, presentation,
+                            String(response.error
+                                || qsTr("Blockchain source changed.")))
+                        return false
+                    }
+                    startMantleTransactionHashLookup(root, value,
+                        presentation)
+                    return false
+                })
+        }
+        return startMantleTransactionHashLookup(root, value, presentation)
+    }
+}
+
+function startMantleTransactionHashLookup(root, value, presentation) {
+    with (root) {
         return root.chainPages.startOperation("detail.transaction", "blockchainTransaction",
             [root.chainPages.normalizedHashOrValue(value)], qsTr("Mantle transaction"),
             function (response) {
                 if (response && response.ok) {
                     const fetched = root.blockchainTransactionDetail(response.value, value)
-                    transactionDetailValue = fetched
-                    transactionDetailError = ""
-                    transactionsPageError = ""
-                    root.chainPages.completePresentation(presentation,
-                        qsTr("Mantle transaction"), BridgeHelpers.formatValue(fetched),
-                        false, fetched)
+                    completeMantleTransaction(root, presentation, fetched)
                     return false
                 }
-                transactionDetailValue = null
-                transactionDetailError = String(response && response.error
-                    || qsTr("Mantle transaction %1 was not found.").arg(value))
-                root.chainPages.completePresentation(presentation,
-                    qsTr("Mantle transaction"), transactionDetailError, true, null)
+                failMantleTransaction(root, presentation,
+                    String(response && response.error
+                        || qsTr("Mantle transaction %1 was not found.").arg(value)))
                 return false
             })
+    }
+}
+
+function completeMantleTransaction(root, presentation, detail) {
+    with (root) {
+        transactionDetailValue = detail
+        transactionDetailError = ""
+        transactionsPageError = ""
+        root.chainPages.completePresentation(presentation,
+            qsTr("Mantle transaction"), BridgeHelpers.formatValue(detail),
+            false, detail)
+    }
+}
+
+function failMantleTransaction(root, presentation, error) {
+    with (root) {
+        transactionDetailValue = null
+        transactionDetailError = String(error || qsTr("Transaction lookup failed."))
+        root.chainPages.completePresentation(presentation,
+            qsTr("Mantle transaction"), transactionDetailError, true, null)
+    }
+}
+
+function l1TransactionNavigationSlot(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+            || String(value.kind || "") !== "l1_transaction"
+            || typeof value.slot !== "number"
+            || !Number.isSafeInteger(value.slot) || value.slot < 0) {
+        return null
+    }
+    return value.slot
+}
+
+function transactionDetailFromBlocks(root, blocks, hash) {
+    const rows = root.chainPages.transactionRowsFromBlocks(blocks)
+    const normalized = root.chainPages.normalizedHashOrValue(hash)
+    for (let i = 0; i < rows.length; ++i) {
+        const row = rows[i]
+        if (root.chainPages.normalizedHashOrValue(row.hash) === normalized) {
+            return transactionDetailFromRow(row)
+        }
+    }
+    return null
+}
+
+function transactionDetailFromRow(row) {
+    return {
+        type: "blockchain_transaction",
+        hash: row.hash,
+        block: row.block,
+        slot: row.slot,
+        index: row.index,
+        ops: row.operations || [],
+        raw: row.raw
     }
 }
 
@@ -206,15 +284,7 @@ function transactionDetail(root, hash) {
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i]
             if (root.chainPages.normalizedHashOrValue(row.hash) === normalized) {
-                return {
-                    type: "blockchain_transaction",
-                    hash: row.hash,
-                    block: row.block,
-                    slot: row.slot,
-                    index: row.index,
-                    ops: row.operations || [],
-                    raw: row.raw
-                }
+                return transactionDetailFromRow(row)
             }
         }
         return null
