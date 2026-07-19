@@ -3,6 +3,8 @@ import QtQuick.Controls.Basic
 import QtTest
 import "../../qml/features/zones/controls"
 import "../../qml/features/zones/pages"
+import "../../qml/state"
+import "../../qml/state/domains"
 import "../../qml/theme"
 import "fixtures"
 import "fixtures/ZoneFixtureData.js" as FixtureData
@@ -26,6 +28,16 @@ TestCase {
 
     ListModel {
         id: registeredIdlRegistry
+    }
+
+    FavoritesState {
+        id: favoriteState
+    }
+
+    ZoneL2ProgramTransferState {
+        id: isolatedProgramState
+
+        l2Context: zoneState
     }
 
     QtObject {
@@ -85,6 +97,7 @@ TestCase {
         property var pendingInspectionEntityRef: null
         property alias registeredIdls: registeredIdlRegistry
         property var programExecution: programExecutionMock
+        property var favoriteStore: favoriteState
 
         function idlEntryAt(index) {
             return null
@@ -137,6 +150,12 @@ TestCase {
         ZoneCatalogStatus {}
     }
 
+    Component {
+        id: isolatedProgramsFactory
+
+        ZoneL2Programs {}
+    }
+
     function init() {
         zoneState.verification = "verified"
         zoneState.coverage = {
@@ -173,6 +192,11 @@ TestCase {
         appModel.selectedView = ""
         appModel.programTab = ""
         appModel.pendingInspectionEntityRef = null
+        favoriteState.clear()
+        isolatedProgramState.l2ProgramsReport = zoneState.l2ProgramsReport
+        isolatedProgramState.l2Programs = FixtureData.l2Programs()
+        isolatedProgramState.l2ProgramsLoaded = true
+        isolatedProgramState.l2ProgramsError = ""
         page.filter = "all"
         page.query = ""
         const detail = findChild(page, "zoneDetail")
@@ -729,6 +753,37 @@ TestCase {
         wait(0)
         compare(programs.nonceRows().length, 2)
         verify(findChild(programs, "zoneL2AccountNoncesTable") !== null)
+    }
+
+    function test_l2_program_favorite_uses_explicit_app_model() {
+        const programs = isolatedProgramsFactory.createObject(
+            testWindow.contentItem, {
+                theme: testRoot.testTheme,
+                zoneState: isolatedProgramState,
+                appModel: appModel,
+                zoneDetail: zoneState.zoneDetail,
+                width: 1100
+            })
+        verify(programs !== null)
+        try {
+            const rows = programs.programRows()
+            compare(rows.length, 2)
+            verify(rows[0].favoriteEntry !== null)
+            compare(rows[0].cells[3].text, "Add")
+
+            const table = findChild(programs, "zoneL2ProgramsTable")
+            verify(table !== null)
+            table.cellActivated(0, 3, rows[0].cells[3], rows[0])
+            compare(favoriteState.count("program"), 1)
+            compare(programs.programRows()[0].cells[3].text, "Yes")
+
+            const savedRows = programs.programRows()
+            table.cellActivated(0, 3, savedRows[0].cells[3], savedRows[0])
+            compare(favoriteState.count("program"), 0)
+            compare(programs.programRows()[0].cells[3].text, "Add")
+        } finally {
+            programs.destroy()
+        }
     }
 
     function test_l2_program_interact_empty_registry_opens_idl_registry() {
