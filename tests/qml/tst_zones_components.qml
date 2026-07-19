@@ -166,6 +166,12 @@ TestCase {
         ZoneL2Programs {}
     }
 
+    Component {
+        id: sourceRowFactory
+
+        ChannelSourceRow {}
+    }
+
     function init() {
         zoneState.verification = "verified"
         zoneState.coverage = {
@@ -501,6 +507,42 @@ TestCase {
         compare(zoneState.lastMutationRequest.mutation.kind, "add_sequencer")
         compare(zoneState.lastMutationRequest.mutation.target.kind, "rpc")
         compare(zoneState.lastMutationRequest.mutation.target.endpoint, "https://new-sequencer.example/")
+    }
+
+    function test_degraded_source_row_uses_warning_tone_and_retains_diagnostic() {
+        const row = sourceRowFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            source: {
+                source_id: "src_degraded",
+                label: "Degraded Sequencer",
+                target: {
+                    kind: "rpc",
+                    endpoint: "https://sequencer.example/"
+                },
+                binding_state: "runtime_attested"
+            },
+            observation: {
+                source_id: "src_degraded",
+                role: "sequencer",
+                binding_state: "runtime_attested",
+                health: "degraded",
+                head_block_id: 42,
+                head_block_hash: FixtureData.identity("a"),
+                last_error: "health probe failed"
+            },
+            role: "sequencer",
+            selected: true,
+            width: 720
+        })
+        verify(row !== null)
+        try {
+            compare(row.tone, "warning")
+            verify(hasVisibleText(row, "Degraded"))
+            verify(hasVisibleText(row, "health probe failed"))
+            verify(hasVisibleText(row, "Head 42"))
+        } finally {
+            row.destroy()
+        }
     }
 
     function test_sequencer_editor_hides_unimplemented_module_mode() {

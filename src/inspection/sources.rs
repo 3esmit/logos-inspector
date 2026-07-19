@@ -149,9 +149,8 @@ fn project_zone_observation(observation: &ChannelSourceObservation) -> ZoneSourc
         }),
         health: match observation.health {
             ChannelSourceHealthState::Pending => ZoneSourceHealth::Pending,
-            ChannelSourceHealthState::Reachable | ChannelSourceHealthState::Degraded => {
-                ZoneSourceHealth::Reachable
-            }
+            ChannelSourceHealthState::Reachable => ZoneSourceHealth::Reachable,
+            ChannelSourceHealthState::Degraded => ZoneSourceHealth::Degraded,
             ChannelSourceHealthState::Unreachable
             | ChannelSourceHealthState::Incomplete
             | ChannelSourceHealthState::Unsupported => ZoneSourceHealth::Unreachable,

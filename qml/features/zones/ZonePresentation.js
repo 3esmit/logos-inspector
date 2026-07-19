@@ -198,7 +198,7 @@ function sourceTone(configured, observation) {
     if (health === "unreachable") {
         return "error"
     }
-    if (health === "stale" || binding === "pending") {
+    if (health === "degraded" || health === "stale" || binding === "pending") {
         return "warning"
     }
     return "neutral"
