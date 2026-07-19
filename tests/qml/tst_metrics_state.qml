@@ -832,7 +832,7 @@ TestCase {
         verify(observation.latestAttempt.runtimeMetricsOnly)
     }
 
-    function test_storage_aggregate_window_tracks_json_constituents_across_partial_reset() {
+    function test_storage_failure_window_ignores_retried_peer_timeouts() {
         metrics.queryNetworkConnection(
             "storage", false, false, "source-inspection")
         gateway.completeRequest(0, success(reportWithMetrics(
@@ -862,13 +862,13 @@ TestCase {
             ])))
 
         compare(metrics.dashboardMetricRawValue(
-            "storage.failed_transfers_total"), 58)
+            "storage.failed_transfers_total"), 3)
         compare(metrics.dashboardMetricValue(
-            "storage.failed_transfers_recent"), 8)
+            "storage.failed_transfers_recent"), 3)
         const graph = metrics.dashboardMetricSamples(
             "storage.failed_transfers_recent")
         compare(graph.length, 1)
-        compare(graph[0].value, 8)
+        compare(graph[0].value, 3)
     }
 
     function test_delivery_aggregate_window_tracks_text_constituents_across_partial_reset() {
@@ -940,6 +940,75 @@ TestCase {
         compare(propagatedGraph[0].value, 7)
     }
 
+    function test_delivery_json_aggregate_taxonomy_avoids_alias_double_counts() {
+        const serviceRows = [
+            {
+                name: "waku_store_queries_total",
+                value: 10
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/store-query/3.0.0" },
+                value: 10
+            },
+            {
+                name: "waku_filter_requests_total",
+                value: 20
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: {
+                    service: "/vac/waku/filter-subscribe/2.0.0-beta1"
+                },
+                value: 20
+            },
+            {
+                name: "waku_lightpush_messages_total",
+                value: 30
+            },
+            {
+                name: "waku_lightpush_v3_messages_total",
+                value: 40
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/lightpush/2.0.0-beta1" },
+                value: 30
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/lightpush/3.0.0" },
+                value: 40
+            },
+            {
+                name: "waku_px_peers_sent_total",
+                value: 50
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: {
+                    service: "/vac/waku/peer-exchange/2.0.0-alpha1"
+                },
+                value: 5
+            }
+        ]
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-taxonomy", serviceRows)))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.store_query_requests_recent"), 10)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.filter_requests_recent"), 20)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.lightpush_requests_recent"), 70)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.message_sent_events_recent"), 70)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.peer_exchange_requests_recent"), 5)
+    }
+
     function test_delivery_aggregate_graph_matches_headline_across_reset_sequence() {
         const observations = [
             [100, 50],
@@ -987,7 +1056,7 @@ TestCase {
         acceptStorage(100, 50, "before-1")
         acceptStorage(103, 55, "before-2")
         compare(metrics.dashboardMetricValue(
-            "storage.failed_transfers_recent"), 8)
+            "storage.failed_transfers_recent"), 3)
 
         metrics.invalidateConfiguration("storage", "source changed")
 
@@ -1003,7 +1072,7 @@ TestCase {
 
         acceptStorage(202, 103, "after-2")
         compare(metrics.dashboardMetricValue(
-            "storage.failed_transfers_recent"), 5)
+            "storage.failed_transfers_recent"), 2)
     }
 
     function test_scheduled_metrics_preserve_full_delivery_observation() {

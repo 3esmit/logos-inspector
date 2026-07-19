@@ -196,6 +196,21 @@ TestCase {
         compare(DashboardMetricCatalog.dashboardMetricLabel(
             "lez.blocks_produced_recent"
         ), "provisional block records available")
+        compare(DashboardMetricCatalog.dashboardMetricLabel(
+            "messaging.store_query_requests_recent"
+        ), "store queries in window")
+        compare(DashboardMetricCatalog.dashboardMetricLabel(
+            "messaging.filter_requests_recent"
+        ), "filter requests in window")
+        compare(DashboardMetricCatalog.dashboardMetricLabel(
+            "messaging.lightpush_requests_recent"
+        ), "Lightpush requests in window")
+        compare(DashboardMetricCatalog.dashboardMetricLabel(
+            "messaging.peer_exchange_requests_recent"
+        ), "peer exchange requests in window")
+        compare(DashboardMetricCatalog.dashboardMetricLabel(
+            "messaging.store_errors_recent"
+        ), "Store/archive errors in window")
         compare(DashboardMetricCatalog.dashboardMetricTone("storage.failed_transfers_recent", 1), "error")
     }
 
@@ -415,23 +430,23 @@ TestCase {
         model.dashboardMetricLastSeen = ({})
         model.dashboardMetricHistoryRevision = 0
         model.metricRows = [
-            { name: "storage_block_exchange_requests_failed_total", value: 100 },
-            { name: "storage_block_exchange_peer_timeouts_total", value: 50 }
+            { name: "waku_node_errors_total", value: 100 },
+            { name: "waku_store_errors_total", value: 50 }
         ]
-        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
 
         model.metricRows = [
-            { name: "storage_block_exchange_requests_failed_total", value: 3 },
-            { name: "storage_block_exchange_peer_timeouts_total", value: 55 }
+            { name: "waku_node_errors_total", value: 3 },
+            { name: "waku_store_errors_total", value: 55 }
         ]
-        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
 
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "storage.failed_transfers_total"), 58)
+            model, "messaging.message_error_events_recent"), 58)
         compare(DashboardMetricCatalog.dashboardMetricValue(
-            model, "storage.failed_transfers_recent"), 8)
+            model, "messaging.message_error_events_recent"), 8)
         const graph = DashboardMetricCatalog.dashboardMetricSamples(
-            model, "storage.failed_transfers_recent")
+            model, "messaging.message_error_events_recent")
         compare(graph.length, 1)
         compare(graph[0].value, 8)
         model.metricRows = []
@@ -442,29 +457,29 @@ TestCase {
         model.dashboardMetricLastSeen = ({})
         model.dashboardMetricHistoryRevision = 0
         model.metricRows = [
-            { name: "storage_block_exchange_requests_failed_total", value: 100 },
-            { name: "storage_block_exchange_peer_timeouts_total", value: 50 }
+            { name: "waku_node_errors_total", value: 100 },
+            { name: "waku_store_errors_total", value: 50 }
         ]
-        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
 
         model.metricRows = [
-            { name: "storage_block_exchange_requests_failed_total", value: 0 },
-            { name: "storage_block_exchange_peer_timeouts_total", value: 150 }
+            { name: "waku_node_errors_total", value: 0 },
+            { name: "waku_store_errors_total", value: 150 }
         ]
-        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
 
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "storage.failed_transfers_total"), 150)
+            model, "messaging.message_error_events_recent"), 150)
         compare(DashboardMetricCatalog.dashboardMetricValue(
-            model, "storage.failed_transfers_recent"), 100)
+            model, "messaging.message_error_events_recent"), 100)
         const graph = DashboardMetricCatalog.dashboardMetricSamples(
-            model, "storage.failed_transfers_recent")
+            model, "messaging.message_error_events_recent")
         compare(graph.length, 1)
         compare(graph[0].value, 100)
         compare(model.dashboardMetricHistory[
-            "storage.failed_transfers_recent"].length, 1)
+            "messaging.message_error_events_recent"].length, 1)
         compare(model.dashboardMetricSeriesHistory[
-            "storage.failed_transfers_recent"].length, 2)
+            "messaging.message_error_events_recent"].length, 2)
         model.metricRows = []
     }
 
@@ -529,6 +544,113 @@ TestCase {
             model, "messaging.store_query_requests_recent")
         compare(graph.length, 1)
         compare(graph[0].value, 3)
+        model.metricRows = []
+    }
+
+    function test_aggregate_taxonomy_uses_fallbacks_without_double_counting() {
+        model.metricRows = [
+            { name: "waku_store_queries_total", value: 9 },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/store-query/3.0.0" },
+                value: 9
+            },
+            { name: "waku_filter_requests_total", value: 8 },
+            {
+                name: "waku_service_requests_total",
+                labels: {
+                    service: "/vac/waku/filter-subscribe/2.0.0-beta1"
+                },
+                value: 8
+            },
+            { name: "waku_lightpush_messages_total", value: 5 },
+            { name: "waku_lightpush_v3_messages_total", value: 7 },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/lightpush/2.0.0-beta1" },
+                value: 5
+            },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/lightpush/3.0.0" },
+                value: 7
+            },
+            { name: "waku_px_peers_sent_total", value: 25 },
+            {
+                name: "waku_service_requests_total",
+                labels: { service: "/vac/waku/peer-exchange/2.0.0-alpha1" },
+                value: 3
+            },
+            { name: "waku_node_errors_total", value: 2 },
+            { name: "waku_node_errors", value: 2 },
+            { name: "waku_store_errors_total", value: 4 },
+            { name: "waku_archive_errors_total", value: 4 },
+            { name: "waku_filter_errors_total", value: 3 },
+            { name: "waku_lightpush_errors_total", value: 4 },
+            { name: "waku_lightpush_v3_errors_total", value: 5 },
+            { name: "message_error_events_recent", value: 18 }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.store_query_requests_recent"), 9)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.filter_requests_recent"), 8)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.lightpush_requests_recent"), 12)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_sent_events_recent"), 12)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.peer_exchange_requests_recent"), 3)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.store_errors_recent"), 8)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_error_events_recent"), 22)
+        model.metricRows = []
+    }
+
+    function test_storage_failure_uses_terminal_counter_and_generated_suffix() {
+        model.metricRows = [
+            {
+                name: "storage_block_exchange_requests_failed_total_total",
+                value: 5
+            },
+            {
+                name: "storage_block_exchange_peer_timeouts_total_total",
+                value: 7
+            }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "storage.failed_transfers_total"), 5)
+        model.metricRows = [{
+            name: "storage_block_exchange_peer_timeouts_total_total",
+            value: 7
+        }]
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "storage.failed_transfers_total"), null)
+        model.metricRows = []
+    }
+
+    function test_lightpush_counter_sample_names_include_total_suffix() {
+        model.metricRows = [
+            { name: "waku_lightpush_messages_total", value: 5 },
+            { name: "waku_lightpush_v3_messages_total", value: 7 }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.lightpush_requests_recent"), 12)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_sent_events_recent"), 12)
+        model.metricRows = []
+    }
+
+    function test_peer_exchange_peer_quantity_is_not_a_request_count() {
+        model.metricRows = [
+            { name: "waku_px_peers_sent_total", value: 25 }
+        ]
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.peer_exchange_requests_recent"), null)
         model.metricRows = []
     }
 
