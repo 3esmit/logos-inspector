@@ -1201,9 +1201,22 @@ TestCase {
         compare(zoneState.zoneDetail.channel_source_config.sequencer_sources[0].binding_state, "persisted_attested")
         verify(zoneState.summaryStale)
 
+        verify(zoneState.updateActiveContextFromFields({
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            zone_kind: "sequencer_zone",
+            selected_sequencer_source_id: null,
+            indexer_source_id: "idx-a",
+            source_config_revision: 3
+        }))
+        compare(sourceEditorState.sourceMutationWarning, {
+            code: "legacy_evidence_matched",
+            message: "Legacy mapping matched finalized evidence."
+        })
+
         const contextAfterSuccess = zoneState.contextRevision
         sourceEditorState.applyChannelSourceConfig({
-            expected_config_revision: 2,
+            expected_config_revision: 3,
             mutation: { kind: "remove_indexer" }
         })
         gateway.respondNext("channelSourceConfigApply", failed("revision conflict"))

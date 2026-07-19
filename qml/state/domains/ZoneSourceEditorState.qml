@@ -36,11 +36,13 @@ QtObject {
     signal sourceMutationFinished(var response)
     signal sourceMutationAccepted(var report)
 
-    function resetSourceEditorState() {
+    function resetSourceEditorState(preserveMutationWarning) {
+        const retainedWarning = preserveMutationWarning === true
+            ? sourceMutationWarning : null
         sourceMutationRequestRevision += 1
         sourceMutationInFlight = false
         sourceMutationError = ""
-        sourceMutationWarning = null
+        sourceMutationWarning = retainedWarning
         managedIndexerRequestRevision += 1
         managedIndexerRefreshInFlight = false
         managedIndexerControlInFlight = false
