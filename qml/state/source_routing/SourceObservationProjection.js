@@ -67,6 +67,21 @@ function storageTransferFailureTone(page) {
 
 function metricUnavailableEvidence(page, key) {
     const metrics = page.model.metrics
+    if (key === "messaging.message_sent_events_recent"
+            || key === "messaging.message_propagated_events_recent") {
+        if (typeof metrics.deliveryModuleEventMetricUnavailableReason
+                === "function") {
+            return metrics.deliveryModuleEventMetricUnavailableReason(key)
+        }
+        const status = String(metrics.deliveryModuleEventStreamStatus || "unknown")
+        const reason = String(metrics.deliveryModuleEventStreamReason || "").trim()
+        if (status === "unavailable") {
+            return reason.length > 0
+                ? qsTr("Delivery event watcher unavailable: %1").arg(reason)
+                : qsTr("Delivery event watcher unavailable.")
+        }
+        return qsTr("Waiting for Delivery event watcher readiness.")
+    }
     const raw = metrics.dashboardMetricRawValue(key)
     if (metrics.dashboardMetricUsesWindow(key)
             && raw !== null && raw !== undefined) {
@@ -627,8 +642,8 @@ function deliveryThroughputRows(page) {
         page.metricRow(qsTr("Relay egress"), "messaging.relay_egress_recent"),
         page.metricRow(qsTr("Service ingress"), "messaging.service_ingress_recent"),
         page.metricRow(qsTr("Service egress"), "messaging.service_egress_recent"),
-        page.metricRow(qsTr("Sent events"), "messaging.message_sent_events_recent"),
-        page.metricRow(qsTr("Propagated events"), "messaging.message_propagated_events_recent"),
+        page.metricRow(qsTr("Confirmed sends"), "messaging.message_sent_events_recent"),
+        page.metricRow(qsTr("Network propagations"), "messaging.message_propagated_events_recent"),
         page.metricRow(qsTr("Messages in window"), "messaging.message_received_events_recent"),
         page.metricRow(qsTr("Errors in window"), "messaging.message_error_events_recent"),
         page.metricRow(qsTr("Store peers"), "messaging.store_peers"),

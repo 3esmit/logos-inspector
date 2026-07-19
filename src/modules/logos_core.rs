@@ -36,6 +36,7 @@ const LOGOSCORE_JSON_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const LOGOSCORE_CLIENT_CONFIG_LIMIT: usize = 64 * 1024;
 const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
+const LOGOSCORE_EVENT_NAME_LIMIT: usize = 256;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
 const LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -1624,24 +1625,53 @@ impl LogoscoreCliRuntime {
         )
     }
 
+    #[must_use]
+    pub(crate) fn watch_all_command(&self, module: &str) -> Command {
+        command_for_runner(
+            &self.runner,
+            ["watch", module, "--json", "--watch-protocol", "v1"],
+        )
+    }
+
     pub(crate) fn start_event_watch(
         &self,
         module: &str,
         event: &str,
         control: &CommandControl,
     ) -> Result<LogoscoreEventWatch> {
+        if event.trim().is_empty() {
+            bail!("module event name is required");
+        }
+        self.start_event_watch_inner(module, Some(event), control)
+    }
+
+    pub(crate) fn start_all_event_watch(
+        &self,
+        module: &str,
+        control: &CommandControl,
+    ) -> Result<LogoscoreEventWatch> {
+        self.start_event_watch_inner(module, None, control)
+    }
+
+    fn start_event_watch_inner(
+        &self,
+        module: &str,
+        event: Option<&str>,
+        control: &CommandControl,
+    ) -> Result<LogoscoreEventWatch> {
         ensure_logoscore_event_watch_supported()?;
         if module.trim().is_empty() {
             bail!("module name is required");
         }
-        if event.trim().is_empty() {
-            bail!("module event name is required");
-        }
         control.check_active()?;
         let recovery = watch_recovery_sender()?;
-        let label = format!("logoscore watch {module}.{event}");
+        let event_label = event.unwrap_or("*");
+        let label = format!("logoscore watch {module}.{event_label}");
         let process_permit = acquire_streaming_command_permit(&label, control)?;
-        let mut command = self.watch_command(module, event);
+        let mut command = event.map_or_else(
+            || self.watch_all_command(module),
+            |event| self.watch_command(module, event),
+        );
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1686,7 +1716,7 @@ impl LogoscoreCliRuntime {
         let reader_stop = Arc::new(AtomicBool::new(false));
         let reader_label = label.clone();
         let expected_module = module.to_owned();
-        let expected_event = event.to_owned();
+        let expected_event = event.unwrap_or_default().to_owned();
         let reader_failure = Arc::clone(&output_failure);
         let stdout_stop = Arc::clone(&reader_stop);
         let reader = match thread::Builder::new()
@@ -2595,10 +2625,21 @@ fn validate_watch_event_frame(value: &Value, module: &str, event: &str) -> Resul
         value.get("module").and_then(Value::as_str) == Some(module),
         "event module does not match `{module}`"
     );
+    let actual_event = value
+        .get("event")
+        .and_then(Value::as_str)
+        .context("event name must be a string")?;
     anyhow::ensure!(
-        value.get("event").and_then(Value::as_str) == Some(event),
-        "event name does not match `{event}`"
+        !actual_event.trim().is_empty(),
+        "event name must not be empty"
     );
+    anyhow::ensure!(
+        actual_event.len() <= LOGOSCORE_EVENT_NAME_LIMIT,
+        "event name exceeded {LOGOSCORE_EVENT_NAME_LIMIT} byte limit"
+    );
+    if !event.is_empty() {
+        anyhow::ensure!(actual_event == event, "event name does not match `{event}`");
+    }
     let data = value
         .get("data")
         .and_then(Value::as_object)
@@ -2608,6 +2649,30 @@ fn validate_watch_event_frame(value: &Value, module: &str, event: &str) -> Resul
         "event exceeded {LOGOSCORE_EVENT_FIELD_LIMIT} field limit"
     );
     Ok(())
+}
+
+pub(crate) fn module_transport_event_from_watch_frame(
+    value: &Value,
+    module: &str,
+) -> Result<ModuleTransportEvent> {
+    validate_watch_event_frame(value, module, "")?;
+    let event = value
+        .get("event")
+        .and_then(Value::as_str)
+        .context("event name must be a string")?;
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .context("event data must be an object")?;
+    let mut args = Vec::with_capacity(data.len());
+    for index in 0..data.len() {
+        let key = format!("arg{index}");
+        let arg = data
+            .get(&key)
+            .with_context(|| format!("event data must contain consecutive `{key}` fields"))?;
+        args.push(arg.clone());
+    }
+    ModuleTransportEvent::new(module, event, args)
 }
 
 fn send_watch_protocol_error(
@@ -3502,6 +3567,115 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_watch_accepts_any_nonempty_event_from_the_selected_module() -> Result<()> {
+        let ready = json!({
+            "type": "subscription_ready",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "module": "delivery_module",
+            "event": ""
+        });
+        let event = json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-17T12:00:00Z",
+            "module": "delivery_module",
+            "event": "messageSent",
+            "data": {
+                "arg0": "request-1",
+                "arg1": "hash-1",
+                "arg2": 1_784_426_733_600_168_769_u64
+            }
+        });
+
+        validate_watch_ready_frame(&ready, "delivery_module", "")?;
+        validate_watch_event_frame(&event, "delivery_module", "")?;
+        let converted = module_transport_event_from_watch_frame(&event, "delivery_module")?;
+        anyhow::ensure!(converted.module() == "delivery_module");
+        anyhow::ensure!(converted.event() == "messageSent");
+        anyhow::ensure!(
+            converted.args()
+                == [
+                    Value::String("request-1".to_owned()),
+                    Value::String("hash-1".to_owned()),
+                    json!(1_784_426_733_600_168_769_u64),
+                ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wildcard_watch_command_omits_event_filter() {
+        let runtime = LogoscoreCliRuntime::managed(
+            "logoscore".to_owned(),
+            "/tmp/logoscore-config".to_owned(),
+        );
+        let command = runtime.watch_all_command("delivery_module");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            [
+                "--config-dir",
+                "/tmp/logoscore-config",
+                "watch",
+                "delivery_module",
+                "--json",
+                "--watch-protocol",
+                "v1",
+            ]
+        );
+    }
+
+    #[test]
+    fn wildcard_watch_rejects_inexact_readiness_and_unbounded_or_sparse_events() -> Result<()> {
+        let inexact_ready = json!({
+            "type": "subscription_ready",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "module": "delivery_module",
+            "event": "messageSent"
+        });
+        anyhow::ensure!(validate_watch_ready_frame(&inexact_ready, "delivery_module", "").is_err());
+
+        let event_frame = |event: &str, data: Value| {
+            json!({
+                "type": "event",
+                "protocol": "logoscore.watch",
+                "version": 1,
+                "timestamp": "2026-07-17T12:00:00Z",
+                "module": "delivery_module",
+                "event": event,
+                "data": data,
+            })
+        };
+        anyhow::ensure!(
+            validate_watch_event_frame(&event_frame("", json!({})), "delivery_module", "",)
+                .is_err()
+        );
+        anyhow::ensure!(
+            validate_watch_event_frame(
+                &event_frame(&"x".repeat(LOGOSCORE_EVENT_NAME_LIMIT + 1), json!({})),
+                "delivery_module",
+                "",
+            )
+            .is_err()
+        );
+        anyhow::ensure!(
+            module_transport_event_from_watch_frame(
+                &event_frame("messageSent", json!({ "arg0": 1, "arg2": 3 })),
+                "delivery_module",
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn shared_staging_requires_local_transport_on_every_platform() -> Result<()> {
         let local = json!({
             "instance_id": "instance-local",
@@ -3647,6 +3821,42 @@ mod tests {
             watch.next_value(&control)? == terminal,
             "queued terminal lost to concurrent cancellation"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn event_watch_timeout_is_idle_but_closed_output_is_terminal() -> Result<()> {
+        let (sender, output) = mpsc::sync_channel(1);
+        let (_readiness_sender, readiness) = mpsc::channel();
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(1),
+        );
+        let mut watch = LogoscoreEventWatch {
+            child: None,
+            output,
+            output_failure: Arc::new(Mutex::new(None)),
+            readiness,
+            reader: None,
+            stderr_reader: None,
+            reader_stop: Arc::new(AtomicBool::new(false)),
+            process_permit: None,
+            recovery: None,
+            label: "idle watch".to_owned(),
+        };
+
+        anyhow::ensure!(
+            watch
+                .next_value_within(&control, Duration::from_millis(1))?
+                .is_none(),
+            "idle event watch was treated as terminal"
+        );
+        drop(sender);
+        let error = watch
+            .next_value_within(&control, Duration::from_millis(1))
+            .err()
+            .context("closed event output was treated as idle")?;
+        anyhow::ensure!(error.to_string().contains("output closed"));
         Ok(())
     }
 

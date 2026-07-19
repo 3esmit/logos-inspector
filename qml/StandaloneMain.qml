@@ -13,12 +13,6 @@ Window {
 
     LogosBridge {
         id: logosBridge
-
-        Component.onCompleted: {
-            if (typeof logosBridge["startModuleWatcher"] === "function") {
-                logosBridge["startModuleWatcher"]()
-            }
-        }
     }
 
     AppShell {

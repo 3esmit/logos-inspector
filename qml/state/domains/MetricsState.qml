@@ -40,6 +40,20 @@ QtObject {
     property var dashboardMetricSeriesLastSeen: ({})
     property int dashboardMetricHistoryRevision: 0
     property int dashboardSnapshotRevision: 0
+    property string deliveryModuleEventStreamStatus: "unknown"
+    property string deliveryModuleEventStreamReason: ""
+    property var deliveryModuleEventTimestamps: ({
+        "messaging.message_sent_events_recent": [],
+        "messaging.message_propagated_events_recent": []
+    })
+    property var deliveryModuleEventCoverageStartedAtMs: ({
+        "messaging.message_sent_events_recent": 0,
+        "messaging.message_propagated_events_recent": 0
+    })
+    property double deliveryModuleEventNowMs: Date.now()
+    property int deliveryModuleEventRevision: 0
+    readonly property int deliveryModuleEventCapacity: 4096
+    readonly property int deliveryModuleEventRetentionMs: 7200000
     property bool dashboardRefreshing: false
     property int dashboardRefreshSerial: 0
     property string dashboardError: ""
@@ -94,6 +108,303 @@ QtObject {
         running: Object.keys(root.activeObservationLeases).length > 0
             || root.activeMessagingMetricsLease !== null
         onTriggered: root.expireTimedOutObservations()
+    }
+
+    property Timer deliveryModuleEventWindowTimer: Timer {
+        interval: 1000
+        repeat: true
+        running: root.deliveryModuleEventStreamStatus === "ready"
+        onTriggered: {
+            root.deliveryModuleEventNowMs = Date.now()
+            root.pruneDeliveryModuleEventTelemetry(root.deliveryModuleEventNowMs)
+        }
+    }
+
+    function deliveryModuleEventMetricKey(eventName) {
+        switch (String(eventName || "")) {
+        case "messageSent":
+            return "messaging.message_sent_events_recent"
+        case "messagePropagated":
+            return "messaging.message_propagated_events_recent"
+        default:
+            return ""
+        }
+    }
+
+    function emptyDeliveryModuleEventTimestamps() {
+        return {
+            "messaging.message_sent_events_recent": [],
+            "messaging.message_propagated_events_recent": []
+        }
+    }
+
+    function emptyDeliveryModuleEventCoverage(startedAtMs) {
+        const timestamp = Number(startedAtMs || 0)
+        return {
+            "messaging.message_sent_events_recent": timestamp,
+            "messaging.message_propagated_events_recent": timestamp
+        }
+    }
+
+    function resetDeliveryModuleEventTelemetry(status, reason) {
+        const nextStatus = String(status || "unknown")
+        const now = Date.now()
+        deliveryModuleEventStreamStatus = nextStatus
+        deliveryModuleEventStreamReason = String(reason || "")
+        deliveryModuleEventTimestamps = emptyDeliveryModuleEventTimestamps()
+        deliveryModuleEventCoverageStartedAtMs =
+            emptyDeliveryModuleEventCoverage(nextStatus === "ready" ? now : 0)
+        deliveryModuleEventNowMs = now
+        deliveryModuleEventRevision += 1
+    }
+
+    function restartDeliveryModuleEventCoverage() {
+        const now = Date.now()
+        deliveryModuleEventTimestamps = emptyDeliveryModuleEventTimestamps()
+        deliveryModuleEventCoverageStartedAtMs = emptyDeliveryModuleEventCoverage(
+            deliveryModuleEventStreamStatus === "ready" ? now : 0)
+        deliveryModuleEventNowMs = now
+        deliveryModuleEventRevision += 1
+    }
+
+    function deliveryModuleEventStatusReason(event) {
+        const object = event && event.object && typeof event.object === "object"
+            ? event.object : ({})
+        return String(object.reason || object.error || object.status || "")
+    }
+
+    function recordDeliveryModuleEvent(eventName, event) {
+        const name = String(eventName || "")
+        if (name === "eventStreamReady") {
+            const reason = deliveryModuleEventStatusReason(event)
+            if (deliveryModuleEventStreamStatus !== "ready") {
+                resetDeliveryModuleEventTelemetry("ready", reason)
+            } else if (deliveryModuleEventStreamReason !== reason) {
+                deliveryModuleEventStreamReason = reason
+                deliveryModuleEventRevision += 1
+            }
+            return true
+        }
+        if (name === "eventStreamUnavailable") {
+            const reason = deliveryModuleEventStatusReason(event)
+            if (deliveryModuleEventStreamStatus !== "unavailable"
+                    || deliveryModuleEventStreamReason !== reason) {
+                resetDeliveryModuleEventTelemetry("unavailable", reason)
+            }
+            return true
+        }
+
+        const key = deliveryModuleEventMetricKey(name)
+        if (!key.length) {
+            return false
+        }
+        if (deliveryModuleEventStreamStatus === "unknown") {
+            resetDeliveryModuleEventTelemetry(
+                "ready", qsTr("Delivery event observed."))
+        } else if (deliveryModuleEventStreamStatus !== "ready") {
+            return false
+        }
+
+        const now = Date.now()
+        const retentionStart = now - deliveryModuleEventRetentionMs
+        const current = Array.isArray(deliveryModuleEventTimestamps[key])
+            ? deliveryModuleEventTimestamps[key] : []
+        const rows = current.filter(function (timestamp) {
+            const numeric = Number(timestamp)
+            return Number.isFinite(numeric)
+                && numeric >= retentionStart && numeric <= now
+        })
+        rows.push(now)
+        if (rows.length > deliveryModuleEventCapacity) {
+            const resetRows = copyMap(deliveryModuleEventTimestamps)
+            resetRows[key] = [now]
+            const resetCoverage = copyMap(deliveryModuleEventCoverageStartedAtMs)
+            resetCoverage[key] = now
+            deliveryModuleEventTimestamps = resetRows
+            deliveryModuleEventCoverageStartedAtMs = resetCoverage
+            deliveryModuleEventNowMs = now
+            deliveryModuleEventRevision += 1
+            return true
+        }
+        const next = copyMap(deliveryModuleEventTimestamps)
+        next[key] = rows
+        deliveryModuleEventTimestamps = next
+        deliveryModuleEventNowMs = now
+        deliveryModuleEventRevision += 1
+        return true
+    }
+
+    function deliveryModuleEventRowsInWindow(key, now) {
+        const revision = deliveryModuleEventRevision
+        const metricKey = String(key || "")
+        const timestamp = Number.isFinite(Number(now))
+            ? Number(now) : Number(deliveryModuleEventNowMs)
+        const windowStart = timestamp - dashboardMetricWindowMs(metricKey)
+        const rows = Array.isArray(deliveryModuleEventTimestamps[metricKey])
+            ? deliveryModuleEventTimestamps[metricKey] : []
+        return rows.filter(function (value) {
+            const numeric = Number(value)
+            return Number.isFinite(numeric)
+                && numeric >= windowStart && numeric <= timestamp
+        }).sort(function (left, right) { return left - right })
+    }
+
+    function deliveryModuleEventTimestampCount() {
+        const revision = deliveryModuleEventRevision
+        const sent = deliveryModuleEventTimestamps[
+            "messaging.message_sent_events_recent"]
+        const propagated = deliveryModuleEventTimestamps[
+            "messaging.message_propagated_events_recent"]
+        return (Array.isArray(sent) ? sent.length : 0)
+            + (Array.isArray(propagated) ? propagated.length : 0)
+    }
+
+    function pruneDeliveryModuleEventTelemetry(now) {
+        if (deliveryModuleEventStreamStatus !== "ready") {
+            return false
+        }
+        const timestamp = Number.isFinite(Number(now))
+            ? Number(now) : Number(deliveryModuleEventNowMs)
+        const retentionStart = timestamp - deliveryModuleEventRetentionMs
+        const keys = [
+            "messaging.message_sent_events_recent",
+            "messaging.message_propagated_events_recent"
+        ]
+        const next = copyMap(deliveryModuleEventTimestamps)
+        let changed = false
+        for (let i = 0; i < keys.length; ++i) {
+            const previous = Array.isArray(next[keys[i]]) ? next[keys[i]] : []
+            const rows = previous.filter(function (value) {
+                const numeric = Number(value)
+                return Number.isFinite(numeric)
+                    && numeric >= retentionStart && numeric <= timestamp
+            })
+            if (rows.length !== previous.length) {
+                next[keys[i]] = rows
+                changed = true
+            }
+        }
+        if (changed) {
+            deliveryModuleEventTimestamps = next
+            deliveryModuleEventRevision += 1
+        }
+        return changed
+    }
+
+    function deliveryModuleEventMetricValue(key) {
+        const metricKey = String(key || "")
+        if (metricKey !== "messaging.message_sent_events_recent"
+                && metricKey !== "messaging.message_propagated_events_recent") {
+            return null
+        }
+        const now = Number(deliveryModuleEventNowMs)
+        if (!deliveryModuleEventCoverageComplete(metricKey, now)) {
+            return null
+        }
+        return deliveryModuleEventRowsInWindow(metricKey, now).length
+    }
+
+    function deliveryModuleEventMetricSamples(key) {
+        const metricKey = String(key || "")
+        const now = Number(deliveryModuleEventNowMs)
+        if (!deliveryModuleEventCoverageComplete(metricKey, now)) {
+            return []
+        }
+        const windowMs = dashboardMetricWindowMs(metricKey)
+        const coverageStart = Number(
+            deliveryModuleEventCoverageStartedAtMs[metricKey] || 0)
+        const sampleStart = Math.max(now - windowMs, coverageStart + windowMs)
+        if (sampleStart > now) {
+            return []
+        }
+        const rows = (Array.isArray(deliveryModuleEventTimestamps[metricKey])
+            ? deliveryModuleEventTimestamps[metricKey] : []).map(function (value) {
+                return Number(value)
+            }).filter(function (value) {
+                return Number.isFinite(value)
+            }).sort(function (left, right) { return left - right })
+        const sampleTimes = [sampleStart]
+        for (let i = 0; i < rows.length; ++i) {
+            const timestamp = rows[i]
+            if (timestamp > sampleStart
+                    && timestamp < now
+                    && sampleTimes[sampleTimes.length - 1] !== timestamp) {
+                sampleTimes.push(timestamp)
+            }
+        }
+        if (sampleTimes[sampleTimes.length - 1] !== now) {
+            sampleTimes.push(now)
+        }
+        const samples = []
+        let firstIncluded = 0
+        let afterIncluded = 0
+        for (let i = 0; i < sampleTimes.length; ++i) {
+            const timestamp = sampleTimes[i]
+            while (afterIncluded < rows.length
+                    && rows[afterIncluded] <= timestamp) {
+                afterIncluded += 1
+            }
+            const windowStart = timestamp - windowMs
+            while (firstIncluded < afterIncluded
+                    && rows[firstIncluded] < windowStart) {
+                firstIncluded += 1
+            }
+            samples.push({
+                timestamp: timestamp,
+                value: afterIncluded - firstIncluded
+            })
+        }
+        return samples
+    }
+
+    function deliveryModuleEventSourceActive() {
+        if (!sourceRouting
+                || typeof sourceRouting.deliverySourceView !== "function") {
+            return true
+        }
+        const source = sourceRouting.deliverySourceView() || ({})
+        const connectionType = String(source.connectionType || "")
+        const resolvedMode = String(source.resolvedMode || source.mode || "")
+        return connectionType === "logoscore_cli"
+            || (connectionType === "module" && resolvedMode === "module")
+    }
+
+    function deliveryModuleEventCoverageComplete(key, now) {
+        const revision = deliveryModuleEventRevision
+        if (deliveryModuleEventStreamStatus !== "ready"
+                || !deliveryModuleEventSourceActive()) {
+            return false
+        }
+        const metricKey = String(key || "")
+        const timestamp = Number(now)
+        const coverageStart = Number(
+            deliveryModuleEventCoverageStartedAtMs[metricKey] || 0)
+        return Number.isFinite(timestamp) && coverageStart > 0
+            && coverageStart <= timestamp - dashboardMetricWindowMs(metricKey)
+    }
+
+    function deliveryModuleEventMetricUnavailableReason(key) {
+        if (!deliveryModuleEventSourceActive()) {
+            return qsTr("Delivery module events do not describe the selected Delivery source.")
+        }
+        if (deliveryModuleEventStreamStatus === "unavailable") {
+            return deliveryModuleEventStreamReason.length > 0
+                ? qsTr("Delivery event watcher unavailable: %1")
+                    .arg(deliveryModuleEventStreamReason)
+                : qsTr("Delivery event watcher unavailable.")
+        }
+        if (deliveryModuleEventStreamStatus !== "ready") {
+            return qsTr("Waiting for Delivery event watcher readiness.")
+        }
+        const metricKey = String(key || "")
+        const now = Number(deliveryModuleEventNowMs)
+        const coverageStart = Number(
+            deliveryModuleEventCoverageStartedAtMs[metricKey] || 0)
+        const remainingMs = coverageStart > 0
+            ? Math.max(0, coverageStart + dashboardMetricWindowMs(metricKey) - now)
+            : dashboardMetricWindowMs(metricKey)
+        return qsTr("Building continuous Delivery event coverage (%1 s remaining).")
+            .arg(Math.ceil(remainingMs / 1000))
     }
 
     function refreshInterval(seconds) {
@@ -1308,6 +1619,7 @@ QtObject {
             messagingMetricsRequestGeneration = 0
             messagingMetricsAttempt = null
             messagingMetricsRevision += 1
+            restartDeliveryModuleEventCoverage()
         }
 
         clearObservationReport(target)

@@ -1,6 +1,13 @@
 function handle(root, event, forwardRuntimeEvent) {
+    const eventName = String(event && event.eventName || "")
+    if (eventName === "eventStreamReady"
+            || eventName === "eventStreamUnavailable") {
+        return root.metrics
+            && typeof root.metrics.recordDeliveryModuleEvent === "function"
+            && root.metrics.recordDeliveryModuleEvent(eventName, event)
+    }
     const effect = root.deliveryApp.applyModuleEvent(
-        event.eventName,
+        eventName,
         event,
         forwardRuntimeEvent
     )
@@ -12,6 +19,10 @@ function handle(root, event, forwardRuntimeEvent) {
     }
     if (effect.deliveryMessage) {
         root.social.applyIncomingDeliveryMessage(effect.deliveryMessage)
+    }
+    if (root.metrics
+            && typeof root.metrics.recordDeliveryModuleEvent === "function") {
+        root.metrics.recordDeliveryModuleEvent(eventName, event)
     }
     return true
 }

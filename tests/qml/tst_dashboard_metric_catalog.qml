@@ -20,6 +20,9 @@ TestCase {
         property var peerMetricValue: 6
         property var storageFailures: 7
         property var metricRows: []
+        property string deliveryModuleEventStreamStatus: "unknown"
+        property var deliveryModuleEventValues: ({})
+        property var deliveryModuleEventSamples: ({})
 
         function copyMap(value) {
             const copy = {}
@@ -58,6 +61,19 @@ TestCase {
 
         function dashboardMetricWindowMs(key) {
             return DashboardMetricCatalog.dashboardMetricWindowMs(model, key)
+        }
+
+        function deliveryModuleEventMetricValue(key) {
+            if (deliveryModuleEventStreamStatus !== "ready") {
+                return null
+            }
+            const value = deliveryModuleEventValues[String(key || "")]
+            return value === undefined ? 0 : value
+        }
+
+        function deliveryModuleEventMetricSamples(key) {
+            const rows = deliveryModuleEventSamples[String(key || "")]
+            return Array.isArray(rows) ? rows : []
         }
 
         function indexerLag() {
@@ -212,6 +228,9 @@ TestCase {
         model.peerMetricValue = 6
         model.storageFailures = 7
         model.metricRows = []
+        model.deliveryModuleEventStreamStatus = "unknown"
+        model.deliveryModuleEventValues = ({})
+        model.deliveryModuleEventSamples = ({})
     }
 
     function test_catalog_metadata_drives_status_facade() {
@@ -352,7 +371,7 @@ TestCase {
         compare(DashboardMetricCatalog.windowDeltaFromSamples([{ timestamp: 0, value: 1 }, { timestamp: 1000, value: 4 }], 1000, 1000), 3)
     }
 
-    function test_sent_and_propagated_recent_metrics_use_accepted_windows() {
+    function test_sent_and_propagated_metrics_use_independent_module_events() {
         const service = "/vac/waku/lightpush/3.0.0"
         model.dashboardMetricHistory = ({})
         model.dashboardMetricLastSeen = ({})
@@ -376,9 +395,9 @@ TestCase {
         verify(DashboardMetricCatalog.dashboardMetricUsesWindow(
             "messaging.message_propagated_events_recent"))
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "messaging.message_sent_events_recent"), 100)
+            model, "messaging.message_sent_events_recent"), null)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "messaging.message_propagated_events_recent"), 500)
+            model, "messaging.message_propagated_events_recent"), null)
         DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
         compare(DashboardMetricCatalog.dashboardMetricValue(
             model, "messaging.message_sent_events_recent"), null)
@@ -400,17 +419,38 @@ TestCase {
         DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
 
         compare(DashboardMetricCatalog.dashboardMetricValue(
-            model, "messaging.message_sent_events_recent"), 4)
+            model, "messaging.message_sent_events_recent"), null)
         compare(DashboardMetricCatalog.dashboardMetricValue(
-            model, "messaging.message_propagated_events_recent"), 7)
+            model, "messaging.message_propagated_events_recent"), null)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_received_events_recent"), 7)
+
+        const now = Date.now()
+        model.deliveryModuleEventStreamStatus = "ready"
+        model.deliveryModuleEventValues = ({
+            "messaging.message_sent_events_recent": 1,
+            "messaging.message_propagated_events_recent": 1
+        })
+        model.deliveryModuleEventSamples = ({
+            "messaging.message_sent_events_recent": [
+                { timestamp: now - 10, value: 1 }
+            ],
+            "messaging.message_propagated_events_recent": [
+                { timestamp: now, value: 1 }
+            ]
+        })
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_sent_events_recent"), 1)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_propagated_events_recent"), 1)
         const sentGraph = DashboardMetricCatalog.dashboardMetricSamples(
             model, "messaging.message_sent_events_recent")
         const propagatedGraph = DashboardMetricCatalog.dashboardMetricSamples(
             model, "messaging.message_propagated_events_recent")
         compare(sentGraph.length, 1)
-        compare(sentGraph[0].value, 4)
+        compare(sentGraph[0].value, 1)
         compare(propagatedGraph.length, 1)
-        compare(propagatedGraph[0].value, 7)
+        compare(propagatedGraph[0].value, 1)
         model.metricRows = []
     }
 
@@ -626,7 +666,7 @@ TestCase {
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
             model, "messaging.lightpush_requests_recent"), 12)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "messaging.message_sent_events_recent"), 12)
+            model, "messaging.message_sent_events_recent"), null)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
             model, "messaging.peer_exchange_requests_recent"), 3)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
@@ -948,7 +988,7 @@ TestCase {
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
             model, "messaging.lightpush_requests_recent"), 26)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "messaging.message_sent_events_recent"), 26)
+            model, "messaging.message_sent_events_recent"), null)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
             model, "messaging.message_received_events_recent"), 12)
         model.metricRows = []
@@ -1017,7 +1057,7 @@ TestCase {
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
             model, "messaging.lightpush_requests_recent"), 12)
         compare(DashboardMetricCatalog.dashboardMetricRawValue(
-            model, "messaging.message_sent_events_recent"), 12)
+            model, "messaging.message_sent_events_recent"), null)
         model.metricRows = []
     }
 

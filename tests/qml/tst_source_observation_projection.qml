@@ -148,6 +148,9 @@ TestCase {
     QtObject {
         id: deliveryMetrics
 
+        property string deliveryModuleEventStreamStatus: "unknown"
+        property string deliveryModuleEventStreamReason: ""
+
         function dashboardMetricRawValue(key) {
             return deliveryModel.metricValues[String(key || "")]
         }
@@ -232,6 +235,8 @@ TestCase {
         testRoot.deliveryProtocolsHealth = [
             { protocol: "relay", health: "ready", desc: "ok" }
         ]
+        deliveryMetrics.deliveryModuleEventStreamStatus = "unknown"
+        deliveryMetrics.deliveryModuleEventStreamReason = ""
         deliveryModel.metricValues = ({
             "messaging.store_peers": 2,
             "messaging.filter_peers": 1,
@@ -431,11 +436,25 @@ TestCase {
     function test_delivery_request_rows_name_window_counts_without_rate_claims() {
         const topics = SourceObservation.deliveryTopicRows(deliveryPage)
         const store = SourceObservation.deliveryStoreRows(deliveryPage)
+        const throughput = SourceObservation.deliveryThroughputRows(deliveryPage)
 
         compare(topics[3].label, "Store queries in window")
         compare(topics[4].label, "Filter requests in window")
         compare(store[3].label, "Store queries in window")
         compare(store[4].label, "Store/archive errors in window")
+        compare(throughput[8].label, "Confirmed sends")
+        compare(throughput[9].label, "Network propagations")
+    }
+
+    function test_delivery_event_metric_gap_names_watcher_and_reason() {
+        const key = "messaging.message_sent_events_recent"
+        compare(SourceObservation.metricUnavailableEvidence(deliveryPage, key),
+                "Waiting for Delivery event watcher readiness.")
+
+        deliveryMetrics.deliveryModuleEventStreamStatus = "unavailable"
+        deliveryMetrics.deliveryModuleEventStreamReason = "watch exited"
+        compare(SourceObservation.metricUnavailableEvidence(deliveryPage, key),
+                "Delivery event watcher unavailable: watch exited")
     }
 
     function test_delivery_topology_uses_exact_metric_semantics_and_requires_complete_service_counts() {

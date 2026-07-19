@@ -2,7 +2,11 @@ use std::{
     collections::BTreeSet,
     io::{ErrorKind, Read as _, Write as _},
     net::{Ipv4Addr, SocketAddr, TcpStream},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -14,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     modules::logos_core::{
         LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransportEvent,
-        normalize_module_call_value,
+        module_transport_event_from_watch_frame, normalize_module_call_value,
     },
     source_routing::{ManagedNodeAction, ManagedNodeContract},
     support::{command_runner::CommandControl, time::now_millis},
@@ -43,45 +47,162 @@ const MESSAGING_HEALTH_RESPONSE_LIMIT: u64 = 64 * 1024;
 const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
+const DELIVERY_MODULE: &str = "delivery_module";
+const DELIVERY_EVENT_STREAM_READY: &str = "eventStreamReady";
+const DELIVERY_EVENT_STREAM_UNAVAILABLE: &str = "eventStreamUnavailable";
+const DELIVERY_EVENT_STREAM_SOURCE: &str = "logoscore_cli_watch";
+const DELIVERY_EVENT_READ_INTERVAL: Duration = Duration::from_millis(250);
+const DELIVERY_WATCH_HEALTH_MAX_AGE: Duration = Duration::from_secs(15);
+const DELIVERY_EVENT_REASON_LIMIT: usize = 512;
+const DELIVERY_NATIVE_EVENTS: [&str; 5] = [
+    "messageSent",
+    "messageError",
+    "messagePropagated",
+    "messageReceived",
+    "connectionStateChanged",
+];
 const STORAGE_LISTEN_PORT: u16 = 8091;
 const INDEXER_WATCHER_MODULE: &str = "lez_indexer_module";
 const SEQUENCER_WATCHER_MODULE: &str = "sequencer_service";
 
-/// Polling fallback for LogosCore installations whose CLI event stream is not
-/// safe or available. The watcher owns daemon/module polling, lifecycle
-/// endpoint checks, transition synthesis, and fanout behind start, subscribe,
-/// and stop.
+/// Owns daemon/module polling, lifecycle transition synthesis, the persistent
+/// Delivery event stream, and bounded fanout behind start, subscribe, and stop.
 pub struct LocalNodeModuleWatcher {
     cancellation: CancellationToken,
-    worker: Option<thread::JoinHandle<()>>,
+    poll_worker: Option<thread::JoinHandle<()>>,
+    delivery_worker: Option<thread::JoinHandle<()>>,
     subscribers: Arc<Mutex<SubscriberHub>>,
 }
+
+type SharedDeliveryWatchHealth = Arc<Mutex<DeliveryWatchHealthObservation>>;
 
 /// Receives synthesized module events from a [`LocalNodeModuleWatcher`].
 pub struct LocalNodeModuleSubscription {
     receiver: mpsc::Receiver<ModuleTransportEvent>,
+    queued: Arc<AtomicUsize>,
+    delivery_gap_pending: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
 struct SubscriberHub {
-    senders: Vec<mpsc::SyncSender<ModuleTransportEvent>>,
+    senders: Vec<SubscriberSender>,
     snapshot: Vec<ModuleTransportEvent>,
+}
+
+struct SubscriberSender {
+    sender: mpsc::SyncSender<ModuleTransportEvent>,
+    queued: Arc<AtomicUsize>,
+    delivery_gap_pending: Arc<AtomicBool>,
+    data_capacity: usize,
+}
+
+impl SubscriberSender {
+    fn is_at_data_capacity(&self) -> bool {
+        self.queued.load(Ordering::Acquire) >= self.data_capacity
+    }
+
+    fn can_accept_status(&self) -> bool {
+        self.queued.load(Ordering::Acquire) < self.data_capacity.saturating_add(1)
+    }
+
+    fn try_send(
+        &self,
+        event: ModuleTransportEvent,
+    ) -> std::result::Result<(), mpsc::TrySendError<ModuleTransportEvent>> {
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        match self.sender.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.queued.fetch_sub(1, Ordering::AcqRel);
+                Err(error)
+            }
+        }
+    }
+
+    fn send(
+        &self,
+        event: ModuleTransportEvent,
+    ) -> std::result::Result<(), mpsc::SendError<ModuleTransportEvent>> {
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        match self.sender.send(event) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.queued.fetch_sub(1, Ordering::AcqRel);
+                Err(error)
+            }
+        }
+    }
+
+    fn has_delivery_gap_pending(&self) -> bool {
+        self.delivery_gap_pending.load(Ordering::Acquire)
+    }
+
+    fn queue_delivery_gap(&self, event: ModuleTransportEvent) -> bool {
+        if self
+            .delivery_gap_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return true;
+        }
+        if self.try_send(event).is_ok() {
+            return true;
+        }
+        self.delivery_gap_pending.store(false, Ordering::Release);
+        false
+    }
 }
 
 impl LocalNodeModuleWatcher {
     /// Starts polling before any module is available so later daemon changes are observed.
     pub fn start() -> Result<Self> {
         let cancellation = CancellationToken::new();
+        let delivery_watch_health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
+            DeliveryWatchHealth::Unknown,
+        )));
         let worker_cancellation = cancellation.clone();
         let subscribers = Arc::new(Mutex::new(SubscriberHub::default()));
         let worker_subscribers = Arc::clone(&subscribers);
+        let worker_delivery_watch_health = Arc::clone(&delivery_watch_health);
         let worker = thread::Builder::new()
             .name("logoscore-module-poll-watcher".to_owned())
-            .spawn(move || run_module_watcher(worker_cancellation, worker_subscribers))
+            .spawn(move || {
+                run_module_watcher(
+                    worker_cancellation,
+                    worker_subscribers,
+                    worker_delivery_watch_health,
+                );
+            })
             .context("failed to start LogosCore module polling watcher")?;
+        let delivery_cancellation = cancellation.clone();
+        let delivery_subscribers = Arc::clone(&subscribers);
+        let delivery_worker_health = Arc::clone(&delivery_watch_health);
+        let delivery_worker = match thread::Builder::new()
+            .name("logoscore-delivery-event-watcher".to_owned())
+            .spawn(move || {
+                run_delivery_event_watcher(
+                    delivery_cancellation,
+                    delivery_subscribers,
+                    delivery_worker_health,
+                );
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                cancellation.cancel();
+                let cleanup = worker.join();
+                let mut error = anyhow::Error::new(error)
+                    .context("failed to start LogosCore Delivery event watcher");
+                if cleanup.is_err() {
+                    error =
+                        error.context("LogosCore module polling watcher panicked during cleanup");
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
             cancellation,
-            worker: Some(worker),
+            poll_worker: Some(worker),
+            delivery_worker: Some(delivery_worker),
             subscribers,
         })
     }
@@ -95,21 +216,28 @@ impl LocalNodeModuleWatcher {
         subscribe_to_hub(&mut subscribers)
     }
 
-    /// Stops polling and waits for the worker to exit.
+    /// Stops polling and event streaming, then waits for both workers to exit.
     pub fn stop(&mut self) -> Result<()> {
         self.cancellation.cancel();
-        if let Some(worker) = self.worker.take() {
+        let poll_result = self.poll_worker.take().map_or(Ok(()), |worker| {
             worker
                 .join()
-                .map_err(|_| anyhow::anyhow!("LogosCore module polling watcher panicked"))?;
-        }
-        let mut subscribers = self
+                .map_err(|_| anyhow::anyhow!("LogosCore module polling watcher panicked"))
+        });
+        let delivery_result = self.delivery_worker.take().map_or(Ok(()), |worker| {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("LogosCore Delivery event watcher panicked"))
+        });
+        let subscriber_result = self
             .subscribers
             .lock()
-            .map_err(|_| anyhow::anyhow!("LogosCore module watcher subscribers are unavailable"))?;
-        subscribers.senders.clear();
-        subscribers.snapshot.clear();
-        Ok(())
+            .map_err(|_| anyhow::anyhow!("LogosCore module watcher subscribers are unavailable"))
+            .map(|mut subscribers| {
+                subscribers.senders.clear();
+                subscribers.snapshot.clear();
+            });
+        poll_result.and(delivery_result).and(subscriber_result)
     }
 }
 
@@ -123,7 +251,16 @@ impl LocalNodeModuleSubscription {
     /// Waits for one event without blocking longer than `timeout`.
     pub fn next_within(&mut self, timeout: Duration) -> Result<Option<ModuleTransportEvent>> {
         match self.receiver.recv_timeout(timeout) {
-            Ok(event) => Ok(Some(event)),
+            Ok(event) => {
+                let queued = self.queued.fetch_sub(1, Ordering::AcqRel);
+                debug_assert!(queued > 0);
+                if event.module() == DELIVERY_MODULE
+                    && event.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE
+                {
+                    self.delivery_gap_pending.store(false, Ordering::Release);
+                }
+                Ok(Some(event))
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 anyhow::bail!("LogosCore module watcher subscription is closed")
@@ -133,15 +270,27 @@ impl LocalNodeModuleSubscription {
 }
 
 fn subscribe_to_hub(hub: &mut SubscriberHub) -> Result<LocalNodeModuleSubscription> {
-    let capacity = SUBSCRIBER_QUEUE_CAPACITY.max(hub.snapshot.len().saturating_add(1));
-    let (sender, receiver) = mpsc::sync_channel(capacity);
+    let data_capacity = SUBSCRIBER_QUEUE_CAPACITY.max(hub.snapshot.len().saturating_add(1));
+    let (sender, receiver) = mpsc::sync_channel(data_capacity.saturating_add(1));
+    let queued = Arc::new(AtomicUsize::new(0));
+    let delivery_gap_pending = Arc::new(AtomicBool::new(false));
+    let subscriber = SubscriberSender {
+        sender,
+        queued: Arc::clone(&queued),
+        delivery_gap_pending: Arc::clone(&delivery_gap_pending),
+        data_capacity,
+    };
     for event in &hub.snapshot {
-        sender.send(event.clone()).map_err(|_| {
+        subscriber.send(event.clone()).map_err(|_| {
             anyhow::anyhow!("LogosCore module watcher subscription closed during setup")
         })?;
     }
-    hub.senders.push(sender);
-    Ok(LocalNodeModuleSubscription { receiver })
+    hub.senders.push(subscriber);
+    Ok(LocalNodeModuleSubscription {
+        receiver,
+        queued,
+        delivery_gap_pending,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +309,7 @@ struct WatcherObservation {
 pub(super) struct ModuleWatcherPoll {
     daemon: DaemonState,
     loaded_modules: BTreeSet<String>,
+    status_observed_at: Instant,
     lifecycle_events: Vec<ModuleTransportEvent>,
     poll_interval: Duration,
 }
@@ -228,7 +378,11 @@ struct IndexerStatusObservation {
     last_error: Option<String>,
 }
 
-fn run_module_watcher(cancellation: CancellationToken, subscribers: Arc<Mutex<SubscriberHub>>) {
+fn run_module_watcher(
+    cancellation: CancellationToken,
+    subscribers: Arc<Mutex<SubscriberHub>>,
+    delivery_watch_health: SharedDeliveryWatchHealth,
+) {
     let mut observation = WatcherObservation::default();
     while !cancellation.is_cancelled() {
         let poll = LocalNodeActionEngine::system()
@@ -238,16 +392,319 @@ fn run_module_watcher(cancellation: CancellationToken, subscribers: Arc<Mutex<Su
         }
         let interval = match poll {
             Ok(poll) => {
+                record_delivery_watch_poll_health(&delivery_watch_health, &poll);
                 let snapshot = snapshot_events(&poll);
                 let mut events = observation_events(&mut observation, &poll);
                 events.extend(poll.lifecycle_events.iter().cloned());
                 publish_events(&subscribers, events, snapshot);
                 poll.poll_interval
             }
-            Err(_) => DAEMON_RETRY_INTERVAL,
+            Err(_) => {
+                record_delivery_watch_health(
+                    &delivery_watch_health,
+                    DeliveryWatchHealth::PollUnavailable,
+                    Instant::now(),
+                );
+                DAEMON_RETRY_INTERVAL
+            }
         };
         wait_for_poll_interval(&cancellation, interval);
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum DeliveryEventStreamState {
+    #[default]
+    Unknown,
+    Ready,
+    Unavailable,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum DeliveryWatchHealth {
+    #[default]
+    Unknown,
+    Ready,
+    DaemonStopped,
+    DaemonUnavailable,
+    ModuleUnavailable,
+    PollUnavailable,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeliveryWatchHealthObservation {
+    health: DeliveryWatchHealth,
+    observed_at: Instant,
+}
+
+impl DeliveryWatchHealthObservation {
+    fn new(health: DeliveryWatchHealth) -> Self {
+        Self {
+            health,
+            observed_at: Instant::now(),
+        }
+    }
+}
+
+impl DeliveryWatchHealth {
+    fn from_poll(poll: &ModuleWatcherPoll) -> Self {
+        match poll.daemon {
+            DaemonState::Stopped => Self::DaemonStopped,
+            DaemonState::Unavailable => Self::DaemonUnavailable,
+            DaemonState::Running if !poll.loaded_modules.contains(DELIVERY_MODULE) => {
+                Self::ModuleUnavailable
+            }
+            DaemonState::Running => Self::Ready,
+        }
+    }
+
+    fn unavailable_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Unknown | Self::Ready => None,
+            Self::DaemonStopped => Some("LogosCore daemon stopped during Delivery event watch"),
+            Self::DaemonUnavailable => {
+                Some("LogosCore daemon became unavailable during Delivery event watch")
+            }
+            Self::ModuleUnavailable => Some("LogosCore Delivery module is no longer loaded"),
+            Self::PollUnavailable => Some("LogosCore module status polling became unavailable"),
+        }
+    }
+}
+
+fn record_delivery_watch_poll_health(health: &SharedDeliveryWatchHealth, poll: &ModuleWatcherPoll) {
+    record_delivery_watch_health(
+        health,
+        DeliveryWatchHealth::from_poll(poll),
+        poll.status_observed_at,
+    );
+}
+
+fn record_delivery_watch_health(
+    health: &SharedDeliveryWatchHealth,
+    next: DeliveryWatchHealth,
+    observed_at: Instant,
+) {
+    if let Ok(mut current) = health.lock() {
+        *current = DeliveryWatchHealthObservation {
+            health: next,
+            observed_at,
+        };
+    }
+}
+
+fn ensure_delivery_watch_health(health: &SharedDeliveryWatchHealth) -> Result<()> {
+    let current = *health
+        .lock()
+        .map_err(|_| anyhow::anyhow!("LogosCore Delivery watch health is unavailable"))?;
+    if let Some(reason) = current.health.unavailable_reason() {
+        anyhow::bail!(reason);
+    }
+    anyhow::ensure!(
+        current.observed_at.elapsed() <= DELIVERY_WATCH_HEALTH_MAX_AGE,
+        "LogosCore module status polling is stale"
+    );
+    Ok(())
+}
+
+fn run_delivery_event_watcher(
+    cancellation: CancellationToken,
+    subscribers: Arc<Mutex<SubscriberHub>>,
+    delivery_watch_health: SharedDeliveryWatchHealth,
+) {
+    let mut state = DeliveryEventStreamState::Unknown;
+    while !cancellation.is_cancelled() {
+        let result = watch_delivery_events_once(
+            &cancellation,
+            &subscribers,
+            &delivery_watch_health,
+            &mut state,
+        );
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let reason = result.err().map_or_else(
+            || "event stream ended".to_owned(),
+            |error| error.to_string(),
+        );
+        while !cancellation.is_cancelled()
+            && !publish_delivery_stream_transition(
+                &subscribers,
+                &mut state,
+                DeliveryEventStreamState::Unavailable,
+                &reason,
+            )
+        {
+            wait_for_poll_interval(&cancellation, DELIVERY_EVENT_READ_INTERVAL);
+        }
+        wait_for_poll_interval(&cancellation, DAEMON_RETRY_INTERVAL);
+    }
+}
+
+fn watch_delivery_events_once(
+    cancellation: &CancellationToken,
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    delivery_watch_health: &SharedDeliveryWatchHealth,
+    state: &mut DeliveryEventStreamState,
+) -> Result<()> {
+    let runtime = ready_delivery_watch_runtime(cancellation)?;
+    let startup_control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
+    let mut watch = runtime.start_all_event_watch(DELIVERY_MODULE, &startup_control)?;
+    let ready_result = watch.wait_ready(&startup_control);
+    if let Err(error) = ready_result {
+        let cleanup_result = watch.stop();
+        return match cleanup_result {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(error.context(format!(
+                "failed to clean up rejected LogosCore Delivery event watch: {cleanup:#}"
+            ))),
+        };
+    }
+    let stream_result = (|| {
+        ensure_delivery_watch_health(delivery_watch_health)?;
+        anyhow::ensure!(
+            publish_delivery_stream_transition(
+                subscribers,
+                state,
+                DeliveryEventStreamState::Ready,
+                "subscription active",
+            ),
+            "Delivery event stream readiness could not reach every subscriber"
+        );
+        read_delivery_events(
+            cancellation,
+            subscribers,
+            delivery_watch_health,
+            &runtime,
+            &mut watch,
+        )
+    })();
+    let cleanup_result = watch.stop();
+    stream_result.and(cleanup_result)
+}
+
+fn read_delivery_events(
+    cancellation: &CancellationToken,
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    delivery_watch_health: &SharedDeliveryWatchHealth,
+    runtime: &LogoscoreCliRuntime,
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+) -> Result<()> {
+    let mut runtime_probe = Instant::now();
+    while !cancellation.is_cancelled() {
+        ensure_delivery_watch_health(delivery_watch_health)?;
+        let control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
+        if let Some(value) = watch.next_value_within(&control, DELIVERY_EVENT_READ_INTERVAL)? {
+            let event = module_transport_event_from_watch_frame(&value, DELIVERY_MODULE)?;
+            if DELIVERY_NATIVE_EVENTS.contains(&event.event()) {
+                anyhow::ensure!(
+                    publish_incremental_events(subscribers, vec![event]),
+                    "Delivery subscriber queue overflowed"
+                );
+            }
+        }
+        if runtime_probe.elapsed() >= DAEMON_RETRY_INTERVAL {
+            let current = delivery_watch_runtime()?;
+            anyhow::ensure!(
+                current == *runtime,
+                "LogosCore Delivery event stream runtime changed"
+            );
+            runtime_probe = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+fn ready_delivery_watch_runtime(cancellation: &CancellationToken) -> Result<LogoscoreCliRuntime> {
+    let runtime = delivery_watch_runtime()?;
+    let control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
+    let status = runtime.status_controlled(control)?;
+    anyhow::ensure!(
+        status
+            .value
+            .pointer("/daemon/status")
+            .and_then(Value::as_str)
+            == Some("running"),
+        "LogosCore daemon is not running"
+    );
+    anyhow::ensure!(
+        loaded_modules(&status.value).contains(DELIVERY_MODULE),
+        "LogosCore Delivery module is not loaded"
+    );
+    Ok(runtime)
+}
+
+fn delivery_watch_runtime() -> Result<LogoscoreCliRuntime> {
+    let engine = LocalNodeActionEngine::system()?;
+    let profile = engine.runtime_profile()?;
+    let managed = profile.as_ref().filter(|profile| profile.is_managed());
+    managed
+        .map(LogoscoreRuntimeProfile::cli_runtime)
+        .transpose()?
+        .map_or_else(|| LogoscoreCliTransport::default().runtime(), Ok)
+}
+
+fn command_control(cancellation: &CancellationToken, timeout: Duration) -> CommandControl {
+    let now = Instant::now();
+    let deadline = now.checked_add(timeout).unwrap_or(now);
+    CommandControl::new(cancellation.clone(), deadline)
+}
+
+fn publish_delivery_stream_transition(
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    state: &mut DeliveryEventStreamState,
+    next: DeliveryEventStreamState,
+    reason: &str,
+) -> bool {
+    if *state == next || next == DeliveryEventStreamState::Unknown {
+        return true;
+    }
+    let (event_name, status) = match next {
+        DeliveryEventStreamState::Ready => (DELIVERY_EVENT_STREAM_READY, "ready"),
+        DeliveryEventStreamState::Unavailable => (DELIVERY_EVENT_STREAM_UNAVAILABLE, "unavailable"),
+        DeliveryEventStreamState::Unknown => return true,
+    };
+    let event = delivery_event_stream_status_event(event_name, status, reason);
+    if let Ok(event) = event {
+        let delivered = publish_incremental_events(subscribers, vec![event]);
+        if delivered {
+            *state = next;
+        }
+        return delivered;
+    }
+    false
+}
+
+fn delivery_event_stream_status_event(
+    event_name: &str,
+    status: &str,
+    reason: &str,
+) -> Result<ModuleTransportEvent> {
+    ModuleTransportEvent::new(
+        DELIVERY_MODULE,
+        event_name,
+        vec![json!({
+            "source": DELIVERY_EVENT_STREAM_SOURCE,
+            "status": status,
+            "reason": bounded_delivery_event_reason(reason),
+            "timestamp": now_millis(),
+        })],
+    )
+}
+
+fn bounded_delivery_event_reason(reason: &str) -> String {
+    let mut reason = reason.trim().to_owned();
+    if reason.is_empty() {
+        reason = "event stream unavailable".to_owned();
+    }
+    if reason.len() <= DELIVERY_EVENT_REASON_LIMIT {
+        return reason;
+    }
+    let mut end = DELIVERY_EVENT_REASON_LIMIT;
+    while !reason.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    reason.truncate(end);
+    reason
 }
 
 fn observation_events(
@@ -363,19 +820,97 @@ fn publish_events(
         return;
     };
     subscribers.snapshot = merge_snapshot(&subscribers.snapshot, snapshot, &events);
-    if events.is_empty() {
-        return;
+    let _all_events_delivered = fanout_events(&mut subscribers, &events);
+}
+
+fn publish_incremental_events(
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    events: Vec<ModuleTransportEvent>,
+) -> bool {
+    let Ok(mut subscribers) = subscribers.lock() else {
+        return false;
+    };
+    let delivered = fanout_events(&mut subscribers, &events);
+    if delivered {
+        for event in events
+            .iter()
+            .filter(|event| is_delivery_event_stream_status(event))
+        {
+            subscribers
+                .snapshot
+                .retain(|current| !is_delivery_event_stream_status(current));
+            subscribers.snapshot.push(event.clone());
+        }
     }
+    delivered
+}
+
+fn fanout_events(subscribers: &mut SubscriberHub, events: &[ModuleTransportEvent]) -> bool {
+    if events.is_empty() {
+        return true;
+    }
+    let delivery_gap = delivery_event_stream_status_event(
+        DELIVERY_EVENT_STREAM_UNAVAILABLE,
+        "unavailable",
+        "subscriber queue overflowed; Delivery event stream will reconnect",
+    )
+    .ok();
+    for event in events
+        .iter()
+        .filter(|event| is_delivery_event_stream_status(event))
+    {
+        let unavailable = event.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE;
+        if subscribers.senders.iter().any(|subscriber| {
+            !(subscriber.can_accept_status()
+                || unavailable && subscriber.has_delivery_gap_pending())
+        }) {
+            return false;
+        }
+    }
+    let mut all_events_delivered = true;
     subscribers.senders.retain(|subscriber| {
-        for event in &events {
+        for event in events {
+            if event.module() == DELIVERY_MODULE
+                && event.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE
+                && subscriber.has_delivery_gap_pending()
+            {
+                continue;
+            }
+            if is_delivery_event_stream_status(event) {
+                match subscriber.try_send(event.clone()) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        all_events_delivered = false;
+                        break;
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => return false,
+                }
+                continue;
+            }
+            if subscriber.is_at_data_capacity() {
+                all_events_delivered = false;
+                if is_delivery_native_event(event) {
+                    let Some(gap) = delivery_gap.as_ref() else {
+                        return false;
+                    };
+                    if !subscriber.queue_delivery_gap(gap.clone()) {
+                        return false;
+                    }
+                }
+                break;
+            }
             match subscriber.try_send(event.clone()) {
                 Ok(()) => {}
-                Err(mpsc::TrySendError::Full(_)) => break,
+                Err(mpsc::TrySendError::Full(_)) => {
+                    all_events_delivered = false;
+                    break;
+                }
                 Err(mpsc::TrySendError::Disconnected(_)) => return false,
             }
         }
         true
     });
+    all_events_delivered
 }
 
 fn merge_snapshot(
@@ -383,20 +918,32 @@ fn merge_snapshot(
     mut baseline: Vec<ModuleTransportEvent>,
     events: &[ModuleTransportEvent],
 ) -> Vec<ModuleTransportEvent> {
-    let mut lifecycle = previous
+    let mut retained = previous
         .iter()
-        .filter(|event| is_lifecycle_status_event(event))
+        .filter(|event| is_retained_status_event(event))
         .cloned()
         .collect::<Vec<_>>();
     for event in events
         .iter()
-        .filter(|event| is_lifecycle_status_event(event))
+        .filter(|event| is_retained_status_event(event))
     {
-        lifecycle.retain(|current| !replaces_lifecycle_snapshot(current, event));
-        lifecycle.push(event.clone());
+        retained.retain(|current| !replaces_retained_snapshot(current, event));
+        retained.push(event.clone());
     }
-    baseline.extend(lifecycle);
+    baseline.extend(retained);
     baseline
+}
+
+fn replaces_retained_snapshot(
+    current: &ModuleTransportEvent,
+    replacement: &ModuleTransportEvent,
+) -> bool {
+    if is_delivery_event_stream_status(current) && is_delivery_event_stream_status(replacement) {
+        return true;
+    }
+    is_lifecycle_status_event(current)
+        && is_lifecycle_status_event(replacement)
+        && replaces_lifecycle_snapshot(current, replacement)
 }
 
 fn replaces_lifecycle_snapshot(
@@ -427,6 +974,22 @@ fn is_lifecycle_status_event(event: &ModuleTransportEvent) -> bool {
     )
 }
 
+fn is_delivery_event_stream_status(event: &ModuleTransportEvent) -> bool {
+    event.module() == DELIVERY_MODULE
+        && matches!(
+            event.event(),
+            DELIVERY_EVENT_STREAM_READY | DELIVERY_EVENT_STREAM_UNAVAILABLE
+        )
+}
+
+fn is_delivery_native_event(event: &ModuleTransportEvent) -> bool {
+    event.module() == DELIVERY_MODULE && DELIVERY_NATIVE_EVENTS.contains(&event.event())
+}
+
+fn is_retained_status_event(event: &ModuleTransportEvent) -> bool {
+    is_lifecycle_status_event(event) || is_delivery_event_stream_status(event)
+}
+
 fn wait_for_poll_interval(cancellation: &CancellationToken, interval: Duration) {
     let deadline = Instant::now()
         .checked_add(interval)
@@ -452,6 +1015,7 @@ impl LocalNodeActionEngine {
         Ok(ModuleWatcherPoll {
             daemon: observation.daemon,
             loaded_modules: observation.loaded_modules,
+            status_observed_at: observation.status_observed_at,
             lifecycle_events,
             poll_interval: if observation.needs_fast_poll {
                 PENDING_LIFECYCLE_POLL_INTERVAL
@@ -480,6 +1044,7 @@ impl LocalNodeActionEngine {
 struct ModuleObservation {
     daemon: DaemonState,
     loaded_modules: BTreeSet<String>,
+    status_observed_at: Instant,
     probes: Vec<NodeLivenessProbe>,
     needs_fast_poll: bool,
 }
@@ -504,6 +1069,7 @@ fn observe_modules(
     let Ok(output) = output else {
         return unavailable_observation(state, managed_runtime.is_some());
     };
+    let status_observed_at = Instant::now();
     let daemon = match output
         .value
         .pointer("/daemon/status")
@@ -528,6 +1094,7 @@ fn observe_modules(
     ModuleObservation {
         daemon,
         loaded_modules,
+        status_observed_at,
         probes,
         needs_fast_poll,
     }
@@ -550,6 +1117,7 @@ fn unavailable_observation(
     ModuleObservation {
         daemon: DaemonState::Unavailable,
         loaded_modules: BTreeSet::new(),
+        status_observed_at: Instant::now(),
         needs_fast_poll: probes.iter().any(NodeLivenessProbe::is_pending),
         probes,
     }
@@ -2511,6 +3079,381 @@ mod tests {
     }
 
     #[test]
+    fn delivery_stream_status_is_retained_and_emitted_only_on_transition() -> Result<()> {
+        let subscribers = Arc::new(Mutex::new(SubscriberHub::default()));
+        let mut state = DeliveryEventStreamState::Unknown;
+        publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Unavailable,
+            "daemon unavailable",
+        );
+        publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Unavailable,
+            "repeat must not emit",
+        );
+        let mut subscription = {
+            let mut hub = subscribers
+                .lock()
+                .map_err(|_| anyhow::anyhow!("test subscriber hub is unavailable"))?;
+            anyhow::ensure!(hub.snapshot.len() == 1);
+            subscribe_to_hub(&mut hub)?
+        };
+
+        let unavailable = subscription
+            .next_within(Duration::from_millis(25))?
+            .context("missing retained Delivery stream status")?;
+        anyhow::ensure!(unavailable.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE);
+        anyhow::ensure!(unavailable.args().len() == 1);
+        anyhow::ensure!(
+            unavailable
+                .args()
+                .first()
+                .and_then(|arg| arg.get("status"))
+                .and_then(Value::as_str)
+                == Some("unavailable")
+        );
+        anyhow::ensure!(
+            subscription
+                .next_within(Duration::from_millis(1))?
+                .is_none(),
+            "unchanged unavailable state emitted repeatedly"
+        );
+
+        publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Ready,
+            "subscription active",
+        );
+        let ready = subscription
+            .next_within(Duration::from_millis(25))?
+            .context("missing Delivery ready transition")?;
+        anyhow::ensure!(ready.event() == DELIVERY_EVENT_STREAM_READY);
+        let hub = subscribers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("test subscriber hub is unavailable"))?;
+        anyhow::ensure!(
+            hub.snapshot
+                .iter()
+                .filter(|event| is_delivery_event_stream_status(event))
+                .count()
+                == 1
+        );
+        anyhow::ensure!(
+            hub.snapshot
+                .iter()
+                .any(|event| event.event() == DELIVERY_EVENT_STREAM_READY)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_stream_status_survives_poll_snapshot_refresh() -> Result<()> {
+        let status = ModuleTransportEvent::new(
+            DELIVERY_MODULE,
+            DELIVERY_EVENT_STREAM_READY,
+            vec![json!({
+                "source": DELIVERY_EVENT_STREAM_SOURCE,
+                "status": "ready",
+                "reason": "subscription active",
+                "timestamp": 1,
+            })],
+        )?;
+        let baseline = vec![ModuleTransportEvent::new(
+            RUNTIME_MODULE,
+            "daemonStarted",
+            vec![json!({ "simulated": true })],
+        )?];
+
+        let snapshot = merge_snapshot(&[status], baseline, &[]);
+
+        anyhow::ensure!(
+            snapshot
+                .iter()
+                .any(|event| event.event() == DELIVERY_EVENT_STREAM_READY)
+        );
+        anyhow::ensure!(
+            snapshot
+                .iter()
+                .any(|event| event.event() == "daemonStarted")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_stream_health_invalidates_ready_watch_after_module_loss() -> Result<()> {
+        let health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
+            DeliveryWatchHealth::Unknown,
+        )));
+        let ready = ModuleWatcherPoll {
+            daemon: DaemonState::Running,
+            loaded_modules: BTreeSet::from([DELIVERY_MODULE.to_owned()]),
+            status_observed_at: Instant::now(),
+            lifecycle_events: Vec::new(),
+            poll_interval: DAEMON_POLL_INTERVAL,
+        };
+        record_delivery_watch_poll_health(&health, &ready);
+        ensure_delivery_watch_health(&health)?;
+
+        let module_lost = ModuleWatcherPoll {
+            daemon: DaemonState::Running,
+            loaded_modules: BTreeSet::new(),
+            status_observed_at: Instant::now(),
+            lifecycle_events: Vec::new(),
+            poll_interval: DAEMON_POLL_INTERVAL,
+        };
+        record_delivery_watch_poll_health(&health, &module_lost);
+
+        let Err(error) = ensure_delivery_watch_health(&health) else {
+            anyhow::bail!("module loss did not invalidate an idle Delivery watch");
+        };
+        anyhow::ensure!(error.to_string().contains("no longer loaded"));
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_stream_health_invalidates_ready_watch_after_poll_failure() -> Result<()> {
+        let health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
+            DeliveryWatchHealth::Ready,
+        )));
+        record_delivery_watch_health(
+            &health,
+            DeliveryWatchHealth::PollUnavailable,
+            Instant::now(),
+        );
+
+        let Err(error) = ensure_delivery_watch_health(&health) else {
+            anyhow::bail!("poll failure did not invalidate authoritative Delivery coverage");
+        };
+        anyhow::ensure!(error.to_string().contains("polling became unavailable"));
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_stream_health_rejects_stale_ready_poll() -> Result<()> {
+        let stale_age = DELIVERY_WATCH_HEALTH_MAX_AGE
+            .checked_add(Duration::from_millis(1))
+            .context("stale Delivery watch test duration overflowed")?;
+        let observed_at = Instant::now()
+            .checked_sub(stale_age)
+            .context("stale Delivery watch test instant underflowed")?;
+        let stale_poll = ModuleWatcherPoll {
+            daemon: DaemonState::Running,
+            loaded_modules: BTreeSet::from([DELIVERY_MODULE.to_owned()]),
+            status_observed_at: observed_at,
+            lifecycle_events: Vec::new(),
+            poll_interval: DAEMON_POLL_INTERVAL,
+        };
+        let health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
+            DeliveryWatchHealth::Unknown,
+        )));
+        record_delivery_watch_poll_health(&health, &stale_poll);
+
+        let Err(error) = ensure_delivery_watch_health(&health) else {
+            anyhow::bail!("stale poll health did not invalidate an idle Delivery watch");
+        };
+        anyhow::ensure!(error.to_string().contains("polling is stale"));
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_ready_replay_stays_unavailable_until_every_live_subscriber_accepts_it() -> Result<()>
+    {
+        let subscribers = Arc::new(Mutex::new(SubscriberHub::default()));
+        let mut state = DeliveryEventStreamState::Unknown;
+        anyhow::ensure!(publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Unavailable,
+            "watch exited",
+        ));
+
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let delivery_gap_pending = Arc::new(AtomicBool::new(false));
+        let blocked = SubscriberSender {
+            sender,
+            queued: Arc::clone(&queued),
+            delivery_gap_pending: Arc::clone(&delivery_gap_pending),
+            data_capacity: 1,
+        };
+        blocked.send(delivery_event_stream_status_event(
+            DELIVERY_EVENT_STREAM_UNAVAILABLE,
+            "unavailable",
+            "watch exited",
+        )?)?;
+        blocked.send(ModuleTransportEvent::new(
+            RUNTIME_MODULE,
+            "daemonStarted",
+            vec![json!({ "simulated": true })],
+        )?)?;
+        {
+            let mut hub = subscribers
+                .lock()
+                .map_err(|_| anyhow::anyhow!("test subscriber hub is unavailable"))?;
+            hub.senders.push(blocked);
+        }
+
+        anyhow::ensure!(!publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Ready,
+            "subscription active",
+        ));
+        anyhow::ensure!(state == DeliveryEventStreamState::Unavailable);
+
+        let mut late = {
+            let mut hub = subscribers
+                .lock()
+                .map_err(|_| anyhow::anyhow!("test subscriber hub is unavailable"))?;
+            anyhow::ensure!(
+                hub.snapshot
+                    .iter()
+                    .any(|event| event.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE)
+            );
+            anyhow::ensure!(
+                !hub.snapshot
+                    .iter()
+                    .any(|event| event.event() == DELIVERY_EVENT_STREAM_READY)
+            );
+            subscribe_to_hub(&mut hub)?
+        };
+        let replay = late
+            .next_within(Duration::from_millis(25))?
+            .context("missing retained Delivery stream status")?;
+        anyhow::ensure!(replay.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE);
+
+        let mut blocked_subscription = LocalNodeModuleSubscription {
+            receiver,
+            queued,
+            delivery_gap_pending,
+        };
+        anyhow::ensure!(
+            blocked_subscription
+                .next_within(Duration::from_millis(25))?
+                .is_some()
+        );
+        anyhow::ensure!(
+            blocked_subscription
+                .next_within(Duration::from_millis(25))?
+                .is_some()
+        );
+        anyhow::ensure!(publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Ready,
+            "subscription active",
+        ));
+        anyhow::ensure!(state == DeliveryEventStreamState::Ready);
+        anyhow::ensure!(
+            blocked_subscription
+                .next_within(Duration::from_millis(25))?
+                .context("missing Delivery ready after queue drain")?
+                .event()
+                == DELIVERY_EVENT_STREAM_READY
+        );
+        anyhow::ensure!(
+            late.next_within(Duration::from_millis(25))?
+                .context("missing Delivery ready for late subscriber")?
+                .event()
+                == DELIVERY_EVENT_STREAM_READY
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_stream_reason_is_utf8_safe_and_bounded() {
+        let reason = "é".repeat(DELIVERY_EVENT_REASON_LIMIT);
+        let bounded = bounded_delivery_event_reason(&reason);
+
+        assert!(bounded.len() <= DELIVERY_EVENT_REASON_LIMIT);
+        assert!(bounded.is_char_boundary(bounded.len()));
+    }
+
+    #[test]
+    fn delivery_subscriber_overflow_enqueues_gap_status_and_requests_reconnect() -> Result<()> {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let delivery_gap_pending = Arc::new(AtomicBool::new(false));
+        let subscribers = Arc::new(Mutex::new(SubscriberHub {
+            senders: vec![SubscriberSender {
+                sender,
+                queued: Arc::clone(&queued),
+                delivery_gap_pending: Arc::clone(&delivery_gap_pending),
+                data_capacity: 1,
+            }],
+            snapshot: Vec::new(),
+        }));
+        let mut subscription = LocalNodeModuleSubscription {
+            receiver,
+            queued,
+            delivery_gap_pending,
+        };
+        let native_event = |request_id: &str| {
+            ModuleTransportEvent::new(
+                DELIVERY_MODULE,
+                "messageSent",
+                vec![Value::String(request_id.to_owned())],
+            )
+        };
+
+        anyhow::ensure!(publish_incremental_events(
+            &subscribers,
+            vec![native_event("request-1")?],
+        ));
+        anyhow::ensure!(!publish_incremental_events(
+            &subscribers,
+            vec![native_event("request-2")?],
+        ));
+
+        let delivered = subscription
+            .next_within(Duration::from_millis(25))?
+            .context("missing queued Delivery event")?;
+        anyhow::ensure!(delivered.event() == "messageSent");
+        let gap = subscription
+            .next_within(Duration::from_millis(25))?
+            .context("missing Delivery overflow gap status")?;
+        anyhow::ensure!(gap.event() == DELIVERY_EVENT_STREAM_UNAVAILABLE);
+        anyhow::ensure!(
+            gap.args()
+                .first()
+                .and_then(|arg| arg.get("reason"))
+                .and_then(Value::as_str)
+                .is_some_and(|reason| reason.contains("overflowed"))
+        );
+        anyhow::ensure!(
+            subscription
+                .next_within(Duration::from_millis(1))?
+                .is_none(),
+            "overflowed Delivery event was forwarded after its gap marker"
+        );
+
+        let mut state = DeliveryEventStreamState::Unavailable;
+        anyhow::ensure!(publish_delivery_stream_transition(
+            &subscribers,
+            &mut state,
+            DeliveryEventStreamState::Ready,
+            "subscription active",
+        ));
+        let ready = subscription
+            .next_within(Duration::from_millis(25))?
+            .context("missing Delivery ready after overflow reconnect")?;
+        anyhow::ensure!(ready.event() == DELIVERY_EVENT_STREAM_READY);
+        anyhow::ensure!(publish_incremental_events(
+            &subscribers,
+            vec![native_event("request-3")?],
+        ));
+        let resumed = subscription
+            .next_within(Duration::from_millis(25))?
+            .context("missing Delivery event after overflow reconnect")?;
+        anyhow::ensure!(resumed.event() == "messageSent");
+        Ok(())
+    }
+
+    #[test]
     fn lifecycle_snapshot_keeps_only_the_latest_node_state() -> Result<()> {
         let started =
             ModuleTransportEvent::new("delivery_module", "nodeStarted", vec![Value::Bool(true)])?;
@@ -2577,6 +3520,7 @@ mod tests {
         let poll = ModuleWatcherPoll {
             daemon: DaemonState::Running,
             loaded_modules: ["delivery_module".to_owned()].into_iter().collect(),
+            status_observed_at: Instant::now(),
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_POLL_INTERVAL,
         };
@@ -2595,6 +3539,7 @@ mod tests {
         let poll = ModuleWatcherPoll {
             daemon: DaemonState::Stopped,
             loaded_modules: BTreeSet::new(),
+            status_observed_at: Instant::now(),
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_POLL_INTERVAL,
         };
@@ -2610,12 +3555,14 @@ mod tests {
         let loaded = ModuleWatcherPoll {
             daemon: DaemonState::Running,
             loaded_modules: BTreeSet::from(["delivery_module".to_owned()]),
+            status_observed_at: Instant::now(),
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_POLL_INTERVAL,
         };
         let unavailable = ModuleWatcherPoll {
             daemon: DaemonState::Unavailable,
             loaded_modules: BTreeSet::new(),
+            status_observed_at: Instant::now(),
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_RETRY_INTERVAL,
         };
