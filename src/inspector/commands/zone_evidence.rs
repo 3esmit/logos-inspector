@@ -758,7 +758,7 @@ fn evidence_plan_is_current(report: &ZoneCatalogServiceReport, plan: &EvidenceDe
         return false;
     };
     catalog.metadata.network_scope == plan.network_scope
-        && catalog.metadata.catalog_revision == plan.catalog_revision
+        && catalog.metadata.catalog_revision >= plan.catalog_revision
         && catalog
             .evidence
             .iter()
@@ -1149,6 +1149,46 @@ mod tests {
                     .first()
                     .is_some_and(|row| row.reference.evidence_id == "evidence-operation"),
             "new publication mutated immutable evidence cursor: {second:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sequencer_evidence_fence_survives_catalog_growth_with_same_anchor() -> Result<()> {
+        let plan = payload_plan()?;
+        let mut newer_catalog = evidence_catalog();
+        newer_catalog.metadata.catalog_revision = plan.catalog_revision + 1;
+        let newer_report = verified_report(newer_catalog.clone());
+        ensure!(
+            evidence_plan_is_current(&newer_report, &plan),
+            "catalog growth invalidated retained finalized evidence"
+        );
+
+        let mut mutated_catalog = newer_catalog.clone();
+        let mutated_reference = mutated_catalog
+            .evidence
+            .iter_mut()
+            .find(|reference| reference.evidence_id == plan.row.reference.evidence_id)
+            .context("fenced evidence is missing")?;
+        mutated_reference.operation_index = mutated_reference.operation_index.saturating_add(1);
+        ensure!(
+            !evidence_plan_is_current(&verified_report(mutated_catalog), &plan),
+            "catalog growth retained a fence after mutating its evidence"
+        );
+
+        newer_catalog
+            .evidence
+            .retain(|reference| reference != &plan.row.reference);
+        ensure!(
+            !evidence_plan_is_current(&verified_report(newer_catalog), &plan),
+            "catalog growth retained a fence after removing its evidence"
+        );
+
+        let mut older_catalog = evidence_catalog();
+        older_catalog.metadata.catalog_revision = plan.catalog_revision - 1;
+        ensure!(
+            !evidence_plan_is_current(&verified_report(older_catalog), &plan),
+            "catalog rollback retained a newer evidence fence"
         );
         Ok(())
     }
