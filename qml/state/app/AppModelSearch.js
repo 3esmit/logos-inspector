@@ -231,12 +231,58 @@ function resolveInspectionTarget(root, query) {
             if (String(report.status || "") === "recovery") {
                 zoneInspection.requestedDetailTab = "sources"
                 selectView("zones", false)
-                shell.setResult(qsTr("Search"), qsTr("Select an Active Zone before resolving this L2 target."), true, report)
+                shell.setResult(qsTr("Search"), inspectionRecoveryMessage(root, report), true, report)
                 return
             }
             shell.setResult(qsTr("Search"), qsTr("No matching inspection target found."), true, report)
         })
     }
+}
+
+function inspectionRecoveryMessage(root, report) {
+    const recovery = String(report && report.recovery || "")
+    const warnings = report && Array.isArray(report.warnings) ? report.warnings : []
+    let warning = null
+    for (let index = 0; index < warnings.length; ++index) {
+        const candidate = warnings[index]
+        if (candidate && String(candidate.recovery || "") === recovery) {
+            warning = candidate
+            break
+        }
+    }
+    if (!warning && warnings.length > 0) {
+        warning = warnings[0]
+    }
+    warning = warning || ({})
+    const code = String(warning.code || "")
+    if (recovery === "refresh_context") {
+        if (!root || !root.zoneInspection || !root.zoneInspection.activeZoneContext) {
+            return qsTr("Select an Active Zone before resolving this L2 target.")
+        }
+        if (code === "zone_unverified") {
+            return qsTr("Wait for the Active Zone to finish verification, then retry the search.")
+        }
+        return qsTr("Refresh the Active Zone data, then retry the search.")
+    }
+    if (recovery === "configure_source") {
+        return qsTr("Configure an L2 source for this Active Zone, then retry the search.")
+    }
+    if (recovery === "select_source") {
+        return qsTr("Select an eligible L2 source in Sources, then retry the search.")
+    }
+    if (recovery === "retry") {
+        if (code === "source_unavailable") {
+            return qsTr("The configured L2 source is unavailable. Check Sources, then retry the search.")
+        }
+        if (code === "source_protocol_error") {
+            return qsTr("The configured L2 source returned an invalid response. Check Sources, then retry the search.")
+        }
+        if (code === "cursor_invalidated") {
+            return qsTr("L2 data changed while resolving this target. Retry the search.")
+        }
+        return qsTr("L2 target resolution failed. Retry the search.")
+    }
+    return qsTr("Target resolution needs attention. Check Sources, then retry the search.")
 }
 
 function dedupeInspectionCandidates(candidates) {

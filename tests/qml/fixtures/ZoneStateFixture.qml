@@ -71,6 +71,10 @@ QtObject {
     property var zoneDetail: FixtureData.detailFor(activeZoneId)
     property var networkScope: FixtureData.networkScope()
     property string networkScopeKey: "genesis_id:" + FixtureData.identity("f")
+    property var targetResolutionReport: null
+    property var targetResolutionCandidates: []
+    property string targetResolutionStatus: ""
+    property string targetResolutionError: ""
 
     property int l2BlocksLimit: 25
     property string l2BlocksExactSourceId: ""

@@ -3061,6 +3061,52 @@ TestCase {
         compare(callCountFor("inspectionResolveTarget"), 0)
     }
 
+    function test_chain_search_source_unavailable_reports_retry_action() {
+        setActiveZone("")
+        fakeHost.responses = {
+            inspectionResolveTarget: function(args) {
+                const request = args[0]
+                return {
+                    ok: true,
+                    value: {
+                        report_kind: "inspection.target_resolution",
+                        schema_version: 1,
+                        query: request.query,
+                        request_revision: request.request_revision,
+                        context_revision: request.active_zone_context.context_revision,
+                        status: "recovery",
+                        candidates: [],
+                        recovery: "retry",
+                        warnings: [{
+                            code: "source_capability_unavailable",
+                            recovery: "none"
+                        }, {
+                            code: "source_unavailable",
+                            recovery: "retry"
+                        }]
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.entityNavigation.routeSearch("l2:27102")
+
+        tryCompare(model.zoneInspection, "targetResolutionStatus", "recovery")
+        compare(model.zoneInspection.requestedDetailTab, "sources")
+        compare(model.shell.currentView, "zones")
+        compare(model.shell.resultTitle, "Search")
+        compare(model.shell.resultIsError, true)
+        compare(model.shell.resultText,
+            "The configured L2 source is unavailable. Check Sources, then retry the search.")
+        verify(model.shell.resultText.indexOf("Select an Active Zone") < 0)
+        compare(callCountFor("inspectionResolveTarget"), 1)
+        compare(callCountFor("zoneL2BlockDetail"), 0)
+        compare(model.zoneInspection.activeZoneContext.selected_sequencer_source_id, "seq-a")
+        compare(model.zoneInspection.activeZoneContext.indexer_source_id, "idx-a")
+    }
+
     function test_typed_navigation_rejects_wrong_network_references() {
         setActiveZone("")
         const wrongScope = { kind: "genesis_id", genesis_id: "ff".repeat(32) }
