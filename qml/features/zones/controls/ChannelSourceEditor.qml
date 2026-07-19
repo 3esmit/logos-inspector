@@ -29,8 +29,9 @@ Rectangle {
     readonly property bool dirty: labelField.text.trim() !== root.initialLabel
         || root.targetKind !== root.initialTargetKind
         || root.targetValue !== root.initialTargetValue
-    readonly property bool validDraft: root.targetKind === "module"
-        || (root.adapterAcceptsInput("rpc_endpoint") && root.targetValue.length > 0)
+    readonly property bool validDraft: root.targetModeImplemented(root.targetKind)
+        && (root.targetKind === "module"
+            || (root.adapterAcceptsInput("rpc_endpoint") && root.targetValue.length > 0))
     signal saved()
     signal cancelled()
     signal reloadRequested()
@@ -44,9 +45,6 @@ Rectangle {
 
     ListModel {
         id: targetOptions
-
-        ListElement { value: "rpc"; label: "RPC" }
-        ListElement { value: "module"; label: "Module" }
     }
 
     ColumnLayout {
@@ -107,6 +105,16 @@ Rectangle {
             onSelected: function (value) {
                 root.targetKind = value
             }
+        }
+
+        Text {
+            visible: !root.targetModeImplemented(root.targetKind)
+            text: qsTr("This source mode is unavailable. Select a supported mode before saving.")
+            color: root.theme.warning
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: root.theme.dataText
+            Layout.fillWidth: true
         }
 
         TextField {
@@ -236,6 +244,7 @@ Rectangle {
 
     function begin(nextRole, nextSource, revision) {
         role = String(nextRole || "sequencer")
+        rebuildTargetOptions()
         source = nextSource || null
         mode = source ? "edit" : "add"
         expectedRevision = Number(revision || 0)
@@ -305,9 +314,7 @@ Rectangle {
     }
 
     function selectedAdapterPolicy() {
-        const family = role === "indexer"
-            ? "execution_zone_indexer" : "execution_zone_sequencer"
-        const modes = SourcePolicyCatalog.sourceModes(family)
+        const modes = sourceModes()
         for (let i = 0; i < modes.length; ++i) {
             const mode = modes[i] || {}
             if (String(mode.key || "") === targetKind) {
@@ -315,6 +322,44 @@ Rectangle {
             }
         }
         return ({})
+    }
+
+    function sourceModes() {
+        const family = role === "indexer"
+            ? "execution_zone_indexer" : "execution_zone_sequencer"
+        return SourcePolicyCatalog.sourceModes(family)
+    }
+
+    function targetModeImplemented(value) {
+        const key = String(value || "")
+        const modes = sourceModes()
+        for (let i = 0; i < modes.length; ++i) {
+            if (String(modes[i] && modes[i].key || "") === key) {
+                return modes[i].implemented === true
+            }
+        }
+        return false
+    }
+
+    function rebuildTargetOptions() {
+        targetOptions.clear()
+        const modes = sourceModes()
+        for (let i = 0; i < modes.length; ++i) {
+            const mode = modes[i] || ({})
+            if (mode.implemented !== true) {
+                continue
+            }
+            const key = String(mode.key || "")
+            if (!key.length) {
+                continue
+            }
+            targetOptions.append({
+                value: key,
+                label: key === "rpc" ? qsTr("RPC")
+                    : (key === "module" ? qsTr("Module")
+                        : String(mode.label || key))
+            })
+        }
     }
 
     function adapterAcceptsInput(inputKey) {
