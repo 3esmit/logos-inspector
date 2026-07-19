@@ -4,8 +4,10 @@ use super::*;
 use crate::{
     inspection::NetworkScope,
     source_routing::channel_sources::{
-        ChannelSourceBindingState, ChannelSourceConfig, ChannelSourceLastGood, ChannelSourceTarget,
-        ConfiguredIndexerSource, ConfiguredSequencerSource, PersistedSequencerAttestation,
+        ChannelSourceBindingState, ChannelSourceConfig, ChannelSourceCurrentFailure,
+        ChannelSourceFailureKind, ChannelSourceLastGood, ChannelSourceProbeStage,
+        ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
+        PersistedSequencerAttestation,
     },
 };
 
@@ -68,6 +70,59 @@ fn never_claims_convergence_from_one_eligible_source() -> Result<()> {
     ensure!(
         projection.selected_head.as_ref().map(|head| head.block_id) == Some(10),
         "selected source did not supply summary head"
+    );
+    Ok(())
+}
+
+#[test]
+fn projects_degraded_health_without_discarding_last_good_source_facts() -> Result<()> {
+    let channel_id = id('8');
+    let config = config(&channel_id, &[1], false);
+    let mut degraded = sequencer(1, &channel_id, 10, Some("aa"));
+    degraded.health = ChannelSourceHealthState::Degraded;
+    degraded.current_failure = Some(ChannelSourceCurrentFailure {
+        kind: ChannelSourceFailureKind::Unavailable,
+        stage: ChannelSourceProbeStage::Health,
+        diagnostic: "health probe failed".to_owned(),
+        failed_at_unix: 11,
+        consecutive_failures: 1,
+    });
+    let snapshot = snapshot(&config, vec![degraded]);
+    let projection = project_zone_sources(
+        ZoneKind::SequencerZone,
+        &channel_id,
+        Some(&config),
+        &snapshot,
+    );
+
+    ensure!(
+        projection.source_status == L2SourceStatus::Degraded,
+        "selected source aggregate status was not degraded"
+    );
+    ensure!(
+        projection.agreement.state == SequencerAgreementState::SingleSource,
+        "degraded last-good source stopped participating in comparison"
+    );
+    ensure!(
+        projection.selected_head.as_ref().map(|head| head.block_id) == Some(10),
+        "degraded source discarded its last-good head"
+    );
+    let observation = projection
+        .observations
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("degraded observation was not projected"))?;
+    ensure!(
+        observation.last_error.as_deref() == Some("health probe failed"),
+        "degraded observation discarded its diagnostic"
+    );
+    ensure!(
+        observation.health == ZoneSourceHealth::Degraded,
+        "degraded observation was projected as another health state"
+    );
+    let serialized = serde_json::to_value(observation)?;
+    ensure!(
+        serialized.get("health").and_then(serde_json::Value::as_str) == Some("degraded"),
+        "degraded observation was serialized as another health state"
     );
     Ok(())
 }

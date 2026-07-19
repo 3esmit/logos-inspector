@@ -744,6 +744,7 @@ pub enum ZoneSourceHealth {
     Stale,
     ChannelMismatch,
     Unknown,
+    Degraded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
