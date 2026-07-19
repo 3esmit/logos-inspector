@@ -197,12 +197,16 @@ Rectangle {
             ActionButton {
                 theme: root.theme
                 text: qsTr("Reload")
+                enabled: !root.zoneState.sourceMutationInFlight
                 onClicked: root.reloadRequested()
             }
         }
 
         Text {
-            visible: root.zoneState.sourceMutationError.length > 0 && !root.conflict
+            visible: root.zoneState.sourceMutationError.length > 0
+                && (!root.conflict
+                    || root.zoneState.sourceMutationError.toLowerCase()
+                        .indexOf("revision conflict") < 0)
             text: root.zoneState.sourceMutationError
             color: root.theme.error
             textFormat: Text.PlainText

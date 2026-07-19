@@ -335,20 +335,29 @@ ColumnLayout {
 
     function reloadDraft() {
         const sourceId = String(draftSource && draftSource.source_id || "")
-        let currentSource = null
-        if (draftRole === "indexer") {
-            currentSource = config.indexer_source || null
-        } else {
-            const sources = Array.isArray(config.sequencer_sources) ? config.sequencer_sources : []
-            for (let i = 0; i < sources.length; ++i) {
-                if (String(sources[i] && sources[i].source_id || "") === sourceId) {
-                    currentSource = sources[i]
-                    break
+        return zoneState.reloadChannelSourceConfig(function (response) {
+            if (!response || response.ok !== true || !response.value
+                    || !response.value.config || !editorLoader.editor) {
+                return
+            }
+            const currentConfig = response.value.config
+            let currentSource = null
+            if (draftRole === "indexer") {
+                currentSource = currentConfig.indexer_source || null
+            } else {
+                const sources = Array.isArray(currentConfig.sequencer_sources)
+                    ? currentConfig.sequencer_sources : []
+                for (let i = 0; i < sources.length; ++i) {
+                    if (String(sources[i] && sources[i].source_id || "") === sourceId) {
+                        currentSource = sources[i]
+                        break
+                    }
                 }
             }
-        }
-        draftSource = currentSource
-        initializeEditor()
+            draftSource = currentSource
+            editorLoader.editor.begin(draftRole, draftSource,
+                Number(currentConfig.config_revision || 0))
+        })
     }
 
     function selectSequencer(source) {

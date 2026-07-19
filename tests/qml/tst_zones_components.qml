@@ -213,6 +213,9 @@ TestCase {
         zoneState.evidenceDetail = null
         zoneState.lastMutationRequest = null
         zoneState.mutationFailure = ""
+        zoneState.sourceReloadConfig = null
+        zoneState.sourceReloadFailure = ""
+        zoneState.sourceReloadCount = 0
         zoneState.managedIndexerStatusStale = false
         zoneState.managedIndexerError = ""
         zoneState.managedIndexerResult = ""
@@ -858,6 +861,54 @@ TestCase {
         verify(editor.conflict)
         compare(endpoint.text, "https://conflict.example/")
         verify(sources.hasDirtyDraft)
+    }
+
+    function test_source_revision_conflict_reload_uses_current_persisted_revision() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "channelSourcesSection") !== null
+        })
+        const sources = findChild(detail, "channelSourcesSection")
+        const originalConfig = zoneState.zoneDetail.channel_source_config
+        const originalSource = originalConfig.sequencer_sources[0]
+        sources.beginEditor("sequencer", originalSource)
+        tryVerify(function () {
+            return findChild(sources, "channelSourceEditor") !== null
+        })
+        const editor = findChild(sources, "channelSourceEditor")
+        const endpoint = findChild(sources, "channelSourceEndpointField")
+        endpoint.text = "https://stale-draft.example/"
+        zoneState.mutationFailure = "Channel source configuration revision conflict"
+
+        verify(editor.submit())
+        verify(editor.conflict)
+        compare(editor.expectedRevision, 7)
+        compare(endpoint.text, "https://stale-draft.example/")
+
+        zoneState.sourceReloadFailure = "Current source configuration is unavailable"
+        sources.reloadDraft()
+        compare(zoneState.sourceReloadCount, 1)
+        verify(editor.conflict)
+        compare(editor.expectedRevision, 7)
+        compare(endpoint.text, "https://stale-draft.example/")
+        verify(hasVisibleText(editor, "Current source configuration is unavailable"))
+
+        const currentConfig = JSON.parse(JSON.stringify(originalConfig))
+        currentConfig.config_revision = 8
+        currentConfig.sequencer_sources[0].label = "Concurrent source revision"
+        currentConfig.sequencer_sources[0].target.endpoint = "https://current.example/"
+        zoneState.sourceReloadFailure = ""
+        zoneState.sourceReloadConfig = currentConfig
+        sources.reloadDraft()
+
+        compare(zoneState.sourceReloadCount, 2)
+        compare(editor.expectedRevision, 8)
+        compare(editor.source.label, "Concurrent source revision")
+        compare(endpoint.text, "https://current.example/")
+        verify(!editor.conflict)
+        verify(!editor.dirty)
+        compare(zoneState.sourceMutationError, "")
     }
 
     function test_l2_tab_renders_conflicts_and_exact_block_provenance() {

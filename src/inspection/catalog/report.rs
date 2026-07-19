@@ -122,6 +122,13 @@ pub struct ZoneCatalogControlRequest {
 
 pub type ChannelSourceApplyRequest = ChannelSourceConfigApplyRequest;
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelSourceConfigCurrentRequest {
+    pub network_scope: NetworkScope,
+    pub channel_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ZoneCatalogConfigureReport {
     pub report_kind: &'static str,
@@ -362,6 +369,16 @@ pub struct ZoneEvidencePayloadReleaseReport {
     pub schema_version: u32,
     pub session_id: String,
     pub released: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelSourceConfigCurrentReport {
+    pub report_kind: &'static str,
+    pub schema_version: u32,
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub channel_id: String,
+    pub config: ChannelSourceConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
