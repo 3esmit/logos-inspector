@@ -552,6 +552,24 @@ TestCase {
         }
     }
 
+    function l2IndexerRoute(sourceId) {
+        return {
+            route: {
+                policy: "indexer_primary",
+                attempts: [{
+                    source_id: String(sourceId),
+                    source_role: "indexer",
+                    outcome: "returned",
+                    contribution: "payload",
+                    finality: "finalized",
+                    source_config_revision: 7,
+                    retrieval: "live"
+                }]
+            },
+            route_completeness: "single_configured"
+        }
+    }
+
     function l2Block(blockId, hashValue, observations) {
         return {
             summary: {
@@ -2577,7 +2595,7 @@ TestCase {
                 scanned_blocks: 5,
                 finalized: true
             }
-        })))
+        }, l2IndexerRoute("idx-a"))))
         compare(l2ToolState.l2TransferRecipients[0].received, "10")
         compare(l2ToolState.l2TransferRecipients[0].source,
             "transfer_outputs_and_account_refs")
@@ -2599,7 +2617,7 @@ TestCase {
                 scanned_blocks: 5,
                 finalized: true
             }
-        })))
+        }, l2IndexerRoute("idx-a"))))
         compare(l2ToolState.l2TransferRecipients.length, 1)
         compare(l2ToolState.l2TransferRecipients[0].received, "3")
         compare(l2ToolState.l2TransfersHistory.length, 1)
@@ -2611,6 +2629,31 @@ TestCase {
         compare(l2ToolState.l2TransfersNewestBlock, 20)
         compare(l2ToolState.l2TransfersOldestBlock, 16)
         compare(l2ToolState.l2TransfersHistory.length, 0)
+    }
+
+    function test_l2_transfer_page_rejects_unproven_indexer_route() {
+        loadConfiguredL2Zone()
+        verify(l2ToolState.refreshL2Transfers() !== null)
+        const request = gateway.lastRequest("zoneL2Transfers")
+        const invalidRoute = l2IndexerRoute("other-indexer")
+        gateway.respond(request, ok(l2Report(request, "lez.transfers", {
+            outcome: "found",
+            value: {
+                recipients: [],
+                next_cursor: null,
+                has_more: false,
+                newest_block: 20,
+                oldest_block: 16,
+                scanned_blocks: 5,
+                finalized: true
+            }
+        }, invalidRoute)))
+
+        compare(l2ToolState.l2TransferRecipients.length, 0)
+        compare(l2ToolState.l2TransfersReport, null)
+        compare(l2ToolState.l2TransfersLoaded, false)
+        compare(l2ToolState.l2TransfersError,
+            "Transfer window returned data from another source.")
     }
 
     function test_target_resolution_is_request_and_context_fenced() {
