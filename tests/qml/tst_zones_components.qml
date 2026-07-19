@@ -82,6 +82,7 @@ TestCase {
         property var zoneInspection: zoneState
         property string selectedView: ""
         property string programTab: ""
+        property var pendingInspectionEntityRef: null
         property alias registeredIdls: registeredIdlRegistry
         property var programExecution: programExecutionMock
 
@@ -171,6 +172,7 @@ TestCase {
         registeredIdlRegistry.clear()
         appModel.selectedView = ""
         appModel.programTab = ""
+        appModel.pendingInspectionEntityRef = null
         page.filter = "all"
         page.query = ""
         const detail = findChild(page, "zoneDetail")
@@ -836,9 +838,17 @@ TestCase {
     }
 
     function test_data_channel_l2_tab_is_explicitly_not_applicable() {
+        appModel.pendingInspectionEntityRef = {
+            canonical_key: "queued-account"
+        }
         verify(page.requestZoneActivation(FixtureData.identity("8")))
+        compare(appModel.pendingInspectionEntityRef, null)
         const detail = findChild(page, "zoneDetail")
+        appModel.pendingInspectionEntityRef = {
+            canonical_key: "queued-account"
+        }
         verify(detail.requestTab("l2"))
+        compare(appModel.pendingInspectionEntityRef, null)
         tryVerify(function () {
             return findChild(detail, "zoneL2Inspector") !== null
         })

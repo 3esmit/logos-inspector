@@ -309,6 +309,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 sourceComponent: ZoneDetail {
                     theme: root.theme
+                    model: root.model
                     zoneState: root.zoneState
                     initialTab: root.initialDetailTab
                     sourceEditorInitiallyOpen: root.sourceEditorInitiallyOpen
@@ -334,7 +335,11 @@ ColumnLayout {
     }
 
     function requestZoneActivation(channelId) {
-        if (channelId.length === 0 || channelId === zoneState.activeZoneId) {
+        if (channelId.length === 0) {
+            return false
+        }
+        cancelPendingInspectionOpen()
+        if (channelId === zoneState.activeZoneId) {
             return false
         }
         if (hasDirtyDraft) {
@@ -350,6 +355,7 @@ ColumnLayout {
         if (channelId.length === 0) {
             return false
         }
+        cancelPendingInspectionOpen()
         if (hasDirtyDraft) {
             pendingZoneId = channelId
             pendingZoneView = "sequencerDashboard"
@@ -369,6 +375,13 @@ ColumnLayout {
             })
         }
         return true
+    }
+
+    function cancelPendingInspectionOpen() {
+        if (root.model
+                && root.model.pendingInspectionEntityRef !== undefined) {
+            root.model.pendingInspectionEntityRef = null
+        }
     }
 
     function discardSourceDraft() {

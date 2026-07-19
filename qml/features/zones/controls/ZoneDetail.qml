@@ -12,6 +12,7 @@ ColumnLayout {
 
     required property Theme theme
     required property var zoneState
+    property var model: null
     property string initialTab: "overview"
     property bool sourceEditorInitiallyOpen: false
     property string currentTab: initialTab
@@ -248,6 +249,10 @@ ColumnLayout {
     }
 
     function requestTab(value) {
+        if (root.model
+                && root.model.pendingInspectionEntityRef !== undefined) {
+            root.model.pendingInspectionEntityRef = null
+        }
         const nextTab = String(value || "overview")
         if (nextTab === currentTab) {
             return true

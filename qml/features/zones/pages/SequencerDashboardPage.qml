@@ -164,6 +164,9 @@ ColumnLayout {
     }
 
     function selectTab(value) {
+        if (root.model.pendingInspectionEntityRef !== undefined) {
+            root.model.pendingInspectionEntityRef = null
+        }
         const tab = root.normalizedTab(value)
         root.currentTab = tab
         root.zoneState.requestedDetailTab = tab === "blocks" ? "l2" : tab

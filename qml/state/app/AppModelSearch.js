@@ -265,6 +265,7 @@ function openInspectionCandidate(root, candidate, recordHistory) {
 
 function openInspectionEntityRef(root, entity, recordHistory) {
     with (root) {
+        pendingInspectionEntityRef = null
         if (!entity || typeof entity !== "object") {
             return false
         }
@@ -294,7 +295,27 @@ function openInspectionEntityRef(root, entity, recordHistory) {
             entityNavigation.openBlockchainBlock(target)
             return true
         }
-        if (layer !== "l2" || !inspectionEntityRefMatchesCatalog(root, entity)) {
+        if (layer !== "l2") {
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
+        const catalogPending = inspectionCatalogPending(root)
+        const catalogFailure = inspectionCatalogFailure(root)
+        const scopeMatches = inspectionNetworkScopeMatches(root, entity.network_scope)
+        if (!scopeMatches && inspectionNetworkScopeKnown(root)) {
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
+        if (catalogFailure.length > 0) {
+            shell.setResult(qsTr("Open reference"),
+                qsTr("Zone catalog is unavailable: %1").arg(catalogFailure),
+                true, entity)
+            selectView("zones", false)
+            return false
+        }
+        if (!scopeMatches && !catalogPending) {
             shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
             selectView("zones", false)
             return false
@@ -304,6 +325,16 @@ function openInspectionEntityRef(root, entity, recordHistory) {
         zoneInspection.requestedDetailTab = tab
         zoneInspection.requestedL2View = String(entity.entity_kind || "") === "transaction"
             ? "transaction" : (String(entity.entity_kind || "") === "block" ? "block" : "blocks")
+        if (catalogPending) {
+            pendingInspectionEntityRef = entity
+            selectView(sequencerView ? "sequencerDashboard" : "zones", false)
+            return true
+        }
+        if (!scopeMatches || !inspectionEntityRefMatchesCatalog(root, entity)) {
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
         selectView(sequencerView ? "sequencerDashboard" : "zones", false)
         if (!zoneInspection.activeZoneContext
                 || String(zoneInspection.activeZoneId || "") !== String(entity.channel_id || "")) {
@@ -321,20 +352,167 @@ function openInspectionEntityRef(root, entity, recordHistory) {
 function resumePendingInspectionEntityRef(root) {
     with (root) {
         const entity = pendingInspectionEntityRef
-        if (!entity || !zoneInspection || zoneInspection.detailInFlight
-                || zoneInspection.detailStale || !zoneInspection.zoneDetail) {
+        if (!entity || !zoneInspection) {
             return false
         }
-        if (String(zoneInspection.activeZoneId || "") !== String(entity.channel_id || "")) {
+        const scopeMatches = inspectionNetworkScopeMatches(root, entity.network_scope)
+        const scopeKnown = inspectionNetworkScopeKnown(root)
+        const catalogPending = inspectionCatalogPending(root)
+        if (!scopeMatches && scopeKnown) {
+            pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
+        const catalogFailure = inspectionCatalogFailure(root)
+        if (catalogFailure.length > 0) {
+            pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"),
+                qsTr("Zone catalog is unavailable: %1").arg(catalogFailure),
+                true, entity)
+            selectView("zones", false)
+            return false
+        }
+        if (!scopeMatches) {
+            if (catalogPending) {
+                return false
+            }
+            pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
+        if (catalogPending) {
             return false
         }
         if (!inspectionEntityRefMatchesCatalog(root, entity)) {
             pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
+        const tab = inspectionDetailTab(entity.entity_kind)
+        const sequencerView = inspectionEntityUsesSequencerDashboard(root, entity)
+        zoneInspection.requestedDetailTab = tab
+        zoneInspection.requestedL2View = String(entity.entity_kind || "") === "transaction"
+            ? "transaction" : (String(entity.entity_kind || "") === "block" ? "block" : "blocks")
+        selectView(sequencerView ? "sequencerDashboard" : "zones", false)
+        if (!zoneInspection.activeZoneContext
+                || String(zoneInspection.activeZoneId || "") !== String(entity.channel_id || "")) {
+            if (zoneInspection.activateZone(String(entity.channel_id || ""))) {
+                return true
+            }
+            pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"), qsTr("Stored Zone could not be activated."), true, entity)
+            return false
+        }
+        if (zoneInspection.detailInFlight) {
+            return false
+        }
+        if (String(zoneInspection.detailError || "").length > 0) {
+            pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"),
+                qsTr("Stored Zone detail could not be loaded: %1").arg(
+                    String(zoneInspection.detailError)), true, entity)
+            return false
+        }
+        if (zoneInspection.detailStale || !zoneInspection.zoneDetail) {
+            zoneInspection.reconcileDetail()
+            if (zoneInspection.detailInFlight) {
+                return false
+            }
+            pendingInspectionEntityRef = null
+            shell.setResult(qsTr("Open reference"), qsTr("Stored Zone detail is unavailable."), true, entity)
             return false
         }
         pendingInspectionEntityRef = null
         return openInspectionEntityInActiveZone(root, entity)
     }
+}
+
+function inspectionCatalogPending(root) {
+    const state = root && root.zoneInspection ? root.zoneInspection : null
+    if (!state) {
+        return false
+    }
+    if (inspectionCatalogReady(root)
+            || inspectionCatalogFailure(root).length > 0) {
+        return false
+    }
+    if (state.started !== true || String(state.desiredSourceKey || "").length === 0) {
+        return false
+    }
+    if (state.configureInFlight === true || state.statusInFlight === true
+            || state.summaryInFlight === true || state.controlInFlight === true
+            || state.automaticRetryPending === true) {
+        return true
+    }
+    const verification = String(state.verification || "empty")
+    return state.catalogConfigured !== true || !state.catalogStatus
+        || verification !== "verified"
+        || String(state.networkScopeKey || "").length === 0
+        || state.summaryLoaded !== true || state.summaryStale === true
+        || (typeof state.summaryMatchesStatus === "function"
+            && !state.summaryMatchesStatus())
+}
+
+function inspectionCatalogReady(root) {
+    const state = root && root.zoneInspection ? root.zoneInspection : null
+    if (!state || state.started !== true) {
+        return false
+    }
+    if (state.controlInFlight === true
+            || state.automaticRetryPending === true) {
+        return false
+    }
+    if (String(state.currentError || "").length > 0
+            && !(state.ingestion
+                && state.ingestion.worker_running === true)) {
+        return false
+    }
+    if (typeof state.summaryMatchesStatus === "function"
+            && !state.summaryMatchesStatus()) {
+        return false
+    }
+    return state.catalogConfigured === true && !!state.catalogStatus
+        && String(state.verification || "") === "verified"
+        && String(state.networkScopeKey || "").length > 0
+        && state.summaryLoaded === true && state.summaryStale !== true
+        && state.summaryInFlight !== true
+}
+
+function inspectionCatalogFailure(root) {
+    const state = root && root.zoneInspection ? root.zoneInspection : null
+    if (!state || inspectionCatalogReady(root)) {
+        return ""
+    }
+    if (state.controlInFlight === true || state.statusInFlight === true) {
+        return ""
+    }
+    if (String(state.configureError || "").length > 0
+            && state.configureInFlight !== true) {
+        return String(state.configureError)
+    }
+    if (String(state.statusError || "").length > 0
+            && state.statusInFlight !== true) {
+        return String(state.statusError)
+    }
+    if (String(state.summaryError || "").length > 0
+            && state.summaryInFlight !== true) {
+        return String(state.summaryError)
+    }
+    const workerRunning = state.ingestion
+        && state.ingestion.worker_running === true
+    if (String(state.currentError || "").length > 0
+            && !workerRunning && state.controlInFlight !== true) {
+        return String(state.currentError)
+    }
+    const verification = String(state.verification || "empty")
+    if ((verification === "source_behind" || verification === "mismatch")
+            && !workerRunning && state.controlInFlight !== true) {
+        return qsTr("Zone catalog verification is %1.").arg(verification)
+    }
+    return ""
 }
 
 function inspectionEntityRefMatchesCatalog(root, entity) {
@@ -360,6 +538,12 @@ function inspectionNetworkScopeMatches(root, scope) {
     return root.zoneInspection
         && root.zoneInspection.scopeKey(scope)
             === root.zoneInspection.scopeKey(root.zoneInspection.networkScope)
+}
+
+function inspectionNetworkScopeKnown(root) {
+    return root.zoneInspection
+        && String(root.zoneInspection.scopeKey(
+            root.zoneInspection.networkScope)).length > 0
 }
 
 function inspectionEntityUsesSequencerDashboard(root, entity) {

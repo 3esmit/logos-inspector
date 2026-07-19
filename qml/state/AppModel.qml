@@ -911,6 +911,86 @@ QtObject {
             Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
             entityNavigationState.projectZoneDashboard()
         }
+
+        function onZoneSummariesChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onCatalogConfiguredChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onStartedChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onDesiredSourceKeyChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onCatalogStatusChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onVerificationChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onNetworkScopeChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onConfigureInFlightChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onStatusInFlightChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onSummaryInFlightChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onControlInFlightChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onAutomaticRetryPendingChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onConfigureErrorChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onStatusErrorChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onSummaryErrorChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onCurrentErrorChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onSummaryStaleChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onDetailInFlightChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onDetailStaleChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
+
+        function onDetailErrorChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+        }
     }
 
     property Connections zoneL2NavigationConnections: Connections {
