@@ -29,7 +29,7 @@ use profile::{
     local_wallet_binary_is_path_like, local_wallet_readiness, parse_local_wallet_profile,
     resolve_local_wallet_accounts_profile, resolve_local_wallet_command_profile,
     resolve_local_wallet_create_profile, resolve_local_wallet_profile,
-    wallet_home_from_environment, wallet_home_is_configured,
+    resolve_local_wallet_send_profile, wallet_home_from_environment, wallet_home_is_configured,
 };
 use runner::{
     CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
@@ -450,7 +450,7 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
     let to_identifier = request.to_identifier.trim();
     validate_wallet_send_recipient(to, to_keys, to_npk, to_vpk)?;
 
-    let wallet = resolve_local_wallet_profile(profile, "send wallet transaction", false)?;
+    let wallet = resolve_local_wallet_send_profile(profile)?;
     let mut args = vec![
         "auth-transfer".to_owned(),
         "send".to_owned(),
@@ -1171,6 +1171,51 @@ mod tests {
         anyhow::ensure!(
             !marker.exists(),
             "advanced command invoked the wallet CLI before validating storage"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_send_requires_storage_before_invoking_cli() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        let marker = directory.path().join("wallet-cli-invoked");
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+
+        let error = local_wallet_send_transaction(
+            json!({
+                "wallet_binary": wallet_binary,
+                "wallet_home": wallet_home,
+                "network_profile": "testnet"
+            }),
+            json!({
+                "from": "Public/sender",
+                "to": "Public/recipient",
+                "amount": "1"
+            }),
+        )
+        .err()
+        .context("wallet send unexpectedly accepted missing wallet storage")?;
+
+        anyhow::ensure!(
+            format!("{error:#}") == "wallet home missing storage.json",
+            "missing storage returned the wrong wallet-send error: {error:#}"
+        );
+        anyhow::ensure!(
+            !marker.exists(),
+            "wallet send invoked the wallet CLI before validating storage"
         );
         Ok(())
     }
