@@ -27,7 +27,8 @@ pub use instruction::{
 use profile::{
     LocalWalletProfileInput, detect_wallet_binary, detect_wallet_home,
     local_wallet_binary_is_path_like, local_wallet_readiness, parse_local_wallet_profile,
-    resolve_local_wallet_profile, wallet_home_from_environment, wallet_home_is_configured,
+    resolve_local_wallet_accounts_profile, resolve_local_wallet_profile,
+    wallet_home_from_environment, wallet_home_is_configured,
 };
 use runner::{
     CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
@@ -304,7 +305,7 @@ fn local_wallet_accounts_with_runner<R: LocalWalletRunner>(
     runner: &R,
     profile: Value,
 ) -> Result<LocalWalletAccountsReport> {
-    let wallet = resolve_local_wallet_profile(profile, "list wallet accounts", true)?;
+    let wallet = resolve_local_wallet_accounts_profile(profile)?;
     let redactions = wallet.redactions();
     let output = runner.run(
         &wallet.wallet_binary,
@@ -1042,6 +1043,47 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn wallet_accounts_require_storage_before_invoking_cli() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        let marker = directory.path().join("wallet-cli-invoked");
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            format!(
+                "#!/bin/sh\ntouch '{}'\necho 'Public/test-account'\n",
+                marker.display()
+            ),
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+
+        let error = local_wallet_accounts(json!({
+            "wallet_binary": wallet_binary,
+            "wallet_home": wallet_home,
+            "network_profile": "testnet"
+        }))
+        .err()
+        .context("account listing unexpectedly accepted missing wallet storage")?;
+
+        anyhow::ensure!(
+            format!("{error:#}") == "wallet home missing storage.json",
+            "missing storage returned the wrong account-list error: {error:#}"
+        );
+        anyhow::ensure!(
+            !marker.exists(),
+            "account listing invoked the wallet CLI before validating storage"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn controlled_wallet_accounts_reaps_cli_at_absolute_deadline() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1053,6 +1095,7 @@ mod tests {
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let wallet_binary = directory.path().join("wallet-test");
         std::fs::write(&wallet_binary, b"#!/bin/sh\nwhile :; do :; done\n")?;
         let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();

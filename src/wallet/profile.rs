@@ -47,6 +47,34 @@ pub(super) fn resolve_local_wallet_profile(
     action: &str,
     require_config: bool,
 ) -> Result<ResolvedLocalWalletProfile> {
+    resolve_local_wallet_profile_with_requirements(
+        profile,
+        action,
+        WalletHomeRequirements {
+            require_config,
+            require_storage: false,
+        },
+    )
+}
+
+pub(super) fn resolve_local_wallet_accounts_profile(
+    profile: Value,
+) -> Result<ResolvedLocalWalletProfile> {
+    resolve_local_wallet_profile_with_requirements(
+        profile,
+        "list wallet accounts",
+        WalletHomeRequirements {
+            require_config: true,
+            require_storage: true,
+        },
+    )
+}
+
+fn resolve_local_wallet_profile_with_requirements(
+    profile: Value,
+    action: &str,
+    requirements: WalletHomeRequirements,
+) -> Result<ResolvedLocalWalletProfile> {
     let profile = parse_local_wallet_profile(profile)?;
     let wallet_binary = profile.wallet_binary.trim();
     if wallet_binary.is_empty() {
@@ -56,14 +84,7 @@ pub(super) fn resolve_local_wallet_profile(
         bail!("wallet binary is not reachable");
     }
 
-    let wallet_home = resolve_wallet_home_from_input(
-        &profile,
-        action,
-        WalletHomeRequirements {
-            require_config,
-            require_storage: false,
-        },
-    )?;
+    let wallet_home = resolve_wallet_home_from_input(&profile, action, requirements)?;
 
     Ok(ResolvedLocalWalletProfile {
         wallet_binary: wallet_binary.to_owned(),
