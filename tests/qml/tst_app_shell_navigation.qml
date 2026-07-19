@@ -268,6 +268,94 @@ TestCase {
                + grid.columnSpacing <= zones.x + 1)
     }
 
+    function test_dirty_zone_source_draft_guards_dashboard_navigation() {
+        const model = findChild(shell, "appModel")
+        const loader = findChild(shell, "pageLoader")
+        verify(model !== null)
+        verify(loader !== null)
+
+        model.stopZoneInspection()
+        const zoneState = model.zoneInspection
+        const channelId = ZoneFixtureData.identity("1")
+        zoneState.verification = "verified"
+        zoneState.summaryStale = false
+        zoneState.zoneSummaries = ZoneFixtureData.zones()
+        zoneState.activeZoneContext = ZoneFixtureData.activeZoneContext(channelId)
+        zoneState.zoneDetail = ZoneFixtureData.detailFor(channelId)
+        zoneState.requestedDetailTab = "overview"
+        model.shell.selectView("zones")
+
+        let zonesPage = null
+        let detail = null
+        let sources = null
+        tryVerify(function () {
+            zonesPage = loader.item
+            detail = zonesPage ? findChild(zonesPage, "zoneDetail") : null
+            return zonesPage !== null && detail !== null
+        })
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            sources = findChild(detail, "channelSourcesSection")
+            return sources !== null
+        })
+        const configuredSource = zoneState.zoneDetail.channel_source_config
+            .sequencer_sources[0]
+        sources.beginEditor("sequencer", configuredSource)
+
+        let endpoint = null
+        tryVerify(function () {
+            endpoint = findChild(sources, "channelSourceEndpointField")
+            return endpoint !== null
+        })
+        endpoint.text = "https://draft-sequencer.example/"
+        tryCompare(zonesPage, "hasDirtyDraft", true)
+        compare(typeof model.navigationGuard, "function")
+        verify(shell.currentPageHasDirtySourceDraft())
+
+        const dashboard = findChild(shell, "navButton_overview")
+        verify(dashboard !== null)
+        mouseClick(dashboard, dashboard.width / 2, dashboard.height / 2)
+
+        let guard = null
+        tryVerify(function () {
+            guard = findChild(shell, "pageNavigationGuard")
+            return model.shell.currentView !== "zones"
+                || (guard !== null && guard.opened)
+        })
+        verify(shell.pendingNavigationRequest !== null)
+        compare(model.shell.currentView, "zones")
+        verify(guard !== null)
+        tryCompare(guard, "opened", true)
+        const cancel = findChild(guard.contentItem, "cancelButton")
+        verify(cancel !== null)
+        mouseClick(cancel, cancel.width / 2, cancel.height / 2)
+        tryCompare(guard, "opened", false)
+        compare(model.shell.currentView, "zones")
+        compare(endpoint.text, "https://draft-sequencer.example/")
+        compare(zonesPage.hasDirtyDraft, true)
+
+        const back = findChild(shell, "navigationBackButton")
+        verify(back !== null)
+        verify(back.enabled)
+        mouseClick(back, back.width / 2, back.height / 2)
+        tryCompare(guard, "opened", true)
+        compare(model.shell.currentView, "zones")
+        const cancelBack = findChild(guard.contentItem, "cancelButton")
+        verify(cancelBack !== null)
+        mouseClick(cancelBack, cancelBack.width / 2, cancelBack.height / 2)
+        tryCompare(guard, "opened", false)
+        compare(endpoint.text, "https://draft-sequencer.example/")
+        compare(zonesPage.hasDirtyDraft, true)
+
+        mouseClick(dashboard, dashboard.width / 2, dashboard.height / 2)
+        tryCompare(guard, "opened", true)
+        const discard = findChild(guard.contentItem, "confirmButton")
+        verify(discard !== null)
+        mouseClick(discard, discard.width / 2, discard.height / 2)
+        tryCompare(model.shell, "currentView", "overview")
+        tryVerify(function () { return loader.item !== zonesPage })
+    }
+
     function verifyButtonNavigation(model, loader, view) {
         const previousSource = loader.sourceComponent
         let button = null

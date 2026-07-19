@@ -12,6 +12,7 @@ Pane {
     required property Theme theme
     required property AppModel model
     property bool compact: false
+    signal navigationRequested(string view)
 
     padding: 18
 
@@ -173,9 +174,7 @@ Pane {
                                 Layout.fillWidth: true
                                 onClicked: {
                                     const view = String(navRow.modelData.view || "")
-                                    Qt.callLater(function () {
-                                        root.model.selectView(view)
-                                    })
+                                    root.navigationRequested(view)
                                 }
                                 ToolTip.visible: (hovered || activeFocus) && root.compact
                                 ToolTip.text: String(navRow.modelData.label || "")

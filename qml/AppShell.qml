@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "components"
+import "components/common"
 import "features/bedrock/pages" as BedrockPages
 import "features/chain/pages" as ChainPages
 import "features/dashboard/pages" as DashboardPages
@@ -25,6 +26,9 @@ Item {
     property QtObject bridgeHost: null
     readonly property bool compact: width < 940
     property int pageLoadSerial: 0
+    property var pendingNavigationRequest: null
+    readonly property ZonePages.ZonesPage loadedZonesPage:
+        pageLoader.item as ZonePages.ZonesPage
 
     Theme {
         id: theme
@@ -39,6 +43,20 @@ Item {
         id: appModel
         objectName: "appModel"
         bridge: bridge
+        navigationGuard: function (kind, payload) {
+            return root.guardNavigation(kind, payload)
+        }
+    }
+
+    ConfirmActionPopup {
+        id: pageNavigationGuard
+
+        objectName: "pageNavigationGuard"
+        theme: theme
+        title: qsTr("Discard source draft")
+        message: qsTr("Discard unsaved Channel source changes before leaving this page?")
+        confirmText: qsTr("Discard")
+        onAccepted: root.acceptGuardedNavigation()
     }
 
     ModuleEventIntake {
@@ -107,6 +125,9 @@ Item {
                 compact: root.compact
                 Layout.preferredWidth: compact ? 96 : 228
                 Layout.fillHeight: true
+                onNavigationRequested: function (view) {
+                    appModel.selectView(view)
+                }
             }
 
             Rectangle {
@@ -253,6 +274,58 @@ Item {
             }
             pageLoader.sourceComponent = root.pageFor(appModel.shell.currentView)
         })
+    }
+
+    function guardNavigation(kind, payload) {
+        if (!root.currentPageHasDirtySourceDraft()) {
+            return false
+        }
+        if (kind === "select_view"
+                && appModel.normalizedNavigationView(payload && payload.view)
+                    === appModel.shell.currentView) {
+            return false
+        }
+        root.pendingNavigationRequest = {
+            kind: String(kind || ""),
+            payload: payload
+        }
+        pageNavigationGuard.open()
+        return true
+    }
+
+    function currentPageHasDirtySourceDraft() {
+        return appModel.shell.currentView === "zones"
+            && root.loadedZonesPage !== null
+            && root.loadedZonesPage.hasDirtyDraft
+    }
+
+    function acceptGuardedNavigation() {
+        const request = root.pendingNavigationRequest
+        root.pendingNavigationRequest = null
+        if (!request) {
+            return false
+        }
+        if (root.loadedZonesPage) {
+            root.loadedZonesPage.discardSourceDraft()
+        }
+        return root.executeGuardedNavigation(request)
+    }
+
+    function executeGuardedNavigation(request) {
+        const payload = request && request.payload ? request.payload : ({})
+        switch (String(request && request.kind || "")) {
+        case "back":
+            return appModel.shell.navigateBack()
+        case "forward":
+            return appModel.shell.navigateForward()
+        case "select_view":
+            return appModel.shell.selectView(payload.view, payload.recordHistory)
+        case "open_settings":
+            return appModel.shell.openSettings(
+                payload.section, payload.subsection, payload.recordHistory)
+        default:
+            return false
+        }
     }
 
     function initialReferenceFromArguments() {
