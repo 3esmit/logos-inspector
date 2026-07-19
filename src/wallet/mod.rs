@@ -27,8 +27,8 @@ pub use instruction::{
 use profile::{
     LocalWalletProfileInput, detect_wallet_binary, detect_wallet_home,
     local_wallet_binary_is_path_like, local_wallet_readiness, parse_local_wallet_profile,
-    resolve_local_wallet_accounts_profile, resolve_local_wallet_profile,
-    wallet_home_from_environment, wallet_home_is_configured,
+    resolve_local_wallet_accounts_profile, resolve_local_wallet_create_profile,
+    resolve_local_wallet_profile, wallet_home_from_environment, wallet_home_is_configured,
 };
 use runner::{
     CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
@@ -367,7 +367,7 @@ fn local_wallet_create_account_with_runner<R: LocalWalletRunner>(
 ) -> Result<LocalWalletCommandReport> {
     let privacy = normalized_wallet_account_privacy(privacy)?;
     let label = label.map(str::trim).filter(|value| !value.is_empty());
-    let wallet = resolve_local_wallet_profile(profile, "create wallet account", false)?;
+    let wallet = resolve_local_wallet_create_profile(profile)?;
     let mut args = vec!["account".to_owned(), "new".to_owned(), privacy.to_owned()];
     if let Some(label) = label {
         args.push("--label".to_owned());
@@ -1085,6 +1085,51 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn wallet_account_create_requires_storage_before_invoking_cli() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        let marker = directory.path().join("wallet-cli-invoked");
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            format!(
+                "#!/bin/sh\ntouch '{}'\necho 'Generated new account with account_id Public/test-account'\n",
+                marker.display()
+            ),
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+
+        let error = local_wallet_create_account(
+            json!({
+                "wallet_binary": wallet_binary,
+                "wallet_home": wallet_home,
+                "network_profile": "testnet"
+            }),
+            "public",
+            Some("test"),
+        )
+        .err()
+        .context("account creation unexpectedly accepted missing wallet storage")?;
+
+        anyhow::ensure!(
+            format!("{error:#}") == "wallet home missing storage.json",
+            "missing storage returned the wrong account-create error: {error:#}"
+        );
+        anyhow::ensure!(
+            !marker.exists(),
+            "account creation invoked the wallet CLI before validating storage"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn controlled_wallet_accounts_reaps_cli_at_absolute_deadline() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1371,6 +1416,7 @@ exit 12
     #[derive(Debug)]
     struct FakeRunner {
         output: LocalWalletOutput,
+        expected_wallet_home: String,
     }
 
     impl LocalWalletRunner for FakeRunner {
@@ -1384,7 +1430,7 @@ exit 12
             if binary != "wallet" {
                 bail!("unexpected wallet binary: {binary}");
             }
-            if wallet_home != "." {
+            if wallet_home != self.expected_wallet_home {
                 bail!("unexpected wallet home: {wallet_home}");
             }
             match invocation {
@@ -1631,19 +1677,25 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
 
     #[test]
     fn local_wallet_create_account_uses_runner_boundary() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let runner = FakeRunner {
             output: LocalWalletOutput {
                 exit_status: "exit status: 0".to_owned(),
                 stdout: b"Generated new account with account_id Private/abc123".to_vec(),
                 stderr: Vec::new(),
             },
+            expected_wallet_home: wallet_home.display().to_string(),
         };
 
         let report = local_wallet_create_account_with_runner(
             &runner,
             json!({
                 "wallet_binary": "wallet",
-                "wallet_home": ".",
+                "wallet_home": wallet_home,
                 "network_profile": "local"
             }),
             "private",
