@@ -307,6 +307,7 @@ function navigationSnapshotsEqual(root, left, right) {
 }
 
 function pushNavigationHistory(root) {
+    root.pendingInspectionEntityRef = null
     if (root.shell.navigationRestoring) {
         return
     }
@@ -330,6 +331,7 @@ function pushNavigationHistory(root) {
 }
 
 function restoreNavigationSnapshot(root, snapshot) {
+    root.pendingInspectionEntityRef = null
     if (!snapshot || typeof snapshot !== "object") {
         return
     }
@@ -509,6 +511,9 @@ function shortNavigationText(root, value) {
 function selectView(root, requestedView, recordHistory) {
     const targetView = normalizedNavigationView(root, requestedView)
     with (root) {
+        if (recordHistory !== false) {
+            pendingInspectionEntityRef = null
+        }
         if (!targetView.length) {
             return
         }

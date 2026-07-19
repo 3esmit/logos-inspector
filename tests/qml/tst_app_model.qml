@@ -130,10 +130,7 @@ TestCase {
         model.navigationRevision = 0
         model.navigationRestoring = false
         model.favoriteStore.clear()
-        model.zoneInspection.activeZoneContext = null
-        model.zoneInspection.networkScope = null
-        model.zoneInspection.zoneSummaries = []
-        model.zoneInspection.zoneDetail = null
+        resetFavoriteZoneNavigationState()
         model.programExecution.dismissIdlInstructionReceipt()
         model.dashboardNode = null
         model.dashboardProvisionalBlocks = []
@@ -528,6 +525,148 @@ TestCase {
                 source_id: String(sourceId),
                 source_role: String(sourceRole || "sequencer")
             } : { kind: "policy" }
+        }
+    }
+
+    function resetFavoriteZoneNavigationState() {
+        const state = model.zoneInspection
+        model.pendingInspectionEntityRef = null
+        model.currentInspectionEntityRef = null
+        state.started = false
+        state.desiredSource = null
+        state.desiredSourceKey = ""
+        state.catalogConfigured = false
+        state.sourceRevision = 0
+        state.catalogStatus = null
+        state.verification = "empty"
+        state.coverage = ({})
+        state.ingestion = ({})
+        state.currentError = ""
+        state.configureError = ""
+        state.statusError = ""
+        state.summaryError = ""
+        state.detailError = ""
+        state.controlError = ""
+        state.configureInFlight = false
+        state.statusInFlight = false
+        state.summaryInFlight = false
+        state.detailInFlight = false
+        state.controlInFlight = false
+        state.automaticRetryPending = false
+        state.networkScope = null
+        state.networkScopeKey = ""
+        state.catalogRevision = 0
+        state.sourceConfigEpoch = 0
+        state.observationRevision = 0
+        state.summaryRevision = 0
+        state.summarySourceRevision = 0
+        state.summaryNetworkScopeKey = ""
+        state.summaryCatalogRevision = 0
+        state.summarySourceConfigEpoch = 0
+        state.summaryObservationRevision = 0
+        state.summaryLoaded = false
+        state.summaryStale = false
+        state.zoneSummaries = []
+        state.activeZoneContext = null
+        state.zoneDetailReport = null
+        state.zoneDetail = null
+        state.detailStale = false
+        state.startupAutoSelectionPending = true
+        state.pendingZoneRestoreId = ""
+        state.pendingZoneRestoreScopeKey = ""
+    }
+
+    function beginColdFavoriteCatalog() {
+        const state = model.zoneInspection
+        state.started = true
+        state.desiredSource = {
+            kind: "direct_http",
+            endpoint: "https://bedrock.example"
+        }
+        state.desiredSourceKey = "direct_http\nhttps://bedrock.example\n"
+        state.configureInFlight = true
+    }
+
+    function favoriteCatalogRow(scope, channelId) {
+        return {
+            channel_id: channelId,
+            kind: "sequencer_zone",
+            active_zone_context_fields: {
+                network_scope: scope,
+                channel_id: channelId,
+                zone_kind: "sequencer_zone",
+                selected_sequencer_source_id: "seq-a",
+                indexer_source_id: "idx-a",
+                source_config_revision: 7
+            },
+            settlement_link: {
+                selected_sequencer_source_id: "seq-a",
+                indexer_source_id: "idx-a"
+            },
+            l1_channel: {},
+            l2_zone: {},
+            activity_detail: {}
+        }
+    }
+
+    function finishFavoriteCatalog(scope, channelId) {
+        const state = model.zoneInspection
+        const row = favoriteCatalogRow(scope, channelId)
+        state.configureInFlight = false
+        state.catalogConfigured = true
+        state.sourceRevision = 1
+        state.networkScope = scope
+        state.networkScopeKey = state.scopeKey(scope)
+        state.catalogRevision = 1
+        state.sourceConfigEpoch = 1
+        state.observationRevision = 1
+        state.catalogStatus = {
+            summary_revision: 1
+        }
+        state.verification = "verified"
+        state.ingestion = { worker_running: false }
+        state.summarySourceRevision = 1
+        state.summaryNetworkScopeKey = state.scopeKey(scope)
+        state.summaryCatalogRevision = 1
+        state.summarySourceConfigEpoch = 1
+        state.summaryObservationRevision = 1
+        state.summaryRevision = 1
+        state.summaryLoaded = true
+        state.summaryStale = false
+        state.zoneSummaries = [row]
+        return row
+    }
+
+    function favoriteZoneDetailResponse(scope, row, summaryRevision) {
+        return {
+            ok: true,
+            value: {
+                report_kind: "zones.zone_detail",
+                schema_version: 1,
+                source_revision: 1,
+                network_scope: scope,
+                catalog_revision: 1,
+                source_config_epoch: 1,
+                observation_revision: 1,
+                summary_revision: Number(summaryRevision || 1),
+                detail: {
+                    summary: row,
+                    l1_channel_snapshot: {},
+                    channel_source_config: {
+                        config_revision: 7,
+                        selected_sequencer_source_id: "seq-a",
+                        sequencer_sources: [],
+                        indexer_source: null
+                    },
+                    source_observations: [],
+                    source_agreement: {},
+                    classification_evidence: {},
+                    activity_counts: {},
+                    detail_revision: 1
+                }
+            },
+            text: "OK",
+            error: ""
         }
     }
 
@@ -2902,6 +3041,251 @@ TestCase {
         compare(model.openInspectionEntityRef(l1Ref, false), false)
         compare(callCountFor("zoneL2Transaction"), 0)
         compare(callCountFor("blockchainBlock"), 0)
+    }
+
+    function test_l2_favorite_waits_for_cold_catalog_and_recomputes_route() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+
+        beginColdFavoriteCatalog()
+        fakeHost.callCount = 0
+        fakeHost.calls = []
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        compare(model.shell.currentView, "zones")
+        verify(model.pendingInspectionEntityRef !== null)
+        compare(model.pendingInspectionEntityRef.canonical_key, "account-a")
+        compare(callCountFor("zoneL2Account"), 0)
+
+        const row = favoriteCatalogRow(scope, channelId)
+        fakeHost.responses = {
+            zoneDetail: favoriteZoneDetailResponse(scope, row)
+        }
+        finishFavoriteCatalog(scope, channelId)
+
+        tryVerify(function () { return callCountFor("zoneL2Account") === 1 })
+        compare(model.shell.currentView, "sequencerDashboard")
+        compare(model.zoneInspection.activeZoneId, channelId)
+        compare(callCountFor("zoneDetail"), 1)
+        compare(callCountFor("zoneL2Account"), 1)
+        compare(model.pendingInspectionEntityRef, null)
+    }
+
+    function test_l2_favorite_stays_queued_while_loaded_catalog_is_stale() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+        const row = finishFavoriteCatalog(scope, channelId)
+        model.zoneInspection.verification = "verifying"
+        model.zoneInspection.ingestion = { worker_running: true }
+        model.zoneInspection.summaryStale = true
+        fakeHost.responses = {
+            zoneDetail: favoriteZoneDetailResponse(scope, row)
+        }
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        verify(model.pendingInspectionEntityRef !== null)
+        compare(callCountFor("zoneDetail"), 0)
+        compare(callCountFor("zoneL2Account"), 0)
+
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.ingestion = { worker_running: false }
+        model.zoneInspection.summaryStale = false
+
+        tryVerify(function () { return callCountFor("zoneL2Account") === 1 })
+        compare(callCountFor("zoneDetail"), 1)
+        compare(model.pendingInspectionEntityRef, null)
+    }
+
+    function test_l2_favorite_pending_open_is_cancelled_by_user_navigation() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        verify(model.pendingInspectionEntityRef !== null)
+
+        compare(model.shell.currentView, "zones")
+        model.selectView("zones")
+        compare(model.pendingInspectionEntityRef, null)
+        finishFavoriteCatalog(scope, channelId)
+        wait(0)
+
+        compare(model.shell.currentView, "zones")
+        compare(callCountFor("zoneDetail"), 0)
+        compare(callCountFor("zoneL2Account"), 0)
+    }
+
+    function test_l2_favorite_catalog_failure_clears_pending_open() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: "22".repeat(32),
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        verify(model.pendingInspectionEntityRef !== null)
+
+        model.zoneInspection.configureInFlight = false
+        model.zoneInspection.configureError = "catalog configuration failed"
+
+        tryVerify(function () { return model.pendingInspectionEntityRef === null })
+        verify(model.shell.resultIsError)
+        verify(model.shell.resultText.indexOf("catalog configuration failed") >= 0)
+        compare(callCountFor("zoneL2Account"), 0)
+    }
+
+    function test_l2_favorite_catalog_stop_clears_pending_open() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: "22".repeat(32),
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        verify(model.pendingInspectionEntityRef !== null)
+
+        model.zoneInspection.started = false
+
+        tryVerify(function () { return model.pendingInspectionEntityRef === null })
+        verify(model.shell.resultIsError)
+        compare(callCountFor("zoneL2Account"), 0)
+    }
+
+    function test_l2_favorite_rejects_stopped_catalog_worker_error() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+        finishFavoriteCatalog(scope, channelId)
+        model.zoneInspection.currentError = "catalog source failed"
+        model.zoneInspection.ingestion = { worker_running: false }
+        model.zoneInspection.automaticRetryPending = false
+
+        compare(model.openInspectionEntityRef(accountRef, false), false)
+
+        verify(model.shell.resultIsError)
+        verify(model.shell.resultText.indexOf("catalog source failed") >= 0)
+        compare(callCountFor("zoneDetail"), 0)
+        compare(callCountFor("zoneL2Account"), 0)
+    }
+
+    function test_l2_favorite_waits_for_summary_status_identity() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+        const row = finishFavoriteCatalog(scope, channelId)
+        model.zoneInspection.summaryRevision = 2
+        model.zoneInspection.catalogStatus = { summary_revision: 1 }
+        fakeHost.responses = {
+            zoneDetail: favoriteZoneDetailResponse(scope, row, 2)
+        }
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        verify(model.pendingInspectionEntityRef !== null)
+        compare(callCountFor("zoneDetail"), 0)
+        compare(callCountFor("zoneL2Account"), 0)
+
+        model.zoneInspection.catalogStatus = { summary_revision: 2 }
+
+        tryVerify(function () { return callCountFor("zoneL2Account") === 1 })
+        compare(callCountFor("zoneDetail"), 1)
+        compare(model.pendingInspectionEntityRef, null)
+    }
+
+    function test_l2_favorite_detail_failure_clears_pending_open_once() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: { kind: "policy" }
+        }
+        beginColdFavoriteCatalog()
+        fakeHost.responses = {
+            zoneDetail: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "detail unavailable"
+            }
+        }
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        const row = finishFavoriteCatalog(scope, channelId)
+
+        tryVerify(function () { return model.pendingInspectionEntityRef === null })
+        verify(model.shell.resultIsError)
+        verify(model.shell.resultText.indexOf("detail unavailable") >= 0)
+        compare(callCountFor("zoneDetail"), 1)
+        compare(callCountFor("zoneL2Account"), 0)
+
+        model.zoneInspection.detailError = ""
+        model.zoneInspection.zoneDetail = { summary: row }
+        model.zoneInspection.detailStale = false
+        wait(0)
+
+        compare(callCountFor("zoneL2Account"), 0)
     }
 
     function test_l2_navigation_routes_sequencer_and_qualifies_policy_reads() {

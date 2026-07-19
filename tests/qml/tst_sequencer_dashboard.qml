@@ -114,6 +114,7 @@ TestCase {
         property var programExecution: programExecutionMock
         property string programTab: ""
         property string selectedView: ""
+        property var pendingInspectionEntityRef: null
 
         function selectView(view) {
             selectedView = String(view || "")
@@ -183,8 +184,20 @@ TestCase {
         programExecutionMock.reset()
         appModel.programTab = ""
         appModel.selectedView = ""
+        appModel.pendingInspectionEntityRef = null
         page.currentTab = "blocks"
         wait(0)
+    }
+
+    function test_tab_selection_cancels_pending_favorite_open() {
+        appModel.pendingInspectionEntityRef = {
+            canonical_key: "queued-account"
+        }
+
+        page.selectTab("accounts")
+
+        compare(appModel.pendingInspectionEntityRef, null)
+        compare(page.currentTab, "accounts")
     }
 
     function test_accounts_show_only_provisional_snapshot_and_idl_decode() {
