@@ -1,5 +1,4 @@
 use std::{
-    env,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -28,7 +27,7 @@ pub use instruction::{
 use profile::{
     LocalWalletProfileInput, detect_wallet_binary, detect_wallet_home,
     local_wallet_binary_is_path_like, local_wallet_readiness, parse_local_wallet_profile,
-    resolve_local_wallet_profile, wallet_home_is_configured,
+    resolve_local_wallet_profile, wallet_home_from_environment, wallet_home_is_configured,
 };
 use runner::{
     CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
@@ -36,10 +35,12 @@ use runner::{
 };
 
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
+const LEGACY_LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_MUTATION_TIMEOUT: Duration = Duration::from_secs(300);
 const LOCAL_WALLET_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCAL_WALLET_PROFILE_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_WALLET_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCAL_WALLET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOCAL_WALLET_OUTPUT_LIMIT: usize = 4096;
@@ -188,9 +189,15 @@ struct LocalWalletSendNativeInput {
 }
 
 pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileStatus> {
-    local_wallet_profile_status_with_env(
+    let (env_home, env_home_source) = wallet_home_from_environment().map_or_else(
+        || (String::new(), None),
+        |(home, source)| (home, Some(source)),
+    );
+    local_wallet_profile_status_with_runner(
+        &CliLocalWalletRunner,
         profile,
-        env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default(),
+        env_home,
+        env_home_source,
     )
 }
 
@@ -641,26 +648,29 @@ pub(crate) fn detected_wallet_profile() -> Value {
     })
 }
 
+#[cfg(test)]
 fn local_wallet_profile_status_with_env(
     profile: Value,
-    nssa_env_home: String,
+    env_home: String,
 ) -> Result<LocalWalletProfileStatus> {
-    local_wallet_profile_status_with_runner(&CliLocalWalletRunner, profile, nssa_env_home)
+    let env_home_source = (!env_home.trim().is_empty()).then_some(LOCAL_WALLET_HOME_ENV);
+    local_wallet_profile_status_with_runner(
+        &CliLocalWalletRunner,
+        profile,
+        env_home,
+        env_home_source,
+    )
 }
 
 fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
     runner: &R,
     profile: Value,
-    nssa_env_home: String,
+    env_home: String,
+    env_home_source: Option<&'static str>,
 ) -> Result<LocalWalletProfileStatus> {
     let profile: LocalWalletProfileInput = parse_local_wallet_profile(profile)?;
     let wallet_binary = profile.wallet_binary.trim();
     let explicit_home = profile.wallet_home.trim();
-    let (env_home, env_home_source) = if !nssa_env_home.trim().is_empty() {
-        (nssa_env_home, Some(LOCAL_WALLET_HOME_ENV))
-    } else {
-        (String::new(), None)
-    };
     let wallet_home = if !explicit_home.is_empty() {
         explicit_home.to_owned()
     } else if env_home_source.is_some() {
@@ -701,6 +711,13 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
     } else if !wallet_home_is_configured(Path::new(&wallet_home)) {
         details.push("wallet home missing wallet_config.json".to_owned());
         status = local_wallet_worst_status(status, "degraded");
+        readiness.command_ready = false;
+        readiness.accounts_ready = false;
+    } else if !readiness.wallet_storage_ready {
+        details.push("wallet home missing storage.json".to_owned());
+        status = local_wallet_worst_status(status, "degraded");
+        readiness.command_ready = false;
+        readiness.accounts_ready = false;
     } else if home_source == "profile" {
         details.push("wallet home configured".to_owned());
     } else {
@@ -719,6 +736,25 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
             Ok(value) => {
                 details.push("wallet binary responded".to_owned());
                 version = (!value.is_empty()).then_some(value);
+                if readiness.accounts_ready {
+                    let mut redactions = vec![wallet_home.as_str()];
+                    if local_wallet_binary_is_path_like(wallet_binary) {
+                        redactions.push(wallet_binary);
+                    }
+                    if let Err(error) = runner.run(
+                        wallet_binary,
+                        &wallet_home,
+                        LocalWalletInvocation::ProfileHomeProbe,
+                        &redactions,
+                    ) {
+                        details.push(format!(
+                            "wallet binary cannot read configured wallet home: {error:#}"
+                        ));
+                        status = local_wallet_worst_status(status, "down");
+                        readiness.command_ready = false;
+                        readiness.accounts_ready = false;
+                    }
+                }
             }
             Err(error) => {
                 details.push(format!("wallet binary version check failed: {error:#}"));
@@ -1044,6 +1080,246 @@ mod tests {
             terminated.reason() == CommandStopReason::DeadlineExceeded
                 && terminated.scope() == CommandTerminationScope::ProcessGroup,
             "wallet deadline returned wrong termination evidence: {terminated}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_profile_and_accounts_bind_both_home_environment_contracts() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            br#"#!/bin/sh
+if [ -z "$LEE_WALLET_HOME_DIR" ] || [ "$LEE_WALLET_HOME_DIR" != "$NSSA_WALLET_HOME_DIR" ]; then
+    echo "wallet home environment mismatch" >&2
+    exit 9
+fi
+if [ ! -f "$LEE_WALLET_HOME_DIR/wallet_config.json" ]; then
+    echo "wrong wallet home" >&2
+    exit 10
+fi
+case "$*" in
+    "--version")
+        echo "wallet 0.1.0-test"
+        ;;
+    "account list")
+        echo "Public/7wHg9sbJwc6h3NP1S9bekfAzB8CHifEcxKswCKUt3YQo"
+        ;;
+    "account list --long")
+        echo "Public/7wHg9sbJwc6h3NP1S9bekfAzB8CHifEcxKswCKUt3YQo [main]"
+        echo "  Account"
+        echo "  {\"balance\":42}"
+        ;;
+    *)
+        exit 11
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+        let profile = json!({
+            "wallet_binary": wallet_binary,
+            "wallet_home": wallet_home,
+            "network_profile": "testnet"
+        });
+
+        let status = local_wallet_profile_status(profile.clone())?;
+        anyhow::ensure!(status.status == "ok", "wallet profile did not become ready");
+        anyhow::ensure!(
+            status.version.as_deref() == Some("wallet 0.1.0-test"),
+            "wallet profile reported the wrong version"
+        );
+        anyhow::ensure!(
+            status.readiness.command_ready,
+            "wallet commands remained unavailable"
+        );
+        anyhow::ensure!(
+            status.readiness.accounts_ready,
+            "wallet accounts remained unavailable"
+        );
+
+        let report = local_wallet_accounts(profile)?;
+        anyhow::ensure!(
+            report.accounts.len() == 1,
+            "unexpected wallet account count"
+        );
+        let account = report
+            .accounts
+            .first()
+            .context("wallet account report was empty")?;
+        anyhow::ensure!(
+            account.label == "main",
+            "wallet account label was not parsed"
+        );
+        anyhow::ensure!(
+            account.state == "loaded",
+            "wallet account state was not parsed"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_profile_rejects_binary_that_cannot_read_configured_home() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            br#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+    echo "wallet 0.1.0-stale"
+    exit 0
+fi
+echo "incompatible wallet storage schema at $LEE_WALLET_HOME_DIR/storage.json" >&2
+exit 12
+"#,
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+
+        let status = local_wallet_profile_status(json!({
+            "wallet_binary": wallet_binary,
+            "wallet_home": wallet_home,
+            "network_profile": "testnet"
+        }))?;
+
+        anyhow::ensure!(status.status == "down", "incompatible wallet stayed ready");
+        anyhow::ensure!(
+            status.version.as_deref() == Some("wallet 0.1.0-stale"),
+            "wallet profile lost the detected version"
+        );
+        anyhow::ensure!(
+            status.readiness.wallet_binary_ready,
+            "wallet binary was not recognized"
+        );
+        anyhow::ensure!(
+            !status.readiness.command_ready,
+            "incompatible wallet commands remained enabled"
+        );
+        anyhow::ensure!(
+            !status.readiness.accounts_ready,
+            "incompatible wallet accounts remained enabled"
+        );
+        anyhow::ensure!(
+            status
+                .detail
+                .contains("wallet binary cannot read configured wallet home"),
+            "wallet profile did not explain the compatibility failure"
+        );
+        anyhow::ensure!(
+            !status
+                .detail
+                .contains(&directory.path().display().to_string()),
+            "wallet profile exposed the configured local path"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_profile_requires_storage_before_enabling_accounts() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'wallet 0.1.0-test'; exit 0; fi\nexit 13\n",
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+
+        let status = local_wallet_profile_status(json!({
+            "wallet_binary": wallet_binary,
+            "wallet_home": wallet_home,
+            "network_profile": "testnet"
+        }))?;
+
+        anyhow::ensure!(
+            status.status == "degraded",
+            "missing storage did not degrade the wallet profile"
+        );
+        anyhow::ensure!(
+            !status.readiness.command_ready,
+            "missing storage left wallet commands enabled"
+        );
+        anyhow::ensure!(
+            !status.readiness.accounts_ready,
+            "missing storage left wallet account listing enabled"
+        );
+        anyhow::ensure!(
+            status.detail.contains("wallet home missing storage.json"),
+            "missing storage detail was not reported"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_profile_does_not_probe_home_without_config() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
+        let marker = directory.path().join("unexpected-probe");
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(
+            &wallet_binary,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'wallet 0.1.0-test'; exit 0; fi\ntouch '{}'\nexit 14\n",
+                marker.display()
+            ),
+        )?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+
+        let status = local_wallet_profile_status(json!({
+            "wallet_binary": wallet_binary,
+            "wallet_home": wallet_home,
+            "network_profile": "testnet"
+        }))?;
+
+        anyhow::ensure!(
+            status.status == "degraded",
+            "missing config did not degrade the wallet profile"
+        );
+        anyhow::ensure!(
+            !status.readiness.command_ready && !status.readiness.accounts_ready,
+            "missing config left wallet actions enabled"
+        );
+        anyhow::ensure!(
+            status
+                .detail
+                .contains("wallet home missing wallet_config.json"),
+            "missing config detail was not reported"
+        );
+        anyhow::ensure!(
+            !marker.exists(),
+            "profile check invoked the wallet against an incomplete home"
         );
         Ok(())
     }

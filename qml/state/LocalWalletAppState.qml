@@ -8,6 +8,8 @@ WalletState {
     property var gateway: null
     property int bedrockBalanceSourceRevision: 0
     property int bedrockBalanceRequestRevision: 0
+    property int nextProfileRequestGeneration: 1
+    property int activeProfileRequestGeneration: 0
     property int nextOperationRequestGeneration: 1
     property int activeOperationRequestGeneration: 0
 
@@ -67,9 +69,14 @@ WalletState {
             return null
         }
         const requestedRevision = profileRevision
+        const requestGeneration = nextProfileRequestGeneration
+        nextProfileRequestGeneration += 1
+        activeProfileRequestGeneration = requestGeneration
+        status = null
         statusError = ""
         gateway.setStatus(qsTr("Local wallet"))
         return gateway.request("localWalletProfileStatus", [profile(gateway.networkProfile(), gateway.prefersBasecampModules())], qsTr("Local wallet"), showResult === true, function (response) {
+            activeProfileRequestGeneration = 0
             if (response.ok) {
                 status = response.value || null
                 statusError = ""
@@ -81,29 +88,8 @@ WalletState {
             }
         }, function () {
             return profileRevision === requestedRevision
+                && activeProfileRequestGeneration === requestGeneration
         })
-    }
-
-    function checkedProfile() {
-        if (!gateway) {
-            return { ok: false, detail: qsTr("Wallet gateway is not available.") }
-        }
-        const response = gateway.requestBlocking("localWalletProfileStatus", [profile(gateway.networkProfile(), gateway.prefersBasecampModules())], qsTr("Local wallet"), false)
-        if (response.ok) {
-            status = response.value || null
-            statusError = ""
-            const value = String(response.value && response.value.status ? response.value.status : "")
-            return {
-                ok: value === "ok",
-                detail: String(response.value && response.value.detail ? response.value.detail : "")
-            }
-        }
-        status = null
-        statusError = response.error || qsTr("Profile status failed.")
-        return {
-            ok: false,
-            detail: statusError
-        }
     }
 
     function createAccount() {

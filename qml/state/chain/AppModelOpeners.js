@@ -241,9 +241,9 @@ function blockchainTransactionDetail(root, value, fallbackHash) {
     }
 }
 
-function openLocalWallet(root, wallet, tab) {
+function openLocalWallet(root, walletReference, tab) {
     with (root) {
-        const target = String(wallet || "").trim()
+        const target = String(walletReference || "").trim()
         const targetTab = String(tab || "").length ? String(tab || "") : "profiles"
         const bedrockOnly = targetTab === "bedrockNotes"
         pushNavigationHistory()
@@ -254,14 +254,22 @@ function openLocalWallet(root, wallet, tab) {
             shell.setResult(qsTr("Bedrock wallet"), qsTr("Configure a Bedrock node endpoint before querying wallet balance."), true, null)
             return
         }
-        if (!bedrockOnly && !walletProfileConfigured()) {
-            shell.setResult(qsTr("Local wallet"), qsTr("Configure wallet binary and wallet home before inspecting local wallet state."), true, null)
-            return
-        }
         if (!bedrockOnly) {
-            const status = root.checkedLocalWalletProfile()
-            if (!status.ok) {
-                shell.setResult(qsTr("Local wallet"), status.detail.length ? status.detail : qsTr("Local wallet profile is not usable."), true, null)
+            const configured = walletProfileConfigured()
+            const usable = walletProfileUsable()
+            if (!configured || !usable) {
+                const cachedDetail = String(root.localWalletStatusError || (root.localWalletStatus && root.localWalletStatus.detail) || "")
+                shell.setResult(
+                    qsTr("Local wallet"),
+                    cachedDetail.length
+                        ? cachedDetail
+                        : (configured
+                            ? qsTr("Local wallet profile is not usable.")
+                            : qsTr("Configure wallet binary and wallet home before inspecting local wallet state.")),
+                    true,
+                    null
+                )
+                checkLocalWalletProfile(false)
                 return
             }
         }
@@ -278,11 +286,14 @@ function openLocalWallet(root, wallet, tab) {
             false,
             walletProfile()
         )
+        if (!bedrockOnly) {
+            checkLocalWalletProfile(false)
+        }
     }
 }
 
-function showLocalWalletRequired(root, wallet) {
+function showLocalWalletRequired(root, walletReference) {
     with (root) {
-        openLocalWallet(root, wallet, "profiles")
+        openLocalWallet(root, walletReference, "profiles")
     }
 }

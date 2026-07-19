@@ -2094,6 +2094,88 @@ TestCase {
         compare(model.localWalletStatus, null)
     }
 
+    function test_local_wallet_navigation_refreshes_profile_without_blocking() {
+        configureReadyWallet()
+        const refreshedStatus = readyWalletStatus("profile")
+        refreshedStatus.detail = "wallet home configured; wallet binary responded"
+        refreshedStatus.version = "wallet 0.1.0"
+        fakeHost.responses = {
+            localWalletProfileStatus: {
+                ok: true,
+                value: refreshedStatus,
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.entityNavigation.openLocalWallet("Public/test-account", "lezAccounts")
+
+        compare(model.shell.currentView, "localWallet")
+        compare(model.localWalletTab, "lezAccounts")
+        compare(model.localWalletLookupTarget, "Public/test-account")
+        verify(!model.shell.resultIsError)
+        compare(model.localWalletStatus, null)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletProfileStatus"
+        }).length, 0)
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletProfileStatus"
+            })
+        })
+        tryVerify(function () {
+            return model.localWalletStatus !== null
+                && model.localWalletStatus.status === "ok"
+                && model.localWalletStatus.version === "wallet 0.1.0"
+        })
+    }
+
+    function test_wallet_profile_refresh_rejects_older_completion() {
+        configureReadyWallet()
+        model.bridge = asyncImportBridgeClient
+        asyncImportHost.deferAsyncRequests = true
+        const operationCount = model.localWalletOperations.length
+
+        verify(model.checkLocalWalletProfile(false) !== null)
+        verify(model.checkLocalWalletProfile(false) !== null)
+        compare(asyncImportHost.pendingAsyncRequests.length, 2)
+        compare(model.localWalletStatus, null)
+
+        const latestStatus = readyWalletStatus("profile")
+        latestStatus.detail = "latest compatible profile"
+        latestStatus.version = "wallet 0.1.0-latest"
+        verify(asyncImportHost.completeAsyncAt(1, {
+            ok: true,
+            value: latestStatus,
+            text: "OK",
+            error: ""
+        }))
+        wait(0)
+        compare(model.localWalletStatus.status, "ok")
+        compare(model.localWalletStatus.version, "wallet 0.1.0-latest")
+        compare(model.localWalletOperations.length, operationCount + 1)
+
+        const olderStatus = readyWalletStatus("profile")
+        olderStatus.status = "down"
+        olderStatus.detail = "older incompatible profile"
+        olderStatus.version = "wallet 0.1.0-older"
+        olderStatus.readiness.command_ready = false
+        olderStatus.readiness.accounts_ready = false
+        verify(asyncImportHost.completeAsyncAt(0, {
+            ok: true,
+            value: olderStatus,
+            text: "OK",
+            error: ""
+        }))
+        wait(0)
+        compare(model.localWalletStatus.status, "ok")
+        compare(model.localWalletStatus.version, "wallet 0.1.0-latest")
+        compare(model.localWalletOperations.length, operationCount + 1)
+
+        model.bridge = bridgeClient
+    }
+
     function test_program_execution_reads_wallet_capability_facade() {
         model.networkProfile = "wallet-test"
         configureReadyWallet()

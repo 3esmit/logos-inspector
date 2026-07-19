@@ -245,6 +245,50 @@ TestCase {
         )
     }
 
+    function test_profile_incompatibility_exposes_complete_actionable_detail() {
+        const detail = "wallet home configured; wallet binary responded; wallet binary cannot read configured wallet home: incompatible wallet storage schema"
+        model.localWalletStatus = {
+            status: "down",
+            detail: detail,
+            readiness: {
+                command_ready: false,
+                accounts_ready: false
+            }
+        }
+        model.localWalletTab = "profiles"
+
+        const message = waitForChild(page, "walletProfileReadinessMessage")
+        tryCompare(message, "visible", true)
+        compare(message.tone, "error")
+        compare(message.title, qsTr("Profile not ready"))
+        compare(message.message, detail)
+        compare(
+            message.Accessible.name,
+            qsTr("%1. %2").arg(qsTr("Profile not ready")).arg(detail)
+        )
+    }
+
+    function test_account_list_actions_require_account_readiness() {
+        model.localWalletStatus = {
+            status: "degraded",
+            detail: "wallet accounts are unavailable",
+            readiness: {
+                command_ready: true,
+                accounts_ready: false
+            }
+        }
+        model.localWalletTab = "controls"
+
+        const controlsButton = waitForChild(page, "controlsListAccountsButton")
+        tryCompare(controlsButton, "visible", true)
+        compare(controlsButton.enabled, false)
+
+        model.localWalletTab = "lezAccounts"
+        const accountsButton = waitForChild(page, "accountsListAccountsButton")
+        tryCompare(accountsButton, "visible", true)
+        compare(accountsButton.enabled, false)
+    }
+
     function test_parse_wallet_command_line_preserves_backslash_paths() {
         compareArgs(
             page.parseWalletCommandLine("account import \"C:\\wallet\\recipient.keys\""),

@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{LOCAL_WALLET_HOME_ENV, LocalWalletReadiness};
+use super::{LEGACY_LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_HOME_ENV, LocalWalletReadiness};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct LocalWalletProfileInput {
@@ -91,14 +91,11 @@ fn resolve_wallet_home_from_input(
     requirements: WalletHomeRequirements,
 ) -> Result<ResolvedWalletHome> {
     let explicit_home = profile.wallet_home.trim();
-    let env_wallet_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let env_wallet_home = wallet_home_from_environment();
     let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
         (explicit_home.to_owned(), "profile".to_owned())
-    } else if !env_wallet_home.trim().is_empty() {
-        (
-            env_wallet_home.trim().to_owned(),
-            LOCAL_WALLET_HOME_ENV.to_owned(),
-        )
+    } else if let Some((home, source)) = env_wallet_home {
+        (home, source.to_owned())
     } else {
         (String::new(), "none".to_owned())
     };
@@ -171,8 +168,23 @@ pub(super) fn detect_wallet_binary() -> Option<PathBuf> {
 }
 
 pub(super) fn detect_wallet_home() -> Option<PathBuf> {
-    if let Some(path) = env_path_if_wallet_home(LOCAL_WALLET_HOME_ENV) {
-        return Some(path);
+    for variable in [LOCAL_WALLET_HOME_ENV, LEGACY_LOCAL_WALLET_HOME_ENV] {
+        if let Some(path) = env_path_if_wallet_home(variable) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+pub(super) fn wallet_home_from_environment() -> Option<(String, &'static str)> {
+    for variable in [LOCAL_WALLET_HOME_ENV, LEGACY_LOCAL_WALLET_HOME_ENV] {
+        let Ok(home) = env::var(variable) else {
+            continue;
+        };
+        let home = home.trim();
+        if !home.is_empty() {
+            return Some((home.to_owned(), variable));
+        }
     }
     None
 }
@@ -220,7 +232,7 @@ pub(super) fn local_wallet_readiness(
         wallet_config_ready,
         wallet_storage_ready,
         command_ready: wallet_binary_ready && wallet_home_ready,
-        accounts_ready: wallet_binary_ready && wallet_config_ready,
+        accounts_ready: wallet_binary_ready && wallet_config_ready && wallet_storage_ready,
         instruction_submit_ready: wallet_config_ready && wallet_storage_ready,
         backup_encryption_ready,
     }
