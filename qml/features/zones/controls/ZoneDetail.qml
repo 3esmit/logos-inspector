@@ -38,6 +38,7 @@ ColumnLayout {
             root.currentTab = root.initialTab
         }
     }
+    onCurrentTabChanged: root.persistRequestedTab()
 
     ListModel {
         id: detailTabs
@@ -266,6 +267,19 @@ ColumnLayout {
             l2InitialView = l2ViewForState()
         }
         currentTab = nextTab
+        return true
+    }
+
+    function persistRequestedTab() {
+        if (!root.zoneState
+                || root.zoneState.requestedDetailTab === undefined) {
+            return false
+        }
+        const tab = String(root.currentTab || "overview")
+        if (root.zoneState.requestedDetailTab === tab) {
+            return false
+        }
+        root.zoneState.requestedDetailTab = tab
         return true
     }
 

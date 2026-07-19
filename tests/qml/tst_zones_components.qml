@@ -180,6 +180,7 @@ TestCase {
         zoneState.statusError = ""
         zoneState.configureError = ""
         zoneState.summaryStale = false
+        zoneState.requestedDetailTab = "overview"
         zoneState.activeZoneId = FixtureData.identity("1")
         zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
         zoneState.targetResolutionReport = null
@@ -217,6 +218,7 @@ TestCase {
         isolatedProgramState.l2ProgramsError = ""
         page.filter = "all"
         page.query = ""
+        page.initialDetailTab = "overview"
         const detail = findChild(page, "zoneDetail")
         if (detail) {
             detail.discardSourceDraft()
@@ -425,6 +427,29 @@ TestCase {
         tryVerify(function () {
             return findChild(page, "zoneDetail") !== null && page.hasDirtyDraft
         })
+    }
+
+    function test_zone_detail_tab_survives_verified_catalog_refresh() {
+        const original = findChild(page, "zoneDetail")
+        verify(original !== null)
+        verify(original.requestTab("transfers"))
+        tryCompare(original, "currentTab", "transfers")
+        tryCompare(zoneState, "requestedDetailTab", "transfers")
+        page.initialDetailTab = zoneState.requestedDetailTab
+
+        zoneState.zoneDetail = null
+        tryVerify(function () {
+            return findChild(page, "zoneDetail") === null
+        })
+        zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
+
+        let restored = null
+        tryVerify(function () {
+            restored = findChild(page, "zoneDetail")
+            return restored !== null && restored !== original
+        })
+        compare(restored.currentTab, "transfers")
+        verify(findChild(restored, "zoneL2Transfers") !== null)
     }
 
     function test_l1_evidence_viewer_renders_exact_payload_as_plain_text() {
