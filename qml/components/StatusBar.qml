@@ -211,19 +211,100 @@ Pane {
             return "any"
         }
         const prefixed = value.match(/^([A-Za-z][A-Za-z0-9_-]*)(?:\s*:\s*|\s+)(.*)$/)
-        if (prefixed && String(prefixed[1]).toLowerCase() === "mantle") {
-            return "transaction"
+        if (prefixed) {
+            return root.prefixedLookupCode(
+                String(prefixed[1]).toLowerCase(),
+                String(prefixed[2] || "").trim())
         }
         if (/^[0-9]+$/.test(value)) {
-            return "block"
+            return root.lookupNumericBlockTarget(value) ? "block"
+                : (root.lookupHashTarget(value) ? "any" : "invalid")
         }
-        if (/^(0x)?[0-9a-fA-F]{64}$/.test(value)) {
+        if (root.lookupHashTarget(value)) {
             return "any"
         }
-        if (/^(0x)?[0-9a-fA-F]{40}$/.test(value) || /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(value)) {
+        if (root.lookupUnprefixedAccountTarget(value)) {
             return "account"
         }
         return "invalid"
+    }
+
+    function prefixedLookupCode(prefix, target) {
+        if (prefix === "mantle") {
+            return "transaction"
+        }
+        if (["private", "wallet", "cid", "storage", "l1-wallet",
+                "note", "module"].indexOf(prefix) >= 0) {
+            return "any"
+        }
+        if (!target.length) {
+            return "invalid"
+        }
+        if (["l1", "slot", "l2", "lez", "block"].indexOf(prefix) >= 0) {
+            return root.lookupBlockTarget(target) ? "block" : "invalid"
+        }
+        if (prefix === "tx" || prefix === "transaction") {
+            return root.lookupHashTarget(target) ? "transaction" : "invalid"
+        }
+        if (prefix === "account") {
+            return root.lookupAccountTarget(target) ? "account" : "invalid"
+        }
+        if (prefix === "program") {
+            return root.lookupHashTarget(target) ? "program" : "invalid"
+        }
+        if (prefix === "zone" || prefix === "channel") {
+            return root.lookupHashTarget(target) ? "zone" : "invalid"
+        }
+        return "invalid"
+    }
+
+    function lookupHashTarget(value) {
+        return /^(0[xX])?[0-9a-fA-F]{64}$/.test(String(value || "").trim())
+    }
+
+    function lookupBlockTarget(value) {
+        const target = String(value || "").trim()
+        return root.lookupNumericBlockTarget(target) || root.lookupHashTarget(target)
+    }
+
+    function lookupNumericBlockTarget(value) {
+        const target = String(value || "").trim()
+        if (!/^[0-9]+$/.test(target)) {
+            return false
+        }
+        const normalized = target.replace(/^0+/, "") || "0"
+        const maximum = "18446744073709551615"
+        return normalized.length < maximum.length
+            || (normalized.length === maximum.length && normalized <= maximum)
+    }
+
+    function lookupAccountTarget(value) {
+        let target = String(value || "").trim()
+        if (target.indexOf("Public/") === 0 || target.indexOf("public/") === 0) {
+            target = target.slice(7)
+        } else if (target.indexOf("Private/") === 0
+                || target.indexOf("private/") === 0) {
+            return false
+        }
+        if (/^(0[xX])?[0-9a-fA-F]{64}$/.test(target)) {
+            return true
+        }
+        if (/^(0[xX])?[0-9a-fA-F]{40}$/.test(target)) {
+            return false
+        }
+        return /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(target)
+    }
+
+    function lookupUnprefixedAccountTarget(value) {
+        const target = String(value || "").trim()
+        if (target.indexOf("Public/") === 0) {
+            return root.lookupAccountTarget(target)
+        }
+        if (target.indexOf("public/") === 0 || target.indexOf("Private/") === 0
+                || target.indexOf("private/") === 0) {
+            return false
+        }
+        return false
     }
 
     function lookupLabel(code) {
@@ -235,6 +316,12 @@ Pane {
         }
         if (code === "transaction") {
             return qsTr("TX")
+        }
+        if (code === "program") {
+            return qsTr("PRG")
+        }
+        if (code === "zone") {
+            return qsTr("ZONE")
         }
         if (code === "invalid") {
             return qsTr("N/A")
