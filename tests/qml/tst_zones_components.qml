@@ -503,6 +503,26 @@ TestCase {
         compare(zoneState.lastMutationRequest.mutation.target.endpoint, "https://new-sequencer.example/")
     }
 
+    function test_sequencer_editor_hides_unimplemented_module_mode() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "channelSourcesSection") !== null
+        })
+        const sources = findChild(detail, "channelSourcesSection")
+        sources.beginEditor("sequencer", null)
+        tryVerify(function () {
+            return findChild(sources, "channelSourceEditor") !== null
+        })
+        const editor = findChild(sources, "channelSourceEditor")
+        const save = findChild(sources, "channelSourceSaveButton")
+
+        verify(!hasVisibleText(editor, "Module"))
+        editor.targetKind = "module"
+        verify(!editor.validDraft)
+        verify(!save.enabled)
+    }
+
     function test_module_source_uses_layer_owned_module_without_user_input() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("sources"))
