@@ -702,6 +702,14 @@ TestCase {
         }
     }
 
+    function favoritePendingSequencerZoneDetailResponse(scope, row) {
+        const response = favoriteZoneDetailResponse(scope, row)
+        response.value.detail.channel_source_config.sequencer_sources[0].binding_state
+            = "pending"
+        response.value.detail.source_observations = []
+        return response
+    }
+
     function appModelTestCapabilityRegistry() {
         return {
             schema_version: 1,
@@ -3110,6 +3118,56 @@ TestCase {
         compare(callCountFor("zoneDetail"), 1)
         compare(callCountFor("zoneL2Account"), 1)
         compare(model.pendingInspectionEntityRef, null)
+    }
+
+    function test_exact_sequencer_favorite_waits_for_runtime_attestation() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        const channelId = "22".repeat(32)
+        const accountRef = {
+            layer: "l2",
+            network_scope: scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: "account",
+            canonical_key: "account-a",
+            source: {
+                kind: "exact",
+                source_id: "seq-a",
+                source_role: "sequencer"
+            }
+        }
+
+        beginColdFavoriteCatalog()
+        fakeHost.callCount = 0
+        fakeHost.calls = []
+        const row = favoriteCatalogRow(scope, channelId)
+        fakeHost.responses = {
+            zoneDetail: favoritePendingSequencerZoneDetailResponse(scope, row)
+        }
+
+        compare(model.openInspectionEntityRef(accountRef, false), true)
+        finishFavoriteCatalog(scope, channelId)
+
+        tryCompare(model.zoneInspection, "activeZoneId", channelId)
+        tryVerify(function () { return model.zoneInspection.zoneDetail !== null })
+        wait(0)
+        verify(model.zoneInspection.l2.l2SequencerConfigured)
+        verify(!model.zoneInspection.l2.l2SequencerReadEnabled)
+        verify(model.pendingInspectionEntityRef !== null)
+        compare(callCountFor("zoneL2Account"), 0)
+
+        model.zoneInspection.zoneDetail
+            = favoriteZoneDetailResponse(scope, row).value.detail
+
+        tryVerify(function () { return callCountFor("zoneL2Account") === 1 })
+        compare(model.pendingInspectionEntityRef, null)
+        const request = fakeHost.calls.filter(function (call) {
+            return call.method === "zoneL2Account"
+        })[0].args[0]
+        compare(request.query.snapshot.kind, "provisional")
+        compare(request.query.exact_source_id, "seq-a")
+        wait(0)
+        compare(callCountFor("zoneL2Account"), 1)
     }
 
     function test_l2_favorite_stays_queued_while_loaded_catalog_is_stale() {

@@ -998,6 +998,7 @@ QtObject {
 
         function onL2SequencerReadEnabledChanged() {
             root.shell.navRevision += 1
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
         }
     }
 

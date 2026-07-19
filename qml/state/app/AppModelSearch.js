@@ -345,6 +345,10 @@ function openInspectionEntityRef(root, entity, recordHistory) {
             }
             return true
         }
+        if (inspectionEntityWaitsForSequencerAttestation(root, entity)) {
+            pendingInspectionEntityRef = entity
+            return true
+        }
         return openInspectionEntityInActiveZone(root, entity)
     }
 }
@@ -423,6 +427,9 @@ function resumePendingInspectionEntityRef(root) {
             }
             pendingInspectionEntityRef = null
             shell.setResult(qsTr("Open reference"), qsTr("Stored Zone detail is unavailable."), true, entity)
+            return false
+        }
+        if (inspectionEntityWaitsForSequencerAttestation(root, entity)) {
             return false
         }
         pendingInspectionEntityRef = null
@@ -575,6 +582,22 @@ function inspectionEntityUsesSequencerDashboard(root, entity) {
             || link.selected_sequencer_source_id || "").length > 0
     }
     return false
+}
+
+function inspectionEntityWaitsForSequencerAttestation(root, entity) {
+    const state = root && root.zoneInspection ? root.zoneInspection : null
+    const l2 = state && state.l2 ? state.l2 : null
+    const source = entity && entity.source && typeof entity.source === "object"
+        ? entity.source : null
+    if (!l2 || !source || String(source.kind || "policy") !== "exact"
+            || String(source.source_role || "") !== "sequencer") {
+        return false
+    }
+    const sourceId = String(source.source_id || "")
+    return sourceId.length > 0
+        && sourceId === String(l2.l2SequencerSourceId())
+        && l2.l2SequencerConfigured === true
+        && l2.l2SequencerReadEnabled !== true
 }
 
 function openInspectionEntityInActiveZone(root, entity) {
