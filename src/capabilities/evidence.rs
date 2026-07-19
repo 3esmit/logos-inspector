@@ -877,9 +877,10 @@ fn observation_target(method: &str) -> Option<ObservationTarget> {
         "blockchainModuleReport" => Some(ObservationTarget::Module(ModuleScope::Blockchain)),
         "storageReport" => Some(ObservationTarget::Module(ModuleScope::Storage)),
         "deliveryReport" => Some(ObservationTarget::Module(ModuleScope::Delivery)),
-        "localNodesStatus" | "localNodesAction" => {
-            Some(ObservationTarget::LastKnown(LastKnownScope::LocalNodes))
-        }
+        "localNodesStatus"
+        | "localNodesAction"
+        | "channelIndexerStatus"
+        | "channelIndexerAction" => Some(ObservationTarget::LastKnown(LastKnownScope::LocalNodes)),
         "localWalletProfileStatus"
         | "localWalletAccounts"
         | "localWalletCreateAccount"

@@ -8,6 +8,7 @@ use crate::support::command_runner::CommandControl;
 mod action_engine;
 mod action_workspace;
 mod adapters;
+mod channel_indexer;
 mod commands;
 mod lifecycle;
 mod messaging_identity;
@@ -70,6 +71,7 @@ impl LocalNodePackageCommit {
     }
 }
 
+pub(crate) use channel_indexer::ChannelIndexerActionRequest;
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
     LocalNodeDeployment, LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport,
@@ -85,6 +87,18 @@ pub use runtime::LogoscoreRuntimeStatus;
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
     action_engine::LocalNodeActionEngine::system()?.status(profile)
+}
+
+pub(crate) fn channel_indexer_status(
+    profile: &str,
+    network_scope: &crate::inspection::NetworkScope,
+    channel_id: &str,
+) -> Result<LocalNodeReport> {
+    action_engine::LocalNodeActionEngine::system()?.channel_indexer_status(
+        profile,
+        network_scope,
+        channel_id,
+    )
 }
 
 pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {
@@ -118,6 +132,20 @@ pub(crate) fn local_nodes_action_controlled(
         confirmation,
         control,
         package_commit,
+    )
+}
+
+pub(crate) fn channel_indexer_action_controlled(
+    profile: &str,
+    request: ChannelIndexerActionRequest,
+    confirmation: Option<&str>,
+    control: CommandControl,
+) -> Result<LocalNodeReport> {
+    action_engine::LocalNodeActionEngine::system()?.channel_indexer_action_controlled(
+        profile,
+        request,
+        confirmation,
+        control,
     )
 }
 

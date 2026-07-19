@@ -5,10 +5,10 @@ use std::{
 
 use anyhow::{Context as _, Result};
 
+use crate::inspection::NetworkScope;
 use crate::support::command_runner::CommandControl;
 use crate::support::{confirmation::ConfirmationPolicy, state_store::config_dir};
 
-use super::LocalNodePackageCommit;
 use super::action_workspace::{LocalNodeActionControls, LocalNodeActionWorkspace};
 use super::adapters::{NodeStatusContext, adapter_for};
 use super::lifecycle::acquire_state_lock;
@@ -22,6 +22,7 @@ use super::presentation;
 use super::process::{find_command, process_group_has_live_members};
 use super::runtime::{self, LogoscoreRuntimeProfile, LogoscoreRuntimeStore};
 use super::workflow::{LocalNodeWorkflow, normalized_profile};
+use super::{ChannelIndexerActionRequest, LocalNodePackageCommit};
 
 const STATE_FILE: &str = "local_nodes.json";
 
@@ -49,6 +50,26 @@ impl LocalNodeActionEngine {
         let state = self.store.load()?;
         let runtime = self.runtime_store.load()?;
         Ok(self.projector.report(profile, &state, runtime.as_ref()))
+    }
+
+    pub(super) fn channel_indexer_status(
+        &self,
+        profile: &str,
+        network_scope: &NetworkScope,
+        channel_id: &str,
+    ) -> Result<LocalNodeReport> {
+        let _state_lock = acquire_state_lock()?;
+        let state = self.store.load()?;
+        let runtime = self.runtime_store.load()?;
+        super::channel_indexer::status(
+            self.runtime_store.config_root(),
+            profile,
+            &state,
+            runtime.as_ref(),
+            self.projector,
+            network_scope,
+            channel_id,
+        )
     }
 
     pub(super) fn runtime_profile(&self) -> Result<Option<LogoscoreRuntimeProfile>> {
@@ -92,6 +113,29 @@ impl LocalNodeActionEngine {
         )
     }
 
+    pub(super) fn channel_indexer_action_controlled(
+        &self,
+        profile: &str,
+        request: ChannelIndexerActionRequest,
+        confirmation: Option<&str>,
+        control: CommandControl,
+    ) -> Result<LocalNodeReport> {
+        ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+
+        let _state_lock = acquire_state_lock()?;
+        let state = self.store.load()?;
+        let runtime = self.runtime_store.load()?;
+        super::channel_indexer::apply(
+            self.runtime_store.config_root(),
+            profile,
+            &state,
+            runtime.as_ref(),
+            self.projector,
+            request,
+            Some(&control),
+        )
+    }
+
     fn apply_inner(
         &self,
         profile: &str,
@@ -130,7 +174,7 @@ impl LocalNodeActionEngine {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct LocalNodeReportProjector;
+pub(super) struct LocalNodeReportProjector;
 
 #[cfg(test)]
 pub(super) fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalNodeReport {
@@ -138,11 +182,11 @@ pub(super) fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalN
 }
 
 impl LocalNodeReportProjector {
-    fn system() -> Self {
+    pub(super) fn system() -> Self {
         Self
     }
 
-    fn report(
+    pub(super) fn report(
         self,
         profile: &str,
         state: &LocalNodesState,

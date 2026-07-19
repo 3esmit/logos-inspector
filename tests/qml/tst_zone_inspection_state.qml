@@ -1281,9 +1281,11 @@ TestCase {
         compare(sourceEditorState.bedrockEndpoint(), "https://l1.example")
 
         sourceEditorState.refreshManagedIndexer()
-        let request = gateway.lastRequest("localNodesStatus")
+        let request = gateway.lastRequest("channelIndexerStatus")
         verify(request !== null)
-        compare(request.args, ["default"])
+        compare(request.args[0], "default")
+        compare(request.args[2], "zone-a")
+        verify(request.args[1] !== null)
         gateway.respond(request, ok({
             profile: "default",
             runtime: {
@@ -1304,13 +1306,17 @@ TestCase {
         compare(sourceEditorState.managedIndexerRuntime.run_state, "running")
 
         sourceEditorState.runManagedIndexerAction("start", "zone-a")
-        request = gateway.lastRequest("localNodesAction")
+        request = gateway.lastRequest("channelIndexerAction")
         verify(request !== null)
         compare(request.args[0], "default")
         compare(request.args[1].action, "start")
-        compare(request.args[1].node, "indexer")
         compare(request.args[1].channel_id, "zone-a")
         compare(request.args[1].bedrock_endpoint, "https://l1.example")
+        compare(request.args[1].source_config_revision,
+            zoneState.activeZoneContext.source_config_revision)
+        compare(request.args[1].selected_sequencer_source_id,
+            zoneState.activeZoneContext.selected_sequencer_source_id)
+        verify(request.args[1].network_scope !== null)
         compare(request.args[2], "confirm-local-node-action")
 
         gateway.respond(request, ok({
@@ -1356,7 +1362,7 @@ TestCase {
         })
 
         sourceEditorState.runManagedIndexerAction("start", "zone-a")
-        const request = gateway.lastRequest("localNodesAction")
+        const request = gateway.lastRequest("channelIndexerAction")
         gateway.respond(request, ok({
             runtime: { run_state: "stopped" },
             nodes: [{
@@ -1384,7 +1390,7 @@ TestCase {
         sourceEditorState.managedIndexerResult = "Indexer start accepted"
 
         sourceEditorState.refreshManagedIndexer()
-        const request = gateway.lastRequest("localNodesStatus")
+        const request = gateway.lastRequest("channelIndexerStatus")
         verify(request !== null)
         gateway.respond(request, ok({
             runtime: {
@@ -1426,14 +1432,14 @@ TestCase {
         compare(sourceEditorState.managedIndexerStatusStale, false)
 
         sourceEditorState.refreshManagedIndexer()
-        const request = gateway.lastRequest("localNodesStatus")
+        const request = gateway.lastRequest("channelIndexerStatus")
         verify(request !== null)
         gateway.respond(request, failed("status unavailable"))
 
         compare(sourceEditorState.managedIndexerStatusStale, true)
         compare(sourceEditorState.managedIndexerNode.run_state, "stopped")
         compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
-        compare(gateway.requestCount("localNodesAction"), 0)
+        compare(gateway.requestCount("channelIndexerAction"), 0)
         compare(sourceEditorState.managedIndexerError,
             "Refresh managed Indexer status before controlling it.")
     }
@@ -1456,11 +1462,11 @@ TestCase {
         zoneState.verification = "empty"
 
         verify(sourceEditorState.runManagedIndexerAction("stop", "zone-a"))
-        let request = gateway.lastRequest("localNodesAction")
+        let request = gateway.lastRequest("channelIndexerAction")
         verify(request !== null)
         compare(request.args[1].action, "stop")
-        compare(request.args[1].node, "indexer")
         compare(request.args[1].channel_id, "zone-a")
+        verify(request.args[1].network_scope !== null)
         verify(request.args[1].bedrock_endpoint === undefined)
         gateway.respond(request, ok({
             runtime: { run_state: "running" },
@@ -1491,7 +1497,7 @@ TestCase {
             operations: []
         })
         compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
-        compare(gateway.requestCount("localNodesAction"), 1)
+        compare(gateway.requestCount("channelIndexerAction"), 1)
         compare(sourceEditorState.managedIndexerError,
             "A verified active Zone is required to start Indexer.")
     }
