@@ -898,6 +898,48 @@ TestCase {
         compare(graph[0].value, 8)
     }
 
+    function test_delivery_sent_and_propagated_metrics_use_accepted_text_windows() {
+        const before = [
+            "waku_service_requests_total{service=\"/vac/waku/lightpush/3.0.0\",state=\"served\"} 100",
+            "waku_node_messages_total{type=\"relay\"} 500"
+        ].join("\n")
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-events-before", before)))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.message_sent_events_recent"), 100)
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.message_propagated_events_recent"), 500)
+        compare(metrics.dashboardMetricValue(
+            "messaging.message_sent_events_recent"), null)
+        compare(metrics.dashboardMetricValue(
+            "messaging.message_propagated_events_recent"), null)
+
+        const after = [
+            "waku_service_requests_total{service=\"/vac/waku/lightpush/3.0.0\",state=\"served\"} 104",
+            "waku_node_messages_total{type=\"relay\"} 507"
+        ].join("\n")
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-events-after", after)))
+
+        compare(metrics.dashboardMetricValue(
+            "messaging.message_sent_events_recent"), 4)
+        compare(metrics.dashboardMetricValue(
+            "messaging.message_propagated_events_recent"), 7)
+        const sentGraph = metrics.dashboardMetricSamples(
+            "messaging.message_sent_events_recent")
+        const propagatedGraph = metrics.dashboardMetricSamples(
+            "messaging.message_propagated_events_recent")
+        compare(sentGraph.length, 1)
+        compare(sentGraph[0].value, 4)
+        compare(propagatedGraph.length, 1)
+        compare(propagatedGraph[0].value, 7)
+    }
+
     function test_delivery_aggregate_graph_matches_headline_across_reset_sequence() {
         const observations = [
             [100, 50],

@@ -309,6 +309,68 @@ TestCase {
         compare(DashboardMetricCatalog.windowDeltaFromSamples([{ timestamp: 0, value: 1 }, { timestamp: 1000, value: 4 }], 1000, 1000), 3)
     }
 
+    function test_sent_and_propagated_recent_metrics_use_accepted_windows() {
+        const service = "/vac/waku/lightpush/3.0.0"
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricSeriesHistory = ({})
+        model.dashboardMetricSeriesLastSeen = ({})
+        model.metricRows = [
+            {
+                name: "waku_service_requests_total",
+                labels: { service: service, state: "served" },
+                value: 100
+            },
+            {
+                name: "waku_node_messages_total",
+                labels: { type: "relay" },
+                value: 500
+            }
+        ]
+
+        verify(DashboardMetricCatalog.dashboardMetricUsesWindow(
+            "messaging.message_sent_events_recent"))
+        verify(DashboardMetricCatalog.dashboardMetricUsesWindow(
+            "messaging.message_propagated_events_recent"))
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_sent_events_recent"), 100)
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "messaging.message_propagated_events_recent"), 500)
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_sent_events_recent"), null)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_propagated_events_recent"), null)
+
+        model.metricRows = [
+            {
+                name: "waku_service_requests_total",
+                labels: { service: service, state: "served" },
+                value: 104
+            },
+            {
+                name: "waku_node_messages_total",
+                labels: { type: "relay" },
+                value: 507
+            }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_sent_events_recent"), 4)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.message_propagated_events_recent"), 7)
+        const sentGraph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "messaging.message_sent_events_recent")
+        const propagatedGraph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "messaging.message_propagated_events_recent")
+        compare(sentGraph.length, 1)
+        compare(sentGraph[0].value, 4)
+        compare(propagatedGraph.length, 1)
+        compare(propagatedGraph[0].value, 7)
+        model.metricRows = []
+    }
+
     function test_window_metric_accumulates_activity_across_counter_reset() {
         const now = Date.now()
         const samples = [
