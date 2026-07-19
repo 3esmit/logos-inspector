@@ -40,7 +40,10 @@ QtObject {
 
     function openReference(kind, value, payload) { return EntityTargetOpening.openReference(root, kind, value, payload) }
 
-    function openMantleTransaction(hash) { return AppModelOpeners.openMantleTransaction(model, hash) }
+    function openMantleTransaction(hash, navigationContext) {
+        return AppModelOpeners.openMantleTransaction(model, hash,
+            navigationContext)
+    }
 
     function openPrivateAccountReference(account) { return AppModelOpeners.openPrivateAccountReference(model, account) }
 

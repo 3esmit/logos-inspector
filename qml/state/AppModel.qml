@@ -874,11 +874,13 @@ QtObject {
     }
     property FavoritesState favoriteStore: FavoritesState {
         onRevisionChanged: root.saveSettingsState()
-        onOpenRequested: function (openKind, value, entityRef) {
+        onOpenRequested: function (openKind, value, entityRef,
+                navigationContext) {
             if (entityRef) {
                 entityNavigationState.openInspectionEntityRef(entityRef, true)
             } else {
-                entityNavigationState.openReference(openKind, value)
+                entityNavigationState.openReference(openKind, value,
+                    navigationContext)
             }
         }
     }

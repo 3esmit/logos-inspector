@@ -8,7 +8,8 @@ QtObject {
     property int revision: 0
     property string filter: "all"
 
-    signal openRequested(string openKind, string value, var entityRef)
+    signal openRequested(string openKind, string value, var entityRef,
+        var navigationContext)
 
     function clear() {
         entries = []
@@ -49,6 +50,8 @@ QtObject {
             return null
         }
         const kind = normalizedKind(value.kind)
+        const navigationContext = normalizedL1TransactionContext(
+            value.navigation_context || value.navigationContext)
         const item = {
             kind: kind,
             layer: normalizedLayer(value.layer),
@@ -67,6 +70,11 @@ QtObject {
         }
         if (!item.open_kind.length) {
             item.open_kind = defaultOpenKind(item)
+        }
+        if (item.kind === "transaction" && item.layer === "l1"
+                && item.open_kind === "mantleTransaction"
+                && navigationContext) {
+            item.navigation_context = navigationContext
         }
         if (!item.title.length) {
             item.title = defaultTitle(item)
@@ -92,6 +100,19 @@ QtObject {
             return layer
         }
         return ""
+    }
+
+    function normalizedL1TransactionContext(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)
+                || String(value.kind || "") !== "l1_transaction"
+                || typeof value.slot !== "number"
+                || !Number.isSafeInteger(value.slot) || value.slot < 0) {
+            return null
+        }
+        return {
+            kind: "l1_transaction",
+            slot: value.slot
+        }
     }
 
     function defaultOpenKind(entry) {
@@ -194,7 +215,7 @@ QtObject {
         if (!l1 && !reference) {
             return null
         }
-        return {
+        const entry = {
             kind: "transaction",
             layer: l1 ? "l1" : "l2",
             value: hash,
@@ -206,6 +227,14 @@ QtObject {
             created_at: new Date().toISOString(),
             entity_ref: reference
         }
+        const navigationContext = l1 ? normalizedL1TransactionContext({
+                kind: "l1_transaction",
+                slot: detail.slot
+            }) : null
+        if (navigationContext) {
+            entry.navigation_context = navigationContext
+        }
+        return entry
     }
 
     function accountEntry(value, entityRef) {
@@ -365,7 +394,8 @@ QtObject {
                 source: item.entity_ref.source
             }
         }
-        openRequested(item.open_kind, item.value, entity)
+        openRequested(item.open_kind, item.value, entity,
+            item.navigation_context || null)
     }
 
     function kindLabel(kind) {

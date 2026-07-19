@@ -1365,6 +1365,16 @@ mod tests {
         store.save_user_settings(&json!({
             "version": 2,
             "theme": "light",
+            "favorites": [{
+                "kind": "transaction",
+                "layer": "l1",
+                "open_kind": "mantleTransaction",
+                "value": "tx-41",
+                "navigation_context": {
+                    "kind": "l1_transaction",
+                    "slot": 41
+                }
+            }],
             "channel_source_configs": [{ "malformed": true }]
         }))?;
         let saved = store.load()?;
@@ -1373,6 +1383,14 @@ mod tests {
             || configs.len() != 1
             || first_sequencer_source(configs.first().context("saved config missing")?)?.source_id
                 != source_id
+            || saved
+                .pointer("/favorites/0/navigation_context/kind")
+                .and_then(Value::as_str)
+                != Some("l1_transaction")
+            || saved
+                .pointer("/favorites/0/navigation_context/slot")
+                .and_then(Value::as_u64)
+                != Some(41)
         {
             bail!("generic settings save overwrote Rust-owned configuration: {saved}");
         }

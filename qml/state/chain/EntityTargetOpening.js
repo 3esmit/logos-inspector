@@ -11,7 +11,7 @@ function referenceTarget(session, kind, value, payload) {
     case "slot":
         return { command: "blockchainBlock", target: target, payload: payload === undefined ? target : payload }
     case "mantleTransaction":
-        return { command: "mantleTransaction", target: target, payload: undefined }
+        return { command: "mantleTransaction", target: target, payload: payload }
     case "wallet":
         return { command: "localWallet", target: target, tab: "profiles", payload: undefined }
     case "private":
@@ -46,7 +46,7 @@ function openReference(session, kind, value, payload) {
         session.openBlockchainBlock(target.payload)
         return
     case "mantleTransaction":
-        session.openMantleTransaction(target.target)
+        session.openMantleTransaction(target.target, target.payload)
         return
     case "localWallet":
         session.openLocalWallet(target.target, target.tab)

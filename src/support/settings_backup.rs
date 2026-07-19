@@ -1124,7 +1124,16 @@ mod tests {
         let backup_settings = json!({
             "version": 2,
             "theme": "backup",
-            "favorites": [{ "value": "new-favorite" }],
+            "favorites": [{
+                "kind": "transaction",
+                "layer": "l1",
+                "open_kind": "mantleTransaction",
+                "value": "new-favorite",
+                "navigation_context": {
+                    "kind": "l1_transaction",
+                    "slot": 41
+                }
+            }],
             "channel_source_configs": [backup_test_channel_config('1', '1', 99, "Backup", 4040)]
         });
         let payload = backup_payload_from_states(
@@ -1148,6 +1157,14 @@ mod tests {
         let saved: Value =
             serde_json::from_slice(&fs::read(directory.path().join("settings.json"))?)?;
         if saved.pointer("/favorites/0/value").and_then(Value::as_str) != Some("new-favorite")
+            || saved
+                .pointer("/favorites/0/navigation_context/kind")
+                .and_then(Value::as_str)
+                != Some("l1_transaction")
+            || saved
+                .pointer("/favorites/0/navigation_context/slot")
+                .and_then(Value::as_u64)
+                != Some(41)
             || saved.get("theme").and_then(Value::as_str) != Some("old")
             || saved.pointer("/channel_source_configs/0") != Some(&current_config)
             || saved
