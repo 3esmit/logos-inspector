@@ -6,6 +6,8 @@ use std::sync::{
 use anyhow::{Result, bail, ensure};
 use tokio::sync::{Notify, mpsc, oneshot};
 
+use crate::source_routing::channel_sources::FinalizedL1EvidenceBasis;
+
 use super::super::probe::{IndexerSourceProbeOutput, SequencerSourceProbeOutput};
 use super::*;
 
@@ -35,6 +37,250 @@ async fn monitoring_starts_only_for_verified_catalog_and_probes_immediately() ->
     ensure!(
         !serialized.contains("localhost") && !serialized.contains("http://"),
         "runtime observation snapshot exposed a source target"
+    );
+    monitor.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn persisted_legacy_proof_must_revalidate_before_head_becomes_observable() -> Result<()> {
+    let (monitor, _clock, mut calls) = test_monitor();
+    let expected_channel_id = channel_id();
+    let mut config = config(9, 1, false);
+    set_evidence_matched(&mut config)?;
+    monitor.configure(scope(), true, vec![config]).await?;
+
+    let call = receive_call(&mut calls).await?;
+    let before = monitor.snapshot();
+    let before_observation = first_observation(&before)
+        .ok_or_else(|| anyhow::anyhow!("legacy source was not configured"))?;
+    ensure!(
+        before_observation.binding_state == Some(ChannelSourceBindingState::Pending)
+            && !before_observation.is_read_eligible(),
+        "persisted legacy proof bypassed live pinned-block validation"
+    );
+    call.respond_regular(evidence_success_output(
+        &expected_channel_id,
+        71,
+        71,
+        "legacy-head",
+    ))?;
+    let snapshot = wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot)
+            .and_then(|observation| observation.last_good.as_ref())
+            .and_then(|last_good| last_good.head.as_ref())
+            .is_some_and(|head| head.block_id == 71)
+    })
+    .await?;
+    let observation = first_observation(&snapshot)
+        .ok_or_else(|| anyhow::anyhow!("legacy source observation is missing"))?;
+    ensure!(
+        observation.binding_state == Some(ChannelSourceBindingState::RuntimeEvidenceMatched),
+        "live pinned-block validation did not create runtime binding"
+    );
+    ensure!(
+        observation.health == ChannelSourceHealthState::Reachable,
+        "unsupported optional identity hid healthy legacy head"
+    );
+    ensure!(
+        observation.current_failure.is_none(),
+        "unsupported optional identity remained a current failure"
+    );
+    ensure!(
+        observation
+            .last_good
+            .as_ref()
+            .is_some_and(|last_good| last_good.reported_channel_id.is_none()),
+        "evidence-matched legacy source claimed an RPC-reported Channel identity"
+    );
+    monitor.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn persisted_legacy_mapping_prefers_newly_available_rpc_identity() -> Result<()> {
+    let (monitor, clock, mut calls) = test_monitor();
+    let expected_channel_id = channel_id();
+    let mut config = config(13, 1, false);
+    set_evidence_matched(&mut config)?;
+    monitor.configure(scope(), true, vec![config]).await?;
+
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(evidence_success_output(
+            &expected_channel_id,
+            71,
+            74,
+            "legacy",
+        ))?;
+    wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.binding_state == Some(ChannelSourceBindingState::RuntimeEvidenceMatched)
+                && observation
+                    .last_good
+                    .as_ref()
+                    .and_then(|last_good| last_good.head.as_ref())
+                    .is_some_and(|head| head.block_id == 74)
+        })
+    })
+    .await?;
+
+    clock.advance(next_probe_delay_millis(0, &source_id(1)));
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(success_output(&expected_channel_id, 75, "rpc-upgrade"))?;
+    let snapshot = wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.binding_state == Some(ChannelSourceBindingState::RuntimeAttested)
+                && observation
+                    .last_good
+                    .as_ref()
+                    .and_then(|last_good| last_good.head.as_ref())
+                    .is_some_and(|head| head.block_id == 75)
+        })
+    })
+    .await?;
+    let observation = first_observation(&snapshot)
+        .ok_or_else(|| anyhow::anyhow!("upgraded source observation is missing"))?;
+    ensure!(
+        observation.last_good.as_ref().is_some_and(|last_good| {
+            last_good.reported_channel_id.as_deref() == Some(expected_channel_id.as_str())
+        }),
+        "direct RPC identity was mislabeled as legacy evidence"
+    );
+
+    clock.advance(next_probe_delay_millis(0, &source_id(1)));
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(evidence_success_output(
+            &expected_channel_id,
+            71,
+            76,
+            "legacy-again",
+        ))?;
+    let downgraded = wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.binding_state == Some(ChannelSourceBindingState::RuntimeEvidenceMatched)
+                && observation
+                    .last_good
+                    .as_ref()
+                    .and_then(|last_good| last_good.head.as_ref())
+                    .is_some_and(|head| head.block_id == 76)
+        })
+    })
+    .await?;
+    ensure!(
+        first_observation(&downgraded)
+            .and_then(|observation| observation.last_good.as_ref())
+            .is_some_and(|last_good| last_good.reported_channel_id.is_none()),
+        "evidence fallback retained stale RPC-reported identity"
+    );
+    monitor.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn persisted_legacy_proof_failure_revokes_runtime_binding_until_revalidated() -> Result<()> {
+    let (monitor, clock, mut calls) = test_monitor();
+    let expected_channel_id = channel_id();
+    let mut config = config(12, 1, false);
+    set_evidence_matched(&mut config)?;
+    monitor.configure(scope(), true, vec![config]).await?;
+
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(evidence_success_output(
+            &expected_channel_id,
+            71,
+            71,
+            "verified",
+        ))?;
+    wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.binding_state == Some(ChannelSourceBindingState::RuntimeEvidenceMatched)
+        })
+    })
+    .await?;
+
+    clock.advance(next_probe_delay_millis(0, &source_id(1)));
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(identity_failure_output(
+            super::super::ChannelSourceFailureKind::Protocol,
+            72,
+            "replacement-head",
+        ))?;
+    let revoked = wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.binding_state == Some(ChannelSourceBindingState::Pending)
+                && observation.current_failure.as_ref().is_some_and(|failure| {
+                    failure.kind == super::super::ChannelSourceFailureKind::Protocol
+                        && failure.stage == ChannelSourceProbeStage::EvidenceConsistency
+                })
+        })
+    })
+    .await?;
+    ensure!(
+        first_observation(&revoked).is_some_and(|observation| !observation.is_read_eligible()),
+        "failed pinned-proof validation retained legacy read eligibility"
+    );
+
+    clock.advance(next_probe_delay_millis(1, &source_id(1)));
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(evidence_success_output(
+            &expected_channel_id,
+            71,
+            73,
+            "revalidated",
+        ))?;
+    let recovered = wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.binding_state == Some(ChannelSourceBindingState::RuntimeEvidenceMatched)
+                && observation
+                    .last_good
+                    .as_ref()
+                    .and_then(|last_good| last_good.head.as_ref())
+                    .is_some_and(|head| head.block_id == 73)
+        })
+    })
+    .await?;
+    ensure!(
+        first_observation(&recovered).is_some_and(ChannelSourceObservation::is_read_eligible),
+        "successful pinned-proof revalidation did not restore read eligibility"
+    );
+    monitor.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_legacy_sequencer_stays_ineligible_without_persisted_proof() -> Result<()> {
+    let (monitor, _clock, mut calls) = test_monitor();
+    monitor
+        .configure(scope(), true, vec![config(10, 1, true)])
+        .await?;
+
+    receive_call(&mut calls)
+        .await?
+        .respond_regular(legacy_success_output(72, "untrusted-head"))?;
+    let snapshot = wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.current_failure.as_ref().is_some_and(|failure| {
+                failure.kind == super::super::ChannelSourceFailureKind::Unsupported
+                    && failure.stage == ChannelSourceProbeStage::ChannelIdentity
+            })
+        })
+    })
+    .await?;
+    let observation = first_observation(&snapshot)
+        .ok_or_else(|| anyhow::anyhow!("pending legacy source observation is missing"))?;
+    ensure!(
+        observation.binding_state == Some(ChannelSourceBindingState::Pending),
+        "health and head synthesized a legacy Channel binding"
+    );
+    ensure!(
+        observation.last_good.is_none() && !observation.is_read_eligible(),
+        "pending legacy source became read eligible"
     );
     monitor.shutdown().await?;
     Ok(())
@@ -434,11 +680,71 @@ async fn observation_revision_is_independent_from_channel_config_revision() -> R
 }
 
 #[test]
-fn only_attested_binding_states_are_read_eligible() {
+fn only_verified_binding_states_are_read_eligible() {
     assert!(ChannelSourceBindingState::PersistedAttested.is_read_eligible());
     assert!(ChannelSourceBindingState::RuntimeAttested.is_read_eligible());
+    assert!(ChannelSourceBindingState::RuntimeEvidenceMatched.is_read_eligible());
     assert!(!ChannelSourceBindingState::Pending.is_read_eligible());
     assert!(!ChannelSourceBindingState::ChannelMismatch.is_read_eligible());
+}
+
+#[test]
+fn regular_task_failure_revokes_evidence_binding() -> Result<()> {
+    let mut config = config(14, 1, false);
+    set_evidence_matched(&mut config)?;
+    let owner_channel_id = config.channel_id.clone();
+    let config_revision = config.config_revision;
+    let Some(configured_source) = config.sequencer_sources.first() else {
+        bail!("evidence-matched source fixture is missing");
+    };
+    let source_id = configured_source.source_id.clone();
+    let target_fingerprint = configured_source.target.fingerprint();
+    let mut channel = ChannelRuntime::new(config, CancellationToken::new(), 0);
+    let Some(source) = channel.sources.get_mut(&source_id) else {
+        bail!("evidence-matched runtime source is missing");
+    };
+    source.binding_state = Some(ChannelSourceBindingState::RuntimeEvidenceMatched);
+    source.in_flight = true;
+
+    let mut state = MonitorState {
+        network_scope: Some(scope()),
+        catalog_verified: true,
+        channels: BTreeMap::from([(owner_channel_id.clone(), channel)]),
+        ..MonitorState::default()
+    };
+    let changed = apply_join_failure(
+        &mut state,
+        &ManualClock::new(),
+        TaskDescriptor {
+            fence: ProbeFence {
+                network_scope: scope(),
+                channel_id: owner_channel_id.clone(),
+                config_revision,
+                source_id: source_id.clone(),
+                target_fingerprint,
+            },
+            kind: ProbeJobKind::Regular,
+        },
+    );
+    let Some(source) = state
+        .channels
+        .get(&owner_channel_id)
+        .and_then(|channel| channel.sources.get(&source_id))
+    else {
+        bail!("evidence-matched runtime source disappeared");
+    };
+    ensure!(
+        changed
+            && !source.in_flight
+            && source.binding_state == Some(ChannelSourceBindingState::Pending)
+            && !source.is_read_eligible()
+            && source
+                .current_failure
+                .as_ref()
+                .is_some_and(|failure| failure.stage == ChannelSourceProbeStage::Task),
+        "regular task failure retained evidence-backed read eligibility"
+    );
+    Ok(())
 }
 
 struct ManualClockState {
@@ -650,7 +956,52 @@ fn first_observation(snapshot: &ChannelSourceMonitorSnapshot) -> Option<&Channel
 fn success_output(channel_id: &str, block_id: u64, hash: &str) -> ChannelSourceProbeOutput {
     ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
         health: ChannelSourceProbeFact::Observed(()),
-        channel_id: ChannelSourceProbeFact::Observed(channel_id.to_owned()),
+        channel_id: ChannelSourceProbeFact::Observed(SequencerSourceIdentity {
+            channel_id: channel_id.to_owned(),
+            basis: SequencerSourceIdentityBasis::RpcReported,
+        }),
+        identity_stage: ChannelSourceProbeStage::ChannelIdentity,
+        head: ChannelSourceProbeFact::Observed(block(block_id, hash)),
+    })
+}
+
+fn evidence_success_output(
+    channel_id: &str,
+    anchor_block_id: u64,
+    head_block_id: u64,
+    hash: &str,
+) -> ChannelSourceProbeOutput {
+    ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
+        health: ChannelSourceProbeFact::Observed(()),
+        channel_id: ChannelSourceProbeFact::Observed(SequencerSourceIdentity {
+            channel_id: channel_id.to_owned(),
+            basis: SequencerSourceIdentityBasis::FinalizedL1EvidenceMatched { anchor_block_id },
+        }),
+        identity_stage: ChannelSourceProbeStage::EvidenceConsistency,
+        head: ChannelSourceProbeFact::Observed(block(head_block_id, hash)),
+    })
+}
+
+fn legacy_success_output(block_id: u64, hash: &str) -> ChannelSourceProbeOutput {
+    ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
+        health: ChannelSourceProbeFact::Observed(()),
+        channel_id: ChannelSourceProbeFact::Failed(probe_failure(
+            super::super::ChannelSourceFailureKind::Unsupported,
+        )),
+        identity_stage: ChannelSourceProbeStage::ChannelIdentity,
+        head: ChannelSourceProbeFact::Observed(block(block_id, hash)),
+    })
+}
+
+fn identity_failure_output(
+    kind: super::super::ChannelSourceFailureKind,
+    block_id: u64,
+    hash: &str,
+) -> ChannelSourceProbeOutput {
+    ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
+        health: ChannelSourceProbeFact::Observed(()),
+        channel_id: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+        identity_stage: ChannelSourceProbeStage::EvidenceConsistency,
         head: ChannelSourceProbeFact::Observed(block(block_id, hash)),
     })
 }
@@ -668,6 +1019,7 @@ fn failed_output_for(
             ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
                 health: ChannelSourceProbeFact::Failed(probe_failure(kind)),
                 channel_id: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+                identity_stage: ChannelSourceProbeStage::ChannelIdentity,
                 head: ChannelSourceProbeFact::Failed(probe_failure(kind)),
             })
         }
@@ -725,6 +1077,35 @@ fn config(revision: u64, source_count: u8, pending: bool) -> ChannelSourceConfig
             .map(|source| source.source_id.clone()),
         sequencer_sources,
         indexer_source: None,
+    }
+}
+
+fn set_evidence_matched(config: &mut ChannelSourceConfig) -> Result<()> {
+    let channel_id = config.channel_id.clone();
+    let source = config
+        .sequencer_sources
+        .first_mut()
+        .ok_or_else(|| anyhow::anyhow!("test Sequencer source is missing"))?;
+    source.channel_attestation = PersistedSequencerAttestation::PersistedEvidenceMatched {
+        channel_id,
+        target_fingerprint: source.target.fingerprint(),
+        matched_at_unix: 1,
+        evidence: Box::new(finalized_l1_evidence()),
+    };
+    Ok(())
+}
+
+fn finalized_l1_evidence() -> FinalizedL1EvidenceBasis {
+    FinalizedL1EvidenceBasis {
+        network_scope: scope(),
+        catalog_source_fingerprint: format!("sha256:{}", id('c')),
+        l1_slot: 100,
+        l1_block_id: id('d'),
+        transaction_hash: id('e'),
+        operation_index: 0,
+        l2_block_id: 71,
+        l2_header_hash: id('f'),
+        l2_signature: "1".repeat(128),
     }
 }
 

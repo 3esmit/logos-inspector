@@ -22,8 +22,10 @@ use crate::{
     },
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
     source_routing::channel_sources::{
-        ChannelSourceConfig, ChannelSourceMonitorSnapshot, ChannelSourceTarget,
-        ConfiguredIndexerSource, ConfiguredSequencerSource, PersistedSequencerAttestation,
+        ChannelSourceBindingState, ChannelSourceConfig, ChannelSourceHealthState,
+        ChannelSourceMonitorSnapshot, ChannelSourceObservation, ChannelSourceObservationSet,
+        ChannelSourceRole, ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
+        PersistedSequencerAttestation,
     },
     support::state_store::RegisteredIdlEntry,
 };
@@ -1267,6 +1269,38 @@ async fn context_gates_unverified_stale_and_data_channel_reads() -> Result<()> {
 }
 
 #[tokio::test]
+async fn sequencer_reads_reject_unverified_or_foreign_monitor_snapshots() -> Result<()> {
+    let (mut facts, config) = facts(false, true);
+    let adapter = Arc::new(ScriptedAdapter::default());
+    let router = scripted_router(adapter.clone());
+    let query = || ZoneL2ProgramsQuery {
+        exact_source_id: None,
+    };
+
+    facts.observations.catalog_verified = false;
+    let result = router.programs(&facts, request(&config, query())).await;
+    let Err(failure) = result else {
+        bail!("unverified monitor snapshot authorized a Sequencer read");
+    };
+    if failure.code != L2ReadErrorCode::SourceIneligible {
+        bail!("unexpected unverified monitor failure: {failure:?}");
+    }
+
+    facts.observations.catalog_verified = true;
+    facts.observations.network_scope = Some(NetworkScope::GenesisId {
+        genesis_id: identity('9'),
+    });
+    let result = router.programs(&facts, request(&config, query())).await;
+    let Err(failure) = result else {
+        bail!("foreign monitor scope authorized a Sequencer read");
+    };
+    if failure.code != L2ReadErrorCode::SourceIneligible || !adapter.calls()?.is_empty() {
+        bail!("foreign monitor scope reached source transport: {failure:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn exact_source_cannot_cross_channels() -> Result<()> {
     let (mut facts, config) = facts(false, true);
     let mut foreign = source_config(&config.network_scope, &identity('d'), false, true);
@@ -1382,6 +1416,12 @@ async fn source_config_revision_invalidates_cached_transaction() -> Result<()> {
     let mut revised = config;
     revised.config_revision = 2;
     facts.configs = vec![revised.clone()];
+    let observation_set = facts
+        .observations
+        .channels
+        .first_mut()
+        .context("test source observation set is missing")?;
+    observation_set.config_revision = revised.config_revision;
     let result = router
         .transaction(
             &facts,
@@ -1631,7 +1671,7 @@ fn facts(with_indexer: bool, with_sequencer: bool) -> (ZoneL2RuntimeFacts, Chann
     } else {
         source_config(&scope, &channel_id, with_indexer, true)
     };
-    let observations = ChannelSourceMonitorSnapshot::default();
+    let observations = runtime_observations(&config);
     let catalog = snapshot(scope.clone());
     let summaries = project_catalog_zones_with_sources(
         &catalog,
@@ -1652,6 +1692,47 @@ fn facts(with_indexer: bool, with_sequencer: bool) -> (ZoneL2RuntimeFacts, Chann
         },
         config,
     )
+}
+
+fn runtime_observations(config: &ChannelSourceConfig) -> ChannelSourceMonitorSnapshot {
+    let mut observations = config
+        .sequencer_sources
+        .iter()
+        .map(|source| ChannelSourceObservation {
+            source_id: source.source_id.clone(),
+            role: ChannelSourceRole::Sequencer,
+            selected: config.selected_sequencer_source_id.as_deref()
+                == Some(source.source_id.as_str()),
+            binding_state: Some(ChannelSourceBindingState::PersistedAttested),
+            health: ChannelSourceHealthState::Reachable,
+            last_good: None,
+            current_failure: None,
+            comparison_blocks: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(source) = config.indexer_source.as_ref() {
+        observations.push(ChannelSourceObservation {
+            source_id: source.source_id.clone(),
+            role: ChannelSourceRole::Indexer,
+            selected: false,
+            binding_state: None,
+            health: ChannelSourceHealthState::Reachable,
+            last_good: None,
+            current_failure: None,
+            comparison_blocks: Vec::new(),
+        });
+    }
+    ChannelSourceMonitorSnapshot {
+        network_scope: Some(config.network_scope.clone()),
+        catalog_verified: true,
+        observation_revision: 1,
+        channels: vec![ChannelSourceObservationSet {
+            channel_id: config.channel_id.clone(),
+            config_revision: config.config_revision,
+            selected_sequencer_source_id: config.selected_sequencer_source_id.clone(),
+            observations,
+        }],
+    }
 }
 
 fn source_config(

@@ -21,6 +21,8 @@ Rectangle {
     readonly property bool insecureRemoteHttp: Presentation.remoteInsecureHttp(root.target)
     readonly property string binding: root.role === "indexer"
         ? "configured" : Presentation.bindingState(root.source, root.observation)
+    readonly property string bindingLabel: root.binding === "runtime_evidence_matched"
+        ? qsTr("Evidence matched") : Presentation.words(root.binding)
     signal selectRequested()
     signal editRequested()
     signal removeRequested()
@@ -107,9 +109,11 @@ Rectangle {
                 }
 
                 Text {
+                    objectName: "channelSourceBindingLabel_"
+                        + String(root.source && root.source.source_id || "")
                     text: root.insecureRemoteHttp
-                        ? qsTr("%1 / Insecure HTTP").arg(Presentation.words(root.binding))
-                        : Presentation.words(root.binding)
+                        ? qsTr("%1 / Insecure HTTP").arg(root.bindingLabel)
+                        : root.bindingLabel
                     color: root.insecureRemoteHttp ? root.theme.warning : root.theme.textMuted
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
@@ -231,7 +235,7 @@ Rectangle {
         MenuItem {
             visible: root.role === "sequencer"
                 && (root.binding === "pending" || root.binding === "channel_mismatch")
-            text: qsTr("Retry attestation")
+            text: qsTr("Retry verification")
             onTriggered: root.retryRequested()
         }
 

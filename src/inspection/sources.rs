@@ -145,6 +145,9 @@ fn project_zone_observation(observation: &ChannelSourceObservation) -> ZoneSourc
             }
             ChannelSourceBindingState::Pending => ZoneSourceBindingState::Pending,
             ChannelSourceBindingState::RuntimeAttested => ZoneSourceBindingState::RuntimeAttested,
+            ChannelSourceBindingState::RuntimeEvidenceMatched => {
+                ZoneSourceBindingState::RuntimeEvidenceMatched
+            }
             ChannelSourceBindingState::ChannelMismatch => ZoneSourceBindingState::ChannelMismatch,
         }),
         health: match observation.health {

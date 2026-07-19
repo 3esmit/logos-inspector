@@ -1,4 +1,5 @@
 use anyhow::Result;
+#[cfg(test)]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use common::block::{BedrockStatus, Block, BlockBody, BlockHeader};
 use serde::Serialize;
@@ -19,15 +20,20 @@ pub struct BlockSummary {
     pub decode_warning: Option<String>,
 }
 
+#[cfg(test)]
 pub(crate) fn decode_sequencer_block(encoded: &str) -> Result<BlockSummary> {
     let bytes = BASE64_STANDARD
         .decode(encoded)
         .map_err(|_| super::evidence_protocol_error("Sequencer block is not valid base64"))?;
 
-    let block = borsh::from_slice::<Block>(&bytes)
+    decode_sequencer_block_bytes(&bytes).map(|block| summarize_block(&block))
+}
+
+pub(crate) fn decode_sequencer_block_bytes(bytes: &[u8]) -> Result<Block> {
+    let block = borsh::from_slice::<Block>(bytes)
         .map_err(|_| super::evidence_protocol_error("Sequencer block has invalid layout"))?;
     verify_block_content_hash(&block)?;
-    Ok(summarize_block(&block))
+    Ok(block)
 }
 
 pub(crate) fn verify_block_content_hash(block: &Block) -> Result<()> {

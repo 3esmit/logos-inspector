@@ -1,14 +1,18 @@
 use anyhow::{Context as _, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use borsh::BorshDeserialize as _;
+use common::block::Block;
 use common::transaction::LeeTransaction;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
 
 use super::{
-    BlockSummary, ProgramIdEntry, TransactionSummary, block::verify_block_content_hash,
-    decode_sequencer_block, programs::program_entries, summarize_block, summarize_transaction,
+    BlockSummary, ProgramIdEntry, TransactionSummary,
+    block::{decode_sequencer_block_bytes, verify_block_content_hash},
+    programs::program_entries,
+    summarize_block, summarize_transaction,
 };
-use crate::{parse_hash, rpc::raw_json_rpc_optional_result};
+use crate::{parse_hash, rpc::raw_json_rpc};
 
 pub async fn sequencer_health(endpoint: &str) -> Result<()> {
     sequencer_client(endpoint)?
@@ -18,11 +22,10 @@ pub async fn sequencer_health(endpoint: &str) -> Result<()> {
 }
 
 pub async fn sequencer_channel_id(endpoint: &str) -> Result<String> {
-    sequencer_client(endpoint)?
-        .get_channel_id()
+    let response = raw_json_rpc(endpoint, "getChannelId", Value::Array(Vec::new()))
         .await
-        .map(|channel_id| channel_id.to_string())
-        .context("failed to fetch Sequencer Channel id")
+        .context("failed to fetch Sequencer Channel id")?;
+    sequencer_channel_id_from_response(&response)
 }
 
 pub async fn last_sequencer_block_id(endpoint: &str) -> Result<u64> {
@@ -88,19 +91,18 @@ pub async fn sequencer_commitment_proof(
 }
 
 pub async fn sequencer_block(endpoint: &str, block_id: u64) -> Result<Option<BlockSummary>> {
-    let result =
-        raw_json_rpc_optional_result(endpoint, "getBlock", Value::Array(vec![json!(block_id)]))
-            .await
-            .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
-    if result.is_null() {
-        return Ok(None);
-    }
-    let encoded = result
-        .as_str()
-        .context("sequencer getBlock result was not a base64 block")?;
-    let block = decode_sequencer_block(encoded)
-        .with_context(|| format!("failed to decode sequencer block {block_id}"))?;
-    Ok(Some(block))
+    Ok(fetch_sequencer_block(endpoint, block_id)
+        .await?
+        .map(|fetched| summarize_block(&fetched.block)))
+}
+
+pub(crate) async fn sequencer_block_bytes(
+    endpoint: &str,
+    block_id: u64,
+) -> Result<Option<Vec<u8>>> {
+    Ok(fetch_sequencer_block(endpoint, block_id)
+        .await?
+        .map(|fetched| fetched.bytes))
 }
 
 pub async fn sequencer_blocks(
@@ -158,4 +160,136 @@ async fn fetch_sequencer_transaction(
         .get_transaction(hash)
         .await
         .with_context(|| format!("failed to fetch sequencer transaction {tx_hash}"))
+}
+
+struct FetchedSequencerBlock {
+    bytes: Vec<u8>,
+    block: Block,
+}
+
+async fn fetch_sequencer_block(
+    endpoint: &str,
+    block_id: u64,
+) -> Result<Option<FetchedSequencerBlock>> {
+    let response = raw_json_rpc(endpoint, "getBlock", Value::Array(vec![json!(block_id)]))
+        .await
+        .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
+    let Some(bytes) = sequencer_block_bytes_from_response(&response)? else {
+        return Ok(None);
+    };
+    let block = decode_sequencer_block_bytes(&bytes)?;
+    if block.header.block_id != block_id {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block response returned another block id",
+        ));
+    }
+    Ok(Some(FetchedSequencerBlock { bytes, block }))
+}
+
+fn sequencer_channel_id_from_response(response: &Value) -> Result<String> {
+    if response.get("error").is_some() {
+        if response.pointer("/error/code").and_then(Value::as_i64) == Some(-32601) {
+            return Err(super::evidence_capability_error(
+                "Sequencer does not expose Channel identity",
+            ));
+        }
+        return Err(super::evidence_protocol_error(
+            "Sequencer Channel identity request returned an RPC error",
+        ));
+    }
+    let Some(channel_id) = response.get("result").and_then(Value::as_str) else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer Channel identity response is malformed",
+        ));
+    };
+    parse_hash(channel_id, "Sequencer Channel id")
+        .map(|channel_id| channel_id.to_string())
+        .map_err(|_| {
+            super::evidence_protocol_error("Sequencer Channel identity response is malformed")
+        })
+}
+
+fn sequencer_block_bytes_from_response(response: &Value) -> Result<Option<Vec<u8>>> {
+    if response.get("error").is_some() {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block request returned an RPC error",
+        ));
+    }
+    let Some(result) = response.get("result") else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block response is malformed",
+        ));
+    };
+    if result.is_null() {
+        return Ok(None);
+    }
+    let Some(encoded) = result.as_str() else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block response is malformed",
+        ));
+    };
+    BASE64_STANDARD
+        .decode(encoded)
+        .map(Some)
+        .map_err(|_| super::evidence_protocol_error("Sequencer block response is not valid base64"))
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, ensure};
+
+    use super::*;
+
+    #[test]
+    fn channel_identity_response_is_canonicalized() -> Result<()> {
+        let expected = "ab".repeat(32);
+        let response = json!({ "result": format!("0x{}", expected.to_uppercase()) });
+
+        let actual = sequencer_channel_id_from_response(&response)?;
+
+        ensure!(actual == expected, "Channel identity was not canonicalized");
+        Ok(())
+    }
+
+    #[test]
+    fn only_numeric_method_not_found_is_an_unsupported_identity_capability() -> Result<()> {
+        let unsupported = identity_response_error(&json!({
+            "error": { "code": -32601, "message": "Method not found" }
+        }))?;
+        ensure!(
+            super::super::is_evidence_capability_error(&unsupported),
+            "numeric -32601 was not classified as a capability failure"
+        );
+
+        for response in [
+            json!({ "error": { "code": -32603, "message": "Method not found" } }),
+            json!({ "error": { "code": "-32601", "message": "Method not found" } }),
+        ] {
+            let error = identity_response_error(&response)?;
+            ensure!(
+                super::super::is_evidence_protocol_error(&error),
+                "non-exact method error was not classified as protocol failure"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_identity_results_are_protocol_failures() -> Result<()> {
+        for response in [json!({}), json!({ "result": null }), json!({ "result": 7 })] {
+            let error = identity_response_error(&response)?;
+            ensure!(
+                super::super::is_evidence_protocol_error(&error),
+                "malformed identity was not classified as protocol failure"
+            );
+        }
+        Ok(())
+    }
+
+    fn identity_response_error(response: &Value) -> Result<anyhow::Error> {
+        let Err(error) = sequencer_channel_id_from_response(response) else {
+            anyhow::bail!("invalid identity response unexpectedly succeeded");
+        };
+        Ok(error)
+    }
 }

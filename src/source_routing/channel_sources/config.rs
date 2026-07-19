@@ -91,13 +91,49 @@ pub enum PersistedSequencerAttestation {
         target_fingerprint: String,
         attested_at_unix: u64,
     },
+    PersistedEvidenceMatched {
+        channel_id: String,
+        target_fingerprint: String,
+        matched_at_unix: u64,
+        evidence: Box<FinalizedL1EvidenceBasis>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SequencerAttestationBasis {
+    RpcReported {},
+    UserTrustedFinalizedL1Evidence(Box<FinalizedL1EvidenceBasis>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FinalizedL1EvidenceBasis {
+    pub network_scope: NetworkScope,
+    pub catalog_source_fingerprint: String,
+    pub l1_slot: u64,
+    pub l1_block_id: String,
+    pub transaction_hash: String,
+    pub operation_index: u32,
+    pub l2_block_id: u64,
+    pub l2_header_hash: String,
+    pub l2_signature: String,
+}
+
+impl Default for SequencerAttestationBasis {
+    fn default() -> Self {
+        Self::RpcReported {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SequencerAttestationReceipt {
-    pub reported_channel_id: String,
+    #[serde(alias = "reported_channel_id")]
+    pub channel_id: String,
     pub target_fingerprint: String,
     pub attested_at_unix: u64,
+    #[serde(default)]
+    pub basis: SequencerAttestationBasis,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -171,6 +207,7 @@ impl ChannelSourceConfig {
                 .normalized(ChannelSourceRole::Sequencer, true)?;
             source.channel_attestation = normalized_attestation(
                 source.channel_attestation.clone(),
+                &self.network_scope,
                 &self.channel_id,
                 &source.target,
             )?;
@@ -311,6 +348,7 @@ fn normalize_hex_identity(value: &str, label: &str) -> Result<String> {
 
 fn normalized_attestation(
     attestation: PersistedSequencerAttestation,
+    owner_network_scope: &NetworkScope,
     owner_channel_id: &str,
     target: &ChannelSourceTarget,
 ) -> Result<PersistedSequencerAttestation> {
@@ -334,7 +372,98 @@ fn normalized_attestation(
                 attested_at_unix,
             })
         }
+        PersistedSequencerAttestation::PersistedEvidenceMatched {
+            channel_id,
+            target_fingerprint,
+            matched_at_unix,
+            evidence,
+        } => {
+            let channel_id = normalize_channel_id(&channel_id)?;
+            if channel_id != owner_channel_id {
+                bail!("Sequencer evidence Channel does not match its owner");
+            }
+            if target_fingerprint != target.fingerprint() {
+                bail!("Sequencer evidence target fingerprint is stale");
+            }
+            let evidence = normalized_finalized_l1_evidence(*evidence, owner_network_scope)?;
+            Ok(PersistedSequencerAttestation::PersistedEvidenceMatched {
+                channel_id,
+                target_fingerprint,
+                matched_at_unix,
+                evidence: Box::new(evidence),
+            })
+        }
     }
+}
+
+#[cfg(test)]
+fn normalized_attestation_basis(
+    basis: SequencerAttestationBasis,
+    owner_network_scope: &NetworkScope,
+) -> Result<SequencerAttestationBasis> {
+    match basis {
+        SequencerAttestationBasis::RpcReported {} => Ok(SequencerAttestationBasis::RpcReported {}),
+        SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(evidence) => {
+            normalized_finalized_l1_evidence(*evidence, owner_network_scope).map(|evidence| {
+                SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(Box::new(evidence))
+            })
+        }
+    }
+}
+
+fn normalized_finalized_l1_evidence(
+    evidence: FinalizedL1EvidenceBasis,
+    owner_network_scope: &NetworkScope,
+) -> Result<FinalizedL1EvidenceBasis> {
+    let FinalizedL1EvidenceBasis {
+        network_scope,
+        catalog_source_fingerprint,
+        l1_slot,
+        l1_block_id,
+        transaction_hash,
+        operation_index,
+        l2_block_id,
+        l2_header_hash,
+        l2_signature,
+    } = evidence;
+    let network_scope = normalize_network_scope(network_scope)?;
+    if &network_scope != owner_network_scope {
+        bail!("Sequencer evidence network scope does not match its owner");
+    }
+    let catalog_source_fingerprint = normalize_sha256_fingerprint(&catalog_source_fingerprint)?;
+    let l1_block_id = normalize_hex_identity(&l1_block_id, "L1 block id")?;
+    let transaction_hash = normalize_hex_identity(&transaction_hash, "L1 transaction hash")?;
+    let l2_header_hash = normalize_hex_identity(&l2_header_hash, "L2 header hash")?;
+    let l2_signature = normalize_hex_width(&l2_signature, 128, "L2 signature")?;
+    Ok(FinalizedL1EvidenceBasis {
+        network_scope,
+        catalog_source_fingerprint,
+        l1_slot,
+        l1_block_id,
+        transaction_hash,
+        operation_index,
+        l2_block_id,
+        l2_header_hash,
+        l2_signature,
+    })
+}
+
+fn normalize_sha256_fingerprint(value: &str) -> Result<String> {
+    let Some(hex) = value.trim().strip_prefix("sha256:") else {
+        bail!("catalog source fingerprint must use sha256");
+    };
+    Ok(format!(
+        "sha256:{}",
+        normalize_hex_width(hex, 64, "catalog source fingerprint")?
+    ))
+}
+
+fn normalize_hex_width(value: &str, width: usize, label: &str) -> Result<String> {
+    let value = value.trim();
+    if value.len() != width || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        bail!("{label} must contain {width} hexadecimal characters");
+    }
+    Ok(value.to_ascii_lowercase())
 }
 
 fn normalized_rpc_endpoint(value: &str, allow_insecure_http: bool) -> Result<String> {
@@ -410,6 +539,8 @@ fn normalized_module_id(value: &str, role: ChannelSourceRole) -> Result<String> 
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     #[test]
@@ -551,6 +682,9 @@ mod tests {
     #[test]
     fn persisted_attestation_must_match_owner_and_target() -> Result<()> {
         let channel_id = "1".repeat(64);
+        let scope = NetworkScope::GenesisId {
+            genesis_id: "a".repeat(64),
+        };
         let target = ChannelSourceTarget::Rpc {
             endpoint: "http://127.0.0.1:3040/".to_owned(),
         };
@@ -559,7 +693,7 @@ mod tests {
             target_fingerprint: target.fingerprint(),
             attested_at_unix: 10,
         };
-        let normalized = normalized_attestation(attestation, &channel_id, &target)?;
+        let normalized = normalized_attestation(attestation, &scope, &channel_id, &target)?;
         if !matches!(
             normalized,
             PersistedSequencerAttestation::PersistedAttested { .. }
@@ -571,8 +705,117 @@ mod tests {
             target_fingerprint: target.fingerprint(),
             attested_at_unix: 10,
         };
-        if normalized_attestation(mismatch, &channel_id, &target).is_ok() {
+        if normalized_attestation(mismatch, &scope, &channel_id, &target).is_ok() {
             bail!("cross-Channel attestation was accepted");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_persisted_attestation_shape_remains_rpc_reported() -> Result<()> {
+        let decoded: PersistedSequencerAttestation = serde_json::from_value(serde_json::json!({
+            "state": "persisted_attested",
+            "channel_id": "1".repeat(64),
+            "target_fingerprint": format!("sha256:{}", "2".repeat(64)),
+            "attested_at_unix": 10
+        }))?;
+
+        if !matches!(
+            decoded,
+            PersistedSequencerAttestation::PersistedAttested { .. }
+        ) {
+            bail!("legacy persisted attestation shape changed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn verification_receipt_uses_neutral_channel_identity_and_reads_legacy_name() -> Result<()> {
+        let expected_channel_id = "1".repeat(64);
+        let receipt: SequencerAttestationReceipt = serde_json::from_value(serde_json::json!({
+            "reported_channel_id": expected_channel_id,
+            "target_fingerprint": format!("sha256:{}", "2".repeat(64)),
+            "attested_at_unix": 10
+        }))?;
+        let serialized = serde_json::to_value(receipt)?;
+        if serialized.get("channel_id").and_then(Value::as_str)
+            != Some(expected_channel_id.as_str())
+            || serialized.get("reported_channel_id").is_some()
+        {
+            bail!("verification receipt claimed a mapped Channel was RPC-reported");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn user_trusted_finalized_l1_evidence_is_scope_bound_and_strict() -> Result<()> {
+        let scope = NetworkScope::GenesisId {
+            genesis_id: "a".repeat(64),
+        };
+        let basis = SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(Box::new(
+            FinalizedL1EvidenceBasis {
+                network_scope: scope.clone(),
+                catalog_source_fingerprint: format!("sha256:{}", "B".repeat(64)),
+                l1_slot: 100,
+                l1_block_id: "C".repeat(64),
+                transaction_hash: "D".repeat(64),
+                operation_index: 2,
+                l2_block_id: 42,
+                l2_header_hash: "E".repeat(64),
+                l2_signature: "F".repeat(128),
+            },
+        ));
+        let serialized = serde_json::to_value(&basis)?;
+        if serialized.get("kind").and_then(Value::as_str)
+            != Some("user_trusted_finalized_l1_evidence")
+            || serialized.get("network_scope").is_none()
+            || serialized.get("l2_signature").is_none()
+        {
+            bail!("boxed finalized L1 basis changed its serialized contract");
+        }
+        let Value::Object(mut unknown_finalized) = serialized else {
+            bail!("finalized L1 basis did not serialize as an object");
+        };
+        unknown_finalized.insert("unexpected".to_owned(), Value::Bool(true));
+        if serde_json::from_value::<SequencerAttestationBasis>(Value::Object(unknown_finalized))
+            .is_ok()
+        {
+            bail!("unknown finalized L1 basis field was accepted");
+        }
+        let normalized = normalized_attestation_basis(basis.clone(), &scope)?;
+        let SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(normalized) = normalized
+        else {
+            bail!("finalized L1 basis changed kind");
+        };
+        let FinalizedL1EvidenceBasis {
+            catalog_source_fingerprint,
+            l1_block_id,
+            transaction_hash,
+            l2_header_hash,
+            l2_signature,
+            ..
+        } = *normalized;
+        if catalog_source_fingerprint != format!("sha256:{}", "b".repeat(64))
+            || l1_block_id != "c".repeat(64)
+            || transaction_hash != "d".repeat(64)
+            || l2_header_hash != "e".repeat(64)
+            || l2_signature != "f".repeat(128)
+        {
+            bail!("finalized L1 basis was not canonicalized");
+        }
+        let other_scope = NetworkScope::GenesisId {
+            genesis_id: "9".repeat(64),
+        };
+        if normalized_attestation_basis(basis, &other_scope).is_ok() {
+            bail!("finalized L1 basis crossed network scope");
+        }
+
+        let unknown = serde_json::json!({
+            "kind": "rpc_reported",
+            "unexpected": true
+        });
+        if serde_json::from_value::<SequencerAttestationBasis>(unknown).is_ok() {
+            bail!("unknown attestation basis field was accepted");
         }
         Ok(())
     }
