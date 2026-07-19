@@ -1735,6 +1735,7 @@ QtObject {
     function openMetricsText(kind) { return AppModelMetrics.openMetricsText(root, kind) }
     function openMetricsTextFromValue(value) { return AppModelMetrics.openMetricsTextFromValue(root, value) }
     function openMetricValue(kind, names) { return AppModelMetrics.openMetricValue(root, kind, names) }
+    function openMetricSeries(kind, spec) { return AppModelMetrics.openMetricSeries(root, kind, spec) }
     function openMetricLabels(text) { return AppModelMetrics.openMetricLabels(root, text) }
     function metricJsonValue(value, names) { return AppModelMetrics.metricJsonValue(root, value, names) }
     function metricSpecName(spec) { return AppModelMetrics.metricSpecName(root, spec) }
@@ -1756,6 +1757,7 @@ QtObject {
     function finalityLagSeconds() { return AppModelMetrics.finalityLagSeconds(root) }
     function indexerLag() { return AppModelMetrics.indexerLag(root) }
     function moduleMetricValue(kind, names) { return AppModelMetrics.moduleMetricValue(root, kind, names) }
+    function moduleMetricSeries(kind, spec) { return AppModelMetrics.moduleMetricSeries(root, kind, spec) }
     function moduleMetricSum(kind, names) { return AppModelMetrics.moduleMetricSum(root, kind, names) }
     function storageManifestCount() { return AppModelMetrics.storageManifestCount(root) }
     function dashboardMetricRawValue(key) { return AppModelMetrics.dashboardMetricRawValue(root, key) }

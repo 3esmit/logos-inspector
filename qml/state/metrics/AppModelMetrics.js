@@ -176,7 +176,7 @@ function openMetricValue(root, kind, names) {
             if (!line.length || line[0] === "#") {
                 continue
             }
-            const match = line.match(/^([^{\s]+)(?:\{([^}]*)\})?\s+(-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?)/i)
+            const match = line.match(/^([^{\s]+)(?:\{([^}]*)\})?\s+([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?)(?:\s|$)/i)
             if (!match) {
                 continue
             }
@@ -190,6 +190,183 @@ function openMetricValue(root, kind, names) {
             }
         }
         return null
+    }
+}
+
+function metricSeriesIdentity(name, labels) {
+    const source = labels && typeof labels === "object" ? labels : {}
+    const keys = Object.keys(source).sort()
+    const parts = []
+    for (let i = 0; i < keys.length; ++i) {
+        const key = keys[i]
+        parts.push(JSON.stringify(key) + ":"
+            + JSON.stringify(String(source[key])))
+    }
+    return String(name || "") + "{" + parts.join(",") + "}"
+}
+
+function metricSeriesLabels(value) {
+    if (!value || typeof value !== "object") {
+        return {}
+    }
+    const explicit = value.labels && typeof value.labels === "object"
+        ? value.labels : (value.label && typeof value.label === "object"
+            ? value.label : null)
+    const source = explicit || value
+    const labels = {}
+    const keys = Object.keys(source)
+    for (let i = 0; i < keys.length; ++i) {
+        const key = keys[i]
+        if (!explicit && (key === "name" || key === "metric"
+                || key === "key" || key === "value" || key === "count"
+                || key === "total" || key === "metrics")) {
+            continue
+        }
+        const labelValue = source[key]
+        if (labelValue !== undefined && labelValue !== null
+                && typeof labelValue !== "object") {
+            labels[key] = labelValue
+        }
+    }
+    return labels
+}
+
+function normalizedMetricSeries(rows) {
+    const source = Array.isArray(rows) ? rows : []
+    const normalized = []
+    for (let i = 0; i < source.length; ++i) {
+        const row = source[i]
+        const name = row && typeof row === "object"
+            ? String(row.name || "") : ""
+        const value = row && typeof row === "object"
+            ? Number(row.value) : NaN
+        if (!name.length || !Number.isFinite(value)) {
+            continue
+        }
+        const labels = metricSeriesLabels(row)
+        normalized.push({
+            id: metricSeriesIdentity(name, labels),
+            name: name,
+            labels: labels,
+            value: value
+        })
+    }
+    normalized.sort(function (left, right) {
+        return left.id < right.id ? -1 : (left.id > right.id ? 1 : 0)
+    })
+    for (let i = 1; i < normalized.length; ++i) {
+        if (normalized[i - 1].id === normalized[i].id) {
+            return null
+        }
+    }
+    return normalized
+}
+
+function collectMetricJsonSeries(root, value, spec, state) {
+    if (value === undefined || value === null) {
+        return
+    }
+    if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; ++i) {
+            collectMetricJsonSeries(root, value[i], spec, state)
+        }
+        return
+    }
+    if (typeof value !== "object") {
+        return
+    }
+    if (Array.isArray(value.metrics)) {
+        collectMetricJsonSeries(root, value.metrics, spec, state)
+        return
+    }
+    const wantedName = root.metricSpecName(spec)
+    const wantedLabels = root.metricSpecLabels(spec)
+    const metricName = String(value.name || value.metric || value.key || "")
+    const labels = metricSeriesLabels(value)
+    if (metricName === wantedName
+            && root.metricLabelsMatch(labels, wantedLabels)) {
+        const number = root.metricNumber(value.value !== undefined
+            ? value.value : (value.count !== undefined
+                ? value.count : value.total))
+        if (number !== null) {
+            state.rows.push({
+                name: metricName,
+                labels: labels,
+                value: number
+            })
+        } else {
+            state.invalid = true
+        }
+        return
+    }
+    if (Object.keys(wantedLabels).length === 0
+            && value[wantedName] !== undefined) {
+        const number = root.metricNumber(value[wantedName])
+        if (number !== null) {
+            state.rows.push({ name: wantedName, labels: {}, value: number })
+        } else {
+            state.invalid = true
+        }
+    }
+}
+
+function metricJsonSeries(root, value, spec) {
+    const state = { rows: [], invalid: false }
+    collectMetricJsonSeries(root, value, spec, state)
+    return state.invalid ? null : normalizedMetricSeries(state.rows)
+}
+
+function openMetricSeries(root, kind, spec) {
+    with (root) {
+        const source = openMetricsValue(root, kind)
+        const jsonRows = metricJsonSeries(root, source, spec)
+        if (jsonRows === null) {
+            return null
+        }
+        if (jsonRows.length > 0) {
+            return jsonRows
+        }
+        const text = root.openMetricsTextFromValue(source)
+        if (!text.length) {
+            return []
+        }
+        const wantedName = root.metricSpecName(spec)
+        const wantedLabels = root.metricSpecLabels(spec)
+        const rows = []
+        const lines = text.split(/\r?\n/)
+        for (let i = 0; i < lines.length; ++i) {
+            const line = lines[i].trim()
+            if (!line.length || line[0] === "#") {
+                continue
+            }
+            const sample = line.match(
+                /^([^{\s]+)(?:\{([^}]*)\})?(?:\s+(.+))?$/)
+            if (!sample) {
+                const prefix = line.match(/^([^{\s]+)/)
+                if (prefix && prefix[1] === wantedName) {
+                    return null
+                }
+                continue
+            }
+            if (sample[1] !== wantedName) {
+                continue
+            }
+            const labels = root.openMetricLabels(sample[2] || "")
+            if (!root.metricLabelsMatch(labels, wantedLabels)) {
+                continue
+            }
+            const value = String(sample[3] || "").match(
+                /^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?)(?:\s|$)/i)
+            if (!value) {
+                return null
+            }
+            const number = Number(value[1])
+            if (!Number.isFinite(number)) {
+                return null
+            }
+            rows.push({ name: sample[1], labels: labels, value: number })
+        }
+        return normalizedMetricSeries(rows)
     }
 }
 
@@ -285,6 +462,12 @@ function metricLabelsMatch(root, actual, wanted) {
 function metricNumber(root, value) {
     with (root) {
         const scalar = root.scalarValue(value)
+        if (scalar === undefined || scalar === null
+                || typeof scalar === "boolean"
+                || (typeof scalar === "string"
+                    && scalar.trim().length === 0)) {
+            return null
+        }
         const number = Number(scalar)
         return Number.isFinite(number) ? number : null
     }
@@ -429,6 +612,10 @@ function moduleMetricValue(root, kind, names) {
         }
         return null
     }
+}
+
+function moduleMetricSeries(root, kind, spec) {
+    return openMetricSeries(root, kind, spec)
 }
 
 function moduleMetricSum(root, kind, names) {

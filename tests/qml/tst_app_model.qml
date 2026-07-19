@@ -718,7 +718,7 @@ TestCase {
         compare(inventory.ownerPath, "metrics")
         compare(inventory.retainedMembers.length, 0)
         verify(inventory.retainedDecision.length > 0)
-        compare(inventory.retiredMembers.length, 98)
+        compare(inventory.retiredMembers.length, 100)
         for (let i = 0; i < inventory.retiredMembers.length; ++i) {
             const member = inventory.retiredMembers[i]
             verify(member.name.length > 0)
@@ -742,7 +742,7 @@ TestCase {
             }
         }
         compare(propertyCount, 22)
-        compare(methodCount, 76)
+        compare(methodCount, 78)
         compare(Object.keys(requiredProperties).sort().join("|"),
             inventory.requiredFacadeProperties.slice(0).sort().join("|"))
         compare(Object.keys(requiredMethods).sort().join("|"),
