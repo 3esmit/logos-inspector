@@ -495,10 +495,6 @@ QtObject {
                 return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback, acceptResponse)
             }
 
-            function requestBlocking(method, args, label, showResult) {
-                return root.requestModule(root.inspectorModule, method, args || [], label, showResult === true)
-            }
-
             function setStatus(value) {
                 appShellState.statusText = String(value || "")
             }
@@ -1288,6 +1284,8 @@ QtObject {
 
     function walletProfileConfigured() { return wallet.profileConfigured() }
 
+    function walletActionReady(action) { return wallet.actionReady(action) }
+
     function walletHomeConfigured() { return wallet.homeConfigured() }
 
     function bedrockWalletSourceConfigured() { return AppModelIdentity.bedrockWalletSourceConfigured(root) }
@@ -1313,8 +1311,6 @@ QtObject {
     function deliveryModuleEventSummary() { return deliveryAppState.moduleEventSummary() }
 
     function checkLocalWalletProfile(showResult) { return wallet.checkProfile(showResult) }
-
-    function checkedLocalWalletProfile() { return wallet.checkedProfile() }
 
     function walletCommandOperationDetail(value) { return wallet.commandOperationDetail(value) }
 

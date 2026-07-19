@@ -248,6 +248,18 @@ ColumnLayout {
                 message: root.model.localWalletStatusError
                 Layout.fillWidth: true
             }
+
+            StatusMessage {
+                objectName: "walletProfileReadinessMessage"
+                visible: root.model.localWalletStatus !== null
+                    && String(root.model.localWalletStatus.status || "") !== "ok"
+                    && String(root.model.localWalletStatus.detail || "").length > 0
+                theme: root.theme
+                tone: String(root.model.localWalletStatus && root.model.localWalletStatus.status || "") === "down" ? "error" : "warning"
+                title: qsTr("Profile not ready")
+                message: String(root.model.localWalletStatus && root.model.localWalletStatus.detail || "")
+                Layout.fillWidth: true
+            }
         }
     }
 
@@ -447,9 +459,10 @@ ColumnLayout {
                     }
 
                     ActionButton {
+                        objectName: "controlsListAccountsButton"
                         theme: root.theme
                         text: qsTr("List accounts")
-                        enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
+                        enabled: !root.model.shell.busy && root.model.walletActionReady("accounts")
                         Layout.preferredWidth: 132
                         onClicked: root.model.wallet.queryAccounts(true)
                     }
@@ -533,10 +546,11 @@ ColumnLayout {
                         Layout.fillWidth: true
 
                         ActionButton {
+                            objectName: "accountsListAccountsButton"
                             theme: root.theme
                             text: qsTr("List accounts")
                             primary: true
-                            enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
+                            enabled: !root.model.shell.busy && root.model.walletActionReady("accounts")
                             Layout.preferredWidth: 132
                             onClicked: root.model.wallet.queryAccounts(false)
                         }

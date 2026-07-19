@@ -9,9 +9,10 @@ use anyhow::Result;
 
 use super::profile::local_wallet_binary_is_path_like;
 use super::{
-    LOCAL_WALLET_DEPLOY_TIMEOUT, LOCAL_WALLET_ENV_ALLOWLIST, LOCAL_WALLET_HOME_ENV,
-    LOCAL_WALLET_LIST_TIMEOUT, LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT,
-    LOCAL_WALLET_POLL_INTERVAL, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
+    LEGACY_LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_DEPLOY_TIMEOUT, LOCAL_WALLET_ENV_ALLOWLIST,
+    LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_LIST_TIMEOUT, LOCAL_WALLET_MUTATION_TIMEOUT,
+    LOCAL_WALLET_OUTPUT_LIMIT, LOCAL_WALLET_POLL_INTERVAL, LOCAL_WALLET_PROFILE_TIMEOUT,
+    LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
 };
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, output_text, run_command, run_command_controlled,
@@ -19,6 +20,7 @@ use crate::support::command_runner::{
 
 pub(super) enum LocalWalletInvocation<'a> {
     Version,
+    ProfileHomeProbe,
     DeployProgram { program_path: &'a Path },
     SyncPrivate,
     Accounts,
@@ -134,6 +136,10 @@ fn configure_invocation<'a>(
             command.arg("--version");
             ("wallet --version", LOCAL_WALLET_VERSION_TIMEOUT)
         }
+        LocalWalletInvocation::ProfileHomeProbe => {
+            command.arg("account").arg("list");
+            ("wallet account list", LOCAL_WALLET_PROFILE_TIMEOUT)
+        }
         LocalWalletInvocation::DeployProgram { program_path } => {
             command.arg("deploy-program").arg(program_path);
             ("wallet deploy-program", LOCAL_WALLET_DEPLOY_TIMEOUT)
@@ -162,6 +168,7 @@ fn configure_local_wallet_command(command: &mut Command, wallet_home: &str) {
     }
     if !wallet_home.trim().is_empty() {
         command.env(LOCAL_WALLET_HOME_ENV, wallet_home);
+        command.env(LEGACY_LOCAL_WALLET_HOME_ENV, wallet_home);
     }
 }
 
