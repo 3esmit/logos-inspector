@@ -88,10 +88,17 @@ QtObject {
             managedIndexerError = qsTr("Inspector bridge is unavailable.")
             return null
         }
+        if (!activeZoneContext || !networkScope || activeZoneId.length === 0) {
+            managedIndexerStatusStale = true
+            managedIndexerError = qsTr("A Zone context is required to inspect this Channel Indexer.")
+            return null
+        }
         managedIndexerRequestRevision += 1
         const requestRevision = managedIndexerRequestRevision
         managedIndexerRefreshInFlight = true
-        return gateway.request("localNodesStatus", [localNodeProfile()], function (response) {
+        return gateway.request("channelIndexerStatus", [
+            localNodeProfile(), networkScope, activeZoneId
+        ], function (response) {
             if (requestRevision !== managedIndexerRequestRevision) {
                 return
             }
@@ -160,23 +167,34 @@ QtObject {
         }
         const request = {
             action: actionKey,
-            node: "indexer",
+            network_scope: networkScope,
             channel_id: targetChannel
         }
         if (actionKey === "start") {
+            const sourceRevision = Number(activeZoneContext
+                && activeZoneContext.source_config_revision || 0)
+            const selectedSourceId = String(activeZoneContext
+                && activeZoneContext.selected_sequencer_source_id || "").trim()
+            if (!Number.isFinite(sourceRevision) || sourceRevision <= 0
+                    || selectedSourceId.length === 0) {
+                managedIndexerError = qsTr("A current selected Sequencer source is required.")
+                return null
+            }
             const endpoint = bedrockEndpoint()
             if (!endpoint.length) {
                 managedIndexerError = qsTr("A Bedrock endpoint is required.")
                 return null
             }
             request.bedrock_endpoint = endpoint
+            request.source_config_revision = sourceRevision
+            request.selected_sequencer_source_id = selectedSourceId
         }
         managedIndexerRequestRevision += 1
         const requestRevision = managedIndexerRequestRevision
         managedIndexerControlInFlight = true
         managedIndexerError = ""
         managedIndexerResult = ""
-        return gateway.request("localNodesAction", [
+        return gateway.request("channelIndexerAction", [
             localNodeProfile(),
             request,
             ConfirmationPolicy.token("local-node-action")

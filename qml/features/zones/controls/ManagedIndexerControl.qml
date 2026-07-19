@@ -27,24 +27,16 @@ ColumnLayout {
         || root.zoneState.managedIndexerRefreshInFlight === true
     readonly property bool runtimeRunning: String(root.runtime.run_state || "") === "running"
     readonly property bool installed: root.installedState === "installed"
-    readonly property bool active: root.runState === "running"
-        || root.runState === "starting" || root.runState === "syncing"
-        || root.runState === "caught_up" || root.runState === "unknown"
-        || root.runState === "failed" || root.runState === "error"
-        || root.runState === "stalled"
-    readonly property bool boundToAnotherChannel: root.active
-        && root.managedChannelId.length > 0
-        && root.managedChannelId !== root.selectedChannelId
     readonly property bool canStart: !root.actionInFlight
         && root.zoneState.managedIndexerStatusStale !== true
         && root.zoneState.verification === "verified"
-        && root.availableActions.indexOf("start") >= 0 && root.runtimeRunning
-        && root.installed && !root.boundToAnotherChannel
+        && root.availableActions.indexOf("start") >= 0
+        && root.installed
         && (root.runState === "stopped" || root.runState === "not_initialized")
     readonly property bool canStop: !root.actionInFlight
         && root.zoneState.managedIndexerStatusStale !== true
         && root.availableActions.indexOf("stop") >= 0 && root.runtimeRunning
-        && root.active && root.managedChannelId.length > 0
+        && root.managedChannelId.length > 0
 
     objectName: "managedIndexerControl"
     spacing: root.theme.gapSmall
@@ -69,7 +61,7 @@ ColumnLayout {
     }
 
     Text {
-        text: qsTr("lez_indexer_module runs inside the Inspector-managed LogosCore runtime. One Channel may be active per runtime.")
+        text: qsTr("Each Channel uses an isolated Inspector-managed LogosCore runtime. The selected Sequencer source is recorded as its configuration binding; Indexer follows finalized Bedrock data.")
         color: root.theme.textMuted
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
@@ -157,18 +149,8 @@ ColumnLayout {
         visible: root.installed && !root.runtimeRunning
         theme: root.theme
         tone: "info"
-        title: qsTr("LogosCore runtime stopped")
-        message: qsTr("Start the Inspector-managed LogosCore runtime under System / Local Nodes before starting this Channel Indexer.")
-        Layout.fillWidth: true
-    }
-
-    StatusMessage {
-        visible: root.boundToAnotherChannel
-        theme: root.theme
-        tone: "warning"
-        title: qsTr("Another Channel is active")
-        message: qsTr("Indexer is bound to %1. Stop it before starting %2.")
-            .arg(root.managedChannelId).arg(root.selectedChannelId)
+        title: qsTr("Isolated runtime starts on demand")
+        message: qsTr("Starting this Channel starts only its own Inspector-managed LogosCore runtime.")
         Layout.fillWidth: true
     }
 
@@ -219,7 +201,7 @@ ColumnLayout {
         ActionButton {
             objectName: "stopManagedIndexerButton"
             theme: root.theme
-            text: root.boundToAnotherChannel ? qsTr("Stop active Channel") : qsTr("Stop")
+            text: qsTr("Stop")
             enabled: root.canStop
             onClicked: root.confirmAction("stop", root.managedChannelId)
         }
@@ -241,9 +223,9 @@ ColumnLayout {
         title: root.pendingAction === "start"
             ? qsTr("Start Channel Indexer") : qsTr("Stop Channel Indexer")
         message: root.pendingAction === "start"
-            ? qsTr("Start lez_indexer_module for Channel %1 using Bedrock %2?")
+            ? qsTr("Start an isolated lez_indexer_module runtime for Channel %1 using Bedrock %2?")
                 .arg(root.pendingChannelId).arg(root.zoneState.bedrockEndpoint())
-            : qsTr("Stop the managed Indexer currently bound to Channel %1?")
+            : qsTr("Stop the isolated managed Indexer for Channel %1?")
                 .arg(root.pendingChannelId)
         confirmText: root.pendingAction === "start" ? qsTr("Start") : qsTr("Stop")
         confirmEnabled: root.pendingAction.length > 0 && !root.actionInFlight

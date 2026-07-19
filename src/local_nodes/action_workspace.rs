@@ -1818,7 +1818,7 @@ pub(super) fn indexer_channel_from_config(path: &str) -> Result<Option<String>> 
         .map(ToOwned::to_owned))
 }
 
-fn validate_channel_id(channel_id: &str) -> Result<()> {
+pub(super) fn validate_channel_id(channel_id: &str) -> Result<()> {
     // `ChannelId` is serialized as a 32-byte hex value. The module's storage
     // reset contract enforces the same representation before deriving its path.
     anyhow::ensure!(
@@ -1828,7 +1828,7 @@ fn validate_channel_id(channel_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn normalized_bedrock_endpoint(endpoint: &str) -> Result<String> {
+pub(super) fn normalized_bedrock_endpoint(endpoint: &str) -> Result<String> {
     let parsed = Url::parse(endpoint).context("Indexer Bedrock endpoint is invalid")?;
     if !matches!(parsed.scheme(), "http" | "https")
         || parsed.host_str().is_none()

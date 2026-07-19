@@ -16,6 +16,7 @@ use super::process::{find_command, process_is_alive};
 
 const RUNTIME_FILE: &str = "logoscore_runtime.json";
 const MANAGED_RUNTIME_ID: &str = "inspector-managed-local";
+const CHANNEL_INDEXER_RUNTIME_ID_PREFIX: &str = "inspector-managed-indexer-";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -73,6 +74,39 @@ impl LogoscoreRuntimeProfile {
         let runtime_root = config_root.join("logoscore-runtime");
         Ok(Self {
             id: MANAGED_RUNTIME_ID.to_owned(),
+            binary_path,
+            config_dir: runtime_root.join("logoscore").display().to_string(),
+            modules_dir: Some(modules_dir),
+            persistence_path: Some(runtime_root.join("node-data").display().to_string()),
+            ownership: LogoscoreRuntimeOwnership::InspectorManaged,
+            timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            daemon_process_id: None,
+        })
+    }
+
+    pub(super) fn create_channel_indexer(
+        config_root: &Path,
+        network_scope_key: &str,
+        channel_id: &str,
+        base: &Self,
+    ) -> Result<Self> {
+        if !base.is_managed() {
+            bail!(
+                "an external logoscore runtime cannot provide an Inspector-managed Channel Indexer"
+            );
+        }
+        base.validate_for_config_root(config_root)?;
+        validate_runtime_key(network_scope_key, "Channel Indexer network scope")?;
+        validate_runtime_key(channel_id, "Channel Indexer ID")?;
+
+        let binary_path = canonical_executable(Some(&base.binary_path))?;
+        let modules_dir = canonical_directory(base.modules_dir.as_deref())?;
+        let runtime_root = config_root
+            .join("channel-indexers")
+            .join(network_scope_key)
+            .join(channel_id);
+        Ok(Self {
+            id: format!("{CHANNEL_INDEXER_RUNTIME_ID_PREFIX}{network_scope_key}-{channel_id}"),
             binary_path,
             config_dir: runtime_root.join("logoscore").display().to_string(),
             modules_dir: Some(modules_dir),
@@ -188,22 +222,17 @@ impl LogoscoreRuntimeProfile {
         Ok(false)
     }
 
-    fn validate_for_config_root(&self, config_root: &Path) -> Result<()> {
+    pub(super) fn validate_for_config_root(&self, config_root: &Path) -> Result<()> {
         if !self.is_managed() {
             return Ok(());
         }
-        if self.id != MANAGED_RUNTIME_ID {
-            bail!("managed logoscore runtime profile has an unexpected id");
-        }
+        let (expected_config, expected_persistence) = managed_runtime_paths(config_root, &self.id)?;
         if self.timeout_profile != LogoscoreTimeoutProfile::Lifecycle {
             bail!("managed logoscore runtime profile has an unexpected timeout profile");
         }
         if canonical_executable(Some(&self.binary_path))? != self.binary_path {
             bail!("managed logoscore runtime binary path is not canonical");
         }
-        let runtime_root = config_root.join("logoscore-runtime");
-        let expected_config = runtime_root.join("logoscore");
-        let expected_persistence = runtime_root.join("node-data");
         if Path::new(&self.config_dir) != expected_config {
             bail!("managed logoscore runtime config path is outside the Inspector runtime root");
         }
@@ -215,6 +244,44 @@ impl LogoscoreRuntimeProfile {
         }
         Ok(())
     }
+}
+
+fn managed_runtime_paths(config_root: &Path, id: &str) -> Result<(PathBuf, PathBuf)> {
+    if id == MANAGED_RUNTIME_ID {
+        let runtime_root = config_root.join("logoscore-runtime");
+        return Ok((
+            runtime_root.join("logoscore"),
+            runtime_root.join("node-data"),
+        ));
+    }
+
+    let Some(key) = id.strip_prefix(CHANNEL_INDEXER_RUNTIME_ID_PREFIX) else {
+        bail!("managed logoscore runtime profile has an unexpected id");
+    };
+    let Some((network_scope_key, channel_id)) = key.split_once('-') else {
+        bail!("Channel Indexer runtime id is invalid");
+    };
+    validate_runtime_key(network_scope_key, "Channel Indexer network scope")?;
+    validate_runtime_key(channel_id, "Channel Indexer ID")?;
+    let runtime_root = config_root
+        .join("channel-indexers")
+        .join(network_scope_key)
+        .join(channel_id);
+    Ok((
+        runtime_root.join("logoscore"),
+        runtime_root.join("node-data"),
+    ))
+}
+
+fn validate_runtime_key(value: &str, label: &str) -> Result<()> {
+    if value.len() != 64
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte.is_ascii_hexdigit())
+        })
+    {
+        bail!("{label} must be exactly 64 lowercase hexadecimal characters");
+    }
+    Ok(())
 }
 
 fn controlled_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
@@ -310,6 +377,9 @@ impl LogoscoreRuntimeStore {
             )
         })?;
         profile.validate_for_config_root(&self.config_dir)?;
+        if profile.is_managed() && profile.id != MANAGED_RUNTIME_ID {
+            bail!("managed logoscore runtime profile has an unexpected global runtime id");
+        }
         Ok(Some(profile))
     }
 
@@ -443,6 +513,67 @@ mod tests {
         {
             bail!("unexpected managed runtime daemon command: {args:?}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn channel_indexer_profiles_use_distinct_scope_and_channel_roots() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules = tempfile::tempdir()?;
+        let base = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some("/bin/sh"),
+            Some(&modules.path().display().to_string()),
+        )?;
+        let scope = "ab".repeat(32);
+        let first_channel = "01".repeat(32);
+        let second_channel = "88".repeat(32);
+        let first = LogoscoreRuntimeProfile::create_channel_indexer(
+            directory.path(),
+            &scope,
+            &first_channel,
+            &base,
+        )?;
+        let second = LogoscoreRuntimeProfile::create_channel_indexer(
+            directory.path(),
+            &scope,
+            &second_channel,
+            &base,
+        )?;
+
+        anyhow::ensure!(first.id != second.id);
+        anyhow::ensure!(first.config_dir != second.config_dir);
+        anyhow::ensure!(first.persistence_path != second.persistence_path);
+        first.validate_for_config_root(directory.path())?;
+        second.validate_for_config_root(directory.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn global_runtime_store_rejects_a_channel_indexer_profile() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules = tempfile::tempdir()?;
+        let base = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some("/bin/sh"),
+            Some(&modules.path().display().to_string()),
+        )?;
+        let profile = LogoscoreRuntimeProfile::create_channel_indexer(
+            directory.path(),
+            &"ab".repeat(32),
+            &"01".repeat(32),
+            &base,
+        )?;
+        let store = LogoscoreRuntimeStore::system(directory.path().to_path_buf());
+        store.save(Some(&profile))?;
+
+        let error = match store.load() {
+            Ok(_) => anyhow::bail!("global store accepted a Channel runtime"),
+            Err(error) => error,
+        };
+        anyhow::ensure!(error.to_string().contains("unexpected global runtime id"));
         Ok(())
     }
 

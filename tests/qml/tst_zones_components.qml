@@ -702,7 +702,7 @@ TestCase {
         verify(start !== null && start.enabled)
         verify(stop !== null && !stop.enabled)
         verify(hasVisibleText(control,
-            "lez_indexer_module runs inside the Inspector-managed LogosCore runtime. One Channel may be active per runtime."))
+            "Each Channel uses an isolated Inspector-managed LogosCore runtime. The selected Sequencer source is recorded as its configuration binding; Indexer follows finalized Bedrock data."))
         verify(hasVisibleText(control, "1.0.0"))
 
         compare(control.selectedChannelId, zoneState.activeZoneId)
@@ -753,6 +753,38 @@ TestCase {
         } finally {
             zoneState.managedIndexerNode = initialNode
             zoneState.managedIndexerResult = initialResult
+        }
+    }
+
+    function test_managed_indexer_other_channel_does_not_block_this_channel_start() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const start = findChild(control, "startManagedIndexerButton")
+        const initialNode = zoneState.managedIndexerNode
+        const initialStale = zoneState.managedIndexerStatusStale
+        try {
+            zoneState.managedIndexerStatusStale = false
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                indexer_state: "stopped",
+                managed_channel_id: "another-channel",
+                available_actions: ["start"],
+                detail: "Independent runtime available"
+            }
+            tryVerify(function () {
+                return start.enabled
+            })
+        } finally {
+            zoneState.managedIndexerNode = initialNode
+            zoneState.managedIndexerStatusStale = initialStale
         }
     }
 

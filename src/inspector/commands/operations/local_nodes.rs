@@ -7,7 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     LocalNodeActionRequest,
     local_nodes::{
-        INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit, local_nodes_action_controlled,
+        ChannelIndexerActionRequest, INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit,
+        channel_indexer_action_controlled, local_nodes_action_controlled,
     },
     support::{args::Args, command_runner::CommandControl},
 };
@@ -21,22 +22,32 @@ use super::supervisor::{OperationControl, TerminationEvidence};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalNodesCommand {
     Action,
+    ChannelIndexerAction,
 }
 
 impl LocalNodesCommand {
     pub(super) const fn method(self) -> OperationMethod {
         match self {
             Self::Action => OperationMethod::LocalNodesAction,
+            Self::ChannelIndexerAction => OperationMethod::ChannelIndexerAction,
         }
     }
 }
 
-pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[OperationDefinition::new(
-    OperationCommand::LocalNodes(LocalNodesCommand::Action),
-    "localNodesAction",
-    "Local node action",
-    OperationClass::Lifecycle,
-)];
+pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
+    OperationDefinition::new(
+        OperationCommand::LocalNodes(LocalNodesCommand::Action),
+        "localNodesAction",
+        "Local node action",
+        OperationClass::Lifecycle,
+    ),
+    OperationDefinition::new(
+        OperationCommand::LocalNodes(LocalNodesCommand::ChannelIndexerAction),
+        "channelIndexerAction",
+        "Channel Indexer action",
+        OperationClass::Lifecycle,
+    ),
+];
 
 pub(super) async fn execute(
     command: LocalNodesCommand,
@@ -45,7 +56,43 @@ pub(super) async fn execute(
 ) -> Result<Value> {
     match command {
         LocalNodesCommand::Action => execute_local_nodes_action(request, control).await,
+        LocalNodesCommand::ChannelIndexerAction => {
+            execute_channel_indexer_action(request, control).await
+        }
     }
+}
+
+async fn execute_channel_indexer_action(
+    request: &RuntimeOperationRequest,
+    control: &OperationControl,
+) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let action_request = serde_json::from_value::<ChannelIndexerActionRequest>(
+        args.value(1)
+            .cloned()
+            .context("Channel Indexer action request is required")?,
+    )
+    .context("failed to parse Channel Indexer action request")?;
+    let profile = args.optional_string(0).unwrap_or("default").to_owned();
+    let confirmation = args.optional_string(2).map(ToOwned::to_owned);
+    let command_control = command_control(control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("Channel Indexer action", move || {
+        let _worker_guard = worker_guard;
+        to_value(channel_indexer_action_controlled(
+            &profile,
+            action_request,
+            confirmation.as_deref(),
+            command_control,
+        )?)
+    })
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::LocalOnly,
+    )
 }
 
 pub(super) async fn execute_local_nodes_action(
