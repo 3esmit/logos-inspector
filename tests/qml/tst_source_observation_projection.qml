@@ -13,6 +13,7 @@ TestCase {
     property var deliveryProtocolsHealth: [
         { protocol: "relay", health: "ready", desc: "ok" }
     ]
+    property var deliveryCapabilities: []
 
     QtObject {
         id: sourceRoutingStub
@@ -215,6 +216,10 @@ TestCase {
         function healthValueTone(value) { return SourceObservation.deliveryHealthValueTone(deliveryPage, value) }
         function protocolHealthRows() { return SourceObservation.deliveryProtocolHealthRows(deliveryPage) }
         function deliverySourceMode() { return "metrics" }
+        function sourceRoute() {
+            return { capabilities: testRoot.deliveryCapabilities }
+        }
+        function sourceName() { return "Test Delivery source" }
         function rollingWindow() { return 45 }
         function sourceNetworkPreset() { return "logos.test" }
         function sourceRestEndpoint() { return "http://delivery" }
@@ -235,6 +240,7 @@ TestCase {
         testRoot.deliveryProtocolsHealth = [
             { protocol: "relay", health: "ready", desc: "ok" }
         ]
+        testRoot.deliveryCapabilities = []
         deliveryMetrics.deliveryModuleEventStreamStatus = "unknown"
         deliveryMetrics.deliveryModuleEventStreamReason = ""
         deliveryModel.metricValues = ({
@@ -444,6 +450,29 @@ TestCase {
         compare(store[4].label, "Store/archive errors in window")
         compare(throughput[8].label, "Confirmed sends")
         compare(throughput[9].label, "Network propagations")
+    }
+
+    function test_delivery_store_rows_follow_current_source_capability() {
+        let store = SourceObservation.deliveryStoreRows(deliveryPage)
+        let manual = detailRowByLabel(store, "Manual query")
+        let payload = detailRowByLabel(store, "Payload viewing")
+
+        compare(manual.state, "unavailable")
+        compare(manual.tone, "neutral")
+        verify(manual.evidence.indexOf("Test Delivery source") >= 0)
+        verify(manual.evidence.indexOf("Direct Waku REST") >= 0)
+        compare(payload.state, "unavailable")
+
+        testRoot.deliveryCapabilities = ["delivery.store.query"]
+        store = SourceObservation.deliveryStoreRows(deliveryPage)
+        manual = detailRowByLabel(store, "Manual query")
+        payload = detailRowByLabel(store, "Payload viewing")
+
+        compare(manual.state, "available")
+        compare(manual.tone, "success")
+        verify(manual.evidence.indexOf("Direct Waku REST") >= 0)
+        compare(payload.state, "opt-in")
+        verify(payload.evidence.indexOf("Include payloads") >= 0)
     }
 
     function test_delivery_event_metric_gap_names_watcher_and_reason() {

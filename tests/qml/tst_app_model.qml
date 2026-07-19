@@ -998,6 +998,7 @@ TestCase {
         compare(delivery.effectiveMode, "rest")
         compare(delivery.label, "Direct Waku REST")
         compare(delivery.target, model.sourceRouting.configuredMessagingRestUrl())
+        verify(delivery.capabilities.indexOf("delivery.store.query") >= 0)
         const deliveryArgs = delivery.reportArgs()
         compare(deliveryArgs[0].source_mode, "rest")
         compare(deliveryArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredMessagingRestUrl())

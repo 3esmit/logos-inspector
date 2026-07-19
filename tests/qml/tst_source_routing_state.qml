@@ -284,6 +284,8 @@ TestCase {
         compare(source.usesRestEndpoint, false)
         compare(source.inputs.length, 0)
         compare(state.deliverySourceView().usesHealthEndpoint, true)
+        verify(state.deliverySourceView().capabilities.indexOf(
+            "delivery.store.query") < 0)
         compare(args.length, 1)
         compare(args[0].source_mode, "logoscore_cli")
         compare(args[0].inputs.rest_endpoint, undefined)
