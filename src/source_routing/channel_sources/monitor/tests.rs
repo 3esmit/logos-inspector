@@ -3,10 +3,10 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::source_routing::channel_sources::FinalizedL1EvidenceBasis;
+use crate::source_routing::channel_sources::{ChannelSourceTarget, FinalizedL1EvidenceBasis};
 
 use super::super::probe::{IndexerSourceProbeOutput, SequencerSourceProbeOutput};
 use super::*;
@@ -309,6 +309,32 @@ async fn initial_round_includes_configured_indexer() -> Result<()> {
     drop(first);
     drop(second);
     monitor.shutdown().await?;
+    Ok(())
+}
+
+#[test]
+fn managed_indexer_probe_request_retains_exact_channel_binding() -> Result<()> {
+    let mut config = config(8, 1, false);
+    config.indexer_source = Some(ConfiguredIndexerSource {
+        source_id: source_id(99),
+        label: None,
+        target: ChannelSourceTarget::Module {
+            module_id: "lez_indexer_module".to_owned(),
+        },
+    });
+    let expected_scope = config.network_scope.clone();
+    let expected_channel = config.channel_id.clone();
+    let expected_revision = config.config_revision;
+    let runtime = ChannelRuntime::new(config, CancellationToken::new(), 0);
+    let source = runtime
+        .sources
+        .get(&source_id(99))
+        .context("managed Indexer runtime source is missing")?;
+
+    ensure!(source.request.network_scope == expected_scope);
+    ensure!(source.request.channel_id == expected_channel);
+    ensure!(source.request.source_config_revision == expected_revision);
+    ensure!(source.request.source_id == source_id(99));
     Ok(())
 }
 

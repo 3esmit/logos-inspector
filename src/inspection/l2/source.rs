@@ -5,12 +5,12 @@ use super::{
     normalize_activity_row, normalize_indexer_block, normalize_sequencer_block,
 };
 use crate::{
-    inspection::ZoneSourceRole,
+    inspection::{NetworkScope, ZoneSourceRole},
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
     modules::logos_core::{LogoscoreCliTransport, ModuleTransportKind, SharedModuleTransport},
     source_routing::channel_sources::{
         ChannelSourceTarget,
-        indexer::IndexerAdapter,
+        indexer::{IndexerAdapter, MODULE_ID},
         layer::{ExecutionZoneReadError, ExecutionZoneReadErrorKind},
         sequencer::SequencerAdapter,
     },
@@ -56,6 +56,8 @@ impl L2SourceError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct L2SourceDescriptor {
+    pub network_scope: NetworkScope,
+    pub channel_id: String,
     pub source_id: String,
     pub role: ZoneSourceRole,
     pub target: ChannelSourceTarget,
@@ -331,11 +333,12 @@ impl SequencerL2SourceAdapter for DirectSequencerL2SourceAdapter {
 pub(crate) struct DirectIndexerL2SourceAdapter {
     module_transport: SharedModuleTransport,
     module_transport_kind: ModuleTransportKind,
+    use_channel_indexer_runtime: bool,
 }
 
 impl Default for DirectIndexerL2SourceAdapter {
     fn default() -> Self {
-        Self::new(
+        Self::with_channel_indexer_runtime(
             Arc::new(LogoscoreCliTransport::default()),
             ModuleTransportKind::LogoscoreCli,
         )
@@ -351,7 +354,38 @@ impl DirectIndexerL2SourceAdapter {
         Self {
             module_transport,
             module_transport_kind,
+            use_channel_indexer_runtime: false,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_channel_indexer_runtime(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
+        Self {
+            module_transport,
+            module_transport_kind,
+            use_channel_indexer_runtime: true,
+        }
+    }
+
+    fn module_transport_for(
+        &self,
+        source: &IndexerL2Source,
+    ) -> Result<SharedModuleTransport, L2SourceError> {
+        if !self.use_channel_indexer_runtime
+            || !matches!(source.target(), ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID)
+        {
+            return Ok(Arc::clone(&self.module_transport));
+        }
+        crate::local_nodes::channel_indexer_module_transport(
+            &source.descriptor.network_scope,
+            &source.descriptor.channel_id,
+            source.descriptor.source_config_revision,
+            &source.descriptor.source_id,
+        )
+        .map_err(|_| L2SourceError::unavailable())
     }
 }
 
@@ -361,7 +395,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         source: IndexerL2Source,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .head()
                 .await
                 .map_err(map_execution_zone_error)?
@@ -377,7 +412,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .blocks(before, limit)
                 .await
                 .map_err(map_execution_zone_error)?
@@ -393,7 +429,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         block_id: u64,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .block_by_id(block_id)
                 .await
                 .map_err(map_execution_zone_error)?
@@ -408,7 +445,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         block_hash: String,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .block_by_hash(&block_hash)
                 .await
                 .map_err(map_execution_zone_error)?
@@ -423,7 +461,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         transaction_id: String,
     ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .transaction(&transaction_id)
                 .await
                 .map_err(map_execution_zone_error)
@@ -437,7 +476,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         block_id: u64,
     ) -> L2SourceFuture<'a, L2AccountValue> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .account_at_block(&account_id, block_id)
                 .await
                 .map(normalize_account)
@@ -453,7 +493,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         limit: usize,
     ) -> L2SourceFuture<'a, Vec<L2AccountActivityRow>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .account_activity(&account_id, offset, limit)
                 .await
                 .map(|rows| rows.into_iter().map(normalize_activity_row).collect())
@@ -468,7 +509,8 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<IndexerBlockReport>> {
         Box::pin(async move {
-            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
+            let module_transport = self.module_transport_for(&source)?;
+            indexer_adapter(&source, &module_transport, self.module_transport_kind)?
                 .blocks(before, limit)
                 .await
                 .map_err(map_execution_zone_error)

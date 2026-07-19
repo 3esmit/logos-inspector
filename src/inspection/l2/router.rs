@@ -66,13 +66,18 @@ impl ZoneL2Router {
         module_transport: SharedModuleTransport,
         module_transport_kind: ModuleTransportKind,
     ) -> Self {
-        Self::new(
-            Arc::new(DirectSequencerL2SourceAdapter),
-            Arc::new(DirectIndexerL2SourceAdapter::new(
+        let use_channel_indexer_runtime = module_transport_kind
+            == ModuleTransportKind::LogoscoreCli
+            && module_transport.logoscore_cli_transport().is_some();
+        let indexer = if use_channel_indexer_runtime {
+            DirectIndexerL2SourceAdapter::with_channel_indexer_runtime(
                 module_transport,
                 module_transport_kind,
-            )),
-        )
+            )
+        } else {
+            DirectIndexerL2SourceAdapter::new(module_transport, module_transport_kind)
+        };
+        Self::new(Arc::new(DirectSequencerL2SourceAdapter), Arc::new(indexer))
     }
 
     pub(crate) async fn blocks(

@@ -18,8 +18,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ChannelSourceConfig, ChannelSourceRole, ChannelSourceTarget, ConfiguredIndexerSource,
-    ConfiguredSequencerSource, PersistedSequencerAttestation,
+    ChannelSourceConfig, ChannelSourceRole, ConfiguredIndexerSource, ConfiguredSequencerSource,
+    PersistedSequencerAttestation,
     config::{normalize_channel_id, normalize_channel_source_configs},
     probe::{
         ChannelSourceBlock, ChannelSourceProbe, ChannelSourceProbeFact, ChannelSourceProbeFailure,
@@ -598,13 +598,13 @@ impl ChannelRuntime {
                 config.selected_sequencer_source_id.as_deref() == Some(source.source_id.as_str());
             sources.insert(
                 source.source_id.clone(),
-                SourceRuntime::sequencer(source, selected, now_millis),
+                SourceRuntime::sequencer(&config, source, selected, now_millis),
             );
         }
         if let Some(source) = config.indexer_source.as_ref() {
             sources.insert(
                 source.source_id.clone(),
-                SourceRuntime::indexer(source, now_millis),
+                SourceRuntime::indexer(&config, source, now_millis),
             );
         }
         Self {
@@ -616,7 +616,12 @@ impl ChannelRuntime {
 }
 
 impl SourceRuntime {
-    fn sequencer(source: &ConfiguredSequencerSource, selected: bool, now_millis: u64) -> Self {
+    fn sequencer(
+        config: &ChannelSourceConfig,
+        source: &ConfiguredSequencerSource,
+        selected: bool,
+        now_millis: u64,
+    ) -> Self {
         let (binding_state, legacy_proof) = match &source.channel_attestation {
             PersistedSequencerAttestation::Pending => (ChannelSourceBindingState::Pending, None),
             PersistedSequencerAttestation::PersistedAttested { .. } => {
@@ -637,45 +642,51 @@ impl SourceRuntime {
             ),
         };
         Self::new(
-            source.source_id.clone(),
-            ChannelSourceRole::Sequencer,
-            source.target.clone(),
+            ChannelSourceProbeRequest {
+                network_scope: config.network_scope.clone(),
+                channel_id: config.channel_id.clone(),
+                source_config_revision: config.config_revision,
+                source_id: source.source_id.clone(),
+                role: ChannelSourceRole::Sequencer,
+                target: source.target.clone(),
+                legacy_proof,
+            },
             selected,
             Some(binding_state),
-            legacy_proof,
             now_millis,
         )
     }
 
-    fn indexer(source: &ConfiguredIndexerSource, now_millis: u64) -> Self {
+    fn indexer(
+        config: &ChannelSourceConfig,
+        source: &ConfiguredIndexerSource,
+        now_millis: u64,
+    ) -> Self {
         Self::new(
-            source.source_id.clone(),
-            ChannelSourceRole::Indexer,
-            source.target.clone(),
+            ChannelSourceProbeRequest {
+                network_scope: config.network_scope.clone(),
+                channel_id: config.channel_id.clone(),
+                source_config_revision: config.config_revision,
+                source_id: source.source_id.clone(),
+                role: ChannelSourceRole::Indexer,
+                target: source.target.clone(),
+                legacy_proof: None,
+            },
             false,
-            None,
             None,
             now_millis,
         )
     }
 
     fn new(
-        source_id: String,
-        role: ChannelSourceRole,
-        target: ChannelSourceTarget,
+        request: ChannelSourceProbeRequest,
         selected: bool,
         binding_state: Option<ChannelSourceBindingState>,
-        legacy_proof: Option<SequencerPersistedLegacyProof>,
         now_millis: u64,
     ) -> Self {
-        let target_fingerprint = target.fingerprint();
+        let target_fingerprint = request.target.fingerprint();
         Self {
-            request: ChannelSourceProbeRequest {
-                source_id,
-                role,
-                target,
-                legacy_proof,
-            },
+            request,
             target_fingerprint,
             selected,
             binding_state,

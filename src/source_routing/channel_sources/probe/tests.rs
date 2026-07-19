@@ -817,6 +817,11 @@ async fn source_probe_records_independent_health_identity_and_head_facts() -> Re
     let output = probe_source(
         transport,
         ChannelSourceProbeRequest {
+            network_scope: crate::inspection::NetworkScope::GenesisId {
+                genesis_id: "ab".repeat(32),
+            },
+            channel_id: "01".repeat(32),
+            source_config_revision: 1,
             source_id: source_id('1'),
             role: ChannelSourceRole::Sequencer,
             target: rpc_target(),
@@ -857,6 +862,11 @@ async fn indexer_probe_exposes_only_indexer_facts() -> Result<()> {
     let output = probe_source(
         Arc::new(HeadRaceTransport::new(true)),
         ChannelSourceProbeRequest {
+            network_scope: crate::inspection::NetworkScope::GenesisId {
+                genesis_id: "ab".repeat(32),
+            },
+            channel_id: "01".repeat(32),
+            source_config_revision: 1,
             source_id: source_id('2'),
             role: ChannelSourceRole::Indexer,
             target: rpc_target(),

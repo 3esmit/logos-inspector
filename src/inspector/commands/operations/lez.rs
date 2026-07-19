@@ -413,6 +413,8 @@ mod tests {
             &context,
             11,
             L2SourceDescriptor {
+                network_scope: context.network_scope.clone(),
+                channel_id: context.channel_id.clone(),
                 source_id: "src_resolved".to_owned(),
                 role: ZoneSourceRole::Sequencer,
                 target: ChannelSourceTarget::Rpc {
@@ -436,10 +438,13 @@ mod tests {
 
     #[test]
     fn resolved_module_source_cannot_enter_direct_wallet_submission() -> Result<()> {
+        let context = active_zone_context();
         let error = bound_instruction_target_from_source(
-            &active_zone_context(),
+            &context,
             11,
             L2SourceDescriptor {
+                network_scope: context.network_scope.clone(),
+                channel_id: context.channel_id.clone(),
                 source_id: "src_module".to_owned(),
                 role: ZoneSourceRole::Sequencer,
                 target: ChannelSourceTarget::Module {

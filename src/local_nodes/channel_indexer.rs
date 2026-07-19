@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -13,8 +14,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     inspection::NetworkScope,
-    modules::logos_core::normalize_module_call_value,
-    source_routing::channel_sources::{ChannelSourceConfig, load_channel_source_configs},
+    modules::logos_core::{
+        LogoscoreCliTransport, SharedModuleTransport, normalize_module_call_value,
+    },
+    source_routing::channel_sources::{
+        ChannelSourceConfig, ChannelSourceTarget, indexer, load_channel_source_configs,
+    },
     support::{
         command_runner::{CommandControl, CommandTerminated},
         time::now_millis,
@@ -183,6 +188,67 @@ pub(super) fn status(
         store.save(&channel_state)?;
     }
     Ok(report)
+}
+
+pub(super) fn module_transport(
+    network_scope: &NetworkScope,
+    channel_id: &str,
+    source_config_revision: u64,
+    source_id: &str,
+) -> Result<SharedModuleTransport> {
+    let channel_id = normalized_channel_id(channel_id)?;
+    let config_root = crate::support::state_store::config_dir()?;
+    let state = ChannelIndexerStore::for_config_dir(&config_root).load()?;
+    let configs = load_channel_source_configs()?;
+    let runtime = runtime_for_module_source(
+        &state,
+        &configs,
+        network_scope,
+        &channel_id,
+        source_config_revision,
+        source_id,
+    )?;
+    Ok(Arc::new(LogoscoreCliTransport::fixed_runtime(runtime)))
+}
+
+fn runtime_for_module_source(
+    state: &ChannelIndexerState,
+    configs: &[ChannelSourceConfig],
+    network_scope: &NetworkScope,
+    channel_id: &str,
+    source_config_revision: u64,
+    source_id: &str,
+) -> Result<crate::modules::logos_core::LogoscoreCliRuntime> {
+    let record = find_record(state, network_scope, channel_id)
+        .context("no isolated Channel Indexer is configured for this Channel")?;
+    if !record.runtime.is_running() || record.state == "stopped" {
+        bail!("isolated Channel Indexer is not running for this Channel");
+    }
+    let config = configs
+        .iter()
+        .find(|config| config.network_scope == *network_scope && config.channel_id == channel_id)
+        .context("Channel source configuration is unavailable for this Channel")?;
+    if config.config_revision != source_config_revision
+        || record.source_config_revision != source_config_revision
+    {
+        bail!("Channel source configuration changed since this Indexer started");
+    }
+    let source = config
+        .indexer_source
+        .as_ref()
+        .filter(|source| source.source_id == source_id)
+        .context("configured Indexer source does not match this Channel runtime")?;
+    if !matches!(
+        &source.target,
+        ChannelSourceTarget::Module { module_id } if module_id == indexer::MODULE_ID
+    ) {
+        bail!("configured Indexer source is not the Channel-owned Indexer module");
+    }
+    let binding = source_binding_from_configs(configs, network_scope, channel_id)?;
+    if !record_matches_binding(record, &binding) {
+        bail!("selected Sequencer binding changed since this Indexer started");
+    }
+    record.runtime.cli_runtime()
 }
 
 pub(super) fn apply(
@@ -1073,11 +1139,12 @@ fn is_control_interruption(error: &anyhow::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use anyhow::{Context as _, Result};
 
     use super::*;
     use crate::source_routing::channel_sources::{
-        ChannelSourceTarget, ConfiguredSequencerSource, PersistedSequencerAttestation,
+        ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
+        PersistedSequencerAttestation,
     };
 
     fn network_scope() -> NetworkScope {
@@ -1102,6 +1169,56 @@ mod tests {
             selected_sequencer_source_id: Some("src_selected".to_owned()),
             indexer_source: None,
         }
+    }
+
+    fn module_source_config(channel_id: &str) -> ChannelSourceConfig {
+        let mut config = source_config(channel_id);
+        config.indexer_source = Some(ConfiguredIndexerSource {
+            source_id: "src_indexer".to_owned(),
+            label: Some("Managed Indexer".to_owned()),
+            target: ChannelSourceTarget::Module {
+                module_id: indexer::MODULE_ID.to_owned(),
+            },
+        });
+        config
+    }
+
+    fn running_record(
+        config_root: &Path,
+        config: &ChannelSourceConfig,
+    ) -> Result<ChannelIndexerRecord> {
+        let modules = tempfile::tempdir()?;
+        let base = LogoscoreRuntimeProfile::create_or_restart(
+            config_root,
+            None,
+            Some("/bin/sh"),
+            Some(&modules.path().display().to_string()),
+        )?;
+        let mut runtime = LogoscoreRuntimeProfile::create_channel_indexer(
+            config_root,
+            &network_scope_key(&config.network_scope)?,
+            &config.channel_id,
+            &base,
+        )?;
+        runtime.daemon_process_id = Some(std::process::id());
+        let binding = source_binding_from_configs(
+            std::slice::from_ref(config),
+            &config.network_scope,
+            &config.channel_id,
+        )?;
+        Ok(ChannelIndexerRecord {
+            network_scope: config.network_scope.clone(),
+            channel_id: config.channel_id.clone(),
+            source_config_revision: config.config_revision,
+            selected_sequencer_source_id: binding.source_id,
+            selected_sequencer_target_fingerprint: binding.target_fingerprint,
+            bedrock_endpoint: "http://127.0.0.1:8080".to_owned(),
+            runtime,
+            state: "caught_up".to_owned(),
+            indexed_block_id: Some("42".to_owned()),
+            last_error: None,
+            operations: Vec::new(),
+        })
     }
 
     #[test]
@@ -1161,6 +1278,95 @@ mod tests {
         anyhow::ensure!(
             channel_actions(true, true, true, true, "stopped")
                 == vec![NodeAction::Start, NodeAction::Stop]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn managed_module_runtime_requires_exact_live_channel_binding() -> Result<()> {
+        let config_root = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let config = module_source_config(&channel_id);
+        let source_id = config
+            .indexer_source
+            .as_ref()
+            .map(|source| source.source_id.clone())
+            .context("module Indexer fixture is missing")?;
+        let record = running_record(config_root.path(), &config)?;
+        let expected = record.runtime.cli_runtime()?;
+        let state = ChannelIndexerState {
+            version: STATE_VERSION,
+            records: vec![record],
+        };
+
+        let resolved = runtime_for_module_source(
+            &state,
+            std::slice::from_ref(&config),
+            &config.network_scope,
+            &channel_id,
+            config.config_revision,
+            &source_id,
+        )?;
+        anyhow::ensure!(resolved == expected);
+
+        let missing = runtime_for_module_source(
+            &state,
+            std::slice::from_ref(&config),
+            &config.network_scope,
+            &"88".repeat(32),
+            config.config_revision,
+            &source_id,
+        )
+        .err()
+        .context("foreign Channel was allowed to use this runtime")?;
+        anyhow::ensure!(missing.to_string().contains("no isolated Channel Indexer"));
+
+        let stale = runtime_for_module_source(
+            &state,
+            std::slice::from_ref(&config),
+            &config.network_scope,
+            &channel_id,
+            config.config_revision.saturating_add(1),
+            &source_id,
+        )
+        .err()
+        .context("stale source revision was accepted")?;
+        anyhow::ensure!(stale.to_string().contains("configuration changed"));
+
+        let wrong_source = runtime_for_module_source(
+            &state,
+            std::slice::from_ref(&config),
+            &config.network_scope,
+            &channel_id,
+            config.config_revision,
+            "src_other",
+        )
+        .err()
+        .context("another Indexer source was accepted")?;
+        anyhow::ensure!(wrong_source.to_string().contains("does not match"));
+
+        let mut changed_binding = config.clone();
+        let selected = changed_binding
+            .sequencer_sources
+            .first_mut()
+            .context("selected Sequencer fixture is missing")?;
+        selected.target = ChannelSourceTarget::Rpc {
+            endpoint: "https://other-sequencer.example/".to_owned(),
+        };
+        let changed = runtime_for_module_source(
+            &state,
+            &[changed_binding],
+            &config.network_scope,
+            &channel_id,
+            config.config_revision,
+            &source_id,
+        )
+        .err()
+        .context("changed Sequencer binding was accepted")?;
+        anyhow::ensure!(
+            changed
+                .to_string()
+                .contains("selected Sequencer binding changed")
         );
         Ok(())
     }

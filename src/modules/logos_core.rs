@@ -649,14 +649,16 @@ impl Default for LogoscoreCliTransport {
 }
 
 impl LogoscoreCliTransport {
+    #[must_use]
+    pub(crate) fn fixed_runtime(runtime: LogoscoreCliRuntime) -> Self {
+        Self {
+            runtime: LogoscoreRuntimeBinding::Fixed(runtime),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
-        Self {
-            runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime::managed(
-                binary_path,
-                config_dir,
-            )),
-        }
+        Self::fixed_runtime(LogoscoreCliRuntime::managed(binary_path, config_dir))
     }
 
     pub(crate) fn runtime(&self) -> Result<LogoscoreCliRuntime> {
