@@ -14,6 +14,7 @@ QtObject {
 
     property double sourceRevision: 3
     property double catalogRevision: 19
+    property string requestedDetailTab: "overview"
     property string verification: "verified"
     property var coverage: ({
         status: "complete",
