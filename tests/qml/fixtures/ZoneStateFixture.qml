@@ -577,6 +577,23 @@ QtObject {
             && activeZoneContext.selected_sequencer_source_id || "")
     }
 
+    function l2EntityRef(entityKind, canonicalKey, sourceObservation) {
+        const source = sourceObservation || ({})
+        return {
+            network_scope: activeZoneContext.network_scope,
+            channel_id: String(activeZoneContext.channel_id || ""),
+            zone_kind: String(activeZoneContext.zone_kind || "unknown"),
+            entity_kind: String(entityKind || ""),
+            canonical_key: String(canonicalKey || ""),
+            source: String(source.source_id || "").length > 0
+                && String(source.source_role || "").length > 0 ? {
+                    kind: "exact",
+                    source_id: String(source.source_id),
+                    source_role: String(source.source_role)
+                } : { kind: "policy" }
+        }
+    }
+
     function l2AvailabilityMessage() {
         return l2Applicable
             ? "Configure an Indexer or select a Sequencer source for this Zone."

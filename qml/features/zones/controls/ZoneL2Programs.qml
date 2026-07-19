@@ -186,7 +186,7 @@ ColumnLayout {
             Layout.fillWidth: true
             onCellActivated: function (row, column, cell, rowData) {
                 if (column === 3 && rowData.favoriteEntry) {
-                    root.zoneState.appModel.favoriteStore.toggle(rowData.favoriteEntry)
+                    root.appModel.favoriteStore.toggle(rowData.favoriteEntry)
                 }
             }
         }
@@ -380,11 +380,11 @@ ColumnLayout {
             const hex = String(row && row.hex || "")
             const entityRef = typeof root.zoneState.l2ProgramEntityRef === "function"
                 ? root.zoneState.l2ProgramEntityRef(row) : null
-            const favorite = root.zoneState.appModel && entityRef
-                ? root.zoneState.appModel.favoriteStore.l2EntityEntry(entityRef,
+            const favorite = root.appModel && entityRef
+                ? root.appModel.favoriteStore.l2EntityEntry(entityRef,
                     qsTr("Program %1").arg(String(row && row.label || hex).slice(0, 20)),
                     String(entityRef.channel_id || "")) : null
-            const saved = favorite && root.zoneState.appModel.favoriteStore.isFavoriteEntry(favorite)
+            const saved = favorite && root.appModel.favoriteStore.isFavoriteEntry(favorite)
             return {
                 cells: [
                     { text: Presentation.text(row && row.label), width: 150, monospace: false },
