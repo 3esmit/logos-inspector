@@ -693,6 +693,16 @@ mod tests {
             .delivery
             .iter()
             .find(|mode| mode.key == "rest");
+        let delivery_module = policy
+            .source_modes
+            .delivery
+            .iter()
+            .find(|mode| mode.key == "module");
+        let delivery_cli = policy
+            .source_modes
+            .delivery
+            .iter()
+            .find(|mode| mode.key == "logoscore_cli");
         let storage_rest = policy
             .source_modes
             .storage
@@ -725,6 +735,16 @@ mod tests {
                 .iter()
                 .any(|input| input.key == "metrics_endpoint")
         }));
+        for source in [delivery_module, delivery_cli, delivery_rest] {
+            assert!(source.is_some_and(|mode| {
+                !mode.adapter.capabilities.contains(&"delivery.topics.read")
+            }));
+        }
+        assert!(
+            delivery_network_monitor.is_some_and(|mode| {
+                mode.adapter.capabilities.contains(&"delivery.topics.read")
+            })
+        );
         assert_eq!(
             storage_rest.map(|mode| mode.source_label),
             Some("Standalone REST")

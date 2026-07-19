@@ -230,6 +230,69 @@ TestCase {
         })
     }
 
+    function test_topics_report_only_observed_source_facts() {
+        model.metrics.messagingMetricsReport = ({
+            probes: [{
+                probe_key: "collectOpenMetricsText",
+                label: "delivery.collectOpenMetricsText",
+                ok: true,
+                value: "libp2p_pubsub_peers 14\nlibp2p_pubsub_topics 8\n"
+            }]
+        })
+        model.metrics.messagingMetricsRevision += 1
+        model.deliveryDiagnosticsTab = "topics"
+
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item, "Topics selected") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Subscribed pubsub topics: 8. OpenMetrics value") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Observed content topics: unavailable. LogosCore CLI (Delivery) does not expose a content-topic catalog. Use Delivery Network Monitor for observed topic activity.") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Topic-to-shard mapping: unavailable. Current Delivery sources do not expose content-topic-to-pubsub-topic or shard relationships.") !== null
+        })
+        verify(findAccessibleByName(pageLoader.item,
+            "Topic-to-shard mapping: observed. 8 content topic(s)") === null)
+        verify(findAccessibleByName(pageLoader.item,
+            "Search and filters on this screen never subscribe to topics in the background.") === null)
+
+        model.messagingSourceMode = "network-monitor"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "delivery_network_monitor",
+                    endpoint: "http://127.0.0.1:8009",
+                    provenance: "test"
+                }
+            }
+        })
+        model.metrics.setSourceReport("messaging", ({
+            probes: [{
+                probe_key: "contentTopics",
+                label: "delivery_network_monitor.contentTopics",
+                ok: true,
+                value: {
+                    "/logos/1/zeta/proto": 2,
+                    "/logos/1/alpha/proto": 5
+                }
+            }]
+        }), {
+            origin: "test",
+            checkedAtMs: Date.now()
+        })
+
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Observed content topics: observed. 2 content topic(s) with received-message counts from Delivery Network Monitor.") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Content topic 1: /logos/1/alpha/proto") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Copy Content topic 1") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Content topic 2: /logos/1/zeta/proto") !== null
+        })
+    }
+
     function test_throughput_requires_two_real_observations() {
         const key = "messaging.network_ingress_recent"
         const now = Date.now()

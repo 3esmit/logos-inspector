@@ -85,6 +85,7 @@ TestCase {
         verify(Array.isArray(deliverySession.view.protocolRows))
         verify(Array.isArray(deliverySession.view.throughputRows))
         verify(Array.isArray(deliverySession.view.topicRows))
+        verify(Array.isArray(deliverySession.view.topicDetailRows))
         compare(deliverySession.view.sourceShortLabel, "REST")
     }
 

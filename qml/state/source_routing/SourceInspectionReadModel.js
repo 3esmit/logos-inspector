@@ -324,7 +324,10 @@ function deliveryView(page, common) {
     common.topologyRows = SourceObservation.deliveryTopologyRows(page)
     common.throughputRows = SourceObservation.deliveryThroughputRows(page)
     common.protocolRows = SourceObservation.deliveryProtocolRows(page)
-    common.topicRows = SourceObservation.deliveryTopicRows(page)
+    const topicSnapshot = SourceObservation.deliveryTopicSnapshot(page)
+    common.topicRows = SourceObservation.deliveryTopicRows(page, topicSnapshot)
+    common.topicDetailRows = SourceObservation.deliveryTopicDetailRows(
+        page, topicSnapshot)
     common.storeRows = SourceObservation.deliveryStoreRows(page)
     common.identityRows = SourceObservation.deliveryIdentityRows(page)
     return common
