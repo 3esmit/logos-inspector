@@ -38,6 +38,16 @@ TestCase {
             }]
         }
 
+        function deliverySourceView() {
+            const mode = String(deliverySourceMode || "")
+            return {
+                mode: mode,
+                resolvedMode: mode,
+                connectionType: mode === "logoscore_cli"
+                    ? "logoscore_cli" : (mode === "module" ? "module" : "rest")
+            }
+        }
+
         function storageSourceReportArgs(includeSensitiveProbe) {
             return [{
                 source_mode: storageSourceMode,
@@ -307,6 +317,7 @@ TestCase {
     }
 
     function resetMetrics() {
+        metrics.messagingRollingWindow = 60
         metrics.blockchainRefreshRate = 30
         metrics.messagingRefreshRate = 30
         metrics.storageRefreshRate = 30
@@ -320,6 +331,14 @@ TestCase {
         metrics.dashboardMetricSeriesLastSeen = ({})
         metrics.dashboardMetricHistoryRevision = 0
         metrics.dashboardSnapshotRevision = 0
+        metrics.deliveryModuleEventStreamStatus = "unknown"
+        metrics.deliveryModuleEventStreamReason = ""
+        metrics.deliveryModuleEventTimestamps =
+            metrics.emptyDeliveryModuleEventTimestamps()
+        metrics.deliveryModuleEventCoverageStartedAtMs =
+            metrics.emptyDeliveryModuleEventCoverage(0)
+        metrics.deliveryModuleEventNowMs = Date.now()
+        metrics.deliveryModuleEventRevision = 0
         metrics.dashboardRefreshing = false
         metrics.dashboardRefreshSerial = 0
         metrics.dashboardError = ""
@@ -368,6 +387,16 @@ TestCase {
         metrics.observationRevision = 0
     }
 
+    function completeDeliveryEventCoverage(now) {
+        const timestamp = Number(now)
+        metrics.deliveryModuleEventCoverageStartedAtMs =
+            metrics.emptyDeliveryModuleEventCoverage(
+                timestamp - metrics.dashboardMetricWindowMs(
+                    "messaging.message_sent_events_recent") - 1)
+        metrics.deliveryModuleEventNowMs = timestamp
+        metrics.deliveryModuleEventRevision += 1
+    }
+
     function init() {
         gateway.reset()
         sourceRouting.storageEndpoint = "http://storage.invalid"
@@ -407,6 +436,150 @@ TestCase {
         compare(metrics.observationReportRevisions.storage, reportRevision + 1)
         compare(metrics.dashboardSnapshotRevision, snapshotRevision + 1)
         compare(gateway.capabilityRefreshCount, 1)
+    }
+
+    function test_delivery_event_metrics_require_contiguous_watcher_coverage() {
+        const sentKey = "messaging.message_sent_events_recent"
+        const propagatedKey = "messaging.message_propagated_events_recent"
+
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+        verify(metrics.recordDeliveryModuleEvent("eventStreamReady", {
+            object: { status: "ready" }
+        }))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+        verify(metrics.deliveryModuleEventMetricUnavailableReason(sentKey)
+            .indexOf("continuous") >= 0)
+        completeDeliveryEventCoverage(Date.now())
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 0)
+        compare(metrics.deliveryModuleEventMetricValue(propagatedKey), 0)
+
+        verify(metrics.recordDeliveryModuleEvent("messageSent", {}))
+        verify(metrics.recordDeliveryModuleEvent("messagePropagated", {}))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 1)
+        compare(metrics.deliveryModuleEventMetricValue(propagatedKey), 1)
+        compare(metrics.deliveryModuleEventMetricSamples(sentKey).slice(-1)[0].value, 1)
+
+        verify(metrics.recordDeliveryModuleEvent("eventStreamUnavailable", {
+            object: { reason: "watch exited" }
+        }))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+        compare(metrics.deliveryModuleEventMetricSamples(sentKey).length, 0)
+        verify(!metrics.recordDeliveryModuleEvent("messageSent", {}))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+
+        verify(metrics.recordDeliveryModuleEvent("eventStreamReady", {
+            object: { status: "ready" }
+        }))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+        compare(metrics.deliveryModuleEventMetricValue(propagatedKey), null)
+        const resumedAt = metrics.deliveryModuleEventNowMs
+        completeDeliveryEventCoverage(resumedAt + 60001)
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 0)
+        compare(metrics.deliveryModuleEventMetricValue(propagatedKey), 0)
+    }
+
+    function test_delivery_event_history_survives_window_widening_and_prunes_only_retention_horizon() {
+        const sentKey = "messaging.message_sent_events_recent"
+        const now = 10000000
+        metrics.deliveryModuleEventStreamStatus = "ready"
+        metrics.deliveryModuleEventTimestamps = ({
+            "messaging.message_sent_events_recent": [
+                now - metrics.deliveryModuleEventRetentionMs - 1,
+                now - 90000,
+                now - 100
+            ],
+            "messaging.message_propagated_events_recent": []
+        })
+        metrics.deliveryModuleEventCoverageStartedAtMs =
+            metrics.emptyDeliveryModuleEventCoverage(now - 300000)
+        metrics.deliveryModuleEventNowMs = now
+        metrics.deliveryModuleEventRevision += 1
+
+        compare(metrics.deliveryModuleEventRowsInWindow(sentKey, now).length, 1)
+        verify(metrics.pruneDeliveryModuleEventTelemetry(now))
+        compare(metrics.deliveryModuleEventTimestamps[sentKey].length, 2)
+        metrics.messagingRollingWindow = 120
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 2)
+    }
+
+    function test_delivery_event_capacity_reset_recovers_without_watcher_reconnect() {
+        const sentKey = "messaging.message_sent_events_recent"
+        const now = Date.now()
+        const rows = []
+        for (let i = 0; i < metrics.deliveryModuleEventCapacity; ++i) {
+            rows.push(now - 100)
+        }
+        metrics.deliveryModuleEventStreamStatus = "ready"
+        metrics.deliveryModuleEventTimestamps = ({
+            "messaging.message_sent_events_recent": rows,
+            "messaging.message_propagated_events_recent": []
+        })
+        metrics.deliveryModuleEventCoverageStartedAtMs =
+            metrics.emptyDeliveryModuleEventCoverage(now - 120000)
+        metrics.deliveryModuleEventNowMs = now
+
+        verify(metrics.recordDeliveryModuleEvent("messageSent", {}))
+        compare(metrics.deliveryModuleEventStreamStatus, "ready")
+        compare(metrics.deliveryModuleEventTimestamps[sentKey].length, 1)
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+
+        const restartedAt = metrics.deliveryModuleEventCoverageStartedAtMs[sentKey]
+        const recoveredCoverage = metrics.emptyDeliveryModuleEventCoverage(
+            restartedAt - 60001)
+        const recoveredRows = metrics.emptyDeliveryModuleEventTimestamps()
+        recoveredRows[sentKey] = [restartedAt + 30000]
+        metrics.deliveryModuleEventCoverageStartedAtMs = recoveredCoverage
+        metrics.deliveryModuleEventTimestamps = recoveredRows
+        metrics.deliveryModuleEventNowMs = restartedAt + 60001
+        metrics.deliveryModuleEventRevision += 1
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 1)
+    }
+
+    function test_delivery_event_counts_are_source_scoped_and_reset_on_source_change() {
+        const sentKey = "messaging.message_sent_events_recent"
+        const now = 10000000
+        metrics.deliveryModuleEventStreamStatus = "ready"
+        metrics.deliveryModuleEventTimestamps = ({
+            "messaging.message_sent_events_recent": [now - 1000],
+            "messaging.message_propagated_events_recent": []
+        })
+        metrics.deliveryModuleEventCoverageStartedAtMs =
+            metrics.emptyDeliveryModuleEventCoverage(now - 120000)
+        metrics.deliveryModuleEventNowMs = now
+        metrics.deliveryModuleEventRevision += 1
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 1)
+
+        sourceRouting.deliverySourceMode = "rest"
+        verify(metrics.invalidateConfiguration("messaging", "source changed"))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+        compare(metrics.deliveryModuleEventTimestamps[sentKey].length, 0)
+
+        sourceRouting.deliverySourceMode = "logoscore_cli"
+        verify(metrics.invalidateConfiguration("messaging", "source changed"))
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), null)
+    }
+
+    function test_delivery_event_graph_keeps_historical_window_counts() {
+        const sentKey = "messaging.message_sent_events_recent"
+        const now = 1000000
+        metrics.messagingRollingWindow = 100
+        metrics.deliveryModuleEventStreamStatus = "ready"
+        metrics.deliveryModuleEventTimestamps = ({
+            "messaging.message_sent_events_recent": [now - 110000, now - 60000],
+            "messaging.message_propagated_events_recent": []
+        })
+        metrics.deliveryModuleEventCoverageStartedAtMs =
+            metrics.emptyDeliveryModuleEventCoverage(now - 300000)
+        metrics.deliveryModuleEventNowMs = now
+        metrics.deliveryModuleEventRevision += 1
+
+        compare(metrics.deliveryModuleEventMetricValue(sentKey), 1)
+        const samples = metrics.deliveryModuleEventMetricSamples(sentKey)
+        const historical = samples.filter(function (sample) {
+            return sample.timestamp === now - 60000
+        })
+        compare(historical.length, 1)
+        compare(historical[0].value, 2)
     }
 
     function test_invalid_storage_cid_is_rejected_before_bridge_dispatch() {
@@ -898,7 +1071,7 @@ TestCase {
         compare(graph[0].value, 8)
     }
 
-    function test_delivery_sent_and_propagated_metrics_use_accepted_text_windows() {
+    function test_delivery_openmetrics_cannot_impersonate_native_message_events() {
         const before = [
             "waku_service_requests_total{service=\"/vac/waku/lightpush/3.0.0\",state=\"served\"} 100",
             "waku_node_messages_total{type=\"relay\"} 500"
@@ -909,9 +1082,9 @@ TestCase {
             "messaging", "delivery-events-before", before)))
 
         compare(metrics.dashboardMetricRawValue(
-            "messaging.message_sent_events_recent"), 100)
+            "messaging.message_sent_events_recent"), null)
         compare(metrics.dashboardMetricRawValue(
-            "messaging.message_propagated_events_recent"), 500)
+            "messaging.message_propagated_events_recent"), null)
         compare(metrics.dashboardMetricValue(
             "messaging.message_sent_events_recent"), null)
         compare(metrics.dashboardMetricValue(
@@ -927,17 +1100,15 @@ TestCase {
             "messaging", "delivery-events-after", after)))
 
         compare(metrics.dashboardMetricValue(
-            "messaging.message_sent_events_recent"), 4)
+            "messaging.message_sent_events_recent"), null)
         compare(metrics.dashboardMetricValue(
-            "messaging.message_propagated_events_recent"), 7)
+            "messaging.message_propagated_events_recent"), null)
         const sentGraph = metrics.dashboardMetricSamples(
             "messaging.message_sent_events_recent")
         const propagatedGraph = metrics.dashboardMetricSamples(
             "messaging.message_propagated_events_recent")
-        compare(sentGraph.length, 1)
-        compare(sentGraph[0].value, 4)
-        compare(propagatedGraph.length, 1)
-        compare(propagatedGraph[0].value, 7)
+        compare(sentGraph.length, 0)
+        compare(propagatedGraph.length, 0)
     }
 
     function test_delivery_json_aggregate_taxonomy_avoids_alias_double_counts() {
@@ -1004,7 +1175,7 @@ TestCase {
         compare(metrics.dashboardMetricRawValue(
             "messaging.lightpush_requests_recent"), 70)
         compare(metrics.dashboardMetricRawValue(
-            "messaging.message_sent_events_recent"), 70)
+            "messaging.message_sent_events_recent"), null)
         compare(metrics.dashboardMetricRawValue(
             "messaging.peer_exchange_requests_recent"), 5)
     }

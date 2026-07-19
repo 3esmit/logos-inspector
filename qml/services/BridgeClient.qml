@@ -58,6 +58,18 @@ QtObject {
         return BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
     }
 
+    function startModuleWatcher() {
+        if (root.closed || !root.host
+                || typeof root.host["startModuleWatcher"] !== "function") {
+            return null
+        }
+        try {
+            return root.host["startModuleWatcher"]() === true
+        } catch (error) {
+            return false
+        }
+    }
+
     function callModule(moduleName, method, args) {
         if (root.closed) {
             return root.closedResponse()

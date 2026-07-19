@@ -121,6 +121,10 @@ function dashboardMetricLabel(key) {
     // Keep the legacy key for persisted graph/footer selections and history.
     case "lez.blocks_produced_recent":
         return qsTr("provisional block records available")
+    case "messaging.message_sent_events_recent":
+        return qsTr("confirmed sends in window")
+    case "messaging.message_propagated_events_recent":
+        return qsTr("network propagations in window")
     case "messaging.message_received_events_recent":
         return qsTr("messages in window")
     case "messaging.message_error_events_recent":
@@ -277,40 +281,6 @@ function dashboardMetricAggregateDefinition(key) {
                 },
                 "waku_service_network_bytes_out_total"
             ]]
-        }
-    case "messaging.message_sent_events_recent":
-        return {
-            kind: "messaging",
-            members: [
-                [
-                    "waku_lightpush_messages_total",
-                    "waku_lightpush_messages",
-                    {
-                        name: "waku_service_requests_total",
-                        labels: {
-                            service: "/vac/waku/lightpush/2.0.0-beta1"
-                        }
-                    },
-                    {
-                        name: "waku_service_requests",
-                        labels: {
-                            service: "/vac/waku/lightpush/2.0.0-beta1"
-                        }
-                    }
-                ],
-                [
-                    "waku_lightpush_v3_messages_total",
-                    "waku_lightpush_v3_messages",
-                    {
-                        name: "waku_service_requests_total",
-                        labels: { service: "/vac/waku/lightpush/3.0.0" }
-                    },
-                    {
-                        name: "waku_service_requests",
-                        labels: { service: "/vac/waku/lightpush/3.0.0" }
-                    }
-                ]
-            ]
         }
     case "messaging.message_error_events_recent":
         return {
@@ -650,9 +620,8 @@ function dashboardMetricRawValue(root, key) {
     case "messaging.outbound_queue":
         return root.moduleMetricValue("messaging", ["outbound_queue"])
     case "messaging.message_sent_events_recent":
-        return dashboardMetricAggregateValue(root, key)
     case "messaging.message_propagated_events_recent":
-        return root.moduleMetricValue("messaging", ["waku_node_messages_total", "waku_node_messages"])
+        return root.deliveryModuleEventMetricValue(key)
     case "messaging.message_received_events_recent":
         return dashboardMetricAggregateValue(root, key)
     case "messaging.message_error_events_recent":
@@ -693,6 +662,7 @@ function dashboardMetricValue(root, key) {
     switch (String(key || "")) {
     case "messaging.message_sent_events_recent":
     case "messaging.message_propagated_events_recent":
+        return root.deliveryModuleEventMetricValue(key)
     case "messaging.message_received_events_recent":
     case "messaging.message_error_events_recent":
     case "storage.failed_transfers_recent":
@@ -795,6 +765,10 @@ function recordDashboardSnapshot(root, prefixes) {
     for (let i = 0; i < keys.length; ++i) {
         const key = keys[i]
         if (!dashboardSnapshotIncludesKey(key, wantedPrefixes)) {
+            continue
+        }
+        if (key === "messaging.message_sent_events_recent"
+                || key === "messaging.message_propagated_events_recent") {
             continue
         }
         const aggregateDefinition = dashboardMetricUsesWindow(key)
@@ -1130,6 +1104,10 @@ function windowDeltaFromSeriesFrames(frames, timestamp, windowMs) {
 
 function dashboardMetricSamples(root, key) {
     const revision = root.dashboardMetricHistoryRevision
+    if (key === "messaging.message_sent_events_recent"
+            || key === "messaging.message_propagated_events_recent") {
+        return root.deliveryModuleEventMetricSamples(key)
+    }
     if (dashboardMetricUsesWindow(key)) {
         return dashboardMetricWindowSamples(root, key)
     }

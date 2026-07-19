@@ -12,11 +12,37 @@ QtObject {
         if (!bridge || !model) {
             return 0
         }
+        if (typeof bridge.startModuleWatcher === "function") {
+            const started = bridge.startModuleWatcher()
+            if (started === false) {
+                root.ingest(model.deliveryModule, "eventStreamUnavailable", [{
+                    source: "standalone_module_watcher",
+                    status: "unavailable",
+                    reason: qsTr("Standalone module watcher failed to start.")
+                }])
+            }
+        }
         const rows = root.subscriptionCatalog()
         let count = 0
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i] || {}
-            count += bridge.subscribeModuleEvents(String(row.moduleName || ""), row.events || [])
+            const moduleName = String(row.moduleName || "")
+            const events = Array.isArray(row.events) ? row.events : []
+            const subscribed = bridge.subscribeModuleEvents(moduleName, events)
+            count += subscribed
+            if (moduleName === String(model.deliveryModule || "")
+                    && typeof bridge.prefersBasecampModules === "function"
+                    && bridge.prefersBasecampModules()) {
+                const ready = subscribed === events.length
+                root.ingest(moduleName,
+                    ready ? "eventStreamReady" : "eventStreamUnavailable", [{
+                        source: "basecamp_module_subscription",
+                        status: ready ? "ready" : "unavailable",
+                        reason: ready
+                            ? qsTr("Delivery module event subscriptions are active.")
+                            : qsTr("Delivery module event subscriptions are incomplete.")
+                    }])
+            }
         }
         return count
     }
@@ -99,6 +125,10 @@ QtObject {
         ignoreUnknownSignals: true
 
         function onHostChanged() {
+            if (root.model && root.model.metrics
+                    && typeof root.model.metrics.resetDeliveryModuleEventTelemetry === "function") {
+                root.model.metrics.resetDeliveryModuleEventTelemetry("unknown", "")
+            }
             Qt.callLater(function () {
                 root.install()
             })

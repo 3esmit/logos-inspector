@@ -199,6 +199,11 @@ TestCase {
         signal moduleEventJson(string moduleName, string eventName, string argsJson)
 
         property var calls: []
+        property bool watcherStarts: true
+
+        function startModuleWatcher() {
+            return watcherStarts
+        }
 
         function backendOwnsRuntimeModuleEvents() {
             return true
@@ -210,6 +215,20 @@ TestCase {
                 method: String(method || ""),
                 args: JSON.parse(String(argsJson || "[]"))
             }])
+            return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
+        }
+    }
+
+    QtObject {
+        id: failedWatcherHost
+
+        signal moduleEventJson(string moduleName, string eventName, string argsJson)
+
+        function startModuleWatcher() {
+            return false
+        }
+
+        function callModuleJson(moduleName, method, argsJson) {
             return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
         }
     }
@@ -248,12 +267,15 @@ TestCase {
         directEventOwnerHost.calls = []
         directEventOwnerHost.ownerResponse = true
         nativeWatcherHost.calls = []
+        nativeWatcherHost.watcherStarts = true
         bridge.moduleEventSubscriptions = ({})
         bridge.moduleEventRegistrations = []
         model.deliveryModuleEvents = []
         model.deliveryModuleEventRevision = 0
         model.deliveryConnectionStatus = ""
         model.deliveryNodeStatus = ""
+        model.messagingSourceMode = "logoscore_cli"
+        model.metrics.resetDeliveryModuleEventTelemetry("unknown", "")
         model.social.socialCommentState = ({})
         model.social.socialCommentRevision = 0
         model.nodeUrl = "http://127.0.0.1:8080/"
@@ -261,6 +283,10 @@ TestCase {
             scopes: {
                 l1: {
                     connector_id: "direct_l1_rpc",
+                    provenance: "test"
+                },
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
                     provenance: "test"
                 }
             }
@@ -343,6 +369,28 @@ TestCase {
         compare(model.deliveryModuleEvents.length, 0)
     }
 
+    function test_host_swap_clears_previous_delivery_event_telemetry() {
+        bridge.host = nativeWatcherHost
+        verify(intake.ingest(model.deliveryModule, "eventStreamReady", [{
+            source: "logoscore.watch",
+            status: "ready"
+        }]))
+        verify(intake.ingest(model.deliveryModule, "messageSent", [
+            "request-old-host", "hash-old-host", "1000"
+        ]))
+        compare(model.metrics.deliveryModuleEventStreamStatus, "ready")
+        compare(model.metrics.deliveryModuleEventTimestamps[
+            "messaging.message_sent_events_recent"].length, 1)
+
+        bridge.host = replacementHost
+
+        tryCompare(model.metrics, "deliveryModuleEventStreamStatus", "unknown")
+        compare(model.metrics.deliveryModuleEventTimestamps[
+            "messaging.message_sent_events_recent"].length, 0)
+        compare(model.metrics.dashboardMetricValue(
+            "messaging.message_sent_events_recent"), null)
+    }
+
     function test_ingest_delivery_message_merges_social_comment() {
         const topic = "/cryptarchia/account/account-1/comments"
         const payload = {
@@ -373,6 +421,68 @@ TestCase {
         tryVerify(function () {
             return runtimeModuleEventCalls(fakeHost.calls) === 1
         })
+    }
+
+    function test_delivery_watcher_events_drive_independent_metrics_once() {
+        const sentKey = "messaging.message_sent_events_recent"
+        const propagatedKey = "messaging.message_propagated_events_recent"
+
+        verify(intake.ingest(model.deliveryModule, "eventStreamReady", [{
+            source: "logoscore.watch",
+            status: "ready"
+        }]))
+        compare(model.metrics.dashboardMetricValue(sentKey), null)
+        const now = model.metrics.deliveryModuleEventNowMs
+        model.metrics.deliveryModuleEventCoverageStartedAtMs =
+            model.metrics.emptyDeliveryModuleEventCoverage(
+                now - model.messagingRollingWindow * 1000 - 1)
+        model.metrics.deliveryModuleEventRevision += 1
+        compare(model.metrics.dashboardMetricValue(sentKey), 0)
+        compare(model.metrics.dashboardMetricValue(propagatedKey), 0)
+
+        verify(intake.ingest(model.deliveryModule, "messageSent", [
+            "request-metrics", "hash-metrics", "1000"
+        ]))
+        compare(model.metrics.dashboardMetricValue(sentKey), 1)
+        compare(model.metrics.dashboardMetricValue(propagatedKey), 0)
+
+        verify(intake.ingest(model.deliveryModule, "messageReceived", [
+            "received-hash", "/test/topic", "payload", "1001"
+        ]))
+        compare(model.metrics.dashboardMetricValue(sentKey), 1)
+        compare(model.metrics.dashboardMetricValue(propagatedKey), 0)
+
+        verify(intake.ingest(model.deliveryModule, "messagePropagated", [
+            "request-metrics", "hash-metrics", "1002"
+        ]))
+        compare(model.metrics.dashboardMetricValue(sentKey), 1)
+        compare(model.metrics.dashboardMetricValue(propagatedKey), 1)
+
+        verify(intake.ingest(model.deliveryModule, "eventStreamUnavailable", [{
+            source: "logoscore.watch",
+            status: "unavailable",
+            reason: "watch exited"
+        }]))
+        compare(model.metrics.dashboardMetricValue(sentKey), null)
+        compare(model.metrics.dashboardMetricValue(propagatedKey), null)
+    }
+
+    function test_standalone_watcher_start_failure_is_explicit() {
+        bridge.host = failedWatcherHost
+
+        tryCompare(model.metrics, "deliveryModuleEventStreamStatus", "unavailable")
+        verify(model.metrics.deliveryModuleEventStreamReason.indexOf("failed to start") >= 0)
+    }
+
+    function test_basecamp_subscriptions_make_zero_traffic_coverage_explicit() {
+        bridge.host = basecampHost
+
+        tryCompare(model.metrics, "deliveryModuleEventStreamStatus", "ready")
+        compare(basecampHost.subscriptions.length, 17)
+        compare(model.metrics.dashboardMetricValue(
+            "messaging.message_sent_events_recent"), null)
+        verify(model.metrics.deliveryModuleEventMetricUnavailableReason(
+            "messaging.message_sent_events_recent").indexOf("continuous") >= 0)
     }
 
     function test_basecamp_event_projects_without_second_runtime_ingress() {

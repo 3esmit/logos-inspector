@@ -72,6 +72,16 @@ TestCase {
 
     function init() {
         fakeHost.reset()
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        wait(0)
         model.metrics.messagingRefreshRate = 0
         model.metrics.messagingMetricsReport = null
         model.metrics.messagingMetricsRevision += 1
@@ -80,6 +90,7 @@ TestCase {
         model.metrics.dashboardMetricSeriesHistory = ({})
         model.metrics.dashboardMetricSeriesLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision += 1
+        model.metrics.resetDeliveryModuleEventTelemetry("unknown", "")
         model.deliveryDiagnosticsTab = "overview"
         model.shell.currentView = "diagnosticsDelivery"
         model.navigationBackStack = []
@@ -199,32 +210,9 @@ TestCase {
         compare(model.metrics.dashboardMetricValue(key), 18)
     }
 
-    function test_sent_and_propagated_rows_require_two_observations() {
+    function test_sent_and_propagated_rows_follow_native_event_watcher() {
         const sentKey = "messaging.message_sent_events_recent"
         const propagatedKey = "messaging.message_propagated_events_recent"
-        const now = Date.now()
-        model.metrics.messagingMetricsReport = deliveryEventMetricsReport(
-            100, 500)
-        model.metrics.messagingMetricsRevision += 1
-        model.metrics.dashboardMetricHistory = ({
-            "messaging.message_sent_events_recent": [
-                { timestamp: now, value: 100 }
-            ],
-            "messaging.message_propagated_events_recent": [
-                { timestamp: now, value: 500 }
-            ]
-        })
-        model.metrics.dashboardMetricLastSeen = ({
-            "messaging.message_sent_events_recent": {
-                timestamp: now,
-                value: 100
-            },
-            "messaging.message_propagated_events_recent": {
-                timestamp: now,
-                value: 500
-            }
-        })
-        model.metrics.dashboardMetricHistoryRevision += 1
 
         const throughputTab = findAccessibleByName(pageLoader.item, "Throughput")
         verify(throughputTab !== null)
@@ -233,44 +221,42 @@ TestCase {
         tryCompare(model, "deliveryDiagnosticsTab", "throughput")
         tryVerify(function () {
             return findAccessibleByName(pageLoader.item,
-                "Sent events: n/a. Waiting for another source observation.") !== null
+                "Confirmed sends: n/a. Waiting for Delivery event watcher readiness.") !== null
                 && findAccessibleByName(pageLoader.item,
-                    "Propagated events: n/a. Waiting for another source observation.") !== null
+                    "Network propagations: n/a. Waiting for Delivery event watcher readiness.") !== null
         })
 
-        model.metrics.messagingMetricsReport = deliveryEventMetricsReport(
-            104, 507)
-        model.metrics.messagingMetricsRevision += 1
-        model.metrics.dashboardMetricHistory = ({
-            "messaging.message_sent_events_recent": [
-                { timestamp: now - 1000, value: 100 },
-                { timestamp: now, value: 104 }
-            ],
-            "messaging.message_propagated_events_recent": [
-                { timestamp: now - 1000, value: 500 },
-                { timestamp: now, value: 507 }
-            ]
+        verify(model.metrics.recordDeliveryModuleEvent("eventStreamReady", {
+            object: { status: "ready" }
+        }))
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Confirmed sends: n/a. Building continuous Delivery event coverage (120 s remaining).") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Network propagations: n/a. Building continuous Delivery event coverage (120 s remaining).") !== null
         })
-        model.metrics.dashboardMetricLastSeen = ({
-            "messaging.message_sent_events_recent": {
-                timestamp: now,
-                value: 104
-            },
-            "messaging.message_propagated_events_recent": {
-                timestamp: now,
-                value: 507
-            }
+        const now = model.metrics.deliveryModuleEventNowMs
+        model.metrics.deliveryModuleEventCoverageStartedAtMs =
+            model.metrics.emptyDeliveryModuleEventCoverage(now - 120001)
+        model.metrics.deliveryModuleEventRevision += 1
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Confirmed sends: 0. 120 s window") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Network propagations: 0. 120 s window") !== null
         })
-        model.metrics.dashboardMetricHistoryRevision += 1
+
+        verify(model.metrics.recordDeliveryModuleEvent("messageSent", {}))
+        verify(model.metrics.recordDeliveryModuleEvent("messagePropagated", {}))
 
         tryVerify(function () {
             return findAccessibleByName(pageLoader.item,
-                "Sent events: 4. 120 s window") !== null
+                "Confirmed sends: 1. 120 s window") !== null
                 && findAccessibleByName(pageLoader.item,
-                    "Propagated events: 7. 120 s window") !== null
+                    "Network propagations: 1. 120 s window") !== null
         })
-        compare(model.metrics.dashboardMetricValue(sentKey), 4)
-        compare(model.metrics.dashboardMetricValue(propagatedKey), 7)
+        compare(model.metrics.dashboardMetricValue(sentKey), 1)
+        compare(model.metrics.dashboardMetricValue(propagatedKey), 1)
     }
 
     function deliveryMetricsReport(networkIngress) {
@@ -282,23 +268,6 @@ TestCase {
                 ok: true,
                 value: "libp2p_network_bytes_total{direction=\"in\"} "
                     + String(networkIngress) + "\n"
-            }]
-        }
-    }
-
-    function deliveryEventMetricsReport(sent, propagated) {
-        return {
-            probes: [{
-                probe_key: "collectOpenMetricsText",
-                label: "delivery.collectOpenMetricsText",
-                source: "delivery collectOpenMetricsText",
-                ok: true,
-                value: [
-                    "waku_service_requests_total{service=\"/vac/waku/lightpush/3.0.0\",state=\"served\"} "
-                        + String(sent),
-                    "waku_node_messages_total{type=\"relay\"} "
-                        + String(propagated)
-                ].join("\n")
             }]
         }
     }
