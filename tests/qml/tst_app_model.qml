@@ -175,6 +175,8 @@ TestCase {
         model.metrics.networkConnectionStatusRevision = 0
         model.metrics.dashboardMetricHistory = ({})
         model.metrics.dashboardMetricLastSeen = ({})
+        model.metrics.dashboardMetricSeriesHistory = ({})
+        model.metrics.dashboardMetricSeriesLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision = 0
         model.metrics.observationReportRequestIdentities = ({})
         model.metrics.blockchainRefreshRate = 30
@@ -4327,13 +4329,45 @@ TestCase {
             "messaging.messages": { timestamp: 2, value: 1 },
             "storage.files": { timestamp: 2, value: 2 }
         }
+        model.metrics.dashboardMetricSeriesHistory = {
+            "messaging.messages": [{
+                timestamp: 1,
+                signature: "0:messages{}",
+                series: [{ id: "0:messages{}", value: 1 }]
+            }],
+            "storage.files": [{
+                timestamp: 1,
+                signature: "0:files{}",
+                series: [{ id: "0:files{}", value: 2 }]
+            }]
+        }
+        model.metrics.dashboardMetricSeriesLastSeen = {
+            "messaging.messages": {
+                timestamp: 2,
+                signature: "0:messages{}",
+                series: [{ id: "0:messages{}", value: 1 }]
+            },
+            "storage.files": {
+                timestamp: 2,
+                signature: "0:files{}",
+                series: [{ id: "0:files{}", value: 2 }]
+            }
+        }
 
         model.metrics.clearDashboardMetricHistoryForPrefix("messaging.")
 
         compare(model.metrics.dashboardMetricHistory["messaging.messages"], undefined)
         compare(model.metrics.dashboardMetricLastSeen["messaging.messages"], undefined)
+        compare(model.metrics.dashboardMetricSeriesHistory[
+            "messaging.messages"], undefined)
+        compare(model.metrics.dashboardMetricSeriesLastSeen[
+            "messaging.messages"], undefined)
         verify(model.metrics.dashboardMetricHistory["storage.files"] !== undefined)
         verify(model.metrics.dashboardMetricLastSeen["storage.files"] !== undefined)
+        verify(model.metrics.dashboardMetricSeriesHistory[
+            "storage.files"] !== undefined)
+        verify(model.metrics.dashboardMetricSeriesLastSeen[
+            "storage.files"] !== undefined)
         verify(model.metrics.dashboardMetricHistory["chain.height"] !== undefined)
         compare(model.metrics.dashboardMetricHistoryRevision, 1)
     }

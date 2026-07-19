@@ -36,6 +36,8 @@ QtObject {
     property int dashboardGraphRevision: 0
     property var dashboardMetricHistory: ({})
     property var dashboardMetricLastSeen: ({})
+    property var dashboardMetricSeriesHistory: ({})
+    property var dashboardMetricSeriesLastSeen: ({})
     property int dashboardMetricHistoryRevision: 0
     property int dashboardSnapshotRevision: 0
     property bool dashboardRefreshing: false

@@ -65,6 +65,8 @@ TestCase {
         model.metrics.storageRefreshRate = 0
         model.metrics.dashboardMetricHistory = ({})
         model.metrics.dashboardMetricLastSeen = ({})
+        model.metrics.dashboardMetricSeriesHistory = ({})
+        model.metrics.dashboardMetricSeriesLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision = 0
         model.dashboardNode = null
         model.dashboardL1Blocks = []
