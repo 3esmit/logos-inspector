@@ -198,6 +198,10 @@ TestCase {
         }
         function metricKnown(key) { return deliveryModel.metrics.dashboardMetricValue(key) !== undefined }
         function metricDisplay(key) { return String(deliveryModel.metrics.dashboardMetricValue(key)) }
+        function metricRow(label, key) { return { label: label, key: key } }
+        function protocolStatusRow(label, protocol, key) {
+            return { label: label, protocol: protocol, key: key }
+        }
         function valueSummary(value) { return value === undefined || value === null ? "unknown" : String(value) }
         function statusRow(label, state, evidence, tone) {
             return { label: label, state: state, evidence: evidence, tone: tone }
@@ -422,6 +426,16 @@ TestCase {
         compare(rows[0].tone, "success")
         compare(SourceObservation.deliveryNetworkMonitorPeerCount(deliveryPage), 2)
         compare(SourceObservation.deliveryServicePeerCount(deliveryPage), 6)
+    }
+
+    function test_delivery_request_rows_name_window_counts_without_rate_claims() {
+        const topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        const store = SourceObservation.deliveryStoreRows(deliveryPage)
+
+        compare(topics[3].label, "Store queries in window")
+        compare(topics[4].label, "Filter requests in window")
+        compare(store[3].label, "Store queries in window")
+        compare(store[4].label, "Store/archive errors in window")
     }
 
     function test_delivery_topology_uses_exact_metric_semantics_and_requires_complete_service_counts() {

@@ -800,8 +800,8 @@ function deliveryTopicRows(page) {
         page.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
         page.metricRow(qsTr("Content topics"), "messaging.content_topics"),
         page.statusRow(qsTr("Topic-to-shard mapping"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 content topic(s)").arg(topics) : qsTr("Requires topic metadata or Delivery Network Monitor source."), topics !== null ? "success" : "neutral"),
-        page.metricRow(qsTr("Store query pressure"), "messaging.store_query_requests_recent"),
-        page.metricRow(qsTr("Filter query pressure"), "messaging.filter_requests_recent")
+        page.metricRow(qsTr("Store queries in window"), "messaging.store_query_requests_recent"),
+        page.metricRow(qsTr("Filter requests in window"), "messaging.filter_requests_recent")
     ]
 }
 
@@ -810,8 +810,8 @@ function deliveryStoreRows(page) {
         page.protocolStatusRow(qsTr("Store mounted state"), "Store", "messaging.store_peers"),
         page.metricRow(qsTr("Store peers"), "messaging.store_peers"),
         page.metricRow(qsTr("Stored messages"), "messaging.store_messages"),
-        page.metricRow(qsTr("Store query rate"), "messaging.store_query_requests_recent"),
-        page.metricRow(qsTr("Store errors"), "messaging.store_errors_recent"),
+        page.metricRow(qsTr("Store queries in window"), "messaging.store_query_requests_recent"),
+        page.metricRow(qsTr("Store/archive errors in window"), "messaging.store_errors_recent"),
         page.statusRow(qsTr("Manual query"), qsTr("available"), qsTr("Network / Delivery Store tab uses includeData=false by default."), "success"),
         page.statusRow(qsTr("Payload viewing"), qsTr("disabled"), qsTr("Payload bytes stay hidden unless a future query opts in."), "success")
     ]

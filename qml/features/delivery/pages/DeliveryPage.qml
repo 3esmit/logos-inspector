@@ -235,7 +235,7 @@ ColumnLayout {
 
             StatusRowsPanel {
                 theme: root.theme
-                title: qsTr("Rolling-window rates")
+                title: qsTr("Metrics and rolling-window activity")
                 rows: root.sourceView.throughputRows
             }
         }

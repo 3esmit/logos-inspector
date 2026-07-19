@@ -125,6 +125,16 @@ function dashboardMetricLabel(key) {
         return qsTr("messages in window")
     case "messaging.message_error_events_recent":
         return qsTr("errors in window")
+    case "messaging.store_query_requests_recent":
+        return qsTr("store queries in window")
+    case "messaging.filter_requests_recent":
+        return qsTr("filter requests in window")
+    case "messaging.lightpush_requests_recent":
+        return qsTr("Lightpush requests in window")
+    case "messaging.peer_exchange_requests_recent":
+        return qsTr("peer exchange requests in window")
+    case "messaging.store_errors_recent":
+        return qsTr("Store/archive errors in window")
     case "storage.active_uploads":
         return qsTr("upload requests total")
     case "storage.active_downloads":
@@ -161,100 +171,173 @@ function dashboardMetricAggregateDefinition(key) {
     case "storage.failed_transfers_total":
         return {
             kind: "storage",
-            specs: [
-                "storage_block_exchange_requests_failed_total",
-                "storage_block_exchange_peer_timeouts_total"
+            members: [
+                [
+                    "storage_block_exchange_requests_failed_total_total",
+                    "storage_block_exchange_requests_failed_total",
+                    "storage_block_exchange_requests_failed"
+                ]
             ]
         }
     case "messaging.message_sent_events_recent":
         return {
             kind: "messaging",
-            specs: [
-                "waku_lightpush_v3_messages",
-                "waku_lightpush_messages",
-                {
-                    name: "waku_service_requests_total",
-                    labels: {
-                        service: "/vac/waku/lightpush/2.0.0-beta1"
+            members: [
+                [
+                    "waku_lightpush_messages_total",
+                    "waku_lightpush_messages",
+                    {
+                        name: "waku_service_requests_total",
+                        labels: {
+                            service: "/vac/waku/lightpush/2.0.0-beta1"
+                        }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: {
+                            service: "/vac/waku/lightpush/2.0.0-beta1"
+                        }
                     }
-                },
-                {
-                    name: "waku_service_requests_total",
-                    labels: { service: "/vac/waku/lightpush/3.0.0" }
-                }
+                ],
+                [
+                    "waku_lightpush_v3_messages_total",
+                    "waku_lightpush_v3_messages",
+                    {
+                        name: "waku_service_requests_total",
+                        labels: { service: "/vac/waku/lightpush/3.0.0" }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: { service: "/vac/waku/lightpush/3.0.0" }
+                    }
+                ]
             ]
         }
     case "messaging.message_error_events_recent":
         return {
             kind: "messaging",
-            specs: [
-                "waku_node_errors_total",
-                "waku_node_errors",
-                "waku_store_errors_total",
-                "waku_filter_errors_total",
-                "waku_lightpush_errors_total",
-                "waku_lightpush_v3_errors_total",
+            members: [
+                ["waku_node_errors_total", "waku_node_errors"],
+                [
+                    "waku_store_errors_total",
+                    "waku_store_errors"
+                ],
+                [
+                    "waku_archive_errors_total",
+                    "waku_archive_errors"
+                ],
+                ["waku_filter_errors_total", "waku_filter_errors"],
+                ["waku_lightpush_errors_total", "waku_lightpush_errors"],
+                [
+                    "waku_lightpush_v3_errors_total",
+                    "waku_lightpush_v3_errors"
+                ]
+            ],
+            fallback: [
                 "message_error_events_recent"
             ]
         }
     case "messaging.store_query_requests_recent":
         return {
             kind: "messaging",
-            specs: [
-                "waku_store_queries_total",
-                {
-                    name: "waku_service_requests_total",
-                    labels: { service: "/vac/waku/store-query/3.0.0" }
-                }
+            members: [
+                [
+                    "waku_store_queries_total",
+                    "waku_store_queries",
+                    {
+                        name: "waku_service_requests_total",
+                        labels: { service: "/vac/waku/store-query/3.0.0" }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: { service: "/vac/waku/store-query/3.0.0" }
+                    }
+                ]
             ]
         }
     case "messaging.filter_requests_recent":
         return {
             kind: "messaging",
-            specs: [
-                "waku_filter_requests_total",
-                {
-                    name: "waku_service_requests_total",
-                    labels: {
-                        service: "/vac/waku/filter-subscribe/2.0.0-beta1"
+            members: [
+                [
+                    "waku_filter_requests_total",
+                    "waku_filter_requests",
+                    {
+                        name: "waku_service_requests_total",
+                        labels: {
+                            service: "/vac/waku/filter-subscribe/2.0.0-beta1"
+                        }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: {
+                            service: "/vac/waku/filter-subscribe/2.0.0-beta1"
+                        }
                     }
-                }
+                ]
             ]
         }
     case "messaging.lightpush_requests_recent":
         return {
             kind: "messaging",
-            specs: [
-                "waku_lightpush_v3_messages",
-                {
-                    name: "waku_service_requests_total",
-                    labels: {
-                        service: "/vac/waku/lightpush/2.0.0-beta1"
+            members: [
+                [
+                    "waku_lightpush_messages_total",
+                    "waku_lightpush_messages",
+                    {
+                        name: "waku_service_requests_total",
+                        labels: {
+                            service: "/vac/waku/lightpush/2.0.0-beta1"
+                        }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: {
+                            service: "/vac/waku/lightpush/2.0.0-beta1"
+                        }
                     }
-                },
-                {
-                    name: "waku_service_requests_total",
-                    labels: { service: "/vac/waku/lightpush/3.0.0" }
-                }
+                ],
+                [
+                    "waku_lightpush_v3_messages_total",
+                    "waku_lightpush_v3_messages",
+                    {
+                        name: "waku_service_requests_total",
+                        labels: { service: "/vac/waku/lightpush/3.0.0" }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: { service: "/vac/waku/lightpush/3.0.0" }
+                    }
+                ]
             ]
         }
     case "messaging.peer_exchange_requests_recent":
         return {
             kind: "messaging",
-            specs: [
-                "waku_px_peers_sent_total",
-                {
-                    name: "waku_service_requests_total",
-                    labels: {
-                        service: "/vac/waku/peer-exchange/2.0.0-alpha1"
+            members: [
+                [
+                    {
+                        name: "waku_service_requests_total",
+                        labels: {
+                            service: "/vac/waku/peer-exchange/2.0.0-alpha1"
+                        }
+                    },
+                    {
+                        name: "waku_service_requests",
+                        labels: {
+                            service: "/vac/waku/peer-exchange/2.0.0-alpha1"
+                        }
                     }
-                }
+                ]
             ]
         }
     case "messaging.store_errors_recent":
         return {
             kind: "messaging",
-            specs: ["waku_store_errors_total", "waku_archive_errors_total"]
+            members: [
+                ["waku_store_errors_total", "waku_store_errors"],
+                ["waku_archive_errors_total", "waku_archive_errors"]
+            ]
         }
     default:
         return null
@@ -283,23 +366,47 @@ function dashboardMetricAggregateObservation(root, key) {
     if (!definition) {
         return null
     }
-    const specs = definition.specs
+    const members = Array.isArray(definition.members)
+        ? definition.members : []
     const series = []
     let total = 0
-    for (let i = 0; i < specs.length; ++i) {
-        const value = dashboardMetricNumber(
-            root.moduleMetricValue(definition.kind, specs[i]))
-        if (value === null) {
-            continue
+    for (let i = 0; i < members.length; ++i) {
+        const candidates = Array.isArray(members[i])
+            ? members[i] : [members[i]]
+        for (let j = 0; j < candidates.length; ++j) {
+            const value = dashboardMetricNumber(
+                root.moduleMetricValue(definition.kind, candidates[j]))
+            if (value === null) {
+                continue
+            }
+            series.push({
+                id: "member:" + String(i) + ":"
+                    + dashboardMetricSpecIdentity(candidates[j]),
+                value: value
+            })
+            total += value
+            break
         }
-        series.push({
-            id: String(i) + ":" + dashboardMetricSpecIdentity(specs[i]),
-            value: value
-        })
-        total += value
     }
     if (series.length === 0) {
-        return null
+        const fallback = Array.isArray(definition.fallback)
+            ? definition.fallback : []
+        for (let i = 0; i < fallback.length; ++i) {
+            const value = dashboardMetricNumber(
+                root.moduleMetricValue(definition.kind, fallback[i]))
+            if (value === null) {
+                continue
+            }
+            series.push({
+                id: "fallback:" + dashboardMetricSpecIdentity(fallback[i]),
+                value: value
+            })
+            total = value
+            break
+        }
+        if (series.length === 0) {
+            return null
+        }
     }
     return {
         value: total,
