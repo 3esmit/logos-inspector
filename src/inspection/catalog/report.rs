@@ -391,10 +391,12 @@ pub struct ChannelSourceAttestationWarning {
 #[serde(rename_all = "snake_case")]
 pub enum ChannelSourceAttestationWarningCode {
     PendingAttestation,
+    LegacyEvidenceMatched,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelSourceAttestationRecovery {
+    None,
     Retry,
 }

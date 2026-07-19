@@ -545,6 +545,46 @@ TestCase {
         }
     }
 
+    function test_evidence_matched_source_row_uses_truthful_insecure_label() {
+        const row = sourceRowFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            source: {
+                source_id: "src_evidence_matched",
+                label: "Evidence-matched Sequencer",
+                target: {
+                    kind: "rpc",
+                    endpoint: "http://sequencer.example/"
+                },
+                binding_state: "runtime_evidence_matched"
+            },
+            observation: {
+                source_id: "src_evidence_matched",
+                role: "sequencer",
+                binding_state: "runtime_evidence_matched",
+                health: "reachable",
+                head_block_id: 73,
+                head_block_hash: FixtureData.identity("b"),
+                last_error: ""
+            },
+            role: "sequencer",
+            selected: true,
+            width: 720
+        })
+        verify(row !== null)
+        try {
+            const bindingLabel = findChild(row,
+                "channelSourceBindingLabel_src_evidence_matched")
+            verify(!!bindingLabel, "Object exists")
+            compare(row.binding, "runtime_evidence_matched")
+            compare(row.bindingLabel, qsTr("Evidence matched"))
+            verify(row.insecureRemoteHttp)
+            compare(bindingLabel.text, qsTr("%1 / Insecure HTTP").arg(
+                qsTr("Evidence matched")))
+        } finally {
+            row.destroy()
+        }
+    }
+
     function test_sequencer_editor_hides_unimplemented_module_mode() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("sources"))

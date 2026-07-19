@@ -663,6 +663,9 @@ fn project_source_config(config: Option<&ChannelSourceConfig>) -> ChannelSourceC
                     PersistedSequencerAttestation::PersistedAttested { .. } => {
                         ZoneSourceBindingState::PersistedAttested
                     }
+                    PersistedSequencerAttestation::PersistedEvidenceMatched { .. } => {
+                        ZoneSourceBindingState::Pending
+                    }
                 }),
             })
             .collect(),
@@ -732,6 +735,7 @@ pub enum ZoneSourceBindingState {
     PersistedAttested,
     Pending,
     RuntimeAttested,
+    RuntimeEvidenceMatched,
     ChannelMismatch,
 }
 

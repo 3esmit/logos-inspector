@@ -56,6 +56,39 @@ fn source_routing_exposes_adapter_boundaries() {
 }
 
 #[test]
+fn sequencer_attestation_basis_is_publicly_composable() {
+    use logos_inspector::{
+        inspection::NetworkScope,
+        source_routing::channel_sources::{
+            FinalizedL1EvidenceBasis, SequencerAttestationBasis, SequencerAttestationReceipt,
+        },
+    };
+
+    let _ = SequencerAttestationBasis::RpcReported {};
+    let _ = SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(Box::new(
+        FinalizedL1EvidenceBasis {
+            network_scope: NetworkScope::GenesisId {
+                genesis_id: "a".repeat(64),
+            },
+            catalog_source_fingerprint: format!("sha256:{}", "b".repeat(64)),
+            l1_slot: 1,
+            l1_block_id: "c".repeat(64),
+            transaction_hash: "d".repeat(64),
+            operation_index: 0,
+            l2_block_id: 2,
+            l2_header_hash: "e".repeat(64),
+            l2_signature: "f".repeat(128),
+        },
+    ));
+    let _ = SequencerAttestationReceipt {
+        channel_id: "a".repeat(64),
+        target_fingerprint: format!("sha256:{}", "b".repeat(64)),
+        attested_at_unix: 1,
+        basis: SequencerAttestationBasis::RpcReported {},
+    };
+}
+
+#[test]
 fn source_routing_mutation_bypasses_remain_retired() {
     let facade = include_str!("../src/source_routing/channel_sources.rs");
     let store = include_str!("../src/source_routing/channel_sources/store.rs");

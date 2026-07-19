@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::watch};
 
 use crate::{
     inspection::{
@@ -27,6 +27,10 @@ use crate::{
             ZoneEvidenceReference, ZoneEvidenceRow, ZoneEvidenceSegmentProvenance,
             ZoneEvidenceSourceKind, ZoneEvidenceSourceProvenance, extract_catalog_evidence_payload,
         },
+    },
+    source_routing::channel_sources::{
+        FinalizedL1EvidenceBasis, SequencerAttestationBasis, SequencerLegacyAnchor,
+        SequencerLegacyAnchorState,
     },
     support::{bridge_envelope::structured_bridge_error, time::now_millis},
 };
@@ -71,9 +75,10 @@ impl EvidenceBlockReader for DirectEvidenceBlockReader {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct ZoneEvidenceCommandInterface {
     reader: Arc<dyn EvidenceBlockReader>,
-    state: Mutex<EvidenceState>,
+    state: Arc<Mutex<EvidenceState>>,
 }
 
 impl ZoneEvidenceCommandInterface {
@@ -81,7 +86,7 @@ impl ZoneEvidenceCommandInterface {
     pub(super) fn new(reader: Arc<dyn EvidenceBlockReader>) -> Self {
         Self {
             reader,
-            state: Mutex::new(EvidenceState::default()),
+            state: Arc::new(Mutex::new(EvidenceState::default())),
         }
     }
 
@@ -209,6 +214,108 @@ impl ZoneEvidenceCommandInterface {
         };
         let after = service.report();
         self.finish_detail(&after, plan, block)
+    }
+
+    pub(super) fn sequencer_attestation_anchor(
+        &self,
+        service: &ZoneCatalogService,
+        channel_id: &str,
+    ) -> SequencerLegacyAnchorState {
+        let interface = self.clone();
+        let reports = service.report_receiver();
+        let channel_id = channel_id.to_owned();
+        SequencerLegacyAnchorState::deferred(move || {
+            let interface = interface.clone();
+            let reports = reports.clone();
+            let channel_id = channel_id.clone();
+            async move {
+                interface
+                    .load_sequencer_attestation_anchor(reports, channel_id)
+                    .await
+            }
+        })
+    }
+
+    async fn load_sequencer_attestation_anchor(
+        &self,
+        reports: watch::Receiver<ZoneCatalogServiceReport>,
+        channel_id: String,
+    ) -> Result<SequencerLegacyAnchorState> {
+        let before = reports.borrow().clone();
+        require_verified_report(&before)?;
+        let catalog = before
+            .catalog
+            .as_deref()
+            .context("verified Zone Catalog is unavailable")?;
+        let Some(reference) = catalog
+            .evidence
+            .iter()
+            .filter(|reference| {
+                reference.channel_id == channel_id
+                    && reference.evidence_kind == ZoneEvidenceKind::SequencerBlock
+            })
+            .max_by(|left, right| {
+                left.l1_slot
+                    .cmp(&right.l1_slot)
+                    .then_with(|| left.operation_index.cmp(&right.operation_index))
+                    .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+            })
+            .cloned()
+        else {
+            return Ok(SequencerLegacyAnchorState::Missing);
+        };
+        let request = ZoneEvidenceDetailRequest {
+            source_revision: before.source_revision,
+            network_scope: catalog.metadata.network_scope.clone(),
+            catalog_revision: catalog.metadata.catalog_revision,
+            channel_id: channel_id.clone(),
+            reference,
+        };
+        let plan = self.prepare_detail(&before, &request)?;
+        let fetched = self
+            .reader
+            .block(plan.source.clone(), request.reference.block_id.clone())
+            .await;
+        let block = match fetched {
+            Ok(Some(block)) => block,
+            Ok(None) | Err(_) => return Ok(SequencerLegacyAnchorState::Unavailable),
+        };
+        let after = reports.borrow().clone();
+        let payload = validate_and_extract_payload(&after, &plan, &block)?;
+        if payload.format != CatalogEvidencePayloadFormat::Bytes {
+            return Err(evidence_unavailable_error()?);
+        }
+        let l2_block = match borsh::from_slice::<common::block::Block>(&payload.bytes) {
+            Ok(block) => block,
+            Err(_) => return Err(evidence_unavailable_error()?),
+        };
+        let transaction_hash = plan
+            .row
+            .reference
+            .transaction_hash
+            .clone()
+            .context("Sequencer evidence has no transaction hash")?;
+        let basis = SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(Box::new(
+            FinalizedL1EvidenceBasis {
+                network_scope: plan.network_scope.clone(),
+                catalog_source_fingerprint: plan.row.source.fingerprint.clone(),
+                l1_slot: plan.row.reference.l1_slot,
+                l1_block_id: plan.row.reference.block_id.clone(),
+                transaction_hash,
+                operation_index: plan.row.reference.operation_index,
+                l2_block_id: l2_block.header.block_id,
+                l2_header_hash: l2_block.header.hash.to_string(),
+                l2_signature: l2_block.header.signature.to_string(),
+            },
+        ));
+
+        let fence_plan = plan.clone();
+        let fence_reports = reports.clone();
+        let fence =
+            Arc::new(move || evidence_plan_is_current(&fence_reports.borrow(), &fence_plan));
+        Ok(SequencerLegacyAnchorState::Available(
+            SequencerLegacyAnchor::new(channel_id, basis, payload.bytes, fence),
+        ))
     }
 
     pub(super) fn payload_chunk(
@@ -357,26 +464,7 @@ impl ZoneEvidenceCommandInterface {
         plan: EvidenceDetailPlan,
         block: CatalogL1Block,
     ) -> Result<ZoneEvidenceDetailReport> {
-        require_verified_report(report)?;
-        validate_report_identity(report, plan.source_revision, &plan.network_scope)?;
-        let catalog = report
-            .catalog
-            .as_deref()
-            .context("verified Zone Catalog is unavailable")?;
-        if catalog.metadata.catalog_revision != plan.catalog_revision
-            || !catalog
-                .evidence
-                .iter()
-                .any(|reference| reference == &plan.row.reference)
-        {
-            return Err(stale_context_error(
-                "Zone evidence changed while detail was loading",
-            )?);
-        }
-        let extracted = match extract_catalog_evidence_payload(&block, &plan.row.reference) {
-            Ok(extracted) => extracted,
-            Err(_) => return Err(evidence_unavailable_error()?),
-        };
+        let extracted = validate_and_extract_payload(report, &plan, &block)?;
         let opcode = extracted.opcode;
         let payload = self.payload_report(&plan, extracted)?;
         Ok(ZoneEvidenceDetailReport {
@@ -630,6 +718,51 @@ struct PayloadSession {
 struct PayloadPreview {
     text: String,
     truncated: bool,
+}
+
+fn validate_and_extract_payload(
+    report: &ZoneCatalogServiceReport,
+    plan: &EvidenceDetailPlan,
+    block: &CatalogL1Block,
+) -> Result<CatalogEvidencePayload> {
+    require_verified_report(report)?;
+    validate_report_identity(report, plan.source_revision, &plan.network_scope)?;
+    let catalog = report
+        .catalog
+        .as_deref()
+        .context("verified Zone Catalog is unavailable")?;
+    if catalog.metadata.catalog_revision != plan.catalog_revision
+        || !catalog
+            .evidence
+            .iter()
+            .any(|reference| reference == &plan.row.reference)
+    {
+        return Err(stale_context_error(
+            "Zone evidence changed while detail was loading",
+        )?);
+    }
+    match extract_catalog_evidence_payload(block, &plan.row.reference) {
+        Ok(extracted) => Ok(extracted),
+        Err(_) => Err(evidence_unavailable_error()?),
+    }
+}
+
+fn evidence_plan_is_current(report: &ZoneCatalogServiceReport, plan: &EvidenceDetailPlan) -> bool {
+    if report.verification_state != CatalogVerificationState::Verified
+        || report.source_revision != plan.source_revision
+        || report.source_fingerprint.as_deref() != Some(plan.row.source.fingerprint.as_str())
+    {
+        return false;
+    }
+    let Some(catalog) = report.catalog.as_deref() else {
+        return false;
+    };
+    catalog.metadata.network_scope == plan.network_scope
+        && catalog.metadata.catalog_revision == plan.catalog_revision
+        && catalog
+            .evidence
+            .iter()
+            .any(|reference| reference == &plan.row.reference)
 }
 
 fn evidence_rows(

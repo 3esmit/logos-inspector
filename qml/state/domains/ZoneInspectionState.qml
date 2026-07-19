@@ -1035,6 +1035,7 @@ QtObject {
             return false
         }
         if (observedBinding === "runtime_attested"
+                || observedBinding === "runtime_evidence_matched"
                 || observedBinding === "persisted_attested") {
             return true
         }
@@ -1042,6 +1043,7 @@ QtObject {
         const configuredBinding = String(configured.binding_state || "")
         return configuredBinding === "persisted_attested"
             || configuredBinding === "runtime_attested"
+            || configuredBinding === "runtime_evidence_matched"
     }
 
     function acceptSourceMutationReport(report) {

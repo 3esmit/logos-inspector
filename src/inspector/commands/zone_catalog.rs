@@ -35,8 +35,9 @@ use crate::{
     inspector::value::to_value,
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::channel_sources::{
-        ChannelSourceAttestationOutcome, ChannelSourceConfig, ChannelSourceConfigMutationInterface,
-        ChannelSourceMonitor, ChannelSourceMonitorSnapshot, SettingsChannelSourceConfigMutation,
+        ChannelSourceAttestationOutcome, ChannelSourceConfig, ChannelSourceConfigMutation,
+        ChannelSourceConfigMutationInterface, ChannelSourceMonitor, ChannelSourceMonitorSnapshot,
+        SequencerLegacyAnchorState, SettingsChannelSourceConfigMutation,
     },
 };
 
@@ -391,15 +392,41 @@ impl ZoneCatalogCommandInterface {
                 bail!("Channel is not present in current Zone Catalog projection");
             }
         }
-        let outcome = runtime.block_on(self.source_store.clone().apply(request))?;
-        let attestation_warning = (outcome.attestation == ChannelSourceAttestationOutcome::Pending)
-            .then(|| ChannelSourceAttestationWarning {
+        let legacy_anchor = if matches!(
+            &request.mutation,
+            ChannelSourceConfigMutation::AddSequencer { .. }
+                | ChannelSourceConfigMutation::UpdateSequencer { .. }
+                | ChannelSourceConfigMutation::RetryAttestation { .. }
+        ) {
+            self.evidence
+                .sequencer_attestation_anchor(&self.service, &request.channel_id)
+        } else {
+            SequencerLegacyAnchorState::Missing
+        };
+        let outcome = runtime.block_on(
+            self.source_store
+                .clone()
+                .apply_with_legacy_anchor(request, legacy_anchor),
+        )?;
+        let attestation_warning = match outcome.attestation {
+            ChannelSourceAttestationOutcome::Pending => Some(ChannelSourceAttestationWarning {
                 code: ChannelSourceAttestationWarningCode::PendingAttestation,
                 recovery: ChannelSourceAttestationRecovery::Retry,
                 message:
-                    "Sequencer Channel attestation is pending; retry when the source is available."
+                    "Sequencer Channel verification is pending; retry when the source is available."
                         .to_owned(),
-            });
+            }),
+            ChannelSourceAttestationOutcome::EvidenceMatched => {
+                Some(ChannelSourceAttestationWarning {
+                    code: ChannelSourceAttestationWarningCode::LegacyEvidenceMatched,
+                    recovery: ChannelSourceAttestationRecovery::None,
+                    message: "Legacy Sequencer does not expose Channel identity. This user-selected mapping is enabled because its live block matches finalized L1 evidence for this Channel."
+                        .to_owned(),
+                })
+            }
+            ChannelSourceAttestationOutcome::NotRequired
+            | ChannelSourceAttestationOutcome::Persisted => None,
+        };
         let config = outcome.config;
         self.refresh(runtime)?;
         let service = self.service.report();
@@ -1010,7 +1037,7 @@ mod tests {
             1,
         )]));
         store.queue_apply(Err(anyhow::anyhow!(
-            "Sequencer attestation reported another Channel"
+            "Sequencer source verification resolved to another Channel"
         )))?;
         let (worker, mut started) = PublishingWorker::new(snapshot(network_scope.clone()));
         let interface = ZoneCatalogCommandInterface::with_dependencies(
@@ -1047,7 +1074,7 @@ mod tests {
         };
         if !error
             .to_string()
-            .contains("Sequencer attestation reported another Channel")
+            .contains("Sequencer source verification resolved to another Channel")
         {
             bail!("unexpected mismatch error: {error:#}");
         }

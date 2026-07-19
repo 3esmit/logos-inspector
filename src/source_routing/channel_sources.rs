@@ -9,7 +9,8 @@ mod store;
 pub use config::{
     ChannelSourceConfig, ChannelSourceConfigApplyRequest, ChannelSourceConfigMutation,
     ChannelSourceRole, ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
-    PersistedSequencerAttestation, SequencerAttestationReceipt,
+    FinalizedL1EvidenceBasis, PersistedSequencerAttestation, SequencerAttestationBasis,
+    SequencerAttestationReceipt,
 };
 
 pub use monitor::{
@@ -19,6 +20,7 @@ pub use monitor::{
     ChannelSourceObservationSet, ChannelSourceProbeStage,
 };
 pub use probe::ChannelSourceFailureKind;
+pub(crate) use probe::{SequencerLegacyAnchor, SequencerLegacyAnchorState};
 pub use store::load_channel_source_configs;
 
 pub(crate) use store::{

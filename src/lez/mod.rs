@@ -52,7 +52,7 @@ pub use accounts::{
     AccountReport, SequencerAccountIdlReport, account_transactions_by_account, sequencer_account,
 };
 pub(crate) use accounts::{indexer_account_report, summarize_account_transaction};
-pub(crate) use block::decode_sequencer_block;
+pub(crate) use block::decode_sequencer_block_bytes;
 pub use block::{BlockSummary, summarize_block};
 pub use indexer::{
     AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport,
@@ -68,6 +68,7 @@ pub(crate) use indexer::{
 pub use programs::{
     ProgramFileInfo, ProgramIdEntry, program_file_info, program_id_base58, program_id_hex,
 };
+pub(crate) use sequencer::sequencer_block_bytes;
 pub use sequencer::{
     last_sequencer_block_id, sequencer_account_nonces, sequencer_block, sequencer_blocks,
     sequencer_channel_id, sequencer_commitment_proof, sequencer_health, sequencer_program_ids,

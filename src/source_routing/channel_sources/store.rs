@@ -26,12 +26,13 @@ use crate::{
 use super::config::{
     ChannelSourceConfig, ChannelSourceConfigApplyRequest, ChannelSourceConfigMutation,
     ChannelSourceRole, ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
-    PersistedSequencerAttestation, SequencerAttestationReceipt, generate_source_id,
-    normalize_channel_id, normalize_channel_source_configs, normalize_label,
+    PersistedSequencerAttestation, SequencerAttestationBasis, SequencerAttestationReceipt,
+    generate_source_id, normalize_channel_id, normalize_channel_source_configs, normalize_label,
     normalize_network_scope, validate_source_id,
 };
 use super::probe::{
-    ChannelSourceFailureKind, DefaultSequencerTargetAttestor, SequencerTargetAttestor,
+    ChannelSourceFailureKind, DefaultSequencerTargetAttestor, SequencerLegacyAnchorState,
+    SequencerTargetAttestor,
 };
 
 const SETTINGS_VERSION: u64 = 2;
@@ -46,6 +47,7 @@ pub(crate) type ChannelSourceConfigMutationFuture =
 pub(crate) enum ChannelSourceAttestationOutcome {
     NotRequired,
     Persisted,
+    EvidenceMatched,
     Pending,
 }
 
@@ -69,6 +71,14 @@ pub(crate) trait ChannelSourceConfigMutationInterface: Send + Sync + 'static {
         self: Arc<Self>,
         request: ChannelSourceConfigApplyRequest,
     ) -> ChannelSourceConfigMutationFuture;
+
+    fn apply_with_legacy_anchor(
+        self: Arc<Self>,
+        request: ChannelSourceConfigApplyRequest,
+        _legacy_anchor: SequencerLegacyAnchorState,
+    ) -> ChannelSourceConfigMutationFuture {
+        self.apply(request)
+    }
 }
 
 #[derive(Clone)]
@@ -92,13 +102,14 @@ impl SettingsChannelSourceConfigMutation {
         }
     }
 
-    async fn apply_request(
+    async fn apply_request_with_legacy_anchor(
         &self,
         request: ChannelSourceConfigApplyRequest,
+        legacy_anchor: SequencerLegacyAnchorState,
     ) -> Result<ChannelSourceConfigApplyOutcome> {
         let store = self.store()?;
         let prepared = store.prepare_mutation(request)?;
-        let (receipt, attestation) = self.attest(&prepared).await?;
+        let (receipt, attestation) = self.attest(&prepared, legacy_anchor).await?;
         let config = store.commit_prepared_mutation(prepared, receipt)?;
         Ok(ChannelSourceConfigApplyOutcome {
             config,
@@ -106,9 +117,19 @@ impl SettingsChannelSourceConfigMutation {
         })
     }
 
+    #[cfg(test)]
+    async fn apply_request(
+        &self,
+        request: ChannelSourceConfigApplyRequest,
+    ) -> Result<ChannelSourceConfigApplyOutcome> {
+        self.apply_request_with_legacy_anchor(request, SequencerLegacyAnchorState::Missing)
+            .await
+    }
+
     async fn attest(
         &self,
         prepared: &PreparedChannelSourceMutation,
+        legacy_anchor: SequencerLegacyAnchorState,
     ) -> Result<(
         Option<SequencerAttestationReceipt>,
         ChannelSourceAttestationOutcome,
@@ -116,19 +137,33 @@ impl SettingsChannelSourceConfigMutation {
         let Some(plan) = prepared.attestation.as_ref() else {
             return Ok((None, ChannelSourceAttestationOutcome::NotRequired));
         };
-        match self.attestor.clone().attest(plan.target.clone()).await {
-            Ok(reported_channel_id) => {
-                let reported_channel_id = normalize_channel_id(&reported_channel_id)?;
-                if reported_channel_id != prepared.channel_id {
-                    bail!("Sequencer attestation reported another Channel");
+        match self
+            .attestor
+            .clone()
+            .attest(plan.target.clone(), legacy_anchor)
+            .await
+        {
+            Ok(attestation) => {
+                let channel_id = normalize_channel_id(&attestation.channel_id)?;
+                if channel_id != prepared.channel_id {
+                    bail!("Sequencer source verification resolved to another Channel");
                 }
+                let outcome = match &attestation.basis {
+                    SequencerAttestationBasis::RpcReported {} => {
+                        ChannelSourceAttestationOutcome::Persisted
+                    }
+                    SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(_) => {
+                        ChannelSourceAttestationOutcome::EvidenceMatched
+                    }
+                };
                 Ok((
                     Some(SequencerAttestationReceipt {
-                        reported_channel_id,
+                        channel_id,
                         target_fingerprint: plan.target.fingerprint(),
                         attested_at_unix: crate::support::time::now_millis() / 1_000,
+                        basis: attestation.basis,
                     }),
-                    ChannelSourceAttestationOutcome::Persisted,
+                    outcome,
                 ))
             }
             Err(failure)
@@ -141,7 +176,7 @@ impl SettingsChannelSourceConfigMutation {
                 Ok((None, ChannelSourceAttestationOutcome::Pending))
             }
             Err(failure) => {
-                Err(anyhow::Error::new(failure).context("Sequencer Channel attestation failed"))
+                Err(anyhow::Error::new(failure).context("Sequencer source verification failed"))
             }
         }
     }
@@ -180,7 +215,21 @@ impl ChannelSourceConfigMutationInterface for SettingsChannelSourceConfigMutatio
         self: Arc<Self>,
         request: ChannelSourceConfigApplyRequest,
     ) -> ChannelSourceConfigMutationFuture {
-        Box::pin(async move { self.apply_request(request).await })
+        Box::pin(async move {
+            self.apply_request_with_legacy_anchor(request, SequencerLegacyAnchorState::Missing)
+                .await
+        })
+    }
+
+    fn apply_with_legacy_anchor(
+        self: Arc<Self>,
+        request: ChannelSourceConfigApplyRequest,
+        legacy_anchor: SequencerLegacyAnchorState,
+    ) -> ChannelSourceConfigMutationFuture {
+        Box::pin(async move {
+            self.apply_request_with_legacy_anchor(request, legacy_anchor)
+                .await
+        })
     }
 }
 
@@ -240,6 +289,10 @@ pub(crate) fn normalized_settings_state_from_backup(
 ) -> Result<Value> {
     let mut incoming = SettingsDocument::from_value(state.clone())?;
     let current = SettingsDocument::from_value(current_state.clone())?;
+    require_imported_source_reverification(
+        &mut incoming.channel_source_configs,
+        &current.channel_source_configs,
+    );
     rebase_imported_config_revisions(
         &mut incoming.channel_source_configs,
         &current.channel_source_configs,
@@ -464,9 +517,9 @@ impl SettingsStore {
         let network_scope = normalize_network_scope(network_scope)?;
         let channel_id = normalize_channel_id(channel_id)?;
         let source_id = validate_source_id(source_id)?;
-        let reported_channel_id = normalize_channel_id(&receipt.reported_channel_id)?;
-        if reported_channel_id != channel_id {
-            bail!("Sequencer attestation reported another Channel");
+        let verified_channel_id = normalize_channel_id(&receipt.channel_id)?;
+        if verified_channel_id != channel_id {
+            bail!("Sequencer source verification resolved to another Channel");
         }
         let Some(config) = document.channel_source_configs.iter_mut().find(|config| {
             config.network_scope == network_scope && config.channel_id == channel_id
@@ -488,13 +541,10 @@ impl SettingsStore {
         };
         let expected_fingerprint = source.target.fingerprint();
         if receipt.target_fingerprint != expected_fingerprint {
-            bail!("Sequencer attestation target fingerprint is stale");
+            bail!("Sequencer source verification target fingerprint is stale");
         }
-        source.channel_attestation = PersistedSequencerAttestation::PersistedAttested {
-            channel_id,
-            target_fingerprint: expected_fingerprint,
-            attested_at_unix: receipt.attested_at_unix,
-        };
+        source.channel_attestation =
+            sequencer_attestation(&channel_id, &source.target, Some(receipt))?;
         config.config_revision = config
             .config_revision
             .checked_add(1)
@@ -512,6 +562,15 @@ impl SettingsStore {
         if old_scope == new_scope {
             return Ok(());
         }
+        if !matches!(
+            (&old_scope, &new_scope),
+            (
+                NetworkScope::FinalizedAnchor { .. },
+                NetworkScope::GenesisId { .. }
+            )
+        ) {
+            bail!("Channel source network scope can only follow verified identity promotion");
+        }
         let mut document = self.load_document_locked(&guard)?;
         let current = std::mem::take(&mut document.channel_source_configs);
         let mut retained = Vec::with_capacity(current.len());
@@ -519,6 +578,15 @@ impl SettingsStore {
         for mut config in current {
             if config.network_scope == old_scope {
                 config.network_scope = new_scope.clone();
+                for source in &mut config.sequencer_sources {
+                    if let PersistedSequencerAttestation::PersistedEvidenceMatched {
+                        evidence,
+                        ..
+                    } = &mut source.channel_attestation
+                    {
+                        evidence.network_scope = new_scope.clone();
+                    }
+                }
                 moved.push(config);
             } else {
                 retained.push(config);
@@ -881,6 +949,37 @@ fn rebase_imported_config_revisions(
     Ok(())
 }
 
+fn require_imported_source_reverification(
+    incoming: &mut [ChannelSourceConfig],
+    current: &[ChannelSourceConfig],
+) {
+    for config in incoming {
+        let current_config = current.iter().find(|candidate| {
+            candidate.network_scope == config.network_scope
+                && candidate.channel_id == config.channel_id
+        });
+        for source in &mut config.sequencer_sources {
+            if source.channel_attestation == PersistedSequencerAttestation::Pending {
+                continue;
+            }
+            let matches_current = current_config
+                .and_then(|current_config| {
+                    current_config
+                        .sequencer_sources
+                        .iter()
+                        .find(|candidate| candidate.source_id == source.source_id)
+                })
+                .is_some_and(|current_source| {
+                    current_source.target == source.target
+                        && current_source.channel_attestation == source.channel_attestation
+                });
+            if !matches_current {
+                source.channel_attestation = PersistedSequencerAttestation::Pending;
+            }
+        }
+    }
+}
+
 fn same_config_semantics(left: &ChannelSourceConfig, right: &ChannelSourceConfig) -> bool {
     let mut left = left.clone();
     let mut right = right.clone();
@@ -1011,19 +1110,31 @@ fn sequencer_attestation(
     let Some(receipt) = receipt else {
         return Ok(PersistedSequencerAttestation::Pending);
     };
-    let reported_channel_id = normalize_channel_id(&receipt.reported_channel_id)?;
-    if reported_channel_id != owner_channel_id {
-        bail!("Sequencer attestation reported another Channel");
+    let verified_channel_id = normalize_channel_id(&receipt.channel_id)?;
+    if verified_channel_id != owner_channel_id {
+        bail!("Sequencer source verification resolved to another Channel");
     }
     let target_fingerprint = target.fingerprint();
     if receipt.target_fingerprint != target_fingerprint {
-        bail!("Sequencer attestation target fingerprint is stale");
+        bail!("Sequencer source verification target fingerprint is stale");
     }
-    Ok(PersistedSequencerAttestation::PersistedAttested {
-        channel_id: reported_channel_id,
-        target_fingerprint,
-        attested_at_unix: receipt.attested_at_unix,
-    })
+    match receipt.basis {
+        SequencerAttestationBasis::RpcReported {} => {
+            Ok(PersistedSequencerAttestation::PersistedAttested {
+                channel_id: verified_channel_id,
+                target_fingerprint,
+                attested_at_unix: receipt.attested_at_unix,
+            })
+        }
+        SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(evidence) => {
+            Ok(PersistedSequencerAttestation::PersistedEvidenceMatched {
+                channel_id: verified_channel_id,
+                target_fingerprint,
+                matched_at_unix: receipt.attested_at_unix,
+                evidence,
+            })
+        }
+    }
 }
 
 fn reject_unused_attestation(receipt: Option<SequencerAttestationReceipt>) -> Result<()> {
@@ -1104,8 +1215,11 @@ mod tests {
     use super::*;
     use crate::source_routing::channel_sources::{ChannelSourceRole, ChannelSourceTarget};
 
+    use super::super::config::FinalizedL1EvidenceBasis;
     use super::super::layer::module_id_for_role;
-    use super::super::probe::{ChannelSourceProbeFailure, SequencerAttestorFuture};
+    use super::super::probe::{
+        ChannelSourceProbeFailure, SequencerAttestorFuture, SequencerTargetAttestation,
+    };
 
     enum FakeAttestation {
         Reported(String),
@@ -1149,7 +1263,11 @@ mod tests {
     }
 
     impl SequencerTargetAttestor for FakeAttestor {
-        fn attest(self: Arc<Self>, target: ChannelSourceTarget) -> SequencerAttestorFuture {
+        fn attest(
+            self: Arc<Self>,
+            target: ChannelSourceTarget,
+            _legacy_anchor: SequencerLegacyAnchorState,
+        ) -> SequencerAttestorFuture {
             let result = (|| {
                 self.calls
                     .lock()
@@ -1170,7 +1288,10 @@ mod tests {
                     .pop_front()
                     .ok_or_else(|| fake_probe_failure(ChannelSourceFailureKind::Protocol))?
                 {
-                    FakeAttestation::Reported(channel_id) => Ok(channel_id),
+                    FakeAttestation::Reported(channel_id) => Ok(SequencerTargetAttestation {
+                        channel_id,
+                        basis: SequencerAttestationBasis::RpcReported {},
+                    }),
                     FakeAttestation::Failed(kind) => Err(fake_probe_failure(kind)),
                 }
             })();
@@ -1496,9 +1617,10 @@ mod tests {
         let config = store.apply_with_attestation(
             request,
             Some(SequencerAttestationReceipt {
-                reported_channel_id: channel_id('4'),
+                channel_id: channel_id('4'),
                 target_fingerprint: target.fingerprint(),
                 attested_at_unix: 10,
+                basis: SequencerAttestationBasis::RpcReported {},
             }),
         )?;
         let source = first_sequencer_source(&config)?;
@@ -1527,9 +1649,10 @@ mod tests {
                 },
             ),
             Some(SequencerAttestationReceipt {
-                reported_channel_id: channel_id('6'),
+                channel_id: channel_id('6'),
                 target_fingerprint: mismatched_target.fingerprint(),
                 attested_at_unix: 11,
+                basis: SequencerAttestationBasis::RpcReported {},
             }),
         );
         if mismatched.is_ok()
@@ -1555,9 +1678,10 @@ mod tests {
                 },
             ),
             Some(SequencerAttestationReceipt {
-                reported_channel_id: channel_id('7'),
+                channel_id: channel_id('7'),
                 target_fingerprint: pending_fingerprint,
                 attested_at_unix: 12,
+                basis: SequencerAttestationBasis::RpcReported {},
             }),
         )?;
         if retried.config_revision != 2
@@ -2015,6 +2139,8 @@ mod tests {
                 != first_sequencer_source(&changed_import)?.channel_attestation
             || first_sequencer_source(added)?.source_id
                 != first_sequencer_source(&new_import)?.source_id
+            || first_sequencer_source(added)?.channel_attestation
+                != PersistedSequencerAttestation::Pending
         {
             bail!("backup revision rebase matrix drifted: {configs:?}");
         }
@@ -2031,6 +2157,92 @@ mod tests {
     }
 
     #[test]
+    fn backup_import_requires_source_reverification() -> Result<()> {
+        let current = evidence_config('6', 'b', 7, 3050);
+        let mut identical_import = current.clone();
+        identical_import.config_revision = 99;
+        let identical = normalized_settings_state_from_backup(
+            &settings_value(vec![identical_import])?,
+            &settings_value(vec![current.clone()])?,
+        )?;
+        let identical_config = settings_configs(&identical)?
+            .into_iter()
+            .next()
+            .context("identical imported evidence mapping is missing")?;
+        if identical_config.config_revision != 7
+            || first_sequencer_source(&identical_config)?.channel_attestation
+                != first_sequencer_source(&current)?.channel_attestation
+        {
+            bail!("identical imported evidence mapping discarded local verification");
+        }
+
+        let mut changed_import = current.clone();
+        changed_import.config_revision = 99;
+        let PersistedSequencerAttestation::PersistedEvidenceMatched { evidence, .. } =
+            &mut first_sequencer_source_mut(&mut changed_import)?.channel_attestation
+        else {
+            bail!("evidence fixture lost its persisted mapping");
+        };
+        evidence.l1_slot = evidence.l1_slot.saturating_add(1);
+        let changed = normalized_settings_state_from_backup(
+            &settings_value(vec![changed_import])?,
+            &settings_value(vec![current])?,
+        )?;
+        let changed_config = settings_configs(&changed)?
+            .into_iter()
+            .next()
+            .context("changed imported evidence mapping is missing")?;
+        if changed_config.config_revision != 8
+            || first_sequencer_source(&changed_config)?.channel_attestation
+                != PersistedSequencerAttestation::Pending
+        {
+            bail!("changed imported evidence mapping bypassed re-verification");
+        }
+
+        let mut forged_import = evidence_config('7', 'c', 99, 3051);
+        let PersistedSequencerAttestation::PersistedEvidenceMatched { evidence, .. } =
+            &mut first_sequencer_source_mut(&mut forged_import)?.channel_attestation
+        else {
+            bail!("evidence fixture lost its persisted mapping");
+        };
+        evidence.l1_slot = u64::MAX;
+        evidence.l1_block_id = "f".repeat(64);
+        evidence.l2_header_hash = "e".repeat(64);
+        let forged = normalized_settings_state_from_backup(
+            &settings_value(vec![forged_import])?,
+            &settings_value(Vec::new())?,
+        )?;
+        let forged_config = settings_configs(&forged)?
+            .into_iter()
+            .next()
+            .context("forged imported evidence mapping is missing")?;
+        if forged_config.config_revision != 1
+            || first_sequencer_source(&forged_config)?.channel_attestation
+                != PersistedSequencerAttestation::Pending
+            || serde_json::to_string(&forged)?.contains("persisted_evidence_matched")
+        {
+            bail!("forged imported evidence mapping retained L1 authority");
+        }
+
+        let forged_rpc = normalized_settings_state_from_backup(
+            &settings_value(vec![attested_config('8', 'd', 99, 3052)])?,
+            &settings_value(Vec::new())?,
+        )?;
+        let forged_rpc_config = settings_configs(&forged_rpc)?
+            .into_iter()
+            .next()
+            .context("forged imported RPC verification is missing")?;
+        if forged_rpc_config.config_revision != 1
+            || first_sequencer_source(&forged_rpc_config)?.channel_attestation
+                != PersistedSequencerAttestation::Pending
+            || serde_json::to_string(&forged_rpc)?.contains("persisted_attested")
+        {
+            bail!("forged imported RPC verification retained read authority");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn identity_promotion_rebinds_channel_sources_once() -> Result<()> {
         let (directory, store) = test_store("identity-rebind")?;
         let old_scope = NetworkScope::FinalizedAnchor {
@@ -2042,6 +2254,15 @@ mod tests {
         let new_scope = network_scope('b');
         let mut config = persisted_config('3', valid_source_id('c'));
         config.network_scope = old_scope.clone();
+        let evidence = finalized_l1_evidence(old_scope.clone());
+        let owner_channel_id = config.channel_id.clone();
+        let source = first_sequencer_source_mut(&mut config)?;
+        source.channel_attestation = PersistedSequencerAttestation::PersistedEvidenceMatched {
+            channel_id: owner_channel_id,
+            target_fingerprint: source.target.fingerprint(),
+            matched_at_unix: 10,
+            evidence: Box::new(evidence),
+        };
         let document = SettingsDocument {
             channel_source_configs: vec![config.clone()],
             ..SettingsDocument::default()
@@ -2057,13 +2278,26 @@ mod tests {
             || rebound_config.config_revision != config.config_revision
             || first_sequencer_source(rebound_config)?.source_id
                 != first_sequencer_source(&config)?.source_id
+            || !matches!(
+                &first_sequencer_source(rebound_config)?.channel_attestation,
+                PersistedSequencerAttestation::PersistedEvidenceMatched { evidence, .. }
+                    if evidence.network_scope == new_scope
+            )
         {
             bail!("identity rebind changed Channel source configuration: {rebound:?}");
         }
 
-        store.rebind_network_scope(old_scope, new_scope)?;
+        store.rebind_network_scope(old_scope, new_scope.clone())?;
         if store.load_document_unlocked()?.channel_source_configs != rebound {
             bail!("repeated identity rebind changed settings");
+        }
+        let before_rejected = store.load_document_unlocked()?.into_value()?;
+        if store
+            .rebind_network_scope(new_scope, network_scope('c'))
+            .is_ok()
+            || store.load_document_unlocked()?.into_value()? != before_rejected
+        {
+            bail!("arbitrary scope rebind changed evidence mapping");
         }
         cleanup_test_dir(&directory)
     }
@@ -2075,9 +2309,10 @@ mod tests {
         let source = first_sequencer_source(&added)?;
         let source_id = source.source_id.clone();
         let receipt = SequencerAttestationReceipt {
-            reported_channel_id: channel_id('3'),
+            channel_id: channel_id('3'),
             target_fingerprint: source.target.fingerprint(),
             attested_at_unix: 100,
+            basis: SequencerAttestationBasis::RpcReported {},
         };
         let attested = store.record_attestation(
             network_scope('a'),
@@ -2133,13 +2368,114 @@ mod tests {
             4,
             &source_id,
             SequencerAttestationReceipt {
-                reported_channel_id: channel_id('4'),
+                channel_id: channel_id('4'),
                 target_fingerprint: first_sequencer_source(&target_edit)?.target.fingerprint(),
                 attested_at_unix: 101,
+                basis: SequencerAttestationBasis::RpcReported {},
             },
         );
         if mismatch.is_ok() {
             bail!("cross-Channel Sequencer attestation was persisted");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[tokio::test]
+    async fn evidence_mapping_persists_exact_basis_and_survives_only_label_edits() -> Result<()> {
+        let (directory, store) = test_store("evidence-mapping")?;
+        let target = rpc_target(3045);
+        let expected_evidence = finalized_l1_evidence(network_scope('a'));
+        let added = store.apply_with_attestation(
+            add_sequencer_request('8', 0, 3045),
+            Some(SequencerAttestationReceipt {
+                channel_id: channel_id('8'),
+                target_fingerprint: target.fingerprint(),
+                attested_at_unix: 200,
+                basis: SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(Box::new(
+                    expected_evidence.clone(),
+                )),
+            }),
+        )?;
+        let source = first_sequencer_source(&added)?;
+        let source_id = source.source_id.clone();
+        if !matches!(
+            &source.channel_attestation,
+            PersistedSequencerAttestation::PersistedEvidenceMatched {
+                channel_id: stored_channel_id,
+                target_fingerprint,
+                matched_at_unix: 200,
+                evidence,
+            } if stored_channel_id == &channel_id('8')
+                && target_fingerprint == &target.fingerprint()
+                && evidence.as_ref() == &expected_evidence
+        ) {
+            bail!("finalized L1 evidence mapping was not persisted exactly: {source:?}");
+        }
+
+        let attestor = Arc::new(FakeAttestor::new([FakeAttestation::Failed(
+            ChannelSourceFailureKind::Protocol,
+        )]));
+        let interface = SettingsChannelSourceConfigMutation::with_store(&store, attestor.clone());
+        let label_edit = interface
+            .apply_request_with_legacy_anchor(
+                apply_request(
+                    '8',
+                    1,
+                    ChannelSourceConfigMutation::UpdateSequencer {
+                        source_id: source_id.clone(),
+                        label: Some("Legacy mapping".to_owned()),
+                        target: target.clone(),
+                        allow_insecure_http: false,
+                    },
+                ),
+                SequencerLegacyAnchorState::deferred(|| async {
+                    bail!("label-only edit acquired deferred L1 evidence")
+                }),
+            )
+            .await?;
+        if attestor.call_count()? != 0
+            || first_sequencer_source(&label_edit.config)?.channel_attestation
+                != source.channel_attestation
+        {
+            bail!("label-only edit changed or reacquired evidence mapping");
+        }
+
+        let failed_target_edit = interface
+            .apply_request(apply_request(
+                '8',
+                2,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: source_id.clone(),
+                    label: Some("Moved".to_owned()),
+                    target: rpc_target(3046),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await;
+        let retained = store.load_document_unlocked()?.channel_source_configs;
+        if failed_target_edit.is_ok()
+            || attestor.call_count()? != 1
+            || retained.as_slice() != [label_edit.config.clone()]
+        {
+            bail!("failed target edit changed persisted evidence mapping");
+        }
+
+        let target_edit = store.apply(apply_request(
+            '8',
+            2,
+            ChannelSourceConfigMutation::UpdateSequencer {
+                source_id: source_id.clone(),
+                label: Some("Moved".to_owned()),
+                target: rpc_target(3046),
+                allow_insecure_http: false,
+            },
+        ))?;
+        if target_edit.config_revision != 3
+            || first_sequencer_source(&target_edit)?.source_id != source_id
+            || first_sequencer_source(&target_edit)?.channel_attestation
+                != PersistedSequencerAttestation::Pending
+        {
+            bail!("target edit did not clear evidence mapping atomically");
         }
         cleanup_test_dir(&directory)
     }
@@ -2258,10 +2594,10 @@ mod tests {
     }
 
     #[test]
-    fn backup_restore_round_trips_config_and_rejects_authenticated_target() -> Result<()> {
+    fn backup_restore_reverifies_evidence_and_rejects_authenticated_target() -> Result<()> {
         let (source_directory, source_store) = test_store("backup-source")?;
         source_store.save_user_settings(&json!({ "version": 2, "theme": "backup" }))?;
-        source_store.apply(apply_request(
+        let added = source_store.apply(apply_request(
             '6',
             0,
             ChannelSourceConfigMutation::AddSequencer {
@@ -2272,25 +2608,54 @@ mod tests {
                 allow_insecure_http: false,
             },
         ))?;
+        let source = first_sequencer_source(&added)?;
+        source_store.record_attestation(
+            network_scope('a'),
+            &channel_id('6'),
+            1,
+            &source.source_id,
+            SequencerAttestationReceipt {
+                channel_id: channel_id('6'),
+                target_fingerprint: source.target.fingerprint(),
+                attested_at_unix: 300,
+                basis: SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(Box::new(
+                    finalized_l1_evidence(network_scope('a')),
+                )),
+            },
+        )?;
         let backup = source_store.load()?;
         let backup_text = serde_json::to_string(&backup)?;
-        if backup_text.contains("userinfo") || backup_text.contains("token=") {
+        if backup_text.contains("userinfo")
+            || backup_text.contains("token=")
+            || !backup_text.contains("persisted_evidence_matched")
+        {
             bail!("backup contained credential material: {backup_text}");
         }
 
         let (restore_directory, restore_store) = test_store("backup-restore")?;
-        restore_store.replace_from_backup(&backup)?;
+        let normalized_backup =
+            normalized_settings_state_from_backup(&backup, &restore_store.load()?)?;
+        restore_store.replace_from_backup(&normalized_backup)?;
         let restored = restore_store.load()?;
-        if settings_configs(&restored)? != settings_configs(&backup)? {
-            bail!("backup restore changed Channel source configuration");
+        let restored_configs = settings_configs(&restored)?;
+        let restored_config = restored_configs
+            .first()
+            .context("restored Channel source configuration is missing")?;
+        let restored_source = first_sequencer_source(restored_config)?;
+        if restored_config.config_revision != 1
+            || restored_source.source_id != source.source_id
+            || restored_source.target != source.target
+            || restored_source.channel_attestation != PersistedSequencerAttestation::Pending
+        {
+            bail!("backup restore did not preserve source and require evidence re-verification");
         }
 
-        let mut authenticated = backup;
+        let mut authenticated = backup.clone();
         let endpoint = authenticated
             .pointer_mut("/channel_source_configs/0/sequencer_sources/0/target/endpoint")
             .context("backup endpoint missing")?;
         *endpoint = Value::String("https://user:secret@rpc.example.test/lez".to_owned());
-        if restore_store.replace_from_backup(&authenticated).is_ok() {
+        if normalized_settings_state_from_backup(&authenticated, &restored).is_ok() {
             bail!("authenticated source target was restored from backup");
         }
         let retained = restore_store.load()?;
@@ -2388,6 +2753,20 @@ mod tests {
         }
     }
 
+    fn finalized_l1_evidence(network_scope: NetworkScope) -> FinalizedL1EvidenceBasis {
+        FinalizedL1EvidenceBasis {
+            network_scope,
+            catalog_source_fingerprint: format!("sha256:{}", "b".repeat(64)),
+            l1_slot: 100,
+            l1_block_id: "c".repeat(64),
+            transaction_hash: "d".repeat(64),
+            operation_index: 2,
+            l2_block_id: 42,
+            l2_header_hash: "e".repeat(64),
+            l2_signature: "f".repeat(128),
+        }
+    }
+
     fn channel_id(character: char) -> String {
         character.to_string().repeat(64)
     }
@@ -2461,6 +2840,26 @@ mod tests {
                 channel_id: config.channel_id.clone(),
                 target_fingerprint: target.fingerprint(),
                 attested_at_unix: 1,
+            };
+        }
+        config
+    }
+
+    fn evidence_config(
+        channel_character: char,
+        source_character: char,
+        revision: u64,
+        port: u16,
+    ) -> ChannelSourceConfig {
+        let mut config = attested_config(channel_character, source_character, revision, port);
+        let channel_id = config.channel_id.clone();
+        let network_scope = config.network_scope.clone();
+        if let Some(source) = config.sequencer_sources.first_mut() {
+            source.channel_attestation = PersistedSequencerAttestation::PersistedEvidenceMatched {
+                channel_id,
+                target_fingerprint: source.target.fingerprint(),
+                matched_at_unix: 1,
+                evidence: Box::new(finalized_l1_evidence(network_scope)),
             };
         }
         config

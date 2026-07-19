@@ -350,6 +350,11 @@ impl ZoneCatalogService {
         self.reports.borrow().clone()
     }
 
+    #[must_use]
+    pub(crate) fn report_receiver(&self) -> watch::Receiver<ZoneCatalogServiceReport> {
+        self.reports.clone()
+    }
+
     pub async fn configure(
         &self,
         source: ZoneCatalogSourceDescriptor,

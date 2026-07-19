@@ -24,6 +24,7 @@ use super::{
     probe::{
         ChannelSourceBlock, ChannelSourceProbe, ChannelSourceProbeFact, ChannelSourceProbeFailure,
         ChannelSourceProbeOutput, ChannelSourceProbeRequest, DefaultChannelSourceProbe,
+        SequencerPersistedLegacyProof, SequencerSourceIdentity, SequencerSourceIdentityBasis,
     },
 };
 use crate::{
@@ -71,13 +72,17 @@ pub enum ChannelSourceBindingState {
     PersistedAttested,
     Pending,
     RuntimeAttested,
+    RuntimeEvidenceMatched,
     ChannelMismatch,
 }
 
 impl ChannelSourceBindingState {
     #[must_use]
     pub fn is_read_eligible(self) -> bool {
-        matches!(self, Self::PersistedAttested | Self::RuntimeAttested)
+        matches!(
+            self,
+            Self::PersistedAttested | Self::RuntimeAttested | Self::RuntimeEvidenceMatched
+        )
     }
 }
 
@@ -98,6 +103,7 @@ pub enum ChannelSourceHealthState {
 pub enum ChannelSourceProbeStage {
     Health,
     ChannelIdentity,
+    EvidenceConsistency,
     Head,
     Task,
 }
@@ -611,11 +617,24 @@ impl ChannelRuntime {
 
 impl SourceRuntime {
     fn sequencer(source: &ConfiguredSequencerSource, selected: bool, now_millis: u64) -> Self {
-        let binding_state = match source.channel_attestation {
-            PersistedSequencerAttestation::Pending => ChannelSourceBindingState::Pending,
+        let (binding_state, legacy_proof) = match &source.channel_attestation {
+            PersistedSequencerAttestation::Pending => (ChannelSourceBindingState::Pending, None),
             PersistedSequencerAttestation::PersistedAttested { .. } => {
-                ChannelSourceBindingState::PersistedAttested
+                (ChannelSourceBindingState::PersistedAttested, None)
             }
+            PersistedSequencerAttestation::PersistedEvidenceMatched {
+                channel_id,
+                evidence,
+                ..
+            } => (
+                ChannelSourceBindingState::Pending,
+                Some(SequencerPersistedLegacyProof {
+                    expected_channel_id: channel_id.clone(),
+                    l2_block_id: evidence.l2_block_id,
+                    l2_header_hash: evidence.l2_header_hash.clone(),
+                    l2_signature: evidence.l2_signature.clone(),
+                }),
+            ),
         };
         Self::new(
             source.source_id.clone(),
@@ -623,6 +642,7 @@ impl SourceRuntime {
             source.target.clone(),
             selected,
             Some(binding_state),
+            legacy_proof,
             now_millis,
         )
     }
@@ -634,6 +654,7 @@ impl SourceRuntime {
             source.target.clone(),
             false,
             None,
+            None,
             now_millis,
         )
     }
@@ -644,6 +665,7 @@ impl SourceRuntime {
         target: ChannelSourceTarget,
         selected: bool,
         binding_state: Option<ChannelSourceBindingState>,
+        legacy_proof: Option<SequencerPersistedLegacyProof>,
         now_millis: u64,
     ) -> Self {
         let target_fingerprint = target.fingerprint();
@@ -652,6 +674,7 @@ impl SourceRuntime {
                 source_id,
                 role,
                 target,
+                legacy_proof,
             },
             target_fingerprint,
             selected,
@@ -910,11 +933,14 @@ fn normalize_probe_channel_id(output: &mut ChannelSourceProbeOutput) {
     let ChannelSourceProbeOutput::Sequencer(output) = output else {
         return;
     };
-    let ChannelSourceProbeFact::Observed(channel_id) = &output.channel_id else {
+    let ChannelSourceProbeFact::Observed(identity) = &output.channel_id else {
         return;
     };
-    output.channel_id = match normalize_channel_id(channel_id) {
-        Ok(channel_id) => ChannelSourceProbeFact::Observed(channel_id),
+    output.channel_id = match normalize_channel_id(&identity.channel_id) {
+        Ok(channel_id) => ChannelSourceProbeFact::Observed(SequencerSourceIdentity {
+            channel_id,
+            basis: identity.basis,
+        }),
         Err(_) => ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure {
             kind: super::ChannelSourceFailureKind::Protocol,
             diagnostic: "Sequencer returned an invalid Channel identity".to_owned(),
@@ -964,15 +990,28 @@ fn apply_binding_state(
     let ChannelSourceProbeOutput::Sequencer(output) = output else {
         return;
     };
-    let ChannelSourceProbeFact::Observed(channel_id) = &output.channel_id else {
+    let ChannelSourceProbeFact::Observed(identity) = &output.channel_id else {
+        if source.request.legacy_proof.is_some()
+            && source.binding_state != Some(ChannelSourceBindingState::ChannelMismatch)
+        {
+            source.binding_state = Some(ChannelSourceBindingState::Pending);
+        }
         return;
     };
-    if channel_id != owner_channel_id {
+    if identity.channel_id != owner_channel_id {
         source.binding_state = Some(ChannelSourceBindingState::ChannelMismatch);
         return;
     }
-    if source.binding_state == Some(ChannelSourceBindingState::Pending) {
-        source.binding_state = Some(ChannelSourceBindingState::RuntimeAttested);
+    if source.binding_state != Some(ChannelSourceBindingState::ChannelMismatch)
+        && (source.binding_state == Some(ChannelSourceBindingState::Pending)
+            || source.request.legacy_proof.is_some())
+    {
+        source.binding_state = Some(match identity.basis {
+            SequencerSourceIdentityBasis::RpcReported => ChannelSourceBindingState::RuntimeAttested,
+            SequencerSourceIdentityBasis::FinalizedL1EvidenceMatched { .. } => {
+                ChannelSourceBindingState::RuntimeEvidenceMatched
+            }
+        });
     }
 }
 
@@ -983,7 +1022,7 @@ fn complete_observation(
 ) -> Option<ChannelSourceLastGood> {
     let (health_ok, reported_channel_id, head) = match output {
         ChannelSourceProbeOutput::Sequencer(output) => {
-            let ChannelSourceProbeFact::Observed(channel_id) = &output.channel_id else {
+            let ChannelSourceProbeFact::Observed(identity) = &output.channel_id else {
                 return None;
             };
             let ChannelSourceProbeFact::Observed(head) = &output.head else {
@@ -991,7 +1030,8 @@ fn complete_observation(
             };
             (
                 matches!(output.health, ChannelSourceProbeFact::Observed(())),
-                Some(channel_id.clone()),
+                matches!(identity.basis, SequencerSourceIdentityBasis::RpcReported)
+                    .then(|| identity.channel_id.clone()),
                 Some(block_observation(head, observed_at_unix)),
             )
         }
@@ -1030,7 +1070,7 @@ fn output_failure(
                     .channel_id
                     .failure()
                     .cloned()
-                    .map(|failure| (ChannelSourceProbeStage::ChannelIdentity, failure))
+                    .map(|failure| (output.identity_stage, failure))
             })
             .or_else(|| {
                 output
@@ -1171,6 +1211,11 @@ fn apply_join_failure(
     };
     match descriptor.kind {
         ProbeJobKind::Regular => {
+            if source.request.legacy_proof.is_some()
+                && source.binding_state != Some(ChannelSourceBindingState::ChannelMismatch)
+            {
+                source.binding_state = Some(ChannelSourceBindingState::Pending);
+            }
             source.consecutive_failures = source.consecutive_failures.saturating_add(1);
             source.current_failure = Some(ChannelSourceCurrentFailure {
                 kind: failure.kind,

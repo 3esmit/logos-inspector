@@ -2,7 +2,7 @@ use crate::{
     inspection::{CatalogVerificationState, ZoneKind, ZoneSourceRole},
     source_routing::channel_sources::{
         ChannelSourceBindingState, ChannelSourceConfig, ChannelSourceHealthState,
-        ChannelSourceRole, ChannelSourceTarget, PersistedSequencerAttestation,
+        ChannelSourceRole, ChannelSourceTarget,
     },
 };
 
@@ -273,20 +273,25 @@ fn source_eligibility(
         ZoneSourceRole::Sequencer => ChannelSourceRole::Sequencer,
         ZoneSourceRole::Indexer => ChannelSourceRole::Indexer,
     };
-    let observation = facts
-        .observations
-        .channels
-        .iter()
-        .find(|set| {
-            set.channel_id == config.channel_id && set.config_revision == config.config_revision
-        })
-        .and_then(|set| {
-            set.observations.iter().find(|observation| {
-                observation.source_id == source_id && observation.role == observed_role
+    let observation = (facts.observations.catalog_verified
+        && facts.observations.network_scope.as_ref() == Some(&config.network_scope))
+    .then(|| {
+        facts
+            .observations
+            .channels
+            .iter()
+            .find(|set| {
+                set.channel_id == config.channel_id && set.config_revision == config.config_revision
             })
-        });
+            .and_then(|set| {
+                set.observations.iter().find(|observation| {
+                    observation.source_id == source_id && observation.role == observed_role
+                })
+            })
+    })
+    .flatten();
     if role == ZoneSourceRole::Sequencer {
-        let source = config
+        let _source = config
             .sequencer_sources
             .iter()
             .find(|source| source.source_id == source_id)
@@ -296,13 +301,14 @@ fn source_eligibility(
                     "Active Zone has no source configured for this read",
                 )
             })?;
-        let runtime_attested = observation.is_some_and(|observation| {
-            observation.binding_state == Some(ChannelSourceBindingState::RuntimeAttested)
+        let read_eligible = observation.is_some_and(|observation| {
+            observation
+                .binding_state
+                .is_some_and(ChannelSourceBindingState::is_read_eligible)
         });
-        if source.channel_attestation == PersistedSequencerAttestation::Pending && !runtime_attested
-        {
+        if !read_eligible {
             return Err(ActiveZoneContextError::source_ineligible(
-                "Sequencer source has no matching Channel attestation",
+                "Sequencer source has no verified Channel binding",
             ));
         }
     }

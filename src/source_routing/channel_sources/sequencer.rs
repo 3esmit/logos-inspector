@@ -139,6 +139,15 @@ impl<'a> SequencerAdapter<'a> {
             .map_err(map_read_error)
     }
 
+    pub(crate) async fn raw_block_by_id(
+        self,
+        block_id: u64,
+    ) -> ExecutionZoneReadResult<Option<Vec<u8>>> {
+        crate::lez::sequencer_block_bytes(self.endpoint, block_id)
+            .await
+            .map_err(map_read_error)
+    }
+
     pub(crate) async fn transaction(
         self,
         transaction_id: &str,

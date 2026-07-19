@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
+use common::block::{Block, HashableBlockData};
 use serde::{Deserialize, Serialize};
 
 use crate::modules::logos_core::{
@@ -7,15 +8,88 @@ use crate::modules::logos_core::{
 };
 
 use super::{
-    ChannelSourceRole, ChannelSourceTarget, indexer::IndexerAdapter,
-    layer::ExecutionZoneReadErrorKind, sequencer::SequencerAdapter,
+    ChannelSourceProbeStage, ChannelSourceRole, ChannelSourceTarget, FinalizedL1EvidenceBasis,
+    SequencerAttestationBasis, indexer::IndexerAdapter, layer::ExecutionZoneReadErrorKind,
+    sequencer::SequencerAdapter,
 };
 
 const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub(crate) type ChannelSourceProbeFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
-pub(crate) type SequencerAttestorFuture =
-    Pin<Box<dyn Future<Output = Result<String, ChannelSourceProbeFailure>> + Send + 'static>>;
+pub(crate) type SequencerAttestorFuture = Pin<
+    Box<
+        dyn Future<Output = Result<SequencerTargetAttestation, ChannelSourceProbeFailure>>
+            + Send
+            + 'static,
+    >,
+>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequencerTargetAttestation {
+    pub(crate) channel_id: String,
+    pub(crate) basis: SequencerAttestationBasis,
+}
+
+#[derive(Clone)]
+pub(crate) struct SequencerLegacyAnchor {
+    channel_id: String,
+    basis: Box<SequencerAttestationBasis>,
+    block_bytes: Vec<u8>,
+    fence: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+#[derive(Clone)]
+pub(crate) enum SequencerLegacyAnchorState {
+    Missing,
+    Unavailable,
+    Available(SequencerLegacyAnchor),
+    Deferred(SequencerLegacyAnchorProvider),
+}
+
+type SequencerLegacyAnchorFuture =
+    Pin<Box<dyn Future<Output = anyhow::Result<SequencerLegacyAnchorState>> + Send + 'static>>;
+
+#[derive(Clone)]
+pub(crate) struct SequencerLegacyAnchorProvider {
+    load: Arc<dyn Fn() -> SequencerLegacyAnchorFuture + Send + Sync>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequencerPersistedLegacyProof {
+    pub(crate) expected_channel_id: String,
+    pub(crate) l2_block_id: u64,
+    pub(crate) l2_header_hash: String,
+    pub(crate) l2_signature: String,
+}
+
+impl SequencerLegacyAnchor {
+    #[must_use]
+    pub(crate) fn new(
+        channel_id: String,
+        basis: SequencerAttestationBasis,
+        block_bytes: Vec<u8>,
+        fence: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        Self {
+            channel_id,
+            basis: Box::new(basis),
+            block_bytes,
+            fence,
+        }
+    }
+}
+
+impl SequencerLegacyAnchorState {
+    pub(crate) fn deferred<F, Fut>(load: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<Self>> + Send + 'static,
+    {
+        Self::Deferred(SequencerLegacyAnchorProvider {
+            load: Arc::new(move || Box::pin(load())),
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,7 +108,11 @@ pub(crate) struct ChannelSourceProbeFailure {
 }
 
 pub(crate) trait SequencerTargetAttestor: Send + Sync + 'static {
-    fn attest(self: Arc<Self>, target: ChannelSourceTarget) -> SequencerAttestorFuture;
+    fn attest(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+        legacy_anchor: SequencerLegacyAnchorState,
+    ) -> SequencerAttestorFuture;
 }
 
 pub(crate) struct DefaultSequencerTargetAttestor {
@@ -57,11 +135,15 @@ impl DefaultSequencerTargetAttestor {
 }
 
 impl SequencerTargetAttestor for DefaultSequencerTargetAttestor {
-    fn attest(self: Arc<Self>, target: ChannelSourceTarget) -> SequencerAttestorFuture {
+    fn attest(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+        legacy_anchor: SequencerLegacyAnchorState,
+    ) -> SequencerAttestorFuture {
         Box::pin(async move {
             match tokio::time::timeout(
                 SOURCE_PROBE_TIMEOUT,
-                self.transport.clone().sequencer_channel_id(target),
+                attest_sequencer_target(self.transport.clone(), target, legacy_anchor),
             )
             .await
             {
@@ -70,6 +152,117 @@ impl SequencerTargetAttestor for DefaultSequencerTargetAttestor {
             }
         })
     }
+}
+
+async fn attest_sequencer_target(
+    transport: Arc<dyn ChannelSourceProbeTransport>,
+    target: ChannelSourceTarget,
+    legacy_anchor: SequencerLegacyAnchorState,
+) -> Result<SequencerTargetAttestation, ChannelSourceProbeFailure> {
+    match transport.clone().sequencer_channel_id(target.clone()).await {
+        Ok(channel_id) => Ok(SequencerTargetAttestation {
+            channel_id,
+            basis: SequencerAttestationBasis::RpcReported {},
+        }),
+        Err(failure) if failure.kind == ChannelSourceFailureKind::Unsupported => {
+            match resolve_legacy_anchor(legacy_anchor).await? {
+                SequencerLegacyAnchorState::Missing => Err(failure),
+                SequencerLegacyAnchorState::Unavailable => {
+                    Err(ChannelSourceProbeFailure::unavailable(
+                        "Finalized L1 anchor is temporarily unavailable",
+                    ))
+                }
+                SequencerLegacyAnchorState::Available(legacy_anchor) => {
+                    attest_legacy_sequencer_target(transport, target, legacy_anchor).await
+                }
+                SequencerLegacyAnchorState::Deferred(_) => {
+                    Err(ChannelSourceProbeFailure::protocol(
+                        "Sequencer legacy anchor provider returned another deferred anchor",
+                    ))
+                }
+            }
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
+async fn resolve_legacy_anchor(
+    legacy_anchor: SequencerLegacyAnchorState,
+) -> Result<SequencerLegacyAnchorState, ChannelSourceProbeFailure> {
+    let SequencerLegacyAnchorState::Deferred(provider) = legacy_anchor else {
+        return Ok(legacy_anchor);
+    };
+    (provider.load)().await.map_err(|_| {
+        ChannelSourceProbeFailure::protocol(
+            "Finalized L1 anchor became invalid or stale during Sequencer source verification",
+        )
+    })
+}
+
+async fn attest_legacy_sequencer_target(
+    transport: Arc<dyn ChannelSourceProbeTransport>,
+    target: ChannelSourceTarget,
+    legacy_anchor: SequencerLegacyAnchor,
+) -> Result<SequencerTargetAttestation, ChannelSourceProbeFailure> {
+    let anchor_block = decode_verified_legacy_block(&legacy_anchor.block_bytes)?;
+    let SequencerAttestationBasis::UserTrustedFinalizedL1Evidence(basis) =
+        legacy_anchor.basis.as_ref()
+    else {
+        return Err(ChannelSourceProbeFailure::protocol(
+            "Sequencer legacy anchor has no user-trusted finalized L1 evidence",
+        ));
+    };
+    let FinalizedL1EvidenceBasis {
+        l2_block_id,
+        l2_header_hash,
+        l2_signature,
+        ..
+    } = basis.as_ref();
+    if anchor_block.header.block_id != *l2_block_id
+        || anchor_block.header.hash.to_string() != *l2_header_hash
+        || anchor_block.header.signature.to_string() != *l2_signature
+    {
+        return Err(ChannelSourceProbeFailure::protocol(
+            "Sequencer legacy anchor does not match its finalized L1 evidence basis",
+        ));
+    }
+    let candidate_bytes = transport
+        .sequencer_block_bytes(target, anchor_block.header.block_id)
+        .await?
+        .ok_or_else(|| {
+            ChannelSourceProbeFailure::incomplete(
+                "Sequencer did not return the finalized L1 anchor block",
+            )
+        })?;
+    let candidate_block = decode_verified_legacy_block(&candidate_bytes)?;
+
+    if HashableBlockData::from(anchor_block.clone())
+        != HashableBlockData::from(candidate_block.clone())
+        || anchor_block.header.hash != candidate_block.header.hash
+        || anchor_block.header.signature != candidate_block.header.signature
+    {
+        return Err(ChannelSourceProbeFailure::protocol(
+            "Sequencer block does not match the finalized L1 anchor",
+        ));
+    }
+    if !(legacy_anchor.fence)() {
+        return Err(ChannelSourceProbeFailure::protocol(
+            "Finalized L1 anchor became stale during Sequencer source verification",
+        ));
+    }
+
+    Ok(SequencerTargetAttestation {
+        channel_id: legacy_anchor.channel_id,
+        basis: *legacy_anchor.basis,
+    })
+}
+
+fn decode_verified_legacy_block(bytes: &[u8]) -> Result<Block, ChannelSourceProbeFailure> {
+    crate::lez::decode_sequencer_block_bytes(bytes).map_err(|_| {
+        ChannelSourceProbeFailure::protocol(
+            "Sequencer evidence block layout or content hash is invalid",
+        )
+    })
 }
 
 impl std::fmt::Display for ChannelSourceProbeFailure {
@@ -144,13 +337,27 @@ pub(crate) struct ChannelSourceProbeRequest {
     pub(crate) source_id: String,
     pub(crate) role: ChannelSourceRole,
     pub(crate) target: ChannelSourceTarget,
+    pub(crate) legacy_proof: Option<SequencerPersistedLegacyProof>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SequencerSourceProbeOutput {
     pub(crate) health: ChannelSourceProbeFact<()>,
-    pub(crate) channel_id: ChannelSourceProbeFact<String>,
+    pub(crate) channel_id: ChannelSourceProbeFact<SequencerSourceIdentity>,
+    pub(crate) identity_stage: ChannelSourceProbeStage,
     pub(crate) head: ChannelSourceProbeFact<ChannelSourceBlock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SequencerSourceIdentityBasis {
+    RpcReported,
+    FinalizedL1EvidenceMatched { anchor_block_id: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequencerSourceIdentity {
+    pub(crate) channel_id: String,
+    pub(crate) basis: SequencerSourceIdentityBasis,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,7 +424,7 @@ impl ChannelSourceProbe for DefaultChannelSourceProbe {
             .await
             {
                 Ok(output) => output,
-                Err(_) => timed_out_output(request.role),
+                Err(_) => timed_out_output(request.role, request.legacy_proof.is_some()),
             }
         })
     }
@@ -254,14 +461,19 @@ async fn probe_source(
     match request.role {
         ChannelSourceRole::Sequencer => {
             let health = transport.clone().sequencer_health(request.target.clone());
-            let channel_id = transport
-                .clone()
-                .sequencer_channel_id(request.target.clone());
+            let channel_id = sequencer_identity(
+                transport.clone(),
+                request.target.clone(),
+                request.legacy_proof,
+            );
             let head = sequencer_head(transport, request.target);
-            let (health, channel_id, head) = tokio::join!(health, channel_id, head);
+            let (health, (identity_stage, channel_id), head) =
+                tokio::join!(health, channel_id, head);
+            let channel_id = validate_sequencer_identity_head(channel_id, &head);
             ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
                 health: result_fact(health),
                 channel_id: result_fact(channel_id),
+                identity_stage,
                 head: result_fact(head),
             })
         }
@@ -277,6 +489,86 @@ async fn probe_source(
     }
 }
 
+fn validate_sequencer_identity_head(
+    identity: Result<SequencerSourceIdentity, ChannelSourceProbeFailure>,
+    head: &Result<ChannelSourceBlock, ChannelSourceProbeFailure>,
+) -> Result<SequencerSourceIdentity, ChannelSourceProbeFailure> {
+    let identity = identity?;
+    if let SequencerSourceIdentityBasis::FinalizedL1EvidenceMatched { anchor_block_id } =
+        identity.basis
+    {
+        let head = head.as_ref().map_err(Clone::clone)?;
+        if head.block_id < anchor_block_id {
+            return Err(ChannelSourceProbeFailure::protocol(
+                "Sequencer head is behind its finalized L1 evidence block",
+            ));
+        }
+    }
+    Ok(identity)
+}
+
+async fn sequencer_identity(
+    transport: Arc<dyn ChannelSourceProbeTransport>,
+    target: ChannelSourceTarget,
+    legacy_proof: Option<SequencerPersistedLegacyProof>,
+) -> (
+    ChannelSourceProbeStage,
+    Result<SequencerSourceIdentity, ChannelSourceProbeFailure>,
+) {
+    match transport.clone().sequencer_channel_id(target.clone()).await {
+        Ok(channel_id) => (
+            ChannelSourceProbeStage::ChannelIdentity,
+            Ok(SequencerSourceIdentity {
+                channel_id,
+                basis: SequencerSourceIdentityBasis::RpcReported,
+            }),
+        ),
+        Err(failure) if failure.kind == ChannelSourceFailureKind::Unsupported => {
+            let Some(legacy_proof) = legacy_proof else {
+                return (ChannelSourceProbeStage::ChannelIdentity, Err(failure));
+            };
+            let anchor_block_id = legacy_proof.l2_block_id;
+            (
+                ChannelSourceProbeStage::EvidenceConsistency,
+                validate_persisted_legacy_proof(transport, target, legacy_proof)
+                    .await
+                    .map(|channel_id| SequencerSourceIdentity {
+                        channel_id,
+                        basis: SequencerSourceIdentityBasis::FinalizedL1EvidenceMatched {
+                            anchor_block_id,
+                        },
+                    }),
+            )
+        }
+        Err(failure) => (ChannelSourceProbeStage::ChannelIdentity, Err(failure)),
+    }
+}
+
+async fn validate_persisted_legacy_proof(
+    transport: Arc<dyn ChannelSourceProbeTransport>,
+    target: ChannelSourceTarget,
+    legacy_proof: SequencerPersistedLegacyProof,
+) -> Result<String, ChannelSourceProbeFailure> {
+    let candidate_bytes = transport
+        .sequencer_block_bytes(target, legacy_proof.l2_block_id)
+        .await?
+        .ok_or_else(|| {
+            ChannelSourceProbeFailure::incomplete(
+                "Sequencer did not return its persisted finalized L1 evidence block",
+            )
+        })?;
+    let candidate = decode_verified_legacy_block(&candidate_bytes)?;
+    if candidate.header.block_id != legacy_proof.l2_block_id
+        || candidate.header.hash.to_string() != legacy_proof.l2_header_hash
+        || candidate.header.signature.to_string() != legacy_proof.l2_signature
+    {
+        return Err(ChannelSourceProbeFailure::protocol(
+            "Sequencer block does not match its persisted finalized L1 evidence",
+        ));
+    }
+    Ok(legacy_proof.expected_channel_id)
+}
+
 fn result_fact<T>(result: Result<T, ChannelSourceProbeFailure>) -> ChannelSourceProbeFact<T> {
     match result {
         Ok(value) => ChannelSourceProbeFact::Observed(value),
@@ -284,12 +576,20 @@ fn result_fact<T>(result: Result<T, ChannelSourceProbeFailure>) -> ChannelSource
     }
 }
 
-fn timed_out_output(role: ChannelSourceRole) -> ChannelSourceProbeOutput {
+fn timed_out_output(
+    role: ChannelSourceRole,
+    uses_finalized_l1_evidence: bool,
+) -> ChannelSourceProbeOutput {
     match role {
         ChannelSourceRole::Sequencer => {
             ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
                 health: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
                 channel_id: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+                identity_stage: if uses_finalized_l1_evidence {
+                    ChannelSourceProbeStage::EvidenceConsistency
+                } else {
+                    ChannelSourceProbeStage::ChannelIdentity
+                },
                 head: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
             })
         }
@@ -362,6 +662,12 @@ trait ChannelSourceProbeTransport: Send + Sync + 'static {
         target: ChannelSourceTarget,
         block_id: u64,
     ) -> TransportFuture<Option<ChannelSourceBlock>>;
+
+    fn sequencer_block_bytes(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+        block_id: u64,
+    ) -> TransportFuture<Option<Vec<u8>>>;
 
     fn indexer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()>;
 
@@ -490,6 +796,32 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .block_by_id(block_id)
                 .await
                 .map(|block| block.map(sequencer_block_reference))
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer block request failed",
+                        "configured source does not expose Sequencer block inspection",
+                    )
+                })
+        })
+    }
+
+    fn sequencer_block_bytes(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+        block_id: u64,
+    ) -> TransportFuture<Option<Vec<u8>>> {
+        Box::pin(async move {
+            SequencerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer block request failed",
+                        "configured source does not expose Sequencer block inspection",
+                    )
+                })?
+                .raw_block_by_id(block_id)
+                .await
                 .map_err(|error| {
                     probe_read_failure(
                         error.kind,
