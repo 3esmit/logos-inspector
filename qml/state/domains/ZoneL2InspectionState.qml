@@ -86,6 +86,30 @@ QtObject {
         return sourceId.length === 0 || String(source.source_id || "") === sourceId
     }
 
+    function validL2SingleSourceRoute(report, exactSourceId, expectedRole,
+            expectedPolicy, expectedFinality) {
+        const sourceId = String(exactSourceId || "")
+        const role = String(expectedRole || "")
+        const route = report && report.route ? report.route : null
+        const attempts = route && Array.isArray(route.attempts) ? route.attempts : []
+        if (sourceId.length === 0 || role.length === 0 || !route
+                || String(route.policy || "") !== String(expectedPolicy || "")
+                || String(report.route_completeness || "") !== "single_configured"
+                || attempts.length !== 1) {
+            return false
+        }
+        const attempt = attempts[0] || ({})
+        return String(attempt.source_id || "") === sourceId
+            && String(attempt.source_role || "") === role
+            && String(attempt.outcome || "") === "returned"
+            && String(attempt.contribution || "") === "payload"
+            && String(attempt.finality || "") === String(expectedFinality || "")
+            && numericRevision(attempt.source_config_revision)
+                === numericRevision(activeZoneContext
+                    && activeZoneContext.source_config_revision)
+            && String(attempt.retrieval || "") === "live"
+    }
+
     function l2RequestContext() {
         if (!activeZoneContext) {
             return null

@@ -381,6 +381,12 @@ QtObject {
                 l2TransfersError = qsTr("Transfer window returned invalid finalized data.")
                 return
             }
+            const sourceId = l2Context.l2IndexerSourceId()
+            if (!l2Context.validL2SingleSourceRoute(report, sourceId, "indexer",
+                    "indexer_primary", "finalized")) {
+                l2TransfersError = qsTr("Transfer window returned data from another source.")
+                return
+            }
             if (older && previousPage) {
                 l2TransfersHistory = l2TransfersHistory.concat([previousPage])
             }
