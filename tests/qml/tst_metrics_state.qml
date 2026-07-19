@@ -285,6 +285,19 @@ TestCase {
         return report
     }
 
+    function reportWithMetrics(kind, marker, value) {
+        const report = sourceReport(true, marker)
+        report.probes = [{
+            probe_key: kind === "storage"
+                ? "collectMetrics" : "collectOpenMetricsText",
+            label: kind + ".metrics",
+            source: kind + " metrics",
+            ok: true,
+            value: value
+        }]
+        return report
+    }
+
     function success(value) {
         return { ok: true, value: value, text: "ok", error: "" }
     }
@@ -303,6 +316,8 @@ TestCase {
         metrics.networkConnectionPendingRevision = 0
         metrics.dashboardMetricHistory = ({})
         metrics.dashboardMetricLastSeen = ({})
+        metrics.dashboardMetricSeriesHistory = ({})
+        metrics.dashboardMetricSeriesLastSeen = ({})
         metrics.dashboardMetricHistoryRevision = 0
         metrics.dashboardSnapshotRevision = 0
         metrics.dashboardRefreshing = false
@@ -815,6 +830,138 @@ TestCase {
         verify(observation.status.transportOk)
         compare(observation.status.origin, "scheduler")
         verify(observation.latestAttempt.runtimeMetricsOnly)
+    }
+
+    function test_storage_aggregate_window_tracks_json_constituents_across_partial_reset() {
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "storage", "storage-before", [
+                {
+                    name: "storage_block_exchange_requests_failed_total",
+                    value: 100
+                },
+                {
+                    name: "storage_block_exchange_peer_timeouts_total",
+                    value: 50
+                }
+            ])))
+
+        metrics.queryNetworkConnection(
+            "storage", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "storage", "storage-after", [
+                {
+                    name: "storage_block_exchange_requests_failed_total",
+                    value: 3
+                },
+                {
+                    name: "storage_block_exchange_peer_timeouts_total",
+                    value: 55
+                }
+            ])))
+
+        compare(metrics.dashboardMetricRawValue(
+            "storage.failed_transfers_total"), 58)
+        compare(metrics.dashboardMetricValue(
+            "storage.failed_transfers_recent"), 8)
+        const graph = metrics.dashboardMetricSamples(
+            "storage.failed_transfers_recent")
+        compare(graph.length, 1)
+        compare(graph[0].value, 8)
+    }
+
+    function test_delivery_aggregate_window_tracks_text_constituents_across_partial_reset() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-before", [
+                "waku_node_errors_total 100",
+                "waku_store_errors_total 50"
+            ].join("\n"))))
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "delivery-after", [
+                "waku_node_errors_total 3",
+                "waku_store_errors_total 55"
+            ].join("\n"))))
+
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.message_error_events_recent"), 58)
+        compare(metrics.dashboardMetricValue(
+            "messaging.message_error_events_recent"), 8)
+        const graph = metrics.dashboardMetricSamples(
+            "messaging.message_error_events_recent")
+        compare(graph.length, 1)
+        compare(graph[0].value, 8)
+    }
+
+    function test_delivery_aggregate_graph_matches_headline_across_reset_sequence() {
+        const observations = [
+            [100, 50],
+            [110, 55],
+            [3, 60],
+            [8, 65]
+        ]
+        for (let i = 0; i < observations.length; ++i) {
+            metrics.queryNetworkConnection(
+                "messaging", false, false, "scheduler")
+            gateway.completeRequest(0, success(reportWithMetrics(
+                "messaging", "delivery-" + String(i), [
+                    "waku_node_errors_total " + String(observations[i][0]),
+                    "waku_store_errors_total " + String(observations[i][1])
+                ].join("\n"))))
+        }
+
+        const graph = metrics.dashboardMetricSamples(
+            "messaging.message_error_events_recent")
+        compare(JSON.stringify(graph.map(function (sample) {
+            return sample.value
+        })), JSON.stringify([15, 23, 33]))
+        compare(metrics.dashboardMetricValue(
+            "messaging.message_error_events_recent"), 33)
+        compare(graph[graph.length - 1].value, 33)
+    }
+
+    function test_source_invalidation_clears_aggregate_series_baseline() {
+        function acceptStorage(first, second, marker) {
+            metrics.queryNetworkConnection(
+                "storage", false, false, "source-inspection")
+            gateway.completeRequest(0, success(reportWithMetrics(
+                "storage", marker, [
+                    {
+                        name: "storage_block_exchange_requests_failed_total",
+                        value: first
+                    },
+                    {
+                        name: "storage_block_exchange_peer_timeouts_total",
+                        value: second
+                    }
+                ])))
+        }
+
+        acceptStorage(100, 50, "before-1")
+        acceptStorage(103, 55, "before-2")
+        compare(metrics.dashboardMetricValue(
+            "storage.failed_transfers_recent"), 8)
+
+        metrics.invalidateConfiguration("storage", "source changed")
+
+        compare(metrics.dashboardMetricSeriesHistory[
+            "storage.failed_transfers_recent"], undefined)
+        compare(metrics.dashboardMetricSeriesLastSeen[
+            "storage.failed_transfers_recent"], undefined)
+        acceptStorage(200, 100, "after-1")
+        compare(metrics.dashboardMetricValue(
+            "storage.failed_transfers_recent"), null)
+        compare(metrics.dashboardMetricSamples(
+            "storage.failed_transfers_recent").length, 0)
+
+        acceptStorage(202, 103, "after-2")
+        compare(metrics.dashboardMetricValue(
+            "storage.failed_transfers_recent"), 5)
     }
 
     function test_scheduled_metrics_preserve_full_delivery_observation() {

@@ -77,6 +77,8 @@ TestCase {
         model.metrics.messagingMetricsRevision += 1
         model.metrics.dashboardMetricHistory = ({})
         model.metrics.dashboardMetricLastSeen = ({})
+        model.metrics.dashboardMetricSeriesHistory = ({})
+        model.metrics.dashboardMetricSeriesLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision += 1
         model.deliveryDiagnosticsTab = "overview"
         model.shell.currentView = "diagnosticsDelivery"

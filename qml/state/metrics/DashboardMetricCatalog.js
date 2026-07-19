@@ -155,6 +155,164 @@ function preferredModuleMetricValue(root, kind, names) {
     return null
 }
 
+function dashboardMetricAggregateDefinition(key) {
+    switch (String(key || "")) {
+    case "storage.failed_transfers_recent":
+    case "storage.failed_transfers_total":
+        return {
+            kind: "storage",
+            specs: [
+                "storage_block_exchange_requests_failed_total",
+                "storage_block_exchange_peer_timeouts_total"
+            ]
+        }
+    case "messaging.message_sent_events_recent":
+        return {
+            kind: "messaging",
+            specs: [
+                "waku_lightpush_v3_messages",
+                "waku_lightpush_messages",
+                {
+                    name: "waku_service_requests_total",
+                    labels: {
+                        service: "/vac/waku/lightpush/2.0.0-beta1"
+                    }
+                },
+                {
+                    name: "waku_service_requests_total",
+                    labels: { service: "/vac/waku/lightpush/3.0.0" }
+                }
+            ]
+        }
+    case "messaging.message_error_events_recent":
+        return {
+            kind: "messaging",
+            specs: [
+                "waku_node_errors_total",
+                "waku_node_errors",
+                "waku_store_errors_total",
+                "waku_filter_errors_total",
+                "waku_lightpush_errors_total",
+                "waku_lightpush_v3_errors_total",
+                "message_error_events_recent"
+            ]
+        }
+    case "messaging.store_query_requests_recent":
+        return {
+            kind: "messaging",
+            specs: [
+                "waku_store_queries_total",
+                {
+                    name: "waku_service_requests_total",
+                    labels: { service: "/vac/waku/store-query/3.0.0" }
+                }
+            ]
+        }
+    case "messaging.filter_requests_recent":
+        return {
+            kind: "messaging",
+            specs: [
+                "waku_filter_requests_total",
+                {
+                    name: "waku_service_requests_total",
+                    labels: {
+                        service: "/vac/waku/filter-subscribe/2.0.0-beta1"
+                    }
+                }
+            ]
+        }
+    case "messaging.lightpush_requests_recent":
+        return {
+            kind: "messaging",
+            specs: [
+                "waku_lightpush_v3_messages",
+                {
+                    name: "waku_service_requests_total",
+                    labels: {
+                        service: "/vac/waku/lightpush/2.0.0-beta1"
+                    }
+                },
+                {
+                    name: "waku_service_requests_total",
+                    labels: { service: "/vac/waku/lightpush/3.0.0" }
+                }
+            ]
+        }
+    case "messaging.peer_exchange_requests_recent":
+        return {
+            kind: "messaging",
+            specs: [
+                "waku_px_peers_sent_total",
+                {
+                    name: "waku_service_requests_total",
+                    labels: {
+                        service: "/vac/waku/peer-exchange/2.0.0-alpha1"
+                    }
+                }
+            ]
+        }
+    case "messaging.store_errors_recent":
+        return {
+            kind: "messaging",
+            specs: ["waku_store_errors_total", "waku_archive_errors_total"]
+        }
+    default:
+        return null
+    }
+}
+
+function dashboardMetricSpecIdentity(spec) {
+    const name = spec && typeof spec === "object"
+        ? String(spec.name || spec.metric || spec.key || "")
+        : String(spec || "")
+    const labels = spec && typeof spec === "object"
+            && spec.labels && typeof spec.labels === "object"
+        ? spec.labels : {}
+    const keys = Object.keys(labels).sort()
+    const parts = []
+    for (let i = 0; i < keys.length; ++i) {
+        const label = keys[i]
+        parts.push(JSON.stringify(label) + ":"
+            + JSON.stringify(String(labels[label])))
+    }
+    return name + "{" + parts.join(",") + "}"
+}
+
+function dashboardMetricAggregateObservation(root, key) {
+    const definition = dashboardMetricAggregateDefinition(key)
+    if (!definition) {
+        return null
+    }
+    const specs = definition.specs
+    const series = []
+    let total = 0
+    for (let i = 0; i < specs.length; ++i) {
+        const value = dashboardMetricNumber(
+            root.moduleMetricValue(definition.kind, specs[i]))
+        if (value === null) {
+            continue
+        }
+        series.push({
+            id: String(i) + ":" + dashboardMetricSpecIdentity(specs[i]),
+            value: value
+        })
+        total += value
+    }
+    if (series.length === 0) {
+        return null
+    }
+    return {
+        value: total,
+        signature: series.map(function (item) { return item.id }).join("|"),
+        series: series
+    }
+}
+
+function dashboardMetricAggregateValue(root, key) {
+    const observation = dashboardMetricAggregateObservation(root, key)
+    return observation ? observation.value : null
+}
+
 function dashboardMetricRawValue(root, key) {
     switch (key) {
     case "bedrock.peer_count":
@@ -196,9 +354,8 @@ function dashboardMetricRawValue(root, key) {
     case "storage.active_downloads":
         return root.moduleMetricValue("storage", ["storage_active_downloads", "active_downloads", "storage_api_downloads"])
     case "storage.failed_transfers_recent":
-        return dashboardMetricRawValue(root, "storage.failed_transfers_total")
     case "storage.failed_transfers_total":
-        return root.moduleMetricSum("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.peer_count":
         return preferredModuleMetricValue(root, "messaging", [
             { name: "libp2p_peers", labels: { type: "connected" } },
@@ -234,26 +391,13 @@ function dashboardMetricRawValue(root, key) {
     case "messaging.outbound_queue":
         return root.moduleMetricValue("messaging", ["outbound_queue"])
     case "messaging.message_sent_events_recent":
-        return root.moduleMetricSum("messaging", [
-            "waku_lightpush_v3_messages",
-            "waku_lightpush_messages",
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/2.0.0-beta1" } },
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/3.0.0" } }
-        ])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.message_propagated_events_recent":
         return root.moduleMetricValue("messaging", ["waku_node_messages_total", "waku_node_messages"])
     case "messaging.message_received_events_recent":
         return root.moduleMetricValue("messaging", ["waku_node_messages_total", "waku_node_messages", "message_received_events_recent"])
     case "messaging.message_error_events_recent":
-        return root.moduleMetricSum("messaging", [
-            "waku_node_errors_total",
-            "waku_node_errors",
-            "waku_store_errors_total",
-            "waku_filter_errors_total",
-            "waku_lightpush_errors_total",
-            "waku_lightpush_v3_errors_total",
-            "message_error_events_recent"
-        ])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.network_ingress_recent":
         return root.moduleMetricValue("messaging", [
             { name: "libp2p_network_bytes_total", labels: { direction: "in" } },
@@ -285,30 +429,17 @@ function dashboardMetricRawValue(root, key) {
             "waku_service_network_bytes_out_total"
         ])
     case "messaging.store_query_requests_recent":
-        return root.moduleMetricSum("messaging", [
-            "waku_store_queries_total",
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/store-query/3.0.0" } }
-        ])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.filter_requests_recent":
-        return root.moduleMetricSum("messaging", [
-            "waku_filter_requests_total",
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/filter-subscribe/2.0.0-beta1" } }
-        ])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.lightpush_requests_recent":
-        return root.moduleMetricSum("messaging", [
-            "waku_lightpush_v3_messages",
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/2.0.0-beta1" } },
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/3.0.0" } }
-        ])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.peer_exchange_requests_recent":
-        return root.moduleMetricSum("messaging", [
-            "waku_px_peers_sent_total",
-            { name: "waku_service_requests_total", labels: { service: "/vac/waku/peer-exchange/2.0.0-alpha1" } }
-        ])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.store_messages":
         return root.moduleMetricValue("messaging", ["waku_store_messages", "waku_archive_messages"])
     case "messaging.store_errors_recent":
-        return root.moduleMetricSum("messaging", ["waku_store_errors_total", "waku_archive_errors_total"])
+        return dashboardMetricAggregateValue(root, key)
     case "messaging.publish_latency_ms":
     case "messaging.receive_latency_ms":
         return null
@@ -362,6 +493,11 @@ function dashboardMetricUsesWindow(key) {
 }
 
 function dashboardMetricWindowDelta(root, key) {
+    if (dashboardMetricAggregateDefinition(key)
+            && dashboardMetricSeriesEvidenceAvailable(root, key)) {
+        return dashboardMetricSeriesWindowDelta(
+            root, key, Date.now(), dashboardMetricWindowMs(root, key))
+    }
     const current = dashboardMetricNumber(dashboardMetricRawValue(root, key))
     if (current === null) {
         return null
@@ -403,15 +539,23 @@ function recordDashboardSnapshot(root, prefixes) {
     const wantedPrefixes = Array.isArray(prefixes) ? prefixes : []
     const next = root.copyMap(root.dashboardMetricHistory)
     const nextSeen = root.copyMap(root.dashboardMetricLastSeen)
+    const nextSeries = root.copyMap(root.dashboardMetricSeriesHistory || {})
+    const nextSeriesSeen = root.copyMap(
+        root.dashboardMetricSeriesLastSeen || {})
     const now = Date.now()
     let historyChanged = false
     let seenChanged = false
+    let seriesHistoryChanged = false
+    let seriesSeenChanged = false
     for (let i = 0; i < keys.length; ++i) {
         const key = keys[i]
         if (!dashboardSnapshotIncludesKey(key, wantedPrefixes)) {
             continue
         }
-        const value = dashboardMetricNumber(dashboardMetricRawValue(root, key))
+        const aggregate = dashboardMetricUsesWindow(key)
+            ? dashboardMetricAggregateObservation(root, key) : null
+        const value = dashboardMetricNumber(aggregate
+            ? aggregate.value : dashboardMetricRawValue(root, key))
         if (value === null) {
             continue
         }
@@ -422,12 +566,31 @@ function recordDashboardSnapshot(root, prefixes) {
             next[key] = update.samples
             historyChanged = true
         }
+        if (aggregate) {
+            const seriesUpdate = dashboardMetricSeriesSampleUpdate(
+                nextSeries[key], nextSeriesSeen[key],
+                update.lastSeen.timestamp, aggregate)
+            nextSeriesSeen[key] = seriesUpdate.lastSeen
+            seriesSeenChanged = true
+            if (seriesUpdate.changed) {
+                nextSeries[key] = seriesUpdate.samples
+                seriesHistoryChanged = true
+            }
+        }
     }
     if (seenChanged) {
         root.dashboardMetricLastSeen = nextSeen
     }
     if (historyChanged) {
         root.dashboardMetricHistory = next
+    }
+    if (seriesSeenChanged) {
+        root.dashboardMetricSeriesLastSeen = nextSeriesSeen
+    }
+    if (seriesHistoryChanged) {
+        root.dashboardMetricSeriesHistory = nextSeries
+    }
+    if (historyChanged || seriesHistoryChanged) {
         root.dashboardMetricHistoryRevision += 1
     }
 }
@@ -469,6 +632,203 @@ function dashboardMetricSampleUpdate(root, stored, lastSeen, now, value) {
         lastSeen: current,
         changed: changed
     }
+}
+
+function normalizedDashboardMetricSeriesFrame(frame) {
+    if (!frame || typeof frame !== "object") {
+        return null
+    }
+    const timestamp = dashboardMetricNumber(frame.timestamp)
+    const rawSeries = Array.isArray(frame.series) ? frame.series : []
+    if (timestamp === null || rawSeries.length === 0) {
+        return null
+    }
+    const series = []
+    for (let i = 0; i < rawSeries.length; ++i) {
+        const item = rawSeries[i]
+        const id = item && typeof item === "object"
+            ? String(item.id || "") : ""
+        const value = dashboardMetricNumber(
+            item && typeof item === "object" ? item.value : null)
+        if (!id.length || value === null) {
+            return null
+        }
+        series.push({ id: id, value: value })
+    }
+    const signature = series.map(function (item) {
+        return item.id
+    }).join("|")
+    if (String(frame.signature || signature) !== signature) {
+        return null
+    }
+    return {
+        timestamp: timestamp,
+        signature: signature,
+        series: series
+    }
+}
+
+function normalizedDashboardMetricSeriesFrames(frames) {
+    const rows = []
+    const raw = Array.isArray(frames) ? frames : []
+    for (let i = 0; i < raw.length; ++i) {
+        const frame = normalizedDashboardMetricSeriesFrame(raw[i])
+        if (frame) {
+            rows.push(frame)
+        }
+    }
+    return rows
+}
+
+function dashboardMetricSeriesFramesEqual(left, right) {
+    const first = normalizedDashboardMetricSeriesFrame(left)
+    const second = normalizedDashboardMetricSeriesFrame(right)
+    if (!first || !second || first.signature !== second.signature
+            || first.series.length !== second.series.length) {
+        return false
+    }
+    for (let i = 0; i < first.series.length; ++i) {
+        if (first.series[i].id !== second.series[i].id
+                || first.series[i].value !== second.series[i].value) {
+            return false
+        }
+    }
+    return true
+}
+
+function dashboardMetricSeriesSampleUpdate(stored, lastSeen, timestamp,
+        observation) {
+    const samples = normalizedDashboardMetricSeriesFrames(stored)
+    const previous = normalizedDashboardMetricSeriesFrame(lastSeen)
+        || (samples.length > 0 ? samples[samples.length - 1] : null)
+    const source = observation && typeof observation === "object"
+        ? observation : null
+    const current = normalizedDashboardMetricSeriesFrame({
+        timestamp: timestamp,
+        signature: source ? source.signature : "",
+        series: source ? source.series : []
+    })
+    if (!current) {
+        return { samples: samples, lastSeen: null, changed: false }
+    }
+    const lastStored = samples.length > 0 ? samples[samples.length - 1] : null
+    let changed = false
+    if (!lastStored) {
+        samples.push(current)
+        changed = true
+    } else if (!previous
+            || !dashboardMetricSeriesFramesEqual(previous, current)) {
+        if (previous && previous.timestamp > lastStored.timestamp
+                && dashboardMetricSeriesFramesEqual(previous, lastStored)) {
+            samples.push(previous)
+        }
+        samples.push(current)
+        changed = true
+    }
+    const trimmed = samples.length > 300
+        ? samples.slice(samples.length - 300) : samples
+    return {
+        samples: normalizedDashboardMetricSeriesFrames(trimmed),
+        lastSeen: current,
+        changed: changed
+    }
+}
+
+function dashboardMetricSeriesEvidenceAvailable(root, key) {
+    const metricKey = String(key || "")
+    const history = root.dashboardMetricSeriesHistory || {}
+    const seen = root.dashboardMetricSeriesLastSeen || {}
+    return history[metricKey] !== undefined || seen[metricKey] !== undefined
+}
+
+function dashboardMetricAcceptedSeriesFrames(root, key) {
+    const metricKey = String(key || "")
+    const history = root.dashboardMetricSeriesHistory || {}
+    const frames = normalizedDashboardMetricSeriesFrames(
+        history[metricKey]).slice()
+    const seen = normalizedDashboardMetricSeriesFrame(
+        (root.dashboardMetricSeriesLastSeen || {})[metricKey])
+    if (seen && (frames.length === 0
+            || seen.timestamp > frames[frames.length - 1].timestamp)) {
+        frames.push(seen)
+    }
+    return frames
+}
+
+function dashboardMetricLatestSeriesEpoch(frames) {
+    const rows = normalizedDashboardMetricSeriesFrames(frames)
+    if (rows.length === 0) {
+        return []
+    }
+    const signature = rows[rows.length - 1].signature
+    let start = rows.length - 1
+    while (start > 0 && rows[start - 1].signature === signature) {
+        start -= 1
+    }
+    return rows.slice(start)
+}
+
+function dashboardMetricSeriesObservationMatches(frame, observation) {
+    if (!frame || !observation) {
+        return false
+    }
+    return dashboardMetricSeriesFramesEqual(frame, {
+        timestamp: frame.timestamp,
+        signature: observation.signature,
+        series: observation.series
+    })
+}
+
+function dashboardMetricSeriesWindowDelta(root, key, timestamp, windowMs) {
+    const observation = dashboardMetricAggregateObservation(root, key)
+    if (!observation) {
+        return null
+    }
+    const frames = dashboardMetricAcceptedSeriesFrames(root, key)
+    if (frames.length === 0
+            || !dashboardMetricSeriesObservationMatches(
+                frames[frames.length - 1], observation)) {
+        return null
+    }
+    return windowDeltaFromSeriesFrames(frames, timestamp, windowMs)
+}
+
+function windowDeltaFromSeriesFrames(frames, timestamp, windowMs) {
+    const rows = normalizedDashboardMetricSeriesFrames(frames)
+    if (rows.length < 2) {
+        return null
+    }
+    const latest = rows[rows.length - 1]
+    let epochStart = rows.length - 1
+    while (epochStart > 0
+            && rows[epochStart - 1].signature === latest.signature) {
+        epochStart -= 1
+    }
+    if (epochStart === rows.length - 1) {
+        return null
+    }
+    const cutoff = timestamp - windowMs
+    let baselineIndex = epochStart
+    for (let i = rows.length - 1; i >= epochStart; --i) {
+        if (rows[i].timestamp <= cutoff) {
+            baselineIndex = i
+            break
+        }
+    }
+    if (latest.timestamp === rows[baselineIndex].timestamp) {
+        return null
+    }
+    let delta = 0
+    for (let i = baselineIndex + 1; i < rows.length; ++i) {
+        const previous = rows[i - 1]
+        const current = rows[i]
+        for (let j = 0; j < current.series.length; ++j) {
+            const before = previous.series[j].value
+            const after = current.series[j].value
+            delta += after >= before ? after - before : Math.max(0, after)
+        }
+    }
+    return delta
 }
 
 function dashboardMetricSamples(root, key) {
@@ -555,6 +915,24 @@ function trimDashboardMetricSamples(samples) {
 }
 
 function dashboardMetricWindowSamples(root, key) {
+    if (dashboardMetricAggregateDefinition(key)
+            && dashboardMetricSeriesEvidenceAvailable(root, key)) {
+        const frames = dashboardMetricLatestSeriesEpoch(
+            dashboardMetricAcceptedSeriesFrames(root, key))
+        const rows = []
+        const windowMs = dashboardMetricWindowMs(root, key)
+        for (let i = 0; i < frames.length; ++i) {
+            const delta = windowDeltaFromSeriesFrames(
+                frames.slice(0, i + 1), frames[i].timestamp, windowMs)
+            if (delta !== null) {
+                rows.push({
+                    timestamp: frames[i].timestamp,
+                    value: delta
+                })
+            }
+        }
+        return rows
+    }
     const history = root.dashboardMetricHistory || {}
     const samples = normalizedDashboardSamples(history[String(key || "")])
     const seen = normalizedDashboardSample(
@@ -619,6 +997,8 @@ function clearDashboardMetricHistoryForPrefixes(root, prefixes) {
     }
     const next = root.copyMap(root.dashboardMetricHistory)
     const seen = root.copyMap(root.dashboardMetricLastSeen)
+    const seriesNext = root.copyMap(root.dashboardMetricSeriesHistory || {})
+    const seriesSeen = root.copyMap(root.dashboardMetricSeriesLastSeen || {})
     let changed = false
     for (const key in next) {
         if (values.some(function (prefix) {
@@ -636,9 +1016,27 @@ function clearDashboardMetricHistoryForPrefixes(root, prefixes) {
             changed = true
         }
     }
+    for (const seriesKey in seriesNext) {
+        if (values.some(function (prefix) {
+            return String(seriesKey || "").indexOf(prefix) === 0
+        })) {
+            delete seriesNext[seriesKey]
+            changed = true
+        }
+    }
+    for (const seriesSeenKey in seriesSeen) {
+        if (values.some(function (prefix) {
+            return String(seriesSeenKey || "").indexOf(prefix) === 0
+        })) {
+            delete seriesSeen[seriesSeenKey]
+            changed = true
+        }
+    }
     if (changed) {
         root.dashboardMetricHistory = next
         root.dashboardMetricLastSeen = seen
+        root.dashboardMetricSeriesHistory = seriesNext
+        root.dashboardMetricSeriesLastSeen = seriesSeen
         root.dashboardMetricHistoryRevision += 1
     }
 }

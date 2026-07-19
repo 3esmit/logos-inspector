@@ -12,11 +12,14 @@ TestCase {
         property var dashboardProvisionalBlocks: [1, 2, 3, 4, 5]
         property var dashboardMetricHistory: ({ "storage.failed_transfers_recent": [{ timestamp: 0, value: 2 }, { timestamp: 2000, value: 7 }] })
         property var dashboardMetricLastSeen: ({})
+        property var dashboardMetricSeriesHistory: ({})
+        property var dashboardMetricSeriesLastSeen: ({})
         property int dashboardMetricHistoryRevision: 0
         property int storageRollingWindow: 60
         property int messagingRollingWindow: 60
         property var peerMetricValue: 6
         property var storageFailures: 7
+        property var metricRows: []
 
         function copyMap(value) {
             const copy = {}
@@ -70,6 +73,19 @@ TestCase {
         }
 
         function moduleMetricSum(kind, names) {
+            if (metricRows.length > 0) {
+                const wanted = Array.isArray(names) ? names : [names]
+                let total = 0
+                let found = false
+                for (let i = 0; i < wanted.length; ++i) {
+                    const value = moduleMetricValue(kind, wanted[i])
+                    if (value !== null) {
+                        total += Number(value)
+                        found = true
+                    }
+                }
+                return found ? total : null
+            }
             if (kind === "storage" && names.indexOf("storage_block_exchange_requests_failed_total") >= 0) {
                 return storageFailures
             }
@@ -80,6 +96,28 @@ TestCase {
         }
 
         function moduleMetricValue(kind, names) {
+            if (metricRows.length > 0) {
+                const wanted = Array.isArray(names) ? names : [names]
+                for (let i = 0; i < wanted.length; ++i) {
+                    const spec = wanted[i]
+                    const name = spec && typeof spec === "object"
+                        ? String(spec.name || "") : String(spec || "")
+                    const labels = spec && typeof spec === "object"
+                        ? (spec.labels || {}) : {}
+                    for (let j = 0; j < metricRows.length; ++j) {
+                        const row = metricRows[j]
+                        if (String(row.name || "") === name
+                                && labelsMatch(row.labels || {}, labels)) {
+                            return row.value
+                        }
+                    }
+                }
+                return null
+            }
+            if (kind === "storage" && metricNames(names).indexOf(
+                    "storage_block_exchange_requests_failed_total") >= 0) {
+                return storageFailures
+            }
             if (kind === "storage" && metricNames(names).indexOf("storage_shared_files_count") >= 0) {
                 return 5
             }
@@ -130,6 +168,22 @@ TestCase {
         function windowDeltaFromSamples(samples, timestamp, windowMs) {
             return DashboardMetricCatalog.windowDeltaFromSamples(samples, timestamp, windowMs)
         }
+    }
+
+    function init() {
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": [
+                { timestamp: 0, value: 2 },
+                { timestamp: 2000, value: 7 }
+            ]
+        })
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricSeriesHistory = ({})
+        model.dashboardMetricSeriesLastSeen = ({})
+        model.dashboardMetricHistoryRevision = 0
+        model.peerMetricValue = 6
+        model.storageFailures = 7
+        model.metricRows = []
     }
 
     function test_catalog_metadata_drives_status_facade() {
@@ -294,6 +348,128 @@ TestCase {
         ], 4000, 4000), 11)
     }
 
+    function test_aggregate_window_accumulates_each_constituent_across_partial_reset() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricHistoryRevision = 0
+        model.metricRows = [
+            { name: "storage_block_exchange_requests_failed_total", value: 100 },
+            { name: "storage_block_exchange_peer_timeouts_total", value: 50 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        model.metricRows = [
+            { name: "storage_block_exchange_requests_failed_total", value: 3 },
+            { name: "storage_block_exchange_peer_timeouts_total", value: 55 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "storage.failed_transfers_total"), 58)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), 8)
+        const graph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "storage.failed_transfers_recent")
+        compare(graph.length, 1)
+        compare(graph[0].value, 8)
+        model.metricRows = []
+    }
+
+    function test_aggregate_window_records_constituent_change_when_total_is_stable() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricHistoryRevision = 0
+        model.metricRows = [
+            { name: "storage_block_exchange_requests_failed_total", value: 100 },
+            { name: "storage_block_exchange_peer_timeouts_total", value: 50 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        model.metricRows = [
+            { name: "storage_block_exchange_requests_failed_total", value: 0 },
+            { name: "storage_block_exchange_peer_timeouts_total", value: 150 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(
+            model, "storage.failed_transfers_total"), 150)
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), 100)
+        const graph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "storage.failed_transfers_recent")
+        compare(graph.length, 1)
+        compare(graph[0].value, 100)
+        compare(model.dashboardMetricHistory[
+            "storage.failed_transfers_recent"].length, 1)
+        compare(model.dashboardMetricSeriesHistory[
+            "storage.failed_transfers_recent"].length, 2)
+        model.metricRows = []
+    }
+
+    function test_aggregate_window_stable_second_observation_reports_zero() {
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricHistoryRevision = 0
+        model.metricRows = [
+            { name: "storage_block_exchange_requests_failed_total", value: 100 },
+            { name: "storage_block_exchange_peer_timeouts_total", value: 50 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "storage.failed_transfers_recent"), 0)
+        const graph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "storage.failed_transfers_recent")
+        compare(graph.length, 1)
+        compare(graph[0].value, 0)
+        model.metricRows = []
+    }
+
+    function test_aggregate_alias_change_starts_new_counter_baseline() {
+        const service = "/vac/waku/store-query/3.0.0"
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.dashboardMetricHistoryRevision = 0
+        model.metricRows = [
+            { name: "waku_store_queries_total", value: 100 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        model.metricRows = [
+            { name: "waku_store_queries_total", value: 105 }
+        ]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.store_query_requests_recent"), 5)
+        compare(DashboardMetricCatalog.dashboardMetricSamples(
+            model, "messaging.store_query_requests_recent").length, 1)
+
+        model.metricRows = [{
+            name: "waku_service_requests_total",
+            labels: { service: service },
+            value: 4
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.store_query_requests_recent"), null)
+        compare(DashboardMetricCatalog.dashboardMetricSamples(
+            model, "messaging.store_query_requests_recent").length, 0)
+
+        model.metricRows = [{
+            name: "waku_service_requests_total",
+            labels: { service: service },
+            value: 7
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["messaging."])
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model, "messaging.store_query_requests_recent"), 3)
+        const graph = DashboardMetricCatalog.dashboardMetricSamples(
+            model, "messaging.store_query_requests_recent")
+        compare(graph.length, 1)
+        compare(graph[0].value, 3)
+        model.metricRows = []
+    }
+
     function test_window_metric_excludes_reset_before_selected_baseline() {
         compare(DashboardMetricCatalog.windowDeltaFromSamples([
             { timestamp: 0, value: 100 },
@@ -320,15 +496,18 @@ TestCase {
     }
 
     function test_current_counter_change_requires_recorded_observation() {
-        model.dashboardMetricHistory = ({
-            "storage.failed_transfers_recent": [
-                { timestamp: 1000, value: 2 }
-            ]
-        })
-        model.dashboardMetricLastSeen = ({
-            "storage.failed_transfers_recent": { timestamp: 1000, value: 2 }
-        })
-        model.storageFailures = 7
+        model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
+        model.metricRows = [{
+            name: "storage_block_exchange_requests_failed_total",
+            value: 2
+        }]
+        DashboardMetricCatalog.recordDashboardSnapshot(model, ["storage."])
+
+        model.metricRows = [{
+            name: "storage_block_exchange_requests_failed_total",
+            value: 7
+        }]
 
         compare(DashboardMetricCatalog.dashboardMetricValue(
             model, "storage.failed_transfers_recent"), null)
@@ -339,6 +518,7 @@ TestCase {
 
         compare(DashboardMetricCatalog.dashboardMetricValue(
             model, "storage.failed_transfers_recent"), 5)
+        model.metricRows = []
     }
 
     function test_stale_observed_window_is_unknown() {
