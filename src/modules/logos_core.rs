@@ -16,6 +16,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use base64::{Engine as _, engine::general_purpose};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tempfile::{NamedTempFile, TempDir};
@@ -2670,9 +2671,29 @@ pub(crate) fn module_transport_event_from_watch_frame(
         let arg = data
             .get(&key)
             .with_context(|| format!("event data must contain consecutive `{key}` fields"))?;
-        args.push(arg.clone());
+        args.push(normalize_watch_event_arg(arg)?);
     }
     ModuleTransportEvent::new(module, event, args)
+}
+
+fn normalize_watch_event_arg(value: &Value) -> Result<Value> {
+    let Some(object) = value.as_object() else {
+        return Ok(value.clone());
+    };
+    if object.len() != 1 || !object.contains_key("_bytes") {
+        return Ok(value.clone());
+    }
+    let encoded = object
+        .get("_bytes")
+        .and_then(Value::as_str)
+        .context("typed event byte payload must be a base64url string")?;
+    let bytes = general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .context("typed event byte payload is not valid base64url")?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Value::String(text)),
+        Err(_) => Ok(value.clone()),
+    }
 }
 
 fn send_watch_protocol_error(
@@ -3603,6 +3624,54 @@ mod tests {
                 ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn wildcard_watch_decodes_utf8_qbytearray_event_arguments() -> Result<()> {
+        let event = json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-19T03:47:07Z",
+            "module": "delivery_module",
+            "event": "messageReceived",
+            "data": {
+                "arg0": "hash-1",
+                "arg1": "/test/topic",
+                "arg2": { "_bytes": "eyJraW5kIjoiY29tbWVudCJ9" },
+                "arg3": 1_784_432_827_841_750_528_u64
+            }
+        });
+
+        let converted = module_transport_event_from_watch_frame(&event, "delivery_module")?;
+
+        anyhow::ensure!(
+            converted.args().get(2) == Some(&Value::String("{\"kind\":\"comment\"}".to_owned()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wildcard_watch_rejects_malformed_qbytearray_event_arguments() {
+        let event = json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-19T03:47:07Z",
+            "module": "delivery_module",
+            "event": "messageReceived",
+            "data": {
+                "arg0": "hash-1",
+                "arg1": "/test/topic",
+                "arg2": { "_bytes": "%%%" },
+                "arg3": 1
+            }
+        });
+
+        assert!(
+            module_transport_event_from_watch_frame(&event, "delivery_module").is_err(),
+            "malformed typed byte payload was accepted"
+        );
     }
 
     #[test]
