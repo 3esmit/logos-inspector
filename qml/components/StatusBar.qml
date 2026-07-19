@@ -28,6 +28,7 @@ Pane {
             Layout.alignment: Qt.AlignVCenter
 
             ActionButton {
+                objectName: "navigationBackButton"
                 theme: root.theme
                 text: ""
                 iconOnly: true
@@ -45,6 +46,7 @@ Pane {
             }
 
             ActionButton {
+                objectName: "navigationForwardButton"
                 theme: root.theme
                 text: ""
                 iconOnly: true

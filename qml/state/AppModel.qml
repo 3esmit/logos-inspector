@@ -80,6 +80,7 @@ QtObject {
         id: appShellState
         model: root
     }
+    property var navigationGuard: null
     property Domains.MetricsState metrics: Domains.MetricsState {
         id: metricsState
 
@@ -1168,17 +1169,49 @@ QtObject {
 
     function canNavigateForward() { return appShellState.canNavigateForward() }
 
-    function navigateBack() { return appShellState.navigateBack() }
+    function navigateBack() {
+        if (root.navigationGuarded("back", null)) {
+            return false
+        }
+        return appShellState.navigateBack()
+    }
 
-    function navigateForward() { return appShellState.navigateForward() }
+    function navigateForward() {
+        if (root.navigationGuarded("forward", null)) {
+            return false
+        }
+        return appShellState.navigateForward()
+    }
 
     function navigationBackLabel() { return appShellState.navigationBackLabel() }
 
     function navigationForwardLabel() { return appShellState.navigationForwardLabel() }
 
-    function selectView(view, recordHistory) { return appShellState.selectView(view, recordHistory) }
+    function selectView(view, recordHistory) {
+        if (root.navigationGuarded("select_view", {
+                view: view,
+                recordHistory: recordHistory
+            })) {
+            return false
+        }
+        return appShellState.selectView(view, recordHistory)
+    }
 
-    function openSettings(section, subsection, recordHistory) { return appShellState.openSettings(section, subsection, recordHistory) }
+    function openSettings(section, subsection, recordHistory) {
+        if (root.navigationGuarded("open_settings", {
+                section: section,
+                subsection: subsection,
+                recordHistory: recordHistory
+            })) {
+            return false
+        }
+        return appShellState.openSettings(section, subsection, recordHistory)
+    }
+
+    function navigationGuarded(kind, payload) {
+        return typeof root.navigationGuard === "function"
+            && root.navigationGuard(String(kind || ""), payload) === true
+    }
 
     function pageHasOutput(view) { return appShellState.pageHasOutput(view) }
 
