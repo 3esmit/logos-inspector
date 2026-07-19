@@ -32,7 +32,7 @@ use profile::{
 };
 use runner::{
     CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
-    local_wallet_output_text,
+    local_wallet_accounts_output_text, local_wallet_output_text,
 };
 
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
@@ -45,6 +45,7 @@ const LOCAL_WALLET_PROFILE_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_WALLET_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCAL_WALLET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOCAL_WALLET_OUTPUT_LIMIT: usize = 4096;
+const LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT: usize = 1024 * 1024;
 const LOCAL_WALLET_MAX_COMMAND_ARGS: usize = 64;
 const LOCAL_WALLET_MAX_COMMAND_ARG_LEN: usize = 2048;
 const LOCAL_WALLET_ENV_ALLOWLIST: &[&str] = &[
@@ -313,13 +314,13 @@ fn local_wallet_accounts_with_runner<R: LocalWalletRunner>(
         LocalWalletInvocation::Accounts,
         &redactions,
     )?;
-    if output.stdout.len() > LOCAL_WALLET_OUTPUT_LIMIT {
+    if output.stdout.len() > LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT {
         bail!(
             "wallet account list output exceeded {} bytes; refusing to parse partial account data",
-            LOCAL_WALLET_OUTPUT_LIMIT
+            LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT
         );
     }
-    let stdout = local_wallet_output_text(&output.stdout, &redactions);
+    let stdout = local_wallet_accounts_output_text(&output.stdout, &redactions);
     let stderr = local_wallet_output_text(&output.stderr, &redactions);
     let accounts = parse_local_wallet_accounts_output(&stdout);
 
@@ -1407,6 +1408,105 @@ exit 12
             }
             Ok(self.output.clone())
         }
+    }
+
+    #[derive(Debug)]
+    struct AccountsRunner {
+        output: LocalWalletOutput,
+    }
+
+    impl LocalWalletRunner for AccountsRunner {
+        fn run(
+            &self,
+            binary: &str,
+            _wallet_home: &str,
+            invocation: LocalWalletInvocation<'_>,
+            _redactions: &[&str],
+        ) -> Result<LocalWalletOutput> {
+            if binary != "wallet" {
+                bail!("unexpected wallet binary: {binary}");
+            }
+            if !matches!(invocation, LocalWalletInvocation::Accounts) {
+                bail!("unexpected wallet invocation");
+            }
+            Ok(self.output.clone())
+        }
+    }
+
+    #[test]
+    fn local_wallet_accounts_accepts_complete_output_larger_than_command_detail_limit() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("wallet_config.json"), b"{}")?;
+        std::fs::write(directory.path().join("storage.json"), b"{}")?;
+        let padding = "x".repeat(180);
+        let stdout = (0..49)
+            .map(|index| {
+                format!(
+                    "m/{index} Public/TestAccount{index} [asset-{index}]\n  Regular account\n  {{\"balance\":{index},\"padding\":\"{padding}\"}}\n"
+                )
+            })
+            .collect::<String>();
+        anyhow::ensure!(
+            stdout.len() > LOCAL_WALLET_OUTPUT_LIMIT,
+            "account-list fixture did not exceed the command-detail limit"
+        );
+        let runner = AccountsRunner {
+            output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: stdout.into_bytes(),
+                stderr: Vec::new(),
+            },
+        };
+
+        let report = local_wallet_accounts_with_runner(
+            &runner,
+            json!({
+                "wallet_binary": "wallet",
+                "wallet_home": directory.path(),
+                "network_profile": "testnet"
+            }),
+        )?;
+
+        anyhow::ensure!(report.accounts.len() == 49, "account rows were truncated");
+        let last = report.accounts.last().context("last account row missing")?;
+        anyhow::ensure!(
+            last.typed_id == "Public/TestAccount48" && last.label == "asset-48",
+            "last account row was not preserved: {last:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_accounts_rejects_output_above_dedicated_limit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("wallet_config.json"), b"{}")?;
+        std::fs::write(directory.path().join("storage.json"), b"{}")?;
+        let runner = AccountsRunner {
+            output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: vec![b'x'; LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT + 1],
+                stderr: Vec::new(),
+            },
+        };
+
+        let error = local_wallet_accounts_with_runner(
+            &runner,
+            json!({
+                "wallet_binary": "wallet",
+                "wallet_home": directory.path(),
+                "network_profile": "testnet"
+            }),
+        )
+        .err()
+        .context("oversized account output unexpectedly succeeded")?;
+
+        anyhow::ensure!(
+            format!("{error:#}")
+                == "wallet account list output exceeded 1048576 bytes; refusing to parse partial account data",
+            "oversized account output returned the wrong error: {error:#}"
+        );
+        Ok(())
     }
 
     #[test]

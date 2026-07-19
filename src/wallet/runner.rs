@@ -9,10 +9,10 @@ use anyhow::Result;
 
 use super::profile::local_wallet_binary_is_path_like;
 use super::{
-    LEGACY_LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_DEPLOY_TIMEOUT, LOCAL_WALLET_ENV_ALLOWLIST,
-    LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_LIST_TIMEOUT, LOCAL_WALLET_MUTATION_TIMEOUT,
-    LOCAL_WALLET_OUTPUT_LIMIT, LOCAL_WALLET_POLL_INTERVAL, LOCAL_WALLET_PROFILE_TIMEOUT,
-    LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
+    LEGACY_LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT, LOCAL_WALLET_DEPLOY_TIMEOUT,
+    LOCAL_WALLET_ENV_ALLOWLIST, LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_LIST_TIMEOUT,
+    LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT, LOCAL_WALLET_POLL_INTERVAL,
+    LOCAL_WALLET_PROFILE_TIMEOUT, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
 };
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, output_text, run_command, run_command_controlled,
@@ -125,6 +125,10 @@ impl LocalWalletRunner for ControlledCliLocalWalletRunner {
 
 pub(super) fn local_wallet_output_text(output: &[u8], redactions: &[&str]) -> String {
     output_text(output, redactions, LOCAL_WALLET_OUTPUT_LIMIT)
+}
+
+pub(super) fn local_wallet_accounts_output_text(output: &[u8], redactions: &[&str]) -> String {
+    output_text(output, redactions, LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT)
 }
 
 fn configure_invocation<'a>(
