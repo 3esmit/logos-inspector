@@ -182,27 +182,56 @@ pub fn prepare_catalog_catch_up(
     target_lib: CatalogBlockReference,
     context: CatalogEngineContext,
 ) -> CatalogEngineResult<Option<CatalogBatch>> {
+    prepare_catalog_catch_up_with_resume(snapshot, target_lib, context, false)
+}
+
+pub(crate) fn prepare_resumed_catalog_catch_up(
+    snapshot: &CatalogSnapshot,
+    target_lib: CatalogBlockReference,
+    context: CatalogEngineContext,
+) -> CatalogEngineResult<Option<CatalogBatch>> {
+    prepare_catalog_catch_up_with_resume(snapshot, target_lib, context, true)
+}
+
+fn prepare_catalog_catch_up_with_resume(
+    snapshot: &CatalogSnapshot,
+    target_lib: CatalogBlockReference,
+    context: CatalogEngineContext,
+    reconcile_unfinished_target: bool,
+) -> CatalogEngineResult<Option<CatalogBatch>> {
     validate_context(snapshot, context)?;
     validate_reference(&target_lib, "target LIB")?;
 
     let mut working = WorkingCatalog::from_snapshot(snapshot);
-    if let Some(cursor) = working
+    let cursor = working
         .traversal
         .as_ref()
         .and_then(|traversal| traversal.ingestion_cursor.as_ref())
-        && cursor.slot > target_lib.slot
-    {
-        return Err(CatalogEngineError::SourceInconsistent(format!(
-            "target LIB slot {} is behind ingestion cursor slot {}",
-            target_lib.slot, cursor.slot
-        )));
+        .cloned();
+    if let Some(cursor) = cursor.as_ref() {
+        if cursor.slot > target_lib.slot {
+            return Err(CatalogEngineError::SourceInconsistent(format!(
+                "target LIB slot {} is behind ingestion cursor slot {}",
+                target_lib.slot, cursor.slot
+            )));
+        }
+        if cursor.slot == target_lib.slot && cursor.block_id != target_lib.block_id {
+            return Err(CatalogEngineError::SourceInconsistent(
+                "target LIB id conflicts with the ingestion cursor at the same slot".to_owned(),
+            ));
+        }
     }
     if let Some(previous_target) = working
         .traversal
         .as_ref()
         .and_then(|traversal| traversal.target_lib.as_ref())
     {
-        if previous_target.slot > target_lib.slot {
+        let unfinished_target = cursor
+            .as_ref()
+            .is_none_or(|cursor| cursor.slot < previous_target.slot);
+        if previous_target.slot > target_lib.slot
+            && !(reconcile_unfinished_target && unfinished_target)
+        {
             return Err(CatalogEngineError::SourceInconsistent(format!(
                 "target LIB moved backward from slot {} to {}",
                 previous_target.slot, target_lib.slot
@@ -217,10 +246,6 @@ pub fn prepare_catalog_catch_up(
         }
     }
 
-    let cursor = working
-        .traversal
-        .as_ref()
-        .and_then(|traversal| traversal.ingestion_cursor.clone());
     working.traversal = Some(CatalogTraversal {
         target_lib: Some(target_lib.clone()),
         ingestion_cursor: cursor,

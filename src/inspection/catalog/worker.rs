@@ -15,9 +15,9 @@ use super::{
     ZoneCatalogRunMode, ZoneCatalogServiceError, ZoneCatalogServiceResult,
     ZoneCatalogSourceDescriptor, ZoneCatalogWorker, ZoneCatalogWorkerFuture,
     apply_catalog_identity_promotion, catalog_gap_repair_request, catalog_prefix_repair_request,
-    confirm_catalog_repair_gap, prepare_catalog_catch_up, reduce_catalog_gap_repair,
-    reduce_catalog_page, reduce_catalog_prefix_repair, reduce_catalog_repair,
-    repair_catalog_ancestry, verify_catalog_candidate,
+    confirm_catalog_repair_gap, prepare_catalog_catch_up, prepare_resumed_catalog_catch_up,
+    reduce_catalog_gap_repair, reduce_catalog_page, reduce_catalog_prefix_repair,
+    reduce_catalog_repair, repair_catalog_ancestry, verify_catalog_candidate,
 };
 use crate::{
     inspection::{CatalogVerificationState, NetworkScope},
@@ -230,6 +230,7 @@ async fn run_catalog_scan_with_pacer(
 ) -> ZoneCatalogServiceResult<()> {
     let mut next_repair_at_unix = 0;
     let mut no_progress_round = 0_u32;
+    let mut first_scan_cycle = true;
     loop {
         context.ensure_current()?;
         let status = source.chain_status().await.map_err(map_source_error)?;
@@ -238,9 +239,14 @@ async fn run_catalog_scan_with_pacer(
         let mut snapshot = catalog_snapshot(catalog.clone(), context).await?;
         let mut made_progress = false;
         let engine_context = engine_context(context, &snapshot)?;
-        if let Some(batch) = prepare_catalog_catch_up(&snapshot, target.clone(), engine_context)
-            .map_err(map_engine_error)?
-        {
+        let prepared = if first_scan_cycle {
+            first_scan_cycle = false;
+            prepare_resumed_catalog_catch_up(&snapshot, target.clone(), engine_context)
+        } else {
+            prepare_catalog_catch_up(&snapshot, target.clone(), engine_context)
+        }
+        .map_err(map_engine_error)?;
+        if let Some(batch) = prepared {
             snapshot = commit_catalog_batch(catalog.clone(), batch, context).await?;
             made_progress = true;
             publish_verified(context, snapshot.clone());
