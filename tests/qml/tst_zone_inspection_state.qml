@@ -1183,10 +1183,17 @@ TestCase {
             },
             observations: [],
             agreement: { state: "unconfigured" },
-            attestation_warning: null
+            attestation_warning: {
+                code: "legacy_evidence_matched",
+                message: "Legacy mapping matched finalized evidence."
+            }
         }))
 
         verify(mutationCallbackResponse.ok)
+        compare(sourceEditorState.sourceMutationWarning, {
+            code: "legacy_evidence_matched",
+            message: "Legacy mapping matched finalized evidence."
+        })
         compare(zoneState.activeZoneContext.selected_sequencer_source_id, null)
         compare(zoneState.activeZoneContext.source_config_revision, 2)
         verify(zoneState.contextRevision > contextBeforeMutation)

@@ -272,8 +272,12 @@ QtObject {
                 return
             }
 
-            sourceMutationWarning = report.attestation_warning || null
+            const warning = report.attestation_warning || null
             sourceMutationAccepted(report)
+            // Accepting a same-Zone config revision refreshes active context
+            // synchronously and resets this state. Publish its receipt warning
+            // after that refresh so the user can see the trust decision.
+            sourceMutationWarning = warning
             if (callback) {
                 callback(response)
             }
