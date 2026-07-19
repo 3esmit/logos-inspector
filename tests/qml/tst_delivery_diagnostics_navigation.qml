@@ -200,6 +200,36 @@ TestCase {
         })
     }
 
+    function test_store_availability_matches_selected_source_capability() {
+        model.deliveryDiagnosticsTab = "store"
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Store selected") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Manual query: unavailable. LogosCore CLI (Delivery) does not expose Store queries. Choose Direct Waku REST in Delivery settings.") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Payload viewing: unavailable. Payload viewing requires a Store-query-capable source.") !== null
+        })
+
+        model.messagingSourceMode = "rest"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "direct_delivery_rest",
+                    endpoint: "http://127.0.0.1:8645",
+                    provenance: "test"
+                }
+            }
+        })
+
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Manual query: available. Network / Delivery Store uses Direct Waku REST. Payloads are excluded by default.") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Payload viewing: opt-in. Enable Include payloads for one Store query.") !== null
+        })
+    }
+
     function test_throughput_requires_two_real_observations() {
         const key = "messaging.network_ingress_recent"
         const now = Date.now()

@@ -178,6 +178,8 @@ function sourceView(root, family, mode, options, details) {
         connectorId: descriptor.connectorId,
         connectionType: descriptor.connectionType,
         inputs: descriptor.inputs,
+        capabilities: Array.isArray(descriptor.capabilities)
+            ? descriptor.capabilities.slice() : [],
         options: options,
         currentIndex: function (candidateOptions) {
             return SourcePolicyProjection.sourceModeIndexFor(root, family, mode, candidateOptions || options)

@@ -821,15 +821,44 @@ function deliveryTopicRows(page) {
 }
 
 function deliveryStoreRows(page) {
+    const queryAvailable = deliverySourceCapabilityAvailable(
+        page, "delivery.store.query")
+    const sourceName = String(page.sourceName() || qsTr("Current Delivery source"))
     return [
         page.protocolStatusRow(qsTr("Store mounted state"), "Store", "messaging.store_peers"),
         page.metricRow(qsTr("Store peers"), "messaging.store_peers"),
         page.metricRow(qsTr("Stored messages"), "messaging.store_messages"),
         page.metricRow(qsTr("Store queries in window"), "messaging.store_query_requests_recent"),
         page.metricRow(qsTr("Store/archive errors in window"), "messaging.store_errors_recent"),
-        page.statusRow(qsTr("Manual query"), qsTr("available"), qsTr("Network / Delivery Store tab uses includeData=false by default."), "success"),
-        page.statusRow(qsTr("Payload viewing"), qsTr("disabled"), qsTr("Payload bytes stay hidden unless a future query opts in."), "success")
+        page.statusRow(
+            qsTr("Manual query"),
+            queryAvailable ? qsTr("available") : qsTr("unavailable"),
+            queryAvailable
+                ? qsTr("Network / Delivery Store uses Direct Waku REST. Payloads are excluded by default.")
+                : qsTr("%1 does not expose Store queries. Choose Direct Waku REST in Delivery settings.").arg(sourceName),
+            queryAvailable ? "success" : "neutral"),
+        page.statusRow(
+            qsTr("Payload viewing"),
+            queryAvailable ? qsTr("opt-in") : qsTr("unavailable"),
+            queryAvailable
+                ? qsTr("Enable Include payloads for one Store query.")
+                : qsTr("Payload viewing requires a Store-query-capable source."),
+            "neutral")
     ]
+}
+
+function deliverySourceCapabilityAvailable(page, key) {
+    const route = page && typeof page.sourceRoute === "function"
+        ? page.sourceRoute() : null
+    const capabilities = route && Array.isArray(route.capabilities)
+        ? route.capabilities : []
+    const expected = String(key || "")
+    for (let index = 0; index < capabilities.length; ++index) {
+        if (String(capabilities[index] || "") === expected) {
+            return true
+        }
+    }
+    return false
 }
 
 function deliveryIdentityRows(page) {
