@@ -177,6 +177,10 @@ QtObject {
         if (!l2Context.l2ReadEnabled || normalizedId.length === 0 || sourceId.length === 0) {
             return false
         }
+        if ((sourceRole === "sequencer" && !l2Context.l2SequencerReadEnabled)
+                || (sourceRole === "indexer" && !l2Context.l2IndexerReadEnabled)) {
+            return false
+        }
         resetL2AccountState(true)
         l2AccountId = normalizedId
         if (sourceRole === "indexer" && sourceId === l2Context.l2IndexerSourceId()) {
