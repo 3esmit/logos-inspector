@@ -1225,6 +1225,56 @@ TestCase {
         compare(sourceEditorState.sourceMutationError, "revision conflict")
     }
 
+    function test_source_reload_reads_current_persisted_config_and_clears_conflict() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a", 2)
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+
+        const initialConfig = configuredSourceConfig()
+        initialConfig.config_revision = 2
+        initialConfig.sequencer_sources[0].source_id = "src-a"
+        initialConfig.selected_sequencer_source_id = "src-a"
+        gateway.respondNext("zoneDetail", ok(detailReport(row, initialConfig)))
+        sourceEditorState.sourceMutationError = "revision conflict"
+
+        let reloadResponse = null
+        sourceEditorState.reloadChannelSourceConfig(function (response) {
+            reloadResponse = response
+        })
+        verify(sourceEditorState.sourceMutationInFlight)
+        const request = gateway.pendingRequest("channelSourceConfigCurrent")
+        verify(request !== null)
+        compare(request.args, [{
+            network_scope: scope("network-a"),
+            channel_id: "zone-a"
+        }])
+
+        const currentConfig = configuredSourceConfig()
+        currentConfig.config_revision = 3
+        currentConfig.sequencer_sources[0].source_id = "src-a"
+        currentConfig.sequencer_sources[0].label = "Concurrent source revision"
+        currentConfig.selected_sequencer_source_id = "src-a"
+        currentConfig.network_scope = scope("network-a")
+        currentConfig.channel_id = "zone-a"
+        gateway.respond(request, ok({
+            report_kind: "zones.channel_source_config_current",
+            schema_version: 1,
+            source_revision: 1,
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            config: currentConfig
+        }))
+
+        verify(reloadResponse !== null && reloadResponse.ok)
+        compare(reloadResponse.value.config.config_revision, 3)
+        compare(reloadResponse.value.config.sequencer_sources[0].label,
+            "Concurrent source revision")
+        verify(!sourceEditorState.sourceMutationInFlight)
+        compare(sourceEditorState.sourceMutationError, "")
+        compare(zoneState.activeZoneContext.source_config_revision, 2)
+    }
+
     function test_managed_indexer_uses_selected_channel_and_bedrock_endpoint() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel

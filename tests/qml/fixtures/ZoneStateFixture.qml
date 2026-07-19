@@ -264,6 +264,9 @@ QtObject {
     property string evidencePayloadError: ""
     property var lastMutationRequest: null
     property string mutationFailure: ""
+    property var sourceReloadConfig: null
+    property string sourceReloadFailure: ""
+    property int sourceReloadCount: 0
     property int retryCount: 0
     property bool clearTransactionOnBlockRefresh: false
 
@@ -648,6 +651,31 @@ QtObject {
             callback(mutationFailure.length > 0
                 ? { ok: false, value: null, text: "", error: mutationFailure }
                 : { ok: true, value: {}, text: "", error: "" })
+        }
+        return 1
+    }
+
+    function reloadChannelSourceConfig(callback) {
+        sourceReloadCount += 1
+        sourceMutationError = ""
+        const response = sourceReloadFailure.length > 0
+            ? { ok: false, value: null, text: "", error: sourceReloadFailure }
+            : {
+                ok: true,
+                value: {
+                    report_kind: "zones.channel_source_config_current",
+                    schema_version: 1,
+                    source_revision: sourceRevision,
+                    network_scope: networkScope,
+                    channel_id: activeZoneId,
+                    config: sourceReloadConfig || zoneDetail.channel_source_config
+                },
+                text: "",
+                error: ""
+            }
+        sourceMutationError = response.ok ? "" : response.error
+        if (callback) {
+            callback(response)
         }
         return 1
     }

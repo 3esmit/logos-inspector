@@ -287,4 +287,77 @@ QtObject {
         })
     }
 
+    function reloadChannelSourceConfig(callback) {
+        if (sourceMutationInFlight) {
+            const busyResponse = ZoneInspectionContract.failedResponse(qsTr("Another Channel source edit is still running."))
+            if (callback) {
+                callback(busyResponse)
+            }
+            return null
+        }
+        if (!activeZoneContext || verification !== "verified") {
+            const inactiveResponse = ZoneInspectionContract.failedResponse(qsTr("A verified active Zone is required."))
+            if (callback) {
+                callback(inactiveResponse)
+            }
+            return null
+        }
+
+        sourceMutationRequestRevision += 1
+        const requestRevision = sourceMutationRequestRevision
+        const generation = sourceGeneration
+        const requestedContextRevision = ZoneInspectionContract.numericRevision(activeZoneContext.context_revision)
+        const channelId = activeZoneId
+        const scope = networkScopeKey
+        sourceMutationInFlight = true
+        sourceMutationError = ""
+        return ZoneInspectionContract.dispatch(gateway, "channelSourceConfigCurrent", {
+            network_scope: networkScope,
+            channel_id: channelId
+        }, function (response) {
+            if (requestRevision !== sourceMutationRequestRevision) {
+                return
+            }
+            sourceMutationInFlight = false
+            if (generation !== sourceGeneration || scope !== networkScopeKey
+                    || !activeZoneContext || channelId !== activeZoneId
+                    || requestedContextRevision !== ZoneInspectionContract.numericRevision(activeZoneContext.context_revision)) {
+                const staleResponse = ZoneInspectionContract.failedResponse(
+                    qsTr("Channel source reload belongs to stale Zone state."))
+                sourceMutationError = staleResponse.error
+                if (callback) {
+                    callback(staleResponse)
+                }
+                return
+            }
+            if (!ZoneInspectionContract.validReportResponse(response,
+                    "zones.channel_source_config_current")) {
+                sourceMutationError = ZoneInspectionContract.responseError(response,
+                    qsTr("Channel source reload failed."))
+                if (callback) {
+                    callback(response)
+                }
+                return
+            }
+            const report = response.value
+            if (ZoneInspectionContract.numericRevision(report.source_revision) !== sourceRevision
+                    || String(report.channel_id || "") !== channelId
+                    || ZoneInspectionContract.scopeKey(report.network_scope) !== networkScopeKey
+                    || !report.config
+                    || String(report.config.channel_id || "") !== channelId
+                    || ZoneInspectionContract.scopeKey(report.config.network_scope) !== networkScopeKey) {
+                sourceMutationError = qsTr("Channel source reload belongs to stale Zone state.")
+                const staleResponse = ZoneInspectionContract.failedResponse(sourceMutationError)
+                if (callback) {
+                    callback(staleResponse)
+                }
+                return
+            }
+            sourceMutationError = ""
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+
 }

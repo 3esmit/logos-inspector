@@ -22,6 +22,7 @@ use crate::{
         catalog::{
             ChannelSourceApplyRequest, ChannelSourceAttestationRecovery,
             ChannelSourceAttestationWarning, ChannelSourceAttestationWarningCode,
+            ChannelSourceConfigCurrentReport, ChannelSourceConfigCurrentRequest,
             ChannelSourceConfigReport, ZONE_CATALOG_REPORT_SCHEMA_VERSION,
             ZoneCatalogConfigureReport, ZoneCatalogConfigureRequest, ZoneCatalogControl,
             ZoneCatalogControlReport, ZoneCatalogControlRequest, ZoneCatalogCoverageReport,
@@ -49,6 +50,7 @@ pub(crate) enum ZoneCatalogCommand {
     Detail,
     Retry,
     Rebuild,
+    CurrentSourceConfig,
     ApplySourceConfig,
     EvidencePage,
     EvidenceDetail,
@@ -56,13 +58,17 @@ pub(crate) enum ZoneCatalogCommand {
     EvidencePayloadRelease,
 }
 
-const COMMANDS: [(&str, ZoneCatalogCommand); 11] = [
+const COMMANDS: [(&str, ZoneCatalogCommand); 12] = [
     ("zoneCatalogConfigure", ZoneCatalogCommand::Configure),
     ("zoneCatalogStatus", ZoneCatalogCommand::Status),
     ("zonesSummary", ZoneCatalogCommand::Summaries),
     ("zoneDetail", ZoneCatalogCommand::Detail),
     ("zoneCatalogRetry", ZoneCatalogCommand::Retry),
     ("zoneCatalogRebuild", ZoneCatalogCommand::Rebuild),
+    (
+        "channelSourceConfigCurrent",
+        ZoneCatalogCommand::CurrentSourceConfig,
+    ),
     (
         "channelSourceConfigApply",
         ZoneCatalogCommand::ApplySourceConfig,
@@ -224,6 +230,10 @@ impl ZoneCatalogCommandInterface {
             ZoneCatalogCommand::Rebuild => {
                 let request = decode_object_request(args, "zoneCatalogRebuild")?;
                 to_value(self.control(runtime, request, ZoneCatalogControl::Rebuild)?)
+            }
+            ZoneCatalogCommand::CurrentSourceConfig => {
+                let request = decode_object_request(args, "channelSourceConfigCurrent")?;
+                to_value(self.current_source_config(request)?)
             }
             ZoneCatalogCommand::ApplySourceConfig => {
                 let request = decode_object_request(args, "channelSourceConfigApply")?;
@@ -432,6 +442,50 @@ impl ZoneCatalogCommandInterface {
         let service = self.service.report();
         let state = self.lock_state()?;
         state.source_config_report(&service, config, attestation_warning)
+    }
+
+    fn current_source_config(
+        &self,
+        request: ChannelSourceConfigCurrentRequest,
+    ) -> Result<ChannelSourceConfigCurrentReport> {
+        let service = self.service.report();
+        require_verified(&service.verification_state)?;
+        let catalog = service
+            .catalog
+            .context("verified Zone Catalog is unavailable")?;
+        if request.network_scope != catalog.metadata.network_scope {
+            bail!("Channel source configuration belongs to a stale network scope");
+        }
+        {
+            let state = self.lock_state()?;
+            if !state.contains_channel(&request.channel_id) {
+                bail!("Channel is not present in current Zone Catalog projection");
+            }
+        }
+        let config = self
+            .source_store
+            .load()?
+            .into_iter()
+            .find(|config| {
+                config.network_scope == request.network_scope
+                    && config.channel_id == request.channel_id
+            })
+            .unwrap_or_else(|| ChannelSourceConfig {
+                network_scope: request.network_scope.clone(),
+                channel_id: request.channel_id.clone(),
+                config_revision: 0,
+                sequencer_sources: Vec::new(),
+                selected_sequencer_source_id: None,
+                indexer_source: None,
+            });
+        Ok(ChannelSourceConfigCurrentReport {
+            report_kind: "zones.channel_source_config_current",
+            schema_version: ZONE_CATALOG_REPORT_SCHEMA_VERSION,
+            source_revision: service.source_revision,
+            network_scope: request.network_scope,
+            channel_id: request.channel_id,
+            config,
+        })
     }
 
     fn evidence_page(
@@ -852,6 +906,29 @@ mod tests {
             config(&scope, &channel_a, 'c', 2, 2),
             config(&scope, &channel_b, 'd', 1, 1),
         ])?;
+        let current_source_command = zone_catalog_command("channelSourceConfigCurrent")
+            .context("current Channel source command is missing")?;
+        let current_source = interface.bridge_call(
+            &runtime,
+            current_source_command,
+            &json!([{
+                "network_scope": scope,
+                "channel_id": channel_a
+            }]),
+        )?;
+        if current_source.get("report_kind").and_then(Value::as_str)
+            != Some("zones.channel_source_config_current")
+            || current_source
+                .pointer("/config/config_revision")
+                .and_then(Value::as_u64)
+                != Some(2)
+            || current_source.get("network_scope") != Some(&network_scope)
+            || current_source.get("channel_id").and_then(Value::as_str) != Some(channel_a.as_str())
+        {
+            bail!(
+                "current Channel source read did not return persisted revision 2: {current_source}"
+            );
+        }
         let current_status =
             interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
         let current_summary_revision = required_u64(&current_status, "summary_revision")?;
