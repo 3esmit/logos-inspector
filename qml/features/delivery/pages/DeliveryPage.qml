@@ -305,17 +305,31 @@ ColumnLayout {
             ]
             pending: root.sourceView.pending
             statusText: root.diagnosticsStatusText("delivery", root.sourceView.statusLine, qsTr("Delivery diagnostics"))
-            guardedTitle: qsTr("Confirmed actions")
+            guardedTitle: qsTr("Delivery workflows")
             permissionEnabled: root.diagnosticsGateEnabled("delivery")
+            permissionEnabledTitle: qsTr("Delivery tools available")
+            permissionEnabledTone: "success"
             permissionDisabledTitle: qsTr("Diagnostics unavailable")
-            guardedMessage: qsTr("Dial, publish, subscribe, and lightpush probes are not auto-run. They need backend adapters and per-action confirmation.")
+            guardedMessage: qsTr("Open the Delivery workspace for confirmed subscribe, unsubscribe, send, and Store-query workflows. Store support remains source-specific. Peer ping is unavailable because current Delivery adapters expose no peer-ping operation.")
             guardedActions: [
-                { text: qsTr("Ping peer"), width: 118 },
-                { text: qsTr("Store query"), width: 122 },
-                { text: qsTr("Lightpush test"), width: 136 }
+                {
+                    action: "messages",
+                    text: qsTr("Open message tools"),
+                    accessibleName: qsTr("Open Delivery message tools"),
+                    width: 174,
+                    enabled: true
+                },
+                {
+                    action: "store",
+                    text: qsTr("Open Store tools"),
+                    accessibleName: qsTr("Open Delivery Store tools"),
+                    width: 158,
+                    enabled: true
+                }
             ]
             evidenceRows: root.sourceView.evidenceRows
             onRefreshRequested: root.refreshSource(true)
+            onGuardedActionRequested: action => root.openDeliveryWorkflow(action)
         }
     }
 
@@ -342,6 +356,13 @@ ColumnLayout {
 
     function refreshSource(showResult) {
         sourceSession.refresh(showResult)
+    }
+
+    function openDeliveryWorkflow(action) {
+        const tab = String(action || "") === "store" ? "store" : "messages"
+        root.model.pushNavigationHistory()
+        root.model.deliveryAppTab = tab
+        root.model.selectView("messaging", false)
     }
 
     function diagnosticsGate(action) {

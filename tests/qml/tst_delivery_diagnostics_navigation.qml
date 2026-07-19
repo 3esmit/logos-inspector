@@ -49,7 +49,9 @@ TestCase {
             id: pageLoader
 
             sourceComponent: model.shell.currentView === "diagnosticsDelivery"
-                ? deliveryDiagnosticsComponent : emptyComponent
+                ? deliveryDiagnosticsComponent
+                : (model.shell.currentView === "messaging"
+                    ? deliveryWorkspaceComponent : emptyComponent)
             width: testWindow.width
         }
     }
@@ -58,6 +60,16 @@ TestCase {
         id: deliveryDiagnosticsComponent
 
         DeliveryPage {
+            theme: theme
+            model: model
+            width: testWindow.width
+        }
+    }
+
+    Component {
+        id: deliveryWorkspaceComponent
+
+        DeliveryAppPage {
             theme: theme
             model: model
             width: testWindow.width
@@ -91,6 +103,7 @@ TestCase {
         model.metrics.dashboardMetricSeriesLastSeen = ({})
         model.metrics.dashboardMetricHistoryRevision += 1
         model.metrics.resetDeliveryModuleEventTelemetry("unknown", "")
+        model.deliveryAppTab = "identity"
         model.deliveryDiagnosticsTab = "overview"
         model.shell.currentView = "diagnosticsDelivery"
         model.navigationBackStack = []
@@ -125,6 +138,65 @@ TestCase {
         compare(model.deliveryDiagnosticsTab, "store")
         tryVerify(function () {
             return findAccessibleByName(pageLoader.item, "Store selected") !== null
+        })
+    }
+
+    function test_live_delivery_workflow_routes_replace_dead_placeholders() {
+        model.deliveryDiagnosticsTab = "diagnostics"
+        tryCompare(model, "deliveryDiagnosticsTab", "diagnostics")
+        tryVerify(function () {
+            return findAccessibleByName(
+                pageLoader.item, "Diagnostics selected") !== null
+        })
+
+        let messageTools = null
+        let storeTools = null
+        tryVerify(function () {
+            messageTools = findAccessibleByName(
+                pageLoader.item, "Open Delivery message tools")
+            storeTools = findAccessibleByName(
+                pageLoader.item, "Open Delivery Store tools")
+            return messageTools !== null && storeTools !== null
+        })
+
+        verify(messageTools.enabled)
+        verify(storeTools.enabled)
+        verify(findAccessibleByName(pageLoader.item, "Ping peer") === null)
+        verify(findAccessibleByName(pageLoader.item, "Lightpush test") === null)
+        verify(findAccessibleByName(pageLoader.item, "Adapters pending") === null)
+
+        mouseClick(messageTools,
+            messageTools.width / 2, messageTools.height / 2)
+
+        compare(model.deliveryAppTab, "messages")
+        compare(model.shell.currentView, "messaging")
+        verify(model.canNavigateBack())
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item, "Messages selected") !== null
+                && findAccessibleByName(pageLoader.item, "Subscribe") !== null
+                && findAccessibleByName(pageLoader.item, "Send") !== null
+        })
+
+        model.navigateBack()
+        compare(model.shell.currentView, "diagnosticsDelivery")
+        compare(model.deliveryAppTab, "identity")
+        compare(model.deliveryDiagnosticsTab, "diagnostics")
+
+        tryVerify(function () {
+            messageTools = findAccessibleByName(
+                pageLoader.item, "Open Delivery message tools")
+            storeTools = findAccessibleByName(
+                pageLoader.item, "Open Delivery Store tools")
+            return messageTools !== null && storeTools !== null
+        })
+
+        mouseClick(storeTools, storeTools.width / 2, storeTools.height / 2)
+
+        compare(model.deliveryAppTab, "store")
+        compare(model.shell.currentView, "messaging")
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item, "Store selected") !== null
+                && findAccessibleByName(pageLoader.item, "Query Store") !== null
         })
     }
 
