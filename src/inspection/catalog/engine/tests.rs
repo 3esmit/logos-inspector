@@ -141,6 +141,89 @@ fn advancing_target_resets_completion_without_losing_catalog_rows() -> Result<()
 }
 
 #[test]
+fn resumed_source_retargets_only_an_unfinished_traversal() -> Result<()> {
+    let (_directory, catalog) = test_catalog(100)?;
+    let previous_target = reference(20, 'e');
+    let snapshot = prepare_and_commit(&catalog, previous_target.clone(), context(1, 101)?)?;
+    let partial_page = page(
+        &previous_target,
+        vec![
+            block_event(0, '0', 'f', Vec::new(), &previous_target),
+            block_event(10, 'a', '0', Vec::new(), &previous_target),
+        ],
+    );
+    let (batch, remaining) = expect_commit(reduce_catalog_page(
+        &snapshot,
+        partial_page,
+        context(1, 102)?,
+    )?)?;
+    ensure!(remaining.is_empty(), "partial setup left events");
+    let partial = catalog.commit_batch(batch)?;
+    let resumed_target = reference(15, 'f');
+
+    let error = prepare_catalog_catch_up(&partial, resumed_target.clone(), context(1, 103)?)
+        .err()
+        .context("same-run target rollback should remain rejected")?;
+    ensure!(
+        matches!(error, CatalogEngineError::SourceInconsistent(_)),
+        "same-run target rollback returned wrong error: {error}"
+    );
+
+    let batch =
+        prepare_resumed_catalog_catch_up(&partial, resumed_target.clone(), context(2, 104)?)?
+            .context("resumed unfinished traversal should retarget")?;
+    let resumed = catalog.commit_batch(batch)?;
+    ensure!(
+        resumed
+            .traversal
+            .as_ref()
+            .and_then(|traversal| traversal.target_lib.as_ref())
+            == Some(&resumed_target),
+        "resumed traversal kept stale target"
+    );
+    ensure!(
+        resumed
+            .traversal
+            .as_ref()
+            .and_then(|traversal| traversal.ingestion_cursor.as_ref())
+            == Some(&reference(10, 'a')),
+        "resumed traversal moved its verified cursor"
+    );
+
+    let final_page = page(
+        &resumed_target,
+        vec![block_event(15, 'f', 'a', Vec::new(), &resumed_target)],
+    );
+    let (batch, remaining) =
+        expect_commit(reduce_catalog_page(&resumed, final_page, context(2, 105)?)?)?;
+    ensure!(remaining.is_empty(), "resumed page left events");
+    let completed = catalog.commit_batch(batch)?;
+    ensure!(
+        completed
+            .traversal
+            .as_ref()
+            .and_then(|traversal| traversal.ingestion_cursor.as_ref())
+            == Some(&resumed_target),
+        "resumed traversal did not reach reconciled target"
+    );
+    Ok(())
+}
+
+#[test]
+fn resumed_source_rejects_target_behind_completed_cursor() -> Result<()> {
+    let (_directory, catalog) = complete_empty_catalog()?;
+    let completed = catalog.snapshot()?;
+    let error = prepare_resumed_catalog_catch_up(&completed, reference(8, '8'), context(2, 104)?)
+        .err()
+        .context("completed target rollback should fail")?;
+    ensure!(
+        matches!(error, CatalogEngineError::SourceInconsistent(_)),
+        "completed target rollback returned wrong error: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn bounded_repair_connects_page_without_opening_gap() -> Result<()> {
     let (_directory, catalog, snapshot, target) = lower_segment_catalog()?;
     let pending = page(
