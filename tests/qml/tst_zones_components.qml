@@ -172,6 +172,12 @@ TestCase {
         ChannelSourceRow {}
     }
 
+    Component {
+        id: sourcesSectionFactory
+
+        ChannelSourcesSection {}
+    }
+
     function init() {
         zoneState.verification = "verified"
         zoneState.coverage = {
@@ -582,6 +588,53 @@ TestCase {
                 qsTr("Evidence matched")))
         } finally {
             row.destroy()
+        }
+    }
+
+    function test_persisted_evidence_match_keeps_legacy_identity_disclosure() {
+        const channelId = FixtureData.identity("1")
+        const detail = FixtureData.detailFor(channelId)
+        detail.channel_source_config = {
+            config_revision: 2,
+            selected_sequencer_source_id: null,
+            sequencer_sources: [{
+                source_id: "src_evidence_matched",
+                label: "Evidence-matched Sequencer",
+                target: {
+                    kind: "rpc",
+                    endpoint: "https://sequencer.example/"
+                },
+                channel_attestation: {
+                    state: "persisted_evidence_matched"
+                }
+            }],
+            indexer_source: null
+        }
+        detail.source_observations = []
+        zoneState.sourceMutationWarning = null
+        const section = sourcesSectionFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: zoneState,
+            detail: detail,
+            width: 900
+        })
+        verify(section !== null)
+        try {
+            compare(section.config.sequencer_sources.length, 1)
+            compare(section.config.sequencer_sources[0].channel_attestation.state,
+                "persisted_evidence_matched")
+            verify(section.hasPersistedLegacyIdentity)
+            const disclosure = findChild(section, "channelSourceAttestationWarning")
+            verify(disclosure !== null)
+            verify(disclosure.visible)
+            compare(disclosure.title, qsTr("Legacy Sequencer identity"))
+            compare(disclosure.message,
+                qsTr("Legacy Sequencer does not expose Channel identity. This user-selected mapping is enabled because its live block matches finalized L1 evidence for this Channel."))
+            compare(disclosure.Accessible.role, Accessible.StaticText)
+            compare(disclosure.Accessible.name,
+                qsTr("%1. %2").arg(disclosure.title).arg(disclosure.message))
+        } finally {
+            section.destroy()
         }
     }
 

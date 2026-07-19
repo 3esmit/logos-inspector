@@ -25,6 +25,36 @@ ColumnLayout {
         ? root.detail.source_observations : []
     readonly property bool hasDirtyDraft: editorLoader.editor !== null
         && editorLoader.editor.dirty
+    readonly property string mutationWarningCode: String(
+        root.zoneState.sourceMutationWarning
+        && root.zoneState.sourceMutationWarning.code || "")
+    readonly property string mutationWarningMessage: String(
+        root.zoneState.sourceMutationWarning
+        && root.zoneState.sourceMutationWarning.message || "")
+    readonly property bool hasPersistedLegacyIdentity: {
+        const sources = root.config && root.config.sequencer_sources
+            ? root.config.sequencer_sources : []
+        for (let index = 0; index < sources.length; ++index) {
+            const attestation = sources[index]
+                && sources[index].channel_attestation
+            if (String(attestation && attestation.state || "")
+                    === "persisted_evidence_matched") {
+                return true
+            }
+        }
+        return false
+    }
+    readonly property string persistedLegacyIdentityMessage:
+        root.hasPersistedLegacyIdentity
+            ? qsTr("Legacy Sequencer does not expose Channel identity. This user-selected mapping is enabled because its live block matches finalized L1 evidence for this Channel.")
+            : ""
+    readonly property string attestationWarningMessage:
+        root.mutationWarningMessage.length > 0
+            ? root.mutationWarningMessage : root.persistedLegacyIdentityMessage
+    readonly property bool attestationWarningIsLegacy:
+        root.mutationWarningCode === "legacy_evidence_matched"
+            || (root.mutationWarningMessage.length === 0
+                && root.hasPersistedLegacyIdentity)
 
     objectName: "channelSourcesSection"
     spacing: root.theme.gapLarge
@@ -121,6 +151,17 @@ ColumnLayout {
             onRemoveRequested: root.confirmRemove("sequencer", modelData)
             onRetryRequested: root.retryAttestation(modelData)
         }
+    }
+
+    StatusMessage {
+        objectName: "channelSourceAttestationWarning"
+        visible: root.attestationWarningMessage.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: root.attestationWarningIsLegacy
+            ? qsTr("Legacy Sequencer identity") : qsTr("Source verification")
+        message: root.attestationWarningMessage
+        Layout.fillWidth: true
     }
 
     Rectangle {
@@ -240,17 +281,6 @@ ColumnLayout {
             onReloadRequested: root.reloadDraft()
         }
         onLoaded: root.initializeEditor()
-    }
-
-    Text {
-        visible: root.zoneState.sourceMutationWarning !== null
-        text: String(root.zoneState.sourceMutationWarning
-            && root.zoneState.sourceMutationWarning.message || "")
-        color: root.theme.warning
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: root.theme.dataText
-        Layout.fillWidth: true
     }
 
     Text {
