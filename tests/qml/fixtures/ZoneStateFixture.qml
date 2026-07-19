@@ -234,11 +234,14 @@ QtObject {
             || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
     readonly property bool l2ReadEnabled: verification === "verified"
         && l2Applicable && l2SourceConfigured
+    property bool sequencerSourceReadEligible: true
+    readonly property bool l2SequencerConfigured: l2Applicable
+        && String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "").length > 0
     readonly property bool l2IndexerReadEnabled: l2ReadEnabled
         && String(activeZoneContext && activeZoneContext.indexer_source_id || "").length > 0
     readonly property bool l2SequencerReadEnabled: l2ReadEnabled
-        && String(activeZoneContext
-            && activeZoneContext.selected_sequencer_source_id || "").length > 0
+        && l2SequencerConfigured && sequencerSourceReadEligible
 
     property string evidenceFilter: "all"
     property var evidenceRows: []

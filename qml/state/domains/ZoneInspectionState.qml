@@ -59,6 +59,9 @@ QtObject {
     property string pendingZoneRestoreId: ""
     property string pendingZoneRestoreScopeKey: ""
 
+    readonly property bool selectedSequencerReadEligible:
+        selectedSequencerSourceReadEligible()
+
     readonly property bool statusPollingEnabled: started
         && catalogConfigured
         && desiredSourceKey.length > 0
@@ -95,6 +98,7 @@ QtObject {
         gateway: root.gateway
         activeZoneContext: root.activeZoneContext
         verification: root.verification
+        sequencerSourceReadEligible: root.selectedSequencerReadEligible
         appModel: root.appModel
     }
     readonly property ZoneEvidenceState evidence: ZoneEvidenceState {
@@ -988,6 +992,56 @@ QtObject {
             sequencer_sources: sequencers,
             indexer_source: config && config.indexer_source ? config.indexer_source : null
         }
+    }
+
+    function selectedSequencerSourceReadEligible() {
+        const sourceId = String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "")
+        if (sourceId.length === 0 || !zoneDetail) {
+            return false
+        }
+
+        const config = zoneDetail.channel_source_config || ({})
+        const sources = Array.isArray(config.sequencer_sources)
+            ? config.sequencer_sources : []
+        let configured = null
+        for (let i = 0; i < sources.length; ++i) {
+            const source = sources[i] || ({})
+            if (String(source.source_id || "") === sourceId) {
+                configured = source
+                break
+            }
+        }
+        if (!configured) {
+            return false
+        }
+
+        const observations = Array.isArray(zoneDetail.source_observations)
+            ? zoneDetail.source_observations : []
+        let observation = null
+        for (let j = 0; j < observations.length; ++j) {
+            const candidate = observations[j] || ({})
+            if (String(candidate.source_id || "") === sourceId
+                    && String(candidate.role || "") === "sequencer") {
+                observation = candidate
+                break
+            }
+        }
+        const observedBinding = String(observation
+            && observation.binding_state || "")
+        const observedHealth = String(observation && observation.health || "")
+        if (observedBinding === "channel_mismatch"
+                || observedHealth === "channel_mismatch") {
+            return false
+        }
+        if (observedBinding === "runtime_attested"
+                || observedBinding === "persisted_attested") {
+            return true
+        }
+
+        const configuredBinding = String(configured.binding_state || "")
+        return configuredBinding === "persisted_attested"
+            || configuredBinding === "runtime_attested"
     }
 
     function acceptSourceMutationReport(report) {

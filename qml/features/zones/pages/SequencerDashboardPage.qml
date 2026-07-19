@@ -16,6 +16,7 @@ ColumnLayout {
     readonly property var zoneState: root.model.zoneInspection
     readonly property var l2State: root.zoneState.l2
     readonly property string sequencerSourceId: root.l2State.l2SequencerSourceId()
+    readonly property bool sequencerConfigured: root.l2State.l2SequencerConfigured
     readonly property bool sequencerReady: root.l2State.l2SequencerReadEnabled
 
     objectName: "sequencerDashboardPage"
@@ -37,7 +38,7 @@ ColumnLayout {
         layerLabel: qsTr("SEQUENCER")
         breadcrumb: qsTr("Zones / Selected Sequencer")
         title: qsTr("Sequencer")
-        subtitle: root.sequencerReady
+        subtitle: root.sequencerConfigured
             ? root.sequencerSourceId
             : qsTr("No selected Sequencer source")
 
@@ -52,18 +53,24 @@ ColumnLayout {
         visible: !root.sequencerReady
         theme: root.theme
         tone: root.l2State.l2Applicable ? "warning" : "info"
-        title: root.l2State.l2Applicable
-            ? qsTr("Sequencer source required") : qsTr("No active Sequencer Zone")
-        message: root.l2State.l2Applicable
-            ? qsTr("Select a Sequencer source in this Zone before opening Sequencer data.")
-            : qsTr("Select a verified Sequencer Zone from Zones.")
+        title: !root.l2State.l2Applicable
+            ? qsTr("No active Sequencer Zone")
+            : root.sequencerConfigured
+                ? qsTr("Sequencer source not ready")
+                : qsTr("Sequencer source required")
+        message: !root.l2State.l2Applicable
+            ? qsTr("Select a verified Sequencer Zone from Zones.")
+            : root.sequencerConfigured
+                ? qsTr("Waiting for the selected Sequencer source to confirm this Channel.")
+                : qsTr("Select a Sequencer source in this Zone before opening Sequencer data.")
         Layout.fillWidth: true
     }
 
     ActionButton {
         visible: !root.sequencerReady
         theme: root.theme
-        text: qsTr("Open Zone Sources")
+        text: root.sequencerConfigured
+            ? qsTr("Review Zone Sources") : qsTr("Open Zone Sources")
         Layout.preferredWidth: 176
         onClicked: root.openSources()
     }
