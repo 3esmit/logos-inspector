@@ -96,6 +96,19 @@ pub(super) fn resolve_local_wallet_command_profile(
     )
 }
 
+pub(super) fn resolve_local_wallet_send_profile(
+    profile: Value,
+) -> Result<ResolvedLocalWalletProfile> {
+    resolve_local_wallet_profile_with_requirements(
+        profile,
+        "send wallet transaction",
+        WalletHomeRequirements {
+            require_config: true,
+            require_storage: true,
+        },
+    )
+}
+
 fn resolve_local_wallet_profile_with_requirements(
     profile: Value,
     action: &str,
