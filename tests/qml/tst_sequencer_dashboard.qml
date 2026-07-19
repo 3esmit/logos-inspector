@@ -167,6 +167,7 @@ TestCase {
         page.currentTab = ""
         wait(0)
         zoneState.verification = "verified"
+        zoneState.sequencerSourceReadEligible = true
         zoneState.activeZoneId = FixtureData.identity("1")
         zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
         zoneState.resetL2Fixture()
@@ -187,6 +188,31 @@ TestCase {
         appModel.pendingInspectionEntityRef = null
         page.currentTab = "blocks"
         wait(0)
+    }
+
+    function test_pending_attestation_waits_then_loads_once_when_runtime_attested() {
+        zoneState.sequencerSourceReadEligible = false
+        wait(0)
+        zoneState.l2BlocksLoaded = false
+        zoneState.l2RefreshCount = 0
+
+        compare(findChild(page, "zoneL2Blocks"), null)
+        compare(zoneState.l2RefreshCount, 0)
+        verify(hasVisibleText(page, "Sequencer source not ready"))
+        verify(hasVisibleText(page,
+            "Waiting for the selected Sequencer source to confirm this Channel."))
+        verify(hasVisibleText(page, "Review Zone Sources"))
+
+        zoneState.sequencerSourceReadEligible = true
+
+        tryVerify(function () {
+            return findChild(page, "zoneL2Blocks") !== null
+                && zoneState.l2BlocksLoaded
+        })
+        compare(zoneState.l2RefreshCount, 1)
+
+        wait(50)
+        compare(zoneState.l2RefreshCount, 1)
     }
 
     function test_tab_selection_cancels_pending_favorite_open() {

@@ -508,6 +508,25 @@ TestCase {
             source_config_revision: 7,
             context_revision: 1
         }
+        model.zoneInspection.zoneDetail = {
+            channel_source_config: {
+                config_revision: 7,
+                selected_sequencer_source_id: "seq-a",
+                sequencer_sources: [{
+                    source_id: "seq-a",
+                    label: "Primary",
+                    target: { kind: "rpc", endpoint: "https://sequencer.example" },
+                    binding_state: "runtime_attested"
+                }],
+                indexer_source: null
+            },
+            source_observations: [{
+                source_id: "seq-a",
+                role: "sequencer",
+                binding_state: "runtime_attested",
+                health: "reachable"
+            }]
+        }
         return zoneId
     }
 
@@ -655,10 +674,23 @@ TestCase {
                     channel_source_config: {
                         config_revision: 7,
                         selected_sequencer_source_id: "seq-a",
-                        sequencer_sources: [],
+                        sequencer_sources: [{
+                            source_id: "seq-a",
+                            label: "Primary",
+                            target: {
+                                kind: "rpc",
+                                endpoint: "https://sequencer.example"
+                            },
+                            binding_state: "runtime_attested"
+                        }],
                         indexer_source: null
                     },
-                    source_observations: [],
+                    source_observations: [{
+                        source_id: "seq-a",
+                        role: "sequencer",
+                        binding_state: "runtime_attested",
+                        health: "reachable"
+                    }],
                     source_agreement: {},
                     classification_evidence: {},
                     activity_counts: {},

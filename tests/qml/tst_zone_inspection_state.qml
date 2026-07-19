@@ -462,6 +462,64 @@ TestCase {
         return row
     }
 
+    function test_pending_selected_sequencer_waits_for_runtime_attestation() {
+        zoneState.verification = "verified"
+        zoneState.activeZoneContext = {
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            zone_kind: "sequencer_zone",
+            selected_sequencer_source_id: "seq-a",
+            indexer_source_id: null,
+            source_config_revision: 1,
+            context_revision: 1
+        }
+        const pendingDetail = {
+            channel_source_config: {
+                config_revision: 1,
+                selected_sequencer_source_id: "seq-a",
+                sequencer_sources: [{
+                    source_id: "seq-a",
+                    binding_state: "pending",
+                    target: { kind: "rpc", endpoint: "https://sequencer.example" }
+                }],
+                indexer_source: null
+            },
+            source_observations: []
+        }
+        zoneState.zoneDetail = pendingDetail
+
+        verify(l2State.l2SequencerConfigured)
+        verify(!zoneState.selectedSequencerReadEligible)
+        verify(!l2State.l2SequencerReadEnabled)
+        compare(l2State.l2Capability("sequencer").status, "pending")
+        compare(l2State.l2Capability("sequencer").recovery, "wait")
+
+        zoneState.zoneDetail = Object.assign({}, pendingDetail, {
+            source_observations: [{
+                source_id: "seq-a",
+                role: "sequencer",
+                binding_state: "runtime_attested",
+                health: "reachable",
+                head_block_id: 42
+            }]
+        })
+
+        verify(zoneState.selectedSequencerReadEligible)
+        verify(l2State.l2SequencerReadEnabled)
+
+        zoneState.zoneDetail = Object.assign({}, pendingDetail, {
+            source_observations: [{
+                source_id: "seq-a",
+                role: "sequencer",
+                binding_state: "channel_mismatch",
+                health: "channel_mismatch"
+            }]
+        })
+
+        verify(!zoneState.selectedSequencerReadEligible)
+        verify(!l2State.l2SequencerReadEnabled)
+    }
+
     function l2Report(requestEntry, reportKind, data, overrides) {
         const request = requestEntry.args[0]
         const report = {

@@ -2,7 +2,7 @@ function navTreeItems(root) {
     with (root) {
         const sequencerChildren = zoneInspection
             && zoneInspection.l2
-            && zoneInspection.l2.l2SequencerReadEnabled === true
+            && zoneInspection.l2.l2SequencerConfigured === true
             ? [{
                 key: "sequencerDashboard",
                 view: "sequencerDashboard",

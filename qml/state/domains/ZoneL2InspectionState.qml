@@ -7,6 +7,7 @@ QtObject {
     required property var gateway
     required property var activeZoneContext
     required property string verification
+    required property bool sequencerSourceReadEligible
     property var appModel: null
     readonly property bool l2Applicable: activeZoneContext !== null
         && String(activeZoneContext.zone_kind || "") === "sequencer_zone"
@@ -15,11 +16,13 @@ QtObject {
             || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
     readonly property bool l2ReadEnabled: verification === "verified"
         && l2Applicable && l2SourceConfigured
+    readonly property bool l2SequencerConfigured: l2Applicable
+        && String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "").length > 0
     readonly property bool l2IndexerReadEnabled: l2ReadEnabled
         && String(activeZoneContext && activeZoneContext.indexer_source_id || "").length > 0
     readonly property bool l2SequencerReadEnabled: l2ReadEnabled
-        && String(activeZoneContext
-            && activeZoneContext.selected_sequencer_source_id || "").length > 0
+        && l2SequencerConfigured && sequencerSourceReadEligible
 
     readonly property ZoneL2BlockTransactionState blocks: ZoneL2BlockTransactionState {
         l2Context: root
@@ -189,9 +192,13 @@ QtObject {
             return capability(false, "input_required", "configure_source",
                 qsTr("Configure this Channel's Indexer."))
         }
-        if (role === "sequencer" && !l2SequencerReadEnabled) {
+        if (role === "sequencer" && !l2SequencerConfigured) {
             return capability(false, "input_required", "select_source",
                 qsTr("Select this Channel's Sequencer."))
+        }
+        if (role === "sequencer" && !l2SequencerReadEnabled) {
+            return capability(false, "pending", "wait",
+                qsTr("Waiting for the selected Sequencer source to confirm this Channel."))
         }
         if (!l2ReadEnabled) {
             return capability(false, "input_required", "configure_source",
