@@ -450,6 +450,8 @@ function dashboardMetricRawValue(root, key) {
 
 function dashboardMetricValue(root, key) {
     switch (String(key || "")) {
+    case "messaging.message_sent_events_recent":
+    case "messaging.message_propagated_events_recent":
     case "messaging.message_received_events_recent":
     case "messaging.message_error_events_recent":
     case "storage.failed_transfers_recent":
@@ -472,6 +474,8 @@ function dashboardMetricValue(root, key) {
 
 function dashboardMetricUsesWindow(key) {
     switch (String(key || "")) {
+    case "messaging.message_sent_events_recent":
+    case "messaging.message_propagated_events_recent":
     case "messaging.message_received_events_recent":
     case "messaging.message_error_events_recent":
     case "messaging.network_ingress_recent":
