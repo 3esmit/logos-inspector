@@ -2,7 +2,7 @@ use std::{any::Any, time::Duration};
 
 use anyhow::{Context as _, Result};
 
-use crate::modules::logos_core::LogoscoreCliRuntime;
+use crate::modules::logos_core::{LogoscoreCliRuntime, SharedModuleTransport};
 use crate::support::command_runner::CommandControl;
 
 mod action_engine;
@@ -99,6 +99,15 @@ pub(crate) fn channel_indexer_status(
         network_scope,
         channel_id,
     )
+}
+
+pub(crate) fn channel_indexer_module_transport(
+    network_scope: &crate::inspection::NetworkScope,
+    channel_id: &str,
+    source_config_revision: u64,
+    source_id: &str,
+) -> Result<SharedModuleTransport> {
+    channel_indexer::module_transport(network_scope, channel_id, source_config_revision, source_id)
 }
 
 pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {

@@ -329,6 +329,8 @@ fn descriptor(
     target: ChannelSourceTarget,
 ) -> L2SourceDescriptor {
     L2SourceDescriptor {
+        network_scope: config.network_scope.clone(),
+        channel_id: config.channel_id.clone(),
         source_id: source_id.to_owned(),
         role,
         target,

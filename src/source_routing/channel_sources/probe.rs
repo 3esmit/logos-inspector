@@ -9,7 +9,9 @@ use crate::modules::logos_core::{
 
 use super::{
     ChannelSourceProbeStage, ChannelSourceRole, ChannelSourceTarget, FinalizedL1EvidenceBasis,
-    SequencerAttestationBasis, indexer::IndexerAdapter, layer::ExecutionZoneReadErrorKind,
+    SequencerAttestationBasis,
+    indexer::{IndexerAdapter, MODULE_ID},
+    layer::ExecutionZoneReadErrorKind,
     sequencer::SequencerAdapter,
 };
 
@@ -334,6 +336,9 @@ pub(crate) struct ChannelSourceBlock {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChannelSourceProbeRequest {
+    pub(crate) network_scope: crate::inspection::NetworkScope,
+    pub(crate) channel_id: String,
+    pub(crate) source_config_revision: u64,
     pub(crate) source_id: String,
     pub(crate) role: ChannelSourceRole,
     pub(crate) target: ChannelSourceTarget,
@@ -387,6 +392,7 @@ pub(crate) trait ChannelSourceProbe: Send + Sync + 'static {
 
 pub(crate) struct DefaultChannelSourceProbe {
     transport: Arc<dyn ChannelSourceProbeTransport>,
+    use_channel_indexer_runtime: bool,
 }
 
 impl Default for DefaultChannelSourceProbe {
@@ -402,12 +408,43 @@ impl DefaultChannelSourceProbe {
         module_transport: SharedModuleTransport,
         module_transport_kind: ModuleTransportKind,
     ) -> Self {
+        let use_channel_indexer_runtime = module_transport_kind
+            == ModuleTransportKind::LogoscoreCli
+            && module_transport.logoscore_cli_transport().is_some();
         Self {
             transport: Arc::new(DefaultChannelSourceProbeTransport::new(
                 module_transport,
                 module_transport_kind,
             )),
+            use_channel_indexer_runtime,
         }
+    }
+
+    fn transport_for(
+        &self,
+        request: &ChannelSourceProbeRequest,
+    ) -> Result<Arc<dyn ChannelSourceProbeTransport>, ChannelSourceProbeFailure> {
+        if !self.use_channel_indexer_runtime
+            || request.role != ChannelSourceRole::Indexer
+            || !matches!(&request.target, ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID)
+        {
+            return Ok(Arc::clone(&self.transport));
+        }
+        let module_transport = crate::local_nodes::channel_indexer_module_transport(
+            &request.network_scope,
+            &request.channel_id,
+            request.source_config_revision,
+            &request.source_id,
+        )
+        .map_err(|error| {
+            ChannelSourceProbeFailure::unavailable(format!(
+                "Channel-owned Indexer runtime is unavailable: {error}"
+            ))
+        })?;
+        Ok(Arc::new(DefaultChannelSourceProbeTransport::new(
+            module_transport,
+            ModuleTransportKind::LogoscoreCli,
+        )))
     }
 }
 
@@ -417,9 +454,15 @@ impl ChannelSourceProbe for DefaultChannelSourceProbe {
         request: ChannelSourceProbeRequest,
     ) -> ChannelSourceProbeFuture<ChannelSourceProbeOutput> {
         Box::pin(async move {
+            let transport = match self.transport_for(&request) {
+                Ok(transport) => transport,
+                Err(failure) => {
+                    return failed_output(request.role, request.legacy_proof.is_some(), failure);
+                }
+            };
             match tokio::time::timeout(
                 SOURCE_PROBE_TIMEOUT,
-                probe_source(self.transport.clone(), request.clone()),
+                probe_source(transport, request.clone()),
             )
             .await
             {
@@ -436,15 +479,10 @@ impl ChannelSourceProbe for DefaultChannelSourceProbe {
     ) -> ChannelSourceProbeFuture<Result<Option<ChannelSourceBlock>, ChannelSourceProbeFailure>>
     {
         Box::pin(async move {
+            let transport = self.transport_for(&request)?;
             let block = match request.role {
-                ChannelSourceRole::Sequencer => self
-                    .transport
-                    .clone()
-                    .sequencer_block(request.target, block_id),
-                ChannelSourceRole::Indexer => self
-                    .transport
-                    .clone()
-                    .indexer_block(request.target, block_id),
+                ChannelSourceRole::Sequencer => transport.sequencer_block(request.target, block_id),
+                ChannelSourceRole::Indexer => transport.indexer_block(request.target, block_id),
             };
             match tokio::time::timeout(SOURCE_PROBE_TIMEOUT, block).await {
                 Ok(result) => result,
@@ -580,22 +618,34 @@ fn timed_out_output(
     role: ChannelSourceRole,
     uses_finalized_l1_evidence: bool,
 ) -> ChannelSourceProbeOutput {
+    failed_output(
+        role,
+        uses_finalized_l1_evidence,
+        ChannelSourceProbeFailure::timeout(),
+    )
+}
+
+fn failed_output(
+    role: ChannelSourceRole,
+    uses_finalized_l1_evidence: bool,
+    failure: ChannelSourceProbeFailure,
+) -> ChannelSourceProbeOutput {
     match role {
         ChannelSourceRole::Sequencer => {
             ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
-                health: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
-                channel_id: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+                health: ChannelSourceProbeFact::Failed(failure.clone()),
+                channel_id: ChannelSourceProbeFact::Failed(failure.clone()),
                 identity_stage: if uses_finalized_l1_evidence {
                     ChannelSourceProbeStage::EvidenceConsistency
                 } else {
                     ChannelSourceProbeStage::ChannelIdentity
                 },
-                head: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+                head: ChannelSourceProbeFact::Failed(failure),
             })
         }
         ChannelSourceRole::Indexer => ChannelSourceProbeOutput::Indexer(IndexerSourceProbeOutput {
-            health: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
-            head: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+            health: ChannelSourceProbeFact::Failed(failure.clone()),
+            head: ChannelSourceProbeFact::Failed(failure),
         }),
     }
 }
