@@ -269,11 +269,18 @@ ColumnLayout {
                 rows: root.sourceView.topicRows
             }
 
+            DetailRowsPanel {
+                visible: root.sourceView.topicDetailRows.length > 0
+                theme: root.theme
+                title: qsTr("Observed content-topic activity")
+                rows: root.sourceView.topicDetailRows
+            }
+
             StatusMessage {
                 theme: root.theme
                 tone: "info"
-                title: qsTr("Passive only")
-                message: qsTr("Search and filters on this screen never subscribe to topics in the background.")
+                title: qsTr("Read-only observations")
+                message: qsTr("Opening this screen never changes subscriptions. Current topic observations are source-reported; no search or filter action is performed.")
                 Layout.fillWidth: true
             }
         }

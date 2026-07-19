@@ -14,6 +14,7 @@ TestCase {
         { protocol: "relay", health: "ready", desc: "ok" }
     ]
     property var deliveryCapabilities: []
+    property var deliveryContentTopics: null
 
     QtObject {
         id: sourceRoutingStub
@@ -198,8 +199,12 @@ TestCase {
             if (method === "allPeersInfo") {
                 return { peers: ["a", "b"] }
             }
+            if (method === "contentTopics") {
+                return testRoot.deliveryContentTopics
+            }
             return null
         }
+        function probeKnown(method) { return probeValue(method) !== null }
         function metricKnown(key) { return deliveryModel.metrics.dashboardMetricValue(key) !== undefined }
         function metricDisplay(key) { return String(deliveryModel.metrics.dashboardMetricValue(key)) }
         function metricRow(label, key) { return { label: label, key: key } }
@@ -207,6 +212,10 @@ TestCase {
             return { label: label, protocol: protocol, key: key }
         }
         function valueSummary(value) { return value === undefined || value === null ? "unknown" : String(value) }
+        function copyValue(value) {
+            return value !== null && typeof value === "object"
+                ? JSON.stringify(value, null, 2) : String(value || "")
+        }
         function statusRow(label, state, evidence, tone) {
             return { label: label, state: state, evidence: evidence, tone: tone }
         }
@@ -241,6 +250,7 @@ TestCase {
             { protocol: "relay", health: "ready", desc: "ok" }
         ]
         testRoot.deliveryCapabilities = []
+        testRoot.deliveryContentTopics = null
         deliveryMetrics.deliveryModuleEventStreamStatus = "unknown"
         deliveryMetrics.deliveryModuleEventStreamReason = ""
         deliveryModel.metricValues = ({
@@ -444,12 +454,113 @@ TestCase {
         const store = SourceObservation.deliveryStoreRows(deliveryPage)
         const throughput = SourceObservation.deliveryThroughputRows(deliveryPage)
 
-        compare(topics[3].label, "Store queries in window")
-        compare(topics[4].label, "Filter requests in window")
+        compare(topics[4].label, "Store queries in window")
+        compare(topics[5].label, "Filter requests in window")
         compare(store[3].label, "Store queries in window")
         compare(store[4].label, "Store/archive errors in window")
         compare(throughput[8].label, "Confirmed sends")
         compare(throughput[9].label, "Network propagations")
+    }
+
+    function test_delivery_topic_rows_do_not_infer_catalog_or_mapping_from_count() {
+        deliveryModel.metricValues = ({
+            "messaging.pubsub_peers": 14,
+            "messaging.pubsub_topics": 8,
+            "messaging.content_topics": 5
+        })
+        testRoot.deliveryContentTopics = ({
+            "/logos/1/stale/proto": 9
+        })
+
+        let topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[0].label, "Pubsub peer instances")
+        compare(topics[1].label, "Subscribed pubsub topics")
+        compare(topics[2].label, "Observed content topics")
+        compare(topics[2].state, "unavailable")
+        verify(topics[2].evidence.indexOf("Test Delivery source") >= 0)
+        compare(topics[3].label, "Topic-to-shard mapping")
+        compare(topics[3].state, "unavailable")
+        verify(topics[3].evidence.indexOf("do not expose") >= 0)
+        compare(SourceObservation.deliveryTopicDetailRows(deliveryPage).length, 0)
+
+        testRoot.deliveryCapabilities = ["delivery.topics.read"]
+        testRoot.deliveryContentTopics = ({
+            "/logos/1/zeta/proto": 2,
+            "/logos/1/alpha/proto": 5
+        })
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "observed")
+        verify(topics[2].evidence.indexOf("2 content topic(s)") >= 0)
+        compare(topics[3].state, "unavailable")
+
+        const details = SourceObservation.deliveryTopicDetailRows(deliveryPage)
+        compare(details.length, 2)
+        compare(details[0].label, "Content topic 1")
+        compare(details[0].value, "/logos/1/alpha/proto")
+        compare(details[0].copyText, "/logos/1/alpha/proto")
+        verify(details[0].source.indexOf("5 message(s)") >= 0)
+        compare(details[1].value, "/logos/1/zeta/proto")
+
+        testRoot.deliveryContentTopics = ({
+            "/0/toychat/2/huilong/proto": 7
+        })
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "observed")
+        compare(SourceObservation.deliveryTopicDetailRows(deliveryPage)[0].value,
+                "/0/toychat/2/huilong/proto")
+
+        testRoot.deliveryContentTopics = ({
+            "1": 3,
+            " exact whitespace topic ": 1
+        })
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "observed")
+        const arbitraryDetails = SourceObservation.deliveryTopicDetailRows(deliveryPage)
+        compare(arbitraryDetails[0].value, " exact whitespace topic ")
+        compare(arbitraryDetails[1].value, "1")
+
+        testRoot.deliveryContentTopics = JSON.parse('{"__proto__":3}')
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "observed")
+        compare(SourceObservation.deliveryTopicDetailRows(deliveryPage)[0].value,
+                "__proto__")
+
+        testRoot.deliveryContentTopics = ({ error: "bad response" })
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "unavailable")
+        verify(topics[2].evidence.indexOf("invalid") >= 0)
+        compare(topics[2].tone, "warning")
+        compare(SourceObservation.deliveryTopicDetailRows(deliveryPage).length, 0)
+
+        testRoot.deliveryContentTopics = ({})
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "empty")
+        compare(topics[2].tone, "neutral")
+
+        testRoot.deliveryContentTopics = ({
+            "/logos/1/null/proto": null,
+            "/logos/1/boolean/proto": true,
+            "/logos/1/blank/proto": "",
+            "/logos/1/fraction/proto": 1.5
+        })
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "unavailable")
+        compare(SourceObservation.deliveryTopicDetailRows(deliveryPage).length, 0)
+
+        const boundedCatalog = ({})
+        for (let index = 0; index < 25; ++index) {
+            boundedCatalog["/logos/1/topic-" + index + "/proto"] = index
+        }
+        testRoot.deliveryContentTopics = boundedCatalog
+        topics = SourceObservation.deliveryTopicRows(deliveryPage)
+        compare(topics[2].state, "observed")
+        verify(topics[2].evidence.indexOf("First 20 shown below") >= 0)
+        const boundedDetails = SourceObservation.deliveryTopicDetailRows(deliveryPage)
+        compare(boundedDetails.length, 21)
+        compare(boundedDetails[20].label, "All reported topic activity")
+        compare(boundedDetails[20].value, "25 topic(s); first 20 shown")
+        compare(boundedDetails[20].copyText,
+                JSON.stringify(boundedCatalog, null, 2))
     }
 
     function test_delivery_store_rows_follow_current_source_capability() {

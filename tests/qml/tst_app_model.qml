@@ -999,6 +999,7 @@ TestCase {
         compare(delivery.label, "Direct Waku REST")
         compare(delivery.target, model.sourceRouting.configuredMessagingRestUrl())
         verify(delivery.capabilities.indexOf("delivery.store.query") >= 0)
+        verify(delivery.capabilities.indexOf("delivery.topics.read") < 0)
         const deliveryArgs = delivery.reportArgs()
         compare(deliveryArgs[0].source_mode, "rest")
         compare(deliveryArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredMessagingRestUrl())
@@ -1548,6 +1549,8 @@ TestCase {
         model.setNetworkConnectorMode("delivery", "network-monitor")
 
         compare(model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
+        verify(model.sourceRouting.deliverySourceView().capabilities.indexOf(
+            "delivery.topics.read") >= 0)
         const deliveryArgs = model.sourceRouting.deliverySourceReportArgs()
         compare(deliveryArgs[0].source_mode, "network-monitor")
         compare(deliveryArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredMessagingRestUrl())

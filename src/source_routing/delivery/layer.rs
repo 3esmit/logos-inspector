@@ -134,7 +134,6 @@ const METRICS_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
 
 const MODULE_CAPABILITIES: &[&str] = &[
     "delivery.identity.read",
-    "delivery.topics.read",
     "delivery.subscribe",
     "delivery.unsubscribe",
     "delivery.send",
@@ -143,7 +142,6 @@ const MODULE_CAPABILITIES: &[&str] = &[
 ];
 const REST_CAPABILITIES: &[&str] = &[
     "delivery.identity.read",
-    "delivery.topics.read",
     "delivery.store.query",
     "delivery.subscribe",
     "delivery.unsubscribe",

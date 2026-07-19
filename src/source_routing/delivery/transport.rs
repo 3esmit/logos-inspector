@@ -14,9 +14,10 @@ use crate::support::raw_source_transport::request_json_bounded;
 
 use super::operations::DeliveryStoreQuery;
 
-const DELIVERY_STATUS_RESPONSE_LIMIT: usize = 64 * 1024;
-const DELIVERY_STATUS_TIMEOUT: Duration = Duration::from_secs(6);
-const DELIVERY_STATUS_SOURCE_FALLBACK: &str = "configured Delivery status endpoint";
+pub(super) const DELIVERY_PROBE_RESPONSE_LIMIT: usize = 64 * 1024;
+pub(super) const DELIVERY_PEER_RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
+const DELIVERY_PROBE_TIMEOUT: Duration = Duration::from_secs(6);
+const DELIVERY_PROBE_SOURCE_FALLBACK: &str = "configured Delivery probe endpoint";
 
 pub(super) async fn module_call(
     transport: &SharedModuleTransport,
@@ -109,40 +110,44 @@ pub(super) async fn probe_value(endpoint: &str, path: &str) -> Result<Value> {
     Ok(parse_probe_text(&text))
 }
 
-pub(super) async fn probe_status_value(endpoint: &str, path: &str) -> Result<Value> {
-    let url = probe_status_url(endpoint, path)?;
+pub(super) async fn probe_json_value_bounded(
+    endpoint: &str,
+    path: &str,
+    max_bytes: usize,
+) -> Result<Value> {
+    let url = probe_json_url(endpoint, path)?;
     request_json_bounded(
         reqwest::Client::new()
             .get(url.clone())
-            .timeout(DELIVERY_STATUS_TIMEOUT),
+            .timeout(DELIVERY_PROBE_TIMEOUT),
         url.as_str(),
-        "failed to read Delivery status response",
-        "invalid Delivery status JSON",
+        "failed to read Delivery probe response",
+        "invalid Delivery probe JSON",
         false,
         false,
-        DELIVERY_STATUS_RESPONSE_LIMIT,
+        max_bytes,
     )
     .await
 }
 
-pub(super) fn probe_status_source(endpoint: &str, path: &str) -> String {
-    probe_status_url(endpoint, path)
+pub(super) fn probe_json_source(endpoint: &str, path: &str) -> String {
+    probe_json_url(endpoint, path)
         .map(|url| url.to_string())
-        .unwrap_or_else(|_| DELIVERY_STATUS_SOURCE_FALLBACK.to_owned())
+        .unwrap_or_else(|_| DELIVERY_PROBE_SOURCE_FALLBACK.to_owned())
 }
 
-fn probe_status_url(endpoint: &str, path: &str) -> Result<Url> {
+fn probe_json_url(endpoint: &str, path: &str) -> Result<Url> {
     let url =
-        Url::parse(&http::rest_url(endpoint, path)).context("invalid Delivery status endpoint")?;
+        Url::parse(&http::rest_url(endpoint, path)).context("invalid Delivery probe endpoint")?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        bail!("Delivery status endpoint must be an HTTP URL with a host");
+        bail!("Delivery probe endpoint must be an HTTP URL with a host");
     }
     if !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        bail!("Delivery status endpoint cannot contain credentials, query, or fragment");
+        bail!("Delivery probe endpoint cannot contain credentials, query, or fragment");
     }
     Ok(url)
 }
@@ -209,18 +214,108 @@ fn parse_probe_text(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        thread,
+    };
 
     #[test]
-    fn status_probe_url_rejects_credential_and_query_leaks() {
-        assert!(probe_status_url("http://user:secret@example.test", "/health").is_err());
-        assert!(probe_status_url("http://example.test?token=secret", "/health").is_err());
+    fn probe_url_rejects_credential_and_query_leaks() {
+        assert!(probe_json_url("http://user:secret@example.test", "/health").is_err());
+        assert!(probe_json_url("http://example.test?token=secret", "/health").is_err());
         assert_eq!(
-            probe_status_source("http://user:secret@example.test", "/health"),
-            DELIVERY_STATUS_SOURCE_FALLBACK
+            probe_json_source("http://user:secret@example.test", "/health"),
+            DELIVERY_PROBE_SOURCE_FALLBACK
         );
         assert_eq!(
-            probe_status_source("http://example.test", "/health"),
+            probe_json_source("http://example.test", "/health"),
             "http://example.test/health"
         );
+    }
+
+    #[tokio::test]
+    async fn bounded_probe_rejects_oversized_declared_body() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request)?;
+            let body = vec![b'x'; DELIVERY_PROBE_RESPONSE_LIMIT + 1];
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            if let Err(error) = stream.write_all(&body)
+                && !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                )
+            {
+                return Err(error.into());
+            }
+            Ok(())
+        });
+
+        let error =
+            probe_json_value_bounded(&endpoint, "/contenttopics", DELIVERY_PROBE_RESPONSE_LIMIT)
+                .await
+                .err()
+                .context("oversized Delivery probe body should fail")?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("Delivery probe server panicked"))??;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("http response body exceeded 65536 byte limit"),
+            "unexpected Delivery probe limit error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn peer_probe_accepts_body_above_topic_limit() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request)?;
+            let peer_data = "x".repeat(DELIVERY_PROBE_RESPONSE_LIMIT + 1);
+            let body = serde_json::to_vec(&serde_json::json!({
+                "peers": [{ "peerId": peer_data }]
+            }))?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            stream.write_all(&body)?;
+            Ok(())
+        });
+
+        let value =
+            probe_json_value_bounded(&endpoint, "/allpeersinfo", DELIVERY_PEER_RESPONSE_LIMIT)
+                .await?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("Delivery peer probe server panicked"))??;
+
+        let peer_id_length = value
+            .get("peers")
+            .and_then(Value::as_array)
+            .and_then(|peers| peers.first())
+            .and_then(|peer| peer.get("peerId"))
+            .and_then(Value::as_str)
+            .map(str::len);
+        anyhow::ensure!(
+            peer_id_length == Some(DELIVERY_PROBE_RESPONSE_LIMIT + 1),
+            "unexpected bounded peer probe payload: {peer_id_length:?}"
+        );
+        Ok(())
     }
 }

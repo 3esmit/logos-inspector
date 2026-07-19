@@ -596,6 +596,8 @@ function dashboardMetricRawValue(root, key) {
         return root.moduleMetricValue("messaging", ["active_subscriptions"])
     case "messaging.pubsub_peers":
         return root.moduleMetricValue("messaging", ["libp2p_pubsub_peers", "waku_relay_peers", "relay_peers"])
+    case "messaging.pubsub_topics":
+        return root.moduleMetricValue("messaging", ["libp2p_pubsub_topics", "waku_relay_topics", "pubsub_topics"])
     case "messaging.store_peers":
         return root.moduleMetricValue("messaging", [
             "waku_store_peers",

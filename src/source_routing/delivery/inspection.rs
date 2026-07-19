@@ -34,6 +34,7 @@ struct DeliveryProbeStep {
     label: &'static str,
     path: String,
     normalizer: DeliveryProbeNormalizer,
+    response_limit: usize,
 }
 
 impl DeliveryProbeStep {
@@ -48,7 +49,13 @@ impl DeliveryProbeStep {
             label,
             path: path.into(),
             normalizer,
+            response_limit: transport::DELIVERY_PROBE_RESPONSE_LIMIT,
         }
+    }
+
+    fn with_response_limit(mut self, response_limit: usize) -> Self {
+        self.response_limit = response_limit;
+        self
     }
 }
 
@@ -147,7 +154,8 @@ fn delivery_network_monitor_probe_plan() -> Vec<DeliveryProbeStep> {
             "delivery_network_monitor.allPeersInfo",
             "/allpeersinfo",
             DeliveryProbeNormalizer::Identity,
-        ),
+        )
+        .with_response_limit(transport::DELIVERY_PEER_RESPONSE_LIMIT),
         DeliveryProbeStep::new(
             SourceProbeKey::DeliveryContentTopics,
             "delivery_network_monitor.contentTopics",
@@ -213,7 +221,7 @@ async fn append_module_health(
         .and_then(|value| scalar_field(value, &["enrUri", "enr"]))
         .and_then(|value| value.as_str().map(ToOwned::to_owned));
     report.push_probe(info_probe);
-    let health_source = transport::probe_status_source(endpoint, &health_step.path);
+    let health_source = transport::probe_json_source(endpoint, &health_step.path);
     if let Some(error) = delivery_health_identity_error(module_enr, rest_enr.as_deref()) {
         report.push_probe(keyed_probe_err(
             SourceProbeKey::DeliveryHealth,
@@ -275,8 +283,8 @@ async fn bounded_http_json_probe(endpoint: &str, step: &DeliveryProbeStep) -> Pr
     keyed_probe_result(
         step.key,
         step.label,
-        transport::probe_status_source(endpoint, &step.path),
-        transport::probe_status_value(endpoint, &step.path)
+        transport::probe_json_source(endpoint, &step.path),
+        transport::probe_json_value_bounded(endpoint, &step.path, step.response_limit)
             .await
             .map(|value| normalize_http_probe_value(value, step.normalizer)),
     )
@@ -484,8 +492,8 @@ async fn delivery_network_monitor_report(
         return unsupported_delivery_source_report("network-monitor");
     };
     let (all_peers_probe, content_topics_probe) = tokio::join!(
-        http_json_probe(endpoint, all_peers_step),
-        http_json_probe(endpoint, content_topics_step),
+        bounded_http_json_probe(endpoint, all_peers_step),
+        bounded_http_json_probe(endpoint, content_topics_step),
     );
     let mut report = SourceReportBuilder::delivery(
         "delivery_network_monitor",
@@ -684,8 +692,16 @@ mod tests {
     fn network_monitor_probe_plan_declares_monitor_endpoints() {
         let steps = delivery_network_monitor_probe_plan();
 
-        assert!(steps.iter().any(|step| step.path == "/allpeersinfo"));
-        assert!(steps.iter().any(|step| step.path == "/contenttopics"));
+        let peers = steps.iter().find(|step| step.path == "/allpeersinfo");
+        let topics = steps.iter().find(|step| step.path == "/contenttopics");
+        assert_eq!(
+            peers.map(|step| step.response_limit),
+            Some(transport::DELIVERY_PEER_RESPONSE_LIMIT)
+        );
+        assert_eq!(
+            topics.map(|step| step.response_limit),
+            Some(transport::DELIVERY_PROBE_RESPONSE_LIMIT)
+        );
     }
 
     #[test]

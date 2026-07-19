@@ -809,15 +809,113 @@ function deliveryCombinedHealthTone(page, left, right) {
     return "neutral"
 }
 
-function deliveryTopicRows(page) {
-    const topics = page.networkMonitorTopicCount()
+function deliveryTopicSnapshot(page) {
+    const available = deliverySourceCapabilityAvailable(
+        page, "delivery.topics.read")
+    const known = available && page.probeKnown("contentTopics")
+    const parsed = known ? deliveryContentTopicEntries(page) : null
+    return {
+        available: available,
+        known: known,
+        valid: known && parsed !== null,
+        entries: parsed || []
+    }
+}
+
+function deliveryTopicRows(page, snapshot) {
+    const observation = snapshot || deliveryTopicSnapshot(page)
+    const entries = observation.entries
+    const sourceName = String(page.sourceName() || qsTr("Current Delivery source"))
+    let catalogState = qsTr("unavailable")
+    let catalogEvidence = qsTr("%1 does not expose a content-topic catalog. Use Delivery Network Monitor for observed topic activity.").arg(sourceName)
+    let catalogTone = "neutral"
+    if (observation.known && !observation.valid) {
+        catalogEvidence = qsTr("Delivery Network Monitor returned invalid content-topic activity data.")
+        catalogTone = "warning"
+    } else if (observation.valid && entries.length === 0) {
+        catalogState = qsTr("empty")
+        catalogEvidence = qsTr("Delivery Network Monitor observed no content-topic activity.")
+    } else if (observation.valid) {
+        catalogState = qsTr("observed")
+        catalogEvidence = qsTr("%1 content topic(s) with received-message counts from Delivery Network Monitor.").arg(entries.length)
+        if (entries.length > 20) {
+            catalogEvidence += " " + qsTr("First 20 shown below; copy the bounded full snapshot from All reported topic activity.")
+        }
+        catalogTone = "success"
+    } else if (observation.available) {
+        catalogEvidence = qsTr("Delivery Network Monitor content-topic data is unavailable.")
+    }
     return [
-        page.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
-        page.metricRow(qsTr("Content topics"), "messaging.content_topics"),
-        page.statusRow(qsTr("Topic-to-shard mapping"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 content topic(s)").arg(topics) : qsTr("Requires topic metadata or Delivery Network Monitor source."), topics !== null ? "success" : "neutral"),
+        page.metricRow(qsTr("Pubsub peer instances"), "messaging.pubsub_peers"),
+        page.metricRow(qsTr("Subscribed pubsub topics"), "messaging.pubsub_topics"),
+        page.statusRow(qsTr("Observed content topics"), catalogState, catalogEvidence, catalogTone),
+        page.statusRow(qsTr("Topic-to-shard mapping"), qsTr("unavailable"), qsTr("Current Delivery sources do not expose content-topic-to-pubsub-topic or shard relationships."), "neutral"),
         page.metricRow(qsTr("Store queries in window"), "messaging.store_query_requests_recent"),
         page.metricRow(qsTr("Filter requests in window"), "messaging.filter_requests_recent")
     ]
+}
+
+function deliveryTopicDetailRows(page, snapshot) {
+    const observation = snapshot || deliveryTopicSnapshot(page)
+    if (!observation.valid) {
+        return []
+    }
+    const entries = observation.entries
+    if (entries.length === 0) {
+        return []
+    }
+    const rows = []
+    const shown = Math.min(entries.length, 20)
+    for (let index = 0; index < shown; ++index) {
+        const entry = entries[index]
+        rows.push({
+            label: qsTr("Content topic %1").arg(index + 1),
+            value: entry.topic,
+            copyText: entry.topic,
+            source: qsTr("%1 message(s) / %2")
+                .arg(entry.messages)
+                .arg(page.sourceName())
+        })
+    }
+    if (entries.length > shown) {
+        rows.push({
+            label: qsTr("All reported topic activity"),
+            value: qsTr("%1 topic(s); first %2 shown").arg(entries.length).arg(shown),
+            copyText: page.copyValue(page.probeValue("contentTopics")),
+            source: qsTr("Bounded source snapshot / %1").arg(page.sourceName())
+        })
+    }
+    return rows
+}
+
+function deliveryContentTopicEntries(page) {
+    const catalog = page.probeValue("contentTopics")
+    if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) {
+        return null
+    }
+    const keys = Object.keys(catalog)
+    const entries = []
+    for (let index = 0; index < keys.length; ++index) {
+        const topic = String(keys[index] || "")
+        const messages = deliveryTopicMessageCount(catalog[keys[index]])
+        if (!deliveryContentTopicValid(topic) || messages === null) {
+            return null
+        }
+        entries.push({ topic: topic, messages: messages })
+    }
+    return entries.sort(function (left, right) {
+        return left.topic < right.topic ? -1 : (left.topic > right.topic ? 1 : 0)
+    })
+}
+
+function deliveryContentTopicValid(topic) {
+    return String(topic || "").length > 0
+}
+
+function deliveryTopicMessageCount(value) {
+    return typeof value === "number" && Number.isFinite(value)
+            && Number.isInteger(value) && value >= 0
+            && value <= 9007199254740991 ? value : null
 }
 
 function deliveryStoreRows(page) {
@@ -980,12 +1078,7 @@ function deliveryNetworkMonitorPeerCount(page) {
 
 function deliveryNetworkMonitorTopicCount(page) {
     const value = page.probeValue("contentTopics")
-    const count = deliveryCountValue(page, value)
-    if (count !== null) {
-        return count
-    }
-    const metric = page.model.metrics.dashboardMetricValue("messaging.content_topics")
-    return metric === null || metric === undefined ? null : Number(metric)
+    return deliveryCountValue(page, value)
 }
 
 function deliveryServicePeerCount(page) {
