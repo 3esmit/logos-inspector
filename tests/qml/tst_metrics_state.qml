@@ -283,6 +283,33 @@ TestCase {
         }
     }
 
+    function blockchainProbe(ok, source, value, error) {
+        return {
+            ok: ok === true,
+            source: source,
+            value: ok === true ? value : null,
+            error: ok === true ? "" : String(error || "probe failed")
+        }
+    }
+
+    function blockchainReport(cryptarchiaOk, headersOk, networkOk, mantleOk) {
+        return {
+            endpoint: "http://bedrock.invalid",
+            cryptarchia_info: blockchainProbe(cryptarchiaOk,
+                "/cryptarchia/info", {
+                    cryptarchia_info: { slot: 42, lib_slot: 40 }
+                }, "cryptarchia down"),
+            headers: blockchainProbe(headersOk, "/cryptarchia/headers", [],
+                "headers down"),
+            network_info: blockchainProbe(networkOk, "/network/info", {
+                n_peers: 3
+            }, "network down"),
+            mantle_metrics: blockchainProbe(mantleOk, "/mantle/metrics", {
+                transactions: 1
+            }, "mantle down")
+        }
+    }
+
     function deliveryMetricsReport(ready, marker, peerCount) {
         const report = sourceReport(ready, marker)
         report.probes = [{
@@ -2121,6 +2148,47 @@ TestCase {
         compare(metrics.moduleReportRevisions.blockchain, moduleRevision)
         compare(testRoot.dashboardNode, null)
         verify(!observation.status.known)
+    }
+
+    function test_blockchain_all_nested_probe_failures_are_unhealthy() {
+        metrics.queryNetworkConnection("blockchain", false, false, "scheduler")
+        gateway.completeRequest(0, success(blockchainReport(false, false, false, false)))
+
+        const observation = metrics.sourceObservation("blockchain")
+        verify(observation.latestAttempt.transportOk)
+        verify(!observation.status.ok)
+        compare(observation.status.detail, "cryptarchia down")
+        compare(metrics.networkConnectionSummary("blockchain",
+            observation.sourceReport), "cryptarchia down")
+    }
+
+    function test_blockchain_partial_nested_probe_success_is_degraded() {
+        metrics.queryNetworkConnection("blockchain", false, false, "scheduler")
+        gateway.completeRequest(0, success(blockchainReport(false, true, false, false)))
+
+        const observation = metrics.sourceObservation("blockchain")
+        verify(observation.latestAttempt.transportOk)
+        verify(!observation.status.ok)
+        compare(observation.status.detail,
+                "Cryptarchia unavailable; other Bedrock APIs responded")
+    }
+
+    function test_blockchain_cryptarchia_success_is_healthy_and_stale_failure_keeps_report() {
+        metrics.queryNetworkConnection("blockchain", false, false, "scheduler")
+        gateway.completeRequest(0, success(blockchainReport(true, true, true, true)))
+
+        const completed = metrics.sourceObservation("blockchain")
+        verify(completed.status.ok)
+        compare(completed.status.detail, "slot 42")
+
+        metrics.queryNetworkConnection("blockchain", false, false, "scheduler")
+        gateway.completeRequest(0, failure("connection refused"))
+
+        const stale = metrics.sourceObservation("blockchain")
+        verify(!stale.status.ok)
+        verify(stale.status.stale)
+        compare(stale.sourceReport.cryptarchia_info.value.cryptarchia_info.slot, 42)
+        compare(stale.status.detail, "connection refused")
     }
 
     function test_missing_lib_slot_keeps_finality_gap_unknown() {

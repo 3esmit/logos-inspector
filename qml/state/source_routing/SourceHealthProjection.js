@@ -5,7 +5,14 @@ function networkConnectionSummary(root, kind, value) {
         const probe = value && value.cryptarchia_info ? value.cryptarchia_info : null
         const payload = probe && probe.value ? probe.value : probe
         const info = payload && payload.cryptarchia_info ? payload.cryptarchia_info : payload
-        return info && info.slot !== undefined ? qsTr("slot %1").arg(info.slot) : qsTr("node reachable")
+        if (blockchainProbeOk(probe)) {
+            return info && info.slot !== undefined
+                ? qsTr("slot %1").arg(info.slot) : qsTr("Cryptarchia reachable")
+        }
+        if (blockchainAnyProbeOk(value)) {
+            return qsTr("Cryptarchia unavailable; other Bedrock APIs responded")
+        }
+        return blockchainProbeEvidence(value)
     }
     if (kind === "indexer") {
         if (value && typeof value === "object") {
@@ -64,6 +71,9 @@ function networkConnectionSummary(root, kind, value) {
 }
 
 function connectionValueOk(root, kind, value) {
+    if (kind === "blockchain") {
+        return blockchainProbeOk(value && value.cryptarchia_info)
+    }
     if (kind === "messaging") {
         const ready = sourceHealthReady(value)
         return ready !== null ? ready : moduleReportReachable(root, value)
@@ -72,6 +82,31 @@ function connectionValueOk(root, kind, value) {
         return storageReportReady(root, value)
     }
     return true
+}
+
+function blockchainProbeOk(probe) {
+    return probe !== null && probe !== undefined && probe.ok === true
+}
+
+function blockchainAnyProbeOk(report) {
+    const keys = ["cryptarchia_info", "headers", "network_info", "mantle_metrics"]
+    for (let index = 0; index < keys.length; ++index) {
+        if (blockchainProbeOk(report && report[keys[index]])) {
+            return true
+        }
+    }
+    return false
+}
+
+function blockchainProbeEvidence(report) {
+    const keys = ["cryptarchia_info", "headers", "network_info", "mantle_metrics"]
+    for (let index = 0; index < keys.length; ++index) {
+        const probe = report && report[keys[index]]
+        if (probe && probe.error) {
+            return String(probe.error)
+        }
+    }
+    return qsTr("Bedrock APIs unavailable")
 }
 
 function storageReportReady(root, report) {

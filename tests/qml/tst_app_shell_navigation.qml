@@ -50,6 +50,7 @@ TestCase {
             "transactions",
             "zones",
             "blockchain",
+            "diagnosticsBedrock",
             "storage",
             "messaging",
             "favorites",

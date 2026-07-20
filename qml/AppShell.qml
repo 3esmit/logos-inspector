@@ -248,6 +248,8 @@ Item {
             return storagePage
         case "messaging":
             return messagingPage
+        case "diagnosticsBedrock":
+            return bedrockDiagnosticsPage
         case "diagnosticsStorage":
             return storageDiagnosticsPage
         case "diagnosticsDelivery":
@@ -433,6 +435,14 @@ Item {
     Component {
         id: storageDiagnosticsPage
         StoragePages.StoragePage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: bedrockDiagnosticsPage
+        BedrockPages.BedrockDiagnosticsPage {
             theme: theme
             model: appModel
         }
