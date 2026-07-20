@@ -606,6 +606,38 @@ TestCase {
         compare(state.summaryTone(), "error")
     }
 
+    function test_configured_channel_indexer_overrides_legacy_stopped_indexer_node() {
+        const report = managedTestnetReport()
+        report.nodes = report.nodes.map(function (node) {
+            if (node.key !== "indexer") {
+                return node
+            }
+            return Object.assign({}, node, {
+                run_state: "stopped",
+                process_id: null
+            })
+        })
+        state.report = report
+        state.observedNodes = ({
+            bedrock: { status: "healthy" },
+            indexer: {
+                channels: [{
+                    channel_id: "a".repeat(64),
+                    status: "reachable",
+                    head: 101,
+                    upstream_head: 104
+                }]
+            },
+            storage: { status: "healthy" },
+            messaging: { status: "healthy" }
+        })
+
+        compare(state.nodeByKind("indexer").run_state, "stopped")
+        compare(state.observedRunState("indexer"), "online")
+        compare(state.summaryText(), "4/4 online")
+        compare(state.summaryTone(), "success")
+    }
+
     function test_testnet_indexer_finality_window_preserves_reachability() {
         state.report = testnetReport()
         state.observedNodes = ({

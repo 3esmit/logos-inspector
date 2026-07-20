@@ -714,15 +714,15 @@ QtObject {
 
     function observedRunState(kind) {
         const key = String(kind || "")
-        const lifecycleState = managedLifecycleRunState(key)
-        if (lifecycleState.length) {
-            return lifecycleState
-        }
         const observation = observedNode(key)
         const status = String(observation && observation.status || "unknown").toLowerCase()
         if (key === "indexer" && observation
                 && Array.isArray(observation.channels) && observation.channels.length > 0) {
             return channelIndexerObservedRunState(observation.channels)
+        }
+        const lifecycleState = managedLifecycleRunState(key)
+        if (lifecycleState.length) {
+            return lifecycleState
         }
         const reachable = status === "healthy" || status === "ready"
             || status === "reachable" || status === "online"
