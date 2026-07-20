@@ -217,7 +217,9 @@ QtObject {
         const nextKey = sourceKey(nextSource)
         const nextError = sourceDescriptorError(sourceDescriptor)
         if (nextKey === desiredSourceKey) {
-            configureError = nextError
+            if (!nextSource) {
+                configureError = nextError
+            }
             if (started && nextSource && !catalogConfigured && !configureInFlight) {
                 beginConfigure()
             }
