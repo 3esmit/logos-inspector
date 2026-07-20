@@ -215,8 +215,24 @@ Frame {
     }
 
     function sourceStatusText(status) {
+        switch (String(status || "")) {
+        case "reachable":
+            return qsTr("Ready")
+        case "unreachable":
+            return qsTr("Offline")
+        case "unconfigured":
+            return qsTr("Not set")
+        case "unknown":
+            return qsTr("Unknown")
+        default:
+            return String(status || "").length > 0
+                ? Presentation.words(status) : "-"
+        }
+    }
+
+    function sourceStatusAccessibleText(status) {
         return String(status || "").length > 0
-            ? Presentation.words(status) : "-"
+            ? Presentation.words(status) : qsTr("not applicable")
     }
 
     function sourceStatusTone(status) {
@@ -237,10 +253,8 @@ Frame {
     }
 
     function sourceAccessibleName(role, status) {
-        const text = root.sourceStatusText(status)
-        return String(status || "").length > 0
-            ? qsTr("%1 source: %2").arg(role).arg(text)
-            : qsTr("%1 source: not applicable").arg(role)
+        return qsTr("%1 source: %2").arg(role)
+            .arg(root.sourceStatusAccessibleText(status))
     }
 
     function zoneFinalityTone(zone) {
