@@ -161,6 +161,7 @@ const LOGOSCORE_CLI_CAPABILITIES: &[&str] = &[
     "storage.content.upload",
     "storage.backup.sync_read_by_cid",
     "storage.backup.sync_upload",
+    "storage.shared_idl.sync_read",
     "storage.shared_idl.sync_upload",
     "storage.content.download_to_file",
     "storage.content.remove",
