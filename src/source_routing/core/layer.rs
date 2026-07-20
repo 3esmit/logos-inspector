@@ -285,21 +285,26 @@ pub(crate) async fn live_blocks(
                 .await
         }
         BedrockAdapter::Module { transport } => {
-            let blocks = adapters::blockchain_recent_blocks(
+            let blocks_read = adapters::blockchain_recent_blocks_read(
                 module_transport,
                 transport,
                 slot_from,
                 slot_to,
                 limit,
             )
-            .await?
-            .as_array()
-            .cloned()
-            .context("blockchain_module.get_blocks must return an array")?;
+            .await?;
+            let blocks = blocks_read
+                .value
+                .as_array()
+                .cloned()
+                .context("blockchain_module.get_blocks must return an array")?;
             Ok(BlockchainLiveBlocksReport {
                 endpoint: BLOCKCHAIN_MODULE.to_owned(),
                 source: match transport {
                     ModuleTransportKind::Module => "module_get_blocks".to_owned(),
+                    ModuleTransportKind::LogoscoreCli if blocks_read.used_tip_parent_walk => {
+                        "logoscore_cli_tip_parent_walk".to_owned()
+                    }
                     ModuleTransportKind::LogoscoreCli => "logoscore_cli_get_blocks".to_owned(),
                 },
                 blocks,
