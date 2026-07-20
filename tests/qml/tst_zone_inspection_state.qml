@@ -2044,7 +2044,8 @@ TestCase {
             idlJson: idlJson,
             programIdHex: programId,
             instructionWords: [0, 7, 9],
-            accountIds: ["Public/sender", "Private/recipient"]
+            accountIds: ["Public/sender", "Private/recipient"],
+            privateSyncPending: true
         }
 
         verify(l2BlockState.openSubmittedL2Transaction(transaction.hash,
@@ -2109,6 +2110,7 @@ TestCase {
             "transfer")
         compare(l2BlockState.l2SubmittedTransactionLocalDecodeWarning, "")
         compare(l2BlockState.l2SubmittedTransactionLocalDecodeError, "")
+        verify(l2BlockState.l2SubmittedTransactionReceiptTraceInput.privateSyncPending)
         compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction, null)
 
         decodeRegistry.count = 2

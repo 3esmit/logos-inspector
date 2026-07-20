@@ -520,7 +520,8 @@ QtObject {
             idlJson: idlJson,
             programIdHex: programId,
             instructionWords: words,
-            accountIds: accountIds
+            accountIds: accountIds,
+            privateSyncPending: report.private_sync_pending === true
         })
     }
 

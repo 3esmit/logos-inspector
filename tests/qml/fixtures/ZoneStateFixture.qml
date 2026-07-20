@@ -126,6 +126,7 @@ QtObject {
     property string l2TransactionTraceError: ""
     property var l2TransactionTraceErrorDetails: null
     property bool l2TransactionTraceInFlight: false
+    property var l2SubmittedTransactionReceiptTraceInput: null
     property var l2SubmittedTransactionLocalDecode: null
     property string l2SubmittedTransactionLocalDecodeWarning: ""
     property string l2SubmittedTransactionLocalDecodeError: ""
@@ -303,6 +304,7 @@ QtObject {
         l2TransactionDetailReport = null
         l2TransactionTrace = null
         l2TransactionTraceReport = null
+        l2SubmittedTransactionReceiptTraceInput = null
         l2SubmittedTransactionLocalDecode = null
         l2SubmittedTransactionLocalDecodeWarning = ""
         l2SubmittedTransactionLocalDecodeError = ""
@@ -485,6 +487,7 @@ QtObject {
         l2TransactionDetailReport = null
         l2TransactionTrace = null
         l2TransactionTraceReport = null
+        l2SubmittedTransactionReceiptTraceInput = null
         l2SubmittedTransactionLocalDecode = null
         l2SubmittedTransactionLocalDecodeWarning = ""
         l2SubmittedTransactionLocalDecodeError = ""
