@@ -125,8 +125,12 @@ Item {
                 compact: root.compact
                 Layout.preferredWidth: compact ? 96 : 228
                 Layout.fillHeight: true
-                onNavigationRequested: function (view) {
-                    appModel.selectView(view)
+                onNavigationRequested: function (view, channelId) {
+                    if (String(channelId || "").length > 0) {
+                        appModel.openZoneDashboard(channelId)
+                    } else {
+                        appModel.selectView(view)
+                    }
                 }
             }
 
@@ -320,6 +324,9 @@ Item {
             return appModel.shell.navigateForward()
         case "select_view":
             return appModel.shell.selectView(payload.view, payload.recordHistory)
+        case "open_zone_dashboard":
+            return appModel.openZoneDashboard(payload.channelId,
+                payload.recordHistory)
         case "open_settings":
             return appModel.shell.openSettings(
                 payload.section, payload.subsection, payload.recordHistory)

@@ -9,10 +9,12 @@ import "../theme"
 Pane {
     id: root
 
+    objectName: "mainNavigation"
+
     required property Theme theme
     required property AppModel model
     property bool compact: false
-    signal navigationRequested(string view)
+    signal navigationRequested(string view, string channelId)
 
     padding: 18
 
@@ -165,16 +167,20 @@ Pane {
                             ActionButton {
                                 id: navButton
 
-                                objectName: "navButton_" + String(navRow.modelData.view || "")
+                                objectName: "navButton_" + (String(navRow.modelData.channelId || "").length > 0
+                                    ? "zone_" + String(navRow.modelData.channelId || "")
+                                    : String(navRow.modelData.view || ""))
                                 visible: !navRow.isGroup
                                 theme: root.theme
                                 text: root.navText(navRow.modelData)
-                                accessibleName: String(navRow.modelData.label || "")
+                                accessibleName: String(navRow.modelData.accessibleName
+                                    || navRow.modelData.label || "")
                                 selected: navRow.modelData.active === true
                                 Layout.fillWidth: true
                                 onClicked: {
                                     const view = String(navRow.modelData.view || "")
-                                    root.navigationRequested(view)
+                                    root.navigationRequested(view,
+                                        String(navRow.modelData.channelId || ""))
                                 }
                                 ToolTip.visible: (hovered || activeFocus) && root.compact
                                 ToolTip.text: String(navRow.modelData.label || "")

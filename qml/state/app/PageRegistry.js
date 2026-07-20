@@ -1,15 +1,6 @@
 function navTreeItems(root) {
     with (root) {
-        const sequencerChildren = zoneInspection
-            && zoneInspection.l2
-            && zoneInspection.l2.l2SequencerConfigured === true
-            ? [{
-                key: "sequencerDashboard",
-                view: "sequencerDashboard",
-                label: qsTr("Sequencer"),
-                token: "SEQ",
-                layer: "l2"
-            }] : []
+        const configuredZones = configuredZoneNavigationItems(root)
         return [
             { type: "item", key: "overview", view: "overview", label: qsTr("Dashboard"), token: "DAS", layer: "system" },
             {
@@ -21,16 +12,22 @@ function navTreeItems(root) {
                 children: [
                     { key: "blocks", view: "blocks", label: qsTr("Blocks"), token: "L1B", layer: "l1" },
                     { key: "transactions", view: "transactions", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" },
-                    {
-                        key: "zones",
-                        view: "zones",
-                        label: qsTr("Zones"),
-                        token: "ZON",
-                        layer: "l1",
-                        children: sequencerChildren
-                    },
                     { key: "blockchain", view: "blockchain", label: qsTr("Node / Module"), token: "L1N", layer: "l1" }
                 ]
+            },
+            {
+                type: "group",
+                key: "zones",
+                label: qsTr("Zones"),
+                token: "ZON",
+                layer: "l2",
+                children: [{
+                    key: "zonesCatalog",
+                    view: "zones",
+                    label: qsTr("Zone Catalog"),
+                    token: "CAT",
+                    layer: "l2"
+                }].concat(configuredZones)
             },
             {
                 type: "group",
@@ -82,6 +79,76 @@ function navTreeItems(root) {
     }
 }
 
+function configuredZoneNavigationItems(root) {
+    const state = root && root.zoneInspection ? root.zoneInspection : null
+    if (!state || String(state.verification || "") !== "verified"
+            || state.summaryStale === true) {
+        return []
+    }
+    const rows = state && Array.isArray(state.zoneSummaries)
+        ? state.zoneSummaries : []
+    const items = []
+    const seen = {}
+    for (let i = 0; i < rows.length; ++i) {
+        const zone = rows[i] || ({})
+        const channelId = String(zone.channel_id || "")
+        const fields = zone.active_zone_context_fields || ({})
+        const link = zone.settlement_link || ({})
+        const sequencerSourceId = String(fields.selected_sequencer_source_id
+            || link.selected_sequencer_source_id || "")
+        const indexerSourceId = String(fields.indexer_source_id
+            || link.indexer_source_id || "")
+        if (String(zone.kind || "") !== "sequencer_zone" || !channelId.length
+                || seen[channelId]
+                || (!sequencerSourceId.length && !indexerSourceId.length)) {
+            continue
+        }
+        seen[channelId] = true
+        const label = configuredZoneNavigationLabel(zone)
+        items.push({
+            key: "zone." + channelId,
+            view: sequencerSourceId.length > 0 ? "sequencerDashboard" : "zones",
+            channelId: channelId,
+            label: label,
+            token: "ZON",
+            layer: "l2",
+            accessibleName: qsTr("Open Zone dashboard for %1").arg(
+                configuredZoneNavigationIdentity(zone, label))
+        })
+    }
+    items.sort(function (left, right) {
+        return String(left.channelId || "").localeCompare(String(right.channelId || ""))
+    })
+    return items
+}
+
+function configuredZoneNavigationLabel(zone) {
+    const value = zone || ({})
+    const display = value.display || ({})
+    const alias = String(display.alias || "")
+    if (alias.length > 0) {
+        return alias
+    }
+    const title = String(display.title || "")
+    if (title.length > 0) {
+        return title
+    }
+    const shortId = String(display.short_channel_id || "")
+    if (shortId.length > 0) {
+        return shortId
+    }
+    const channelId = String(value.channel_id || "")
+    return channelId.length > 12
+        ? channelId.slice(0, 6) + "…" + channelId.slice(-6) : channelId
+}
+
+function configuredZoneNavigationIdentity(zone, label) {
+    const channelId = String(zone && zone.channel_id || "")
+    const name = String(label || "")
+    return channelId.length > 0 && name.length > 0 && name !== channelId
+        ? qsTr("%1 (%2)").arg(name).arg(channelId) : name
+}
+
 function parentNavKeyForView(root, view) {
     const target = String(view || "")
     if (target === "blockDetail" || target === "transactionDetail") {
@@ -108,6 +175,12 @@ function ancestorNavKeysForView(root, view) {
 function navItemForView(root, view) {
     with (root) {
         const target = String(view || "")
+        const activeChannelId = String(zoneInspection && zoneInspection.activeZoneId || "")
+        const activeItem = navItemForViewAndChannel(navTreeItems(root), target,
+            activeChannelId)
+        if (activeItem) {
+            return activeItem
+        }
         const path = navPathForView(root, target)
         if (path.length > 0) {
             return path[path.length - 1]
@@ -120,6 +193,26 @@ function navItemForView(root, view) {
         }
         return null
     }
+}
+
+function navItemForViewAndChannel(items, view, activeChannelId) {
+    const values = Array.isArray(items) ? items : []
+    const target = String(view || "")
+    const channelId = String(activeChannelId || "")
+    for (let i = 0; i < values.length; ++i) {
+        const item = values[i] || ({})
+        if (String(item.view || "") === target
+                && String(item.channelId || "") === channelId
+                && channelId.length > 0) {
+            return item
+        }
+        const nested = navItemForViewAndChannel(item.children || [], target,
+            channelId)
+        if (nested) {
+            return nested
+        }
+    }
+    return null
 }
 
 function layerForView(root, view) {
@@ -196,19 +289,27 @@ function navItemForQueryIn(items, normalized) {
     return null
 }
 
-function navItemContainsView(item, view) {
+function navItemContainsView(item, view, activeChannelId) {
     if (!item) {
         return false
     }
-    const target = String(view || "")
-    if (String(item.view || "") === target) {
+    if (navItemIsActive(item, view, activeChannelId)) {
         return true
     }
     const children = item.children || []
     for (let i = 0; i < children.length; ++i) {
-        if (navItemContainsView(children[i], target)) {
+        if (navItemContainsView(children[i], view, activeChannelId)) {
             return true
         }
     }
     return false
+}
+
+function navItemIsActive(item, view, activeChannelId) {
+    const value = item || ({})
+    if (String(value.view || "") !== String(view || "")) {
+        return false
+    }
+    const itemChannelId = String(value.channelId || "")
+    return !itemChannelId.length || itemChannelId === String(activeChannelId || "")
 }
