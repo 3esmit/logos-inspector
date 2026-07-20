@@ -49,6 +49,11 @@ impl ZoneSourceProjection {
             .as_ref()
             .and_then(|head| head.header_hash.clone());
         l2_zone.finalized_block_id = self.finalized_head.as_ref().map(|head| head.block_id);
+        l2_zone.indexer_state = self
+            .observations
+            .iter()
+            .find(|observation| observation.role == ZoneSourceRole::Indexer)
+            .and_then(|observation| observation.indexer_state.clone());
         l2_zone.agreement_state = self.agreement.state;
     }
 }
@@ -182,6 +187,7 @@ fn project_zone_observation(observation: &ChannelSourceObservation) -> ZoneSourc
             | ChannelSourceHealthState::Unsupported => ZoneSourceHealth::Unreachable,
             ChannelSourceHealthState::ChannelMismatch => ZoneSourceHealth::ChannelMismatch,
         },
+        indexer_state: last_good.and_then(|observation| observation.indexer_state.clone()),
         reported_channel_id: last_good
             .and_then(|observation| observation.reported_channel_id.clone()),
         head_block_id: last_good

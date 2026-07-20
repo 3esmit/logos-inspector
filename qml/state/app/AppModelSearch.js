@@ -31,6 +31,7 @@ function projectZoneDashboard(root) {
             context.indexer_source_id, "indexer")
         const sequencerHealth = sourceHealthProjection(sequencerObservation, sourceStatus)
         const indexerHealth = sourceHealthProjection(indexerObservation, "unknown")
+        const indexerRuntimeState = String(l2.indexer_state || "").toLowerCase()
         const nextOverview = {
             context_revision: Number(context.context_revision || 0),
             network_scope: context.network_scope,
@@ -43,6 +44,7 @@ function projectZoneDashboard(root) {
             },
             indexer: {
                 health: indexerHealth,
+                indexer_state: indexerRuntimeState,
                 head: { ok: finalizedBlock !== null, value: finalizedBlock }
             }
         }
@@ -172,7 +174,8 @@ function projectChannelStatuses(state) {
                 configured: indexerSourceId.length > 0,
                 source_id: indexerSourceId,
                 status: channelSourceStatus(l2.indexer_source_status, indexerSourceId.length > 0),
-                head: finalizedBlock
+                head: finalizedBlock,
+                indexer_state: String(l2.indexer_state || "").toLowerCase()
             }
         })
     }

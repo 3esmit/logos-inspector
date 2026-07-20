@@ -456,6 +456,8 @@ pub struct L2ZoneSummary {
     pub source_status: L2SourceStatus,
     #[serde(default = "default_indexer_source_status")]
     pub indexer_source_status: L2SourceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_state: Option<String>,
     pub selected_source_id: Option<String>,
     pub configured_source_count: u64,
     pub observed_source_count: u64,
@@ -719,6 +721,8 @@ pub struct ZoneSourceObservation {
     pub role: ZoneSourceRole,
     pub binding_state: Option<ZoneSourceBindingState>,
     pub health: ZoneSourceHealth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_state: Option<String>,
     pub reported_channel_id: Option<String>,
     pub head_block_id: Option<u64>,
     pub head_block_hash: Option<String>,
@@ -942,6 +946,7 @@ fn project_l2_zone(config: Option<&ChannelSourceConfig>) -> L2ZoneSummary {
         } else {
             L2SourceStatus::Unconfigured
         },
+        indexer_state: None,
         selected_source_id,
         configured_source_count,
         observed_source_count: 0,

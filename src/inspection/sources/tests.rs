@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 
 use super::*;
 use crate::{
-    inspection::NetworkScope,
+    inspection::{L2FinalityState, NetworkScope},
     source_routing::channel_sources::{
         ChannelSourceBindingState, ChannelSourceConfig, ChannelSourceCurrentFailure,
         ChannelSourceFailureKind, ChannelSourceLastGood, ChannelSourceProbeStage,
@@ -249,6 +249,54 @@ fn finalized_conflict_has_deterministic_highest_severity() -> Result<()> {
 }
 
 #[test]
+fn projects_indexer_runtime_state_into_l2_summary() -> Result<()> {
+    let channel_id = id('8');
+    let config = config(&channel_id, &[1], true);
+    let mut observed_indexer = indexer(99, 26_001, "final");
+    let Some(last_good) = observed_indexer.last_good.as_mut() else {
+        anyhow::bail!("Indexer fixture lost its last-good observation");
+    };
+    last_good.indexer_state = Some("caught_up".to_owned());
+    let snapshot = snapshot(&config, vec![observed_indexer]);
+    let projection = project_zone_sources(
+        ZoneKind::SequencerZone,
+        &channel_id,
+        Some(&config),
+        &snapshot,
+    );
+    let observation = projection
+        .observations
+        .iter()
+        .find(|observation| observation.role == ZoneSourceRole::Indexer)
+        .ok_or_else(|| anyhow::anyhow!("Indexer observation was not projected"))?;
+    ensure!(
+        observation.indexer_state.as_deref() == Some("caught_up"),
+        "Indexer runtime state was discarded from source observation"
+    );
+
+    let mut l2 = L2ZoneSummary {
+        source_status: L2SourceStatus::Unknown,
+        indexer_source_status: L2SourceStatus::Unknown,
+        indexer_state: None,
+        selected_source_id: None,
+        configured_source_count: 1,
+        observed_source_count: 0,
+        latest_block_id: None,
+        latest_block_hash: None,
+        safe_block_id: None,
+        finalized_block_id: None,
+        finality_state: L2FinalityState::Unknown,
+        agreement_state: SequencerAgreementState::Unobserved,
+    };
+    projection.apply_to_l2_zone(&mut l2);
+    ensure!(
+        l2.indexer_state.as_deref() == Some("caught_up"),
+        "Indexer runtime state was discarded from L2 summary"
+    );
+    Ok(())
+}
+
+#[test]
 fn projects_unreachable_indexer_health_without_reusing_sequencer_status() -> Result<()> {
     let channel_id = id('8');
     let config = config(&channel_id, &[1], true);
@@ -380,6 +428,7 @@ fn sequencer(
             observed_at_unix: 10,
             latency_millis: 3,
             health_ok: true,
+            indexer_state: None,
             reported_channel_id: Some(channel_id.to_owned()),
             head: Some(block(block_id, hash)),
         }),
@@ -399,6 +448,7 @@ fn indexer(number: u8, block_id: u64, hash: &str) -> ChannelSourceObservation {
             observed_at_unix: 10,
             latency_millis: 4,
             health_ok: true,
+            indexer_state: Some("caught_up".to_owned()),
             reported_channel_id: None,
             head: Some(block(block_id, Some(hash))),
         }),

@@ -7372,6 +7372,7 @@ TestCase {
             l2_zone: {
                 source_status: "reachable",
                 indexer_source_status: "reachable",
+                indexer_state: "caught_up",
                 latest_block_id: 104,
                 finalized_block_id: 101
             }
@@ -7405,6 +7406,7 @@ TestCase {
         compare(observation.status, "unavailable")
         compare(observation.channels.length, 2)
         compare(observation.channels[0].head, 101)
+        compare(observation.channels[0].indexer_state, "caught_up")
         compare(observation.channels[1].upstream_head, 90)
         compare(model.localNodes.channelIndexerObservedRunState(observation.channels), "unavailable")
     }

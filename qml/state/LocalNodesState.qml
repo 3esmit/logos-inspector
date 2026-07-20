@@ -24,7 +24,6 @@ QtObject {
     property bool packageCatalogLoading: false
     property int packageCatalogGeneration: 0
     property var observedNodes: ({})
-    property int publicTestnetFinalityWindowBlocks: 256
     readonly property string defaultRuntimeModulesDir: "/opt/logos-node/modules"
     property string pendingAction: ""
     property string pendingNode: ""
@@ -704,14 +703,6 @@ QtObject {
         return values[key] || null
     }
 
-    function observationNumber(value) {
-        if (value === undefined || value === null || value === "") {
-            return null
-        }
-        const number = Number(value)
-        return Number.isFinite(number) ? number : null
-    }
-
     function observedRunState(kind) {
         const key = String(kind || "")
         const observation = observedNode(key)
@@ -724,17 +715,12 @@ QtObject {
         if (lifecycleState.length) {
             return lifecycleState
         }
+        const runtimeState = indexerRuntimeRunState(observation && observation.indexer_state)
+        if (key === "indexer" && runtimeState.length) {
+            return runtimeState
+        }
         const reachable = status === "healthy" || status === "ready"
             || status === "reachable" || status === "online"
-        if (reachable && key === "indexer") {
-            const head = observationNumber(observation.head)
-            const upstreamHead = observationNumber(observation.upstream_head)
-            if (head === null || upstreamHead === null) {
-                return "unknown"
-            }
-            return Math.max(0, upstreamHead - head) <= publicTestnetFinalityWindowBlocks
-                ? "online" : "syncing"
-        }
         if (reachable) {
             return "online"
         }
@@ -767,14 +753,35 @@ QtObject {
                 unresolved = true
                 continue
             }
-            const head = observationNumber(row.head)
-            const upstreamHead = observationNumber(row.upstream_head)
-            if (head !== null && upstreamHead !== null
-                    && Math.max(0, upstreamHead - head) > publicTestnetFinalityWindowBlocks) {
-                return "syncing"
+            const runtimeState = indexerRuntimeRunState(row.indexer_state)
+            if (runtimeState.length) {
+                if (runtimeState !== "online") {
+                    return runtimeState
+                }
+                continue
             }
         }
         return unresolved ? "unknown" : "online"
+    }
+
+    function indexerRuntimeRunState(value) {
+        switch (String(value || "").toLowerCase()) {
+        case "running":
+        case "caught_up":
+            return "online"
+        case "starting":
+        case "syncing":
+            return "syncing"
+        case "stopped":
+        case "error":
+        case "failed":
+        case "stalled":
+        case "unavailable":
+        case "offline":
+            return "unavailable"
+        default:
+            return ""
+        }
     }
 
     function managedLifecycleRunState(kind) {

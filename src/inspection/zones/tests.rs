@@ -233,6 +233,7 @@ fn zone_detail_adds_compact_facts_without_repeating_summary_sections() -> Result
             role: ZoneSourceRole::Sequencer,
             binding_state: Some(ZoneSourceBindingState::PersistedAttested),
             health: ZoneSourceHealth::Reachable,
+            indexer_state: None,
             reported_channel_id: Some("8".repeat(64)),
             head_block_id: Some(1_099),
             head_block_hash: Some("b".repeat(64)),

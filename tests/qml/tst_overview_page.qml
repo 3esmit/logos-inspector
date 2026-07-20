@@ -222,6 +222,39 @@ TestCase {
         verifyAccessibleControl(indexer, Accessible.StaticText)
     }
 
+    function test_dashboard_exposes_indexer_ingestion_state_when_source_is_reachable() {
+        const panel = findChild(page, "dashboardZonesPanel")
+        const configured = dashboardZones()[0]
+        const channelId = String(configured.channel_id || "")
+        const syncing = Object.assign({}, configured, {
+            l2_zone: Object.assign({}, configured.l2_zone, {
+                indexer_source_status: "reachable",
+                indexer_state: "syncing"
+            })
+        })
+        model.zoneInspection.zoneSummaries = [syncing]
+        wait(0)
+
+        let row = findChild(panel, "dashboardZoneRow_" + channelId)
+        verify(row !== null)
+        compare(row.cells[3].text, "Syncing")
+        compare(row.cells[3].tone, "warning")
+        verifyAccessibleControl(findAccessibleByName(
+            row, "Indexer source: Syncing"), Accessible.StaticText)
+
+        model.zoneInspection.zoneSummaries = [Object.assign({}, syncing, {
+            l2_zone: Object.assign({}, syncing.l2_zone, {
+                indexer_state: "caught_up"
+            })
+        })]
+        wait(0)
+
+        row = findChild(panel, "dashboardZoneRow_" + channelId)
+        verify(row !== null)
+        compare(row.cells[3].text, "Caught up")
+        compare(row.cells[3].tone, "success")
+    }
+
     function test_dashboard_view_all_actions_are_contextual_and_routed() {
         const blocks = findChild(page, "dashboardL1BlocksViewAll")
         const zones = findChild(page, "dashboardZonesViewAll")

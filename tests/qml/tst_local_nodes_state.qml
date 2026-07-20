@@ -557,9 +557,9 @@ TestCase {
             messaging: { status: "healthy" }
         })
 
-        compare(state.summaryText(), "3/4 online")
-        compare(state.summaryTone(), "warning")
-        compare(state.observedRunState("indexer"), "syncing")
+        compare(state.summaryText(), "4/4 online")
+        compare(state.summaryTone(), "success")
+        compare(state.observedRunState("indexer"), "online")
     }
 
     function test_testnet_summary_counts_configured_channel_indexers_individually() {
@@ -638,7 +638,58 @@ TestCase {
         compare(state.summaryTone(), "success")
     }
 
-    function test_testnet_indexer_finality_window_preserves_reachability() {
+    function test_configured_channel_indexer_uses_reported_state_over_provisional_gap() {
+        state.report = testnetReport()
+        state.observedNodes = ({
+            bedrock: { status: "healthy" },
+            indexer: {
+                channels: [{
+                    channel_id: "a".repeat(64),
+                    status: "reachable",
+                    indexer_state: "caught_up",
+                    head: 26001,
+                    upstream_head: 28686
+                }]
+            },
+            storage: { status: "healthy" },
+            messaging: { status: "healthy" }
+        })
+
+        compare(state.observedRunState("indexer"), "online")
+        compare(state.summaryText(), "4/4 online")
+
+        state.observedNodes = Object.assign({}, state.observedNodes, {
+            indexer: {
+                channels: [{
+                    channel_id: "a".repeat(64),
+                    status: "reachable",
+                    indexer_state: "syncing",
+                    head: 26001,
+                    upstream_head: 28686
+                }]
+            }
+        })
+
+        compare(state.observedRunState("indexer"), "syncing")
+        compare(state.summaryText(), "3/4 online")
+
+        state.observedNodes = Object.assign({}, state.observedNodes, {
+            indexer: {
+                channels: [{
+                    channel_id: "a".repeat(64),
+                    status: "reachable",
+                    indexer_state: "stalled",
+                    head: 26001,
+                    upstream_head: 28686
+                }]
+            }
+        })
+
+        compare(state.observedRunState("indexer"), "unavailable")
+        compare(state.summaryText(), "3/4 online")
+    }
+
+    function test_reachable_indexer_does_not_infer_sync_from_provisional_gap() {
         state.report = testnetReport()
         state.observedNodes = ({
             indexer: {
@@ -653,6 +704,16 @@ TestCase {
         state.observedNodes = ({
             indexer: {
                 status: "reachable",
+                head: 22161,
+                upstream_head: 22418
+            }
+        })
+
+        compare(state.observedRunState("indexer"), "online")
+
+        state.observedNodes = ({
+            indexer: {
+                status: "syncing",
                 head: 22161,
                 upstream_head: 22418
             }

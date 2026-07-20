@@ -367,7 +367,7 @@ pub(crate) struct SequencerSourceIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexerSourceProbeOutput {
-    pub(crate) health: ChannelSourceProbeFact<()>,
+    pub(crate) health: ChannelSourceProbeFact<Option<String>>,
     pub(crate) head: ChannelSourceProbeFact<Option<ChannelSourceBlock>>,
 }
 
@@ -719,7 +719,10 @@ trait ChannelSourceProbeTransport: Send + Sync + 'static {
         block_id: u64,
     ) -> TransportFuture<Option<Vec<u8>>>;
 
-    fn indexer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()>;
+    fn indexer_health(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+    ) -> TransportFuture<Option<String>>;
 
     fn indexer_finalized_head_id(
         self: Arc<Self>,
@@ -882,7 +885,10 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         })
     }
 
-    fn indexer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()> {
+    fn indexer_health(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+    ) -> TransportFuture<Option<String>> {
         Box::pin(async move {
             IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {

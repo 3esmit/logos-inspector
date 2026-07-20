@@ -65,8 +65,11 @@ impl ChannelSourceProbeTransport for HeadRaceTransport {
         Box::pin(async { Ok(None) })
     }
 
-    fn indexer_health(self: Arc<Self>, _target: ChannelSourceTarget) -> TransportFuture<()> {
-        Box::pin(async { Ok(()) })
+    fn indexer_health(
+        self: Arc<Self>,
+        _target: ChannelSourceTarget,
+    ) -> TransportFuture<Option<String>> {
+        Box::pin(async { Ok(None) })
     }
 
     fn indexer_finalized_head_id(
@@ -162,8 +165,11 @@ impl ChannelSourceProbeTransport for AttestationTransport {
         })
     }
 
-    fn indexer_health(self: Arc<Self>, _target: ChannelSourceTarget) -> TransportFuture<()> {
-        Box::pin(async { Ok(()) })
+    fn indexer_health(
+        self: Arc<Self>,
+        _target: ChannelSourceTarget,
+    ) -> TransportFuture<Option<String>> {
+        Box::pin(async { Ok(None) })
     }
 
     fn indexer_finalized_head_id(
@@ -879,7 +885,7 @@ async fn indexer_probe_exposes_only_indexer_facts() -> Result<()> {
         anyhow::bail!("Indexer request returned Sequencer output");
     };
     ensure!(
-        matches!(output.health, ChannelSourceProbeFact::Observed(())),
+        matches!(output.health, ChannelSourceProbeFact::Observed(None)),
         "Indexer health fact was not retained"
     );
     ensure!(
