@@ -413,13 +413,14 @@ async fn execute_payload_upload(
 }
 
 fn required_payload_upload_cid(upload: &Value) -> Result<String> {
-    upload
+    let cid = upload
         .get("cid")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-        .context("Storage payload upload returned no CID")
+        .context("Storage payload upload returned no CID")?;
+    storage_layer::parse_storage_cid(cid).context("Storage payload upload returned invalid CID")
 }
 
 async fn execute_backup_catalog_upload(
@@ -624,13 +625,14 @@ fn downloaded_backup_result(
 }
 
 fn required_backup_upload_cid(upload: &Value) -> Result<String> {
-    upload
+    let cid = upload
         .get("cid")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-        .context("Storage backup upload returned no CID")
+        .context("Storage backup upload returned no CID")?;
+    storage_layer::parse_backup_cid(cid).context("Storage backup upload returned invalid CID")
 }
 
 pub(super) async fn storage_rest_download_tracked(
@@ -2692,7 +2694,12 @@ mod tests {
 
     #[test]
     fn payload_upload_completion_requires_nonempty_string_cid() -> Result<()> {
-        let cases = [json!({}), json!({ "cid": null }), json!({ "cid": "  " })];
+        let cases = [
+            json!({}),
+            json!({ "cid": null }),
+            json!({ "cid": "  " }),
+            json!({ "cid": "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700}}" }),
+        ];
         for upload in cases {
             anyhow::ensure!(
                 required_payload_upload_cid(&upload).is_err(),
@@ -2708,7 +2715,12 @@ mod tests {
 
     #[test]
     fn backup_upload_completion_requires_nonempty_string_cid() -> Result<()> {
-        let cases = [json!({}), json!({ "cid": null }), json!({ "cid": "  " })];
+        let cases = [
+            json!({}),
+            json!({ "cid": null }),
+            json!({ "cid": "  " }),
+            json!({ "cid": "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700}}" }),
+        ];
         for upload in cases {
             anyhow::ensure!(
                 required_backup_upload_cid(&upload).is_err(),

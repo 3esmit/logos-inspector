@@ -10,13 +10,13 @@ const STORAGE_CID_MAX_BYTES: usize = 256;
 #[cfg(test)]
 const BACKUP_CID_MAX_BYTES: usize = STORAGE_CID_MAX_BYTES;
 
-fn parse_storage_cid(value: String) -> Result<String> {
+pub(crate) fn parse_storage_cid(value: String) -> Result<String> {
     let value = value.trim();
     validate_storage_cid(value)?;
     Ok(value.to_owned())
 }
 
-fn parse_backup_cid(value: String) -> Result<String> {
+pub(crate) fn parse_backup_cid(value: String) -> Result<String> {
     let value = value.trim();
     validate_backup_cid(value)?;
     Ok(value.to_owned())
