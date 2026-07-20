@@ -598,17 +598,17 @@ ColumnLayout {
                         Layout.fillWidth: true
                         Layout.preferredHeight: root.theme.controlHeight
 
-                        contentItem: TextField {
-                            text: shareIdl.displayText
-                            color: root.theme.text
-                            placeholderText: qsTr("Save a local IDL first")
-                            placeholderTextColor: root.theme.textDim
+                        contentItem: Text {
+                            text: shareIdl.displayText.length > 0
+                                ? shareIdl.displayText : qsTr("Save a local IDL first")
+                            color: shareIdl.displayText.length > 0
+                                ? root.theme.text : root.theme.textDim
                             verticalAlignment: Text.AlignVCenter
                             leftPadding: 12
                             rightPadding: 24
-                            readOnly: true
-                            background: null
+                            elide: Text.ElideRight
                             font.pixelSize: root.theme.primaryText
+                            Accessible.ignored: true
                         }
 
                         background: Rectangle {
