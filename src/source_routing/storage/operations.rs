@@ -34,6 +34,7 @@ use super::{BACKUP_CID_MAX_BYTES, STORAGE_CID_MAX_BYTES};
 use super::{layer::STORAGE_SOURCE_MODES, parse_backup_cid, parse_storage_cid, transport};
 
 const DEFAULT_BLOCK_SIZE: u64 = 65_536;
+const SHARED_IDL_DOWNLOAD_FILENAME: &str = "shared-idl.json";
 const MANIFEST_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STORAGE_DOWNLOAD_CANCEL_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const STORAGE_DOWNLOAD_CANCEL_TIMEOUT: Duration = Duration::from_secs(6);
@@ -165,6 +166,31 @@ impl StorageModuleDownload {
             })),
             (Ok(_), Err(cleanup)) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
                 "storage download target was committed but logoscore staging cleanup failed: {cleanup:#}"
+            ))
+            .into()),
+            (Err(primary), Ok(())) => Err(primary),
+            (Err(primary), Err(cleanup)) => {
+                Err(StorageDownloadSettlementUnconfirmed::new(format!(
+                    "{primary:#}; logoscore download staging cleanup failed: {cleanup:#}"
+                ))
+                .into())
+            }
+        }
+    }
+
+    pub(crate) fn read_bounded(self, max_bytes: usize) -> Result<Vec<u8>> {
+        let Self {
+            staged,
+            cid,
+            session_id,
+            ..
+        } = self;
+        let bytes = staged.read_bounded(max_bytes);
+        let cleanup = staged.close();
+        match (bytes, cleanup) {
+            (Ok(bytes), Ok(())) => Ok(bytes),
+            (Ok(_), Err(cleanup)) => Err(StorageDownloadSettlementUnconfirmed::new(format!(
+                "storage download `{cid}` session `{session_id}` was read but logoscore staging cleanup failed: {cleanup:#}"
             ))
             .into()),
             (Err(primary), Ok(())) => Err(primary),
@@ -377,17 +403,52 @@ impl StorageClient {
         Ok(())
     }
 
-    pub(crate) async fn download_bytes_bounded(
+    pub(crate) async fn download_bytes_bounded_controlled(
         &self,
+        module_transport: &SharedModuleTransport,
         cid: &str,
         local_only: bool,
         module_error: &str,
         max_bytes: usize,
+        control: ModuleCallControl,
     ) -> Result<Vec<u8>> {
+        let cid = parse_storage_cid(cid.to_owned())?;
         match &self.adapter {
-            StorageOperationAdapter::Module(_) => bail!("{module_error}"),
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => bail!("{module_error}"),
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
+                anyhow::ensure!(
+                    module_transport.kind() == ModuleTransportKind::LogoscoreCli,
+                    "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
+                    module_transport.kind().as_str()
+                );
+                let path = SHARED_IDL_DOWNLOAD_FILENAME.to_owned();
+                let download = logoscore_cli_download_by_terminal_event(
+                    module_transport,
+                    vec![
+                        json!(cid),
+                        json!(path),
+                        json!(local_only),
+                        json!(DEFAULT_BLOCK_SIZE),
+                    ],
+                    &[
+                        ("cid", cid),
+                        ("path", SHARED_IDL_DOWNLOAD_FILENAME.to_owned()),
+                    ],
+                    Some(max_bytes),
+                    &control,
+                )
+                .await?;
+                download.read_bounded(max_bytes)
+            }
             StorageOperationAdapter::Rest { endpoint } => {
-                transport::download_bytes(endpoint, cid, local_only, max_bytes).await
+                transport::download_bytes_controlled(
+                    endpoint,
+                    &cid,
+                    local_only,
+                    max_bytes,
+                    control.command_control(),
+                )
+                .await
             }
         }
     }
@@ -747,6 +808,7 @@ async fn execute_plan(
                     &module_transport,
                     args,
                     &context,
+                    None,
                     &control,
                 )
                 .await?;
@@ -816,6 +878,7 @@ async fn logoscore_cli_download_by_terminal_event(
     module_transport: &SharedModuleTransport,
     dispatch_args: Vec<Value>,
     context: &[(&'static str, String)],
+    max_bytes: Option<usize>,
     control: &ModuleCallControl,
 ) -> Result<StorageModuleDownload> {
     ensure_manifest_poll_active(control, false)?;
@@ -875,6 +938,7 @@ async fn logoscore_cli_download_by_terminal_event(
             local_only,
             block_size,
             &staged,
+            max_bytes,
             command_control,
             &worker_effect_may_have_started,
         );
@@ -938,6 +1002,7 @@ fn logoscore_cli_download_by_terminal_event_blocking(
     local_only: bool,
     block_size: u64,
     staged: &crate::modules::logos_core::LogoscoreSharedDownload,
+    max_bytes: Option<usize>,
     control: CommandControl,
     effect_may_have_started: &AtomicBool,
 ) -> Result<String> {
@@ -992,6 +1057,18 @@ fn logoscore_cli_download_by_terminal_event_blocking(
             return cleanup_download_watch_before_dispatch(error, &mut watch);
         }
     };
+    if let Some(max_bytes) = max_bytes {
+        let max_bytes = u64::try_from(max_bytes)
+            .context("Storage download byte limit does not fit in manifest size")?;
+        if expected_bytes > max_bytes {
+            return cleanup_download_watch_before_dispatch(
+                anyhow::anyhow!(
+                    "Storage download expected {expected_bytes} bytes exceeds {max_bytes} byte limit"
+                ),
+                &mut watch,
+            );
+        }
+    }
     let staged_path = staged
         .path()
         .to_str()
@@ -1053,22 +1130,36 @@ fn logoscore_cli_download_by_terminal_event_blocking(
         );
     }
 
-    let terminal = match wait_for_download_terminal(&mut watch, cid, &control) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            return cleanup_active_download_error(
-                runtime,
-                cid,
-                error.context(format!(
-                    "Storage download session `{session_id}` lost authoritative settlement"
-                )),
-                &mut watch,
-                &control,
-            );
-        }
-    };
+    let terminal =
+        match wait_for_download_terminal(&mut watch, cid, staged.path(), max_bytes, &control) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                return cleanup_active_download_error(
+                    runtime,
+                    cid,
+                    error.context(format!(
+                        "Storage download session `{session_id}` lost authoritative settlement"
+                    )),
+                    &mut watch,
+                    &control,
+                );
+            }
+        };
     match terminal {
         DownloadTerminalEvent::Succeeded => {
+            if let Some(max_bytes) = max_bytes {
+                if let Err(error) = validate_download_staging_bound(staged.path(), max_bytes) {
+                    return cleanup_active_download_error(
+                        runtime,
+                        cid,
+                        error.context(format!(
+                            "Storage download session `{session_id}` exceeded its byte limit"
+                        )),
+                        &mut watch,
+                        &control,
+                    );
+                }
+            }
             if let Err(error) = validate_completed_download(staged.path(), expected_bytes) {
                 return cleanup_active_download_error(
                     runtime,
@@ -1152,10 +1243,15 @@ fn validate_completed_download(path: &Path, expected_bytes: u64) -> Result<()> {
 fn wait_for_download_terminal(
     watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
     session_id: &str,
+    staged_path: &Path,
+    max_bytes: Option<usize>,
     control: &CommandControl,
 ) -> Result<DownloadTerminalEvent> {
     let mut unrelated = 0_usize;
     loop {
+        if let Some(max_bytes) = max_bytes {
+            validate_download_staging_bound(staged_path, max_bytes)?;
+        }
         let Some(value) = watch.next_value_within(control, Duration::from_millis(100))? else {
             continue;
         };
@@ -1171,6 +1267,25 @@ fn wait_for_download_terminal(
             terminal => return Ok(terminal),
         }
     }
+}
+
+fn validate_download_staging_bound(path: &Path, max_bytes: usize) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "failed to inspect Storage download staging path `{}`",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_file(),
+        "Storage download staging path is not a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len()
+            <= u64::try_from(max_bytes).context("Storage download byte limit is too large")?,
+        "Storage download exceeded {max_bytes} byte limit"
+    );
+    Ok(())
 }
 
 fn decode_download_terminal_event(
@@ -2451,6 +2566,7 @@ mod tests {
         dispatched_path: std::path::PathBuf,
         download_cancel_count_path: std::path::PathBuf,
         download_count_path: std::path::PathBuf,
+        download_staged_path_path: std::path::PathBuf,
         download_path: std::path::PathBuf,
         remove_count_path: std::path::PathBuf,
         upload_count_path: std::path::PathBuf,
@@ -2522,7 +2638,7 @@ case "$1" in
       remove_malformed_terminal)
         printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageRemoveDone","data":{"arg0":"{\"success\":true}"}}'
         ;;
-      download_success|download_foreign_success|download_manifest_fetch|download_size_mismatch)
+      download_success|download_foreign_success|download_manifest_fetch|download_size_mismatch|download_bounded_overflow)
         printf '%s\n' '{"type":"event","protocol":"logoscore.watch","version":1,"timestamp":"2026-07-16T12:00:01Z","module":"storage_module","event":"storageDownloadDone","data":{"arg0":"{\"success\":true,\"sessionId\":\"cid-download-1\"}"}}'
         ;;
       download_terminal_failure)
@@ -2582,8 +2698,12 @@ case "$1" in
         ;;
       downloadToUrl)
         printf x >> "$state/download-count"
+        printf '%s' "$5" > "$state/download-staged-path"
         if [ "$mode" != "download_dispatch_failure" ]; then
-          printf '%s' 'fixture download bytes' > "$5"
+          case "$mode" in
+            download_bounded_overflow) printf '%s' 'fixture download bytes!' > "$5" ;;
+            *) printf '%s' 'fixture download bytes' > "$5" ;;
+          esac
         fi
         touch "$state/dispatched"
         if [ "$mode" = "download_dispatch_failure" ]; then exit 8; fi
@@ -2652,6 +2772,7 @@ esac
                 dispatched_path: config_dir.join("dispatched"),
                 download_cancel_count_path: config_dir.join("download-cancel-count"),
                 download_count_path: config_dir.join("download-count"),
+                download_staged_path_path: config_dir.join("download-staged-path"),
                 download_path,
                 remove_count_path: config_dir.join("remove-count"),
                 upload_count_path: config_dir.join("upload-count"),
@@ -2738,6 +2859,14 @@ esac
             match fs::read(&self.download_cancel_count_path) {
                 Ok(count) => Ok(count.len()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error.into()),
+            }
+        }
+
+        fn staged_download_path(&self) -> Result<Option<std::path::PathBuf>> {
+            match fs::read_to_string(&self.download_staged_path_path) {
+                Ok(path) => Ok(Some(std::path::PathBuf::from(path.trim()))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error.into()),
             }
         }
@@ -3417,6 +3546,153 @@ esac
                 && fake.calls()? == ["manifests", "downloadToUrl"]
                 && fake.download_count()? == 1,
             "CLI download lost secured owned output or exactly-once dispatch"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_shared_idl_download_reads_bounded_bytes_and_cleans_staging() -> Result<()>
+    {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_success")?;
+        let client = StorageClient::from_initialization(&json!({
+            "source_mode": "logoscore_cli",
+            "inputs": {}
+        }))?;
+        let transport = fake.transport();
+
+        let bytes = client
+            .download_bytes_bounded_controlled(
+                &transport,
+                "cid-download-1",
+                false,
+                "shared IDL module download should be available",
+                22,
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await?;
+        let staged = fake
+            .staged_download_path()?
+            .context("shared IDL download did not record its staging path")?;
+
+        anyhow::ensure!(
+            bytes == b"fixture download bytes"
+                && fake.calls()? == ["manifests", "downloadToUrl"]
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 0
+                && !staged.exists(),
+            "shared IDL CLI download did not return bounded bytes with cleaned staging"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_shared_idl_download_rejects_manifest_above_bound_before_dispatch()
+    -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_success")?;
+        let client = StorageClient::from_initialization(&json!({
+            "source_mode": "logoscore_cli",
+            "inputs": {}
+        }))?;
+        let transport = fake.transport();
+
+        let error = client
+            .download_bytes_bounded_controlled(
+                &transport,
+                "cid-download-1",
+                false,
+                "shared IDL module download should be available",
+                21,
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .context("oversized shared IDL manifest should stop before dispatch")?;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("expected 22 bytes exceeds 21 byte limit")
+                && fake.calls()? == ["manifests"]
+                && fake.download_count()? == 0
+                && fake.download_cancel_count()? == 0
+                && fake.staged_download_path()?.is_none(),
+            "oversized shared IDL manifest reached Storage download dispatch: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_shared_idl_download_cancels_staging_overflow() -> Result<()> {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_bounded_overflow")?;
+        let client = StorageClient::from_initialization(&json!({
+            "source_mode": "logoscore_cli",
+            "inputs": {}
+        }))?;
+        let transport = fake.transport();
+
+        let error = client
+            .download_bytes_bounded_controlled(
+                &transport,
+                "cid-download-1",
+                false,
+                "shared IDL module download should be available",
+                22,
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .context("shared IDL staging overflow should fail")?;
+        let staged = fake
+            .staged_download_path()?
+            .context("staging overflow did not record a staging path")?;
+
+        anyhow::ensure!(
+            format!("{error:#}").contains("exceeded 22 byte limit")
+                && fake.download_count()? == 1
+                && fake.download_cancel_count()? == 1
+                && !staged.exists(),
+            "shared IDL staging overflow did not cancel and clean up: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logoscore_cli_shared_idl_download_rejects_untrusted_cid_before_dispatch() -> Result<()>
+    {
+        let _test_permit = serialize_cli_upload_test().await;
+        let fake = FakeUploadRuntime::new("download_success")?;
+        let client = StorageClient::from_initialization(&json!({
+            "source_mode": "logoscore_cli",
+            "inputs": {}
+        }))?;
+        let transport = fake.transport();
+
+        let error = client
+            .download_bytes_bounded_controlled(
+                &transport,
+                "cid-download-1/unsafe",
+                false,
+                "shared IDL module download should be available",
+                22,
+                module_call_control(Duration::from_secs(5)),
+            )
+            .await
+            .err()
+            .context("unsafe shared IDL CID should fail before CLI dispatch")?;
+
+        anyhow::ensure!(
+            error.to_string().contains("storage CID")
+                && fake.calls()?.is_empty()
+                && fake.download_count()? == 0
+                && fake.download_cancel_count()? == 0,
+            "unsafe shared IDL CID reached Storage CLI: {error:#}"
         );
         Ok(())
     }

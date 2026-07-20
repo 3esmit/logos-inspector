@@ -1,8 +1,15 @@
+use std::{
+    sync::{Arc, atomic::AtomicU8},
+    time::Duration,
+};
+
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 use tokio::runtime::Runtime;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
+    modules::logos_core::{ModuleCallControl, SharedModuleTransport},
     social::{
         SocialCommentQuery, SocialPayload,
         accepted_shared_idl_entries_from_messages as decode_accepted_shared_idls_from_messages,
@@ -18,6 +25,7 @@ use super::super::value::to_value;
 use super::RuntimeMethodEntry;
 
 const SHARED_IDL_DOWNLOAD_MAX_BYTES: usize = 16 * 1024 * 1024;
+const SHARED_IDL_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("socialCommentTopic", social_comment_topic),
@@ -27,7 +35,7 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("socialCommentPageFromStore", social_comment_page_from_store),
     RuntimeMethodEntry::sync("socialCommentRowFromEvent", social_comment_row_from_event),
     RuntimeMethodEntry::sync("socialTopicValid", social_topic_valid),
-    RuntimeMethodEntry::with_runtime(
+    RuntimeMethodEntry::with_module_transport(
         "acceptedSharedIdlEntriesFromStoreWithStorage",
         accepted_shared_idl_entries_from_store_with_storage,
     ),
@@ -113,6 +121,7 @@ pub(super) fn social_topic_valid(args: Value) -> Result<Value> {
 pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
     runtime: &Runtime,
     args: Value,
+    module_transport: SharedModuleTransport,
 ) -> Result<Value> {
     let args = Args::new(args)?;
     let topic = args.string(0, "social topic")?;
@@ -135,7 +144,13 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
         value,
     );
     for message in &mut messages {
-        hydrate_shared_idl_payload(runtime, &storage, local_only, &mut message.payload)?;
+        hydrate_shared_idl_payload(
+            runtime,
+            &storage,
+            &module_transport,
+            local_only,
+            &mut message.payload,
+        )?;
     }
     to_value(decode_accepted_shared_idls_from_messages(
         topic,
@@ -149,6 +164,7 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
 fn hydrate_shared_idl_payload(
     runtime: &Runtime,
     storage: &storage_layer::StorageClient,
+    module_transport: &SharedModuleTransport,
     local_only: bool,
     payload: &mut SocialPayload,
 ) -> Result<()> {
@@ -162,11 +178,13 @@ fn hydrate_shared_idl_payload(
         return Ok(());
     }
     let bytes = runtime
-        .block_on(storage.download_bytes_bounded(
+        .block_on(storage.download_bytes_bounded_controlled(
+            module_transport,
             idl_cid,
             local_only,
-            "shared IDL CID fetch through storage_module needs storageDownloadDone correlation; use Direct REST source for synchronous shared IDL fetch",
+            "shared IDL CID fetch through Basecamp storage_module is unavailable; select Logoscore CLI or Direct REST",
             SHARED_IDL_DOWNLOAD_MAX_BYTES,
+            shared_idl_download_control(),
         ))
         .with_context(|| format!("failed to fetch shared IDL CID {idl_cid}"))?;
     let text = String::from_utf8(bytes).context("shared IDL CID payload is not UTF-8")?;
@@ -183,11 +201,20 @@ fn hydrate_shared_idl_payload(
     Ok(())
 }
 
+fn shared_idl_download_control() -> ModuleCallControl {
+    ModuleCallControl::new(
+        CancellationToken::new(),
+        tokio::time::Instant::now() + SHARED_IDL_DOWNLOAD_TIMEOUT,
+        Arc::new(AtomicU8::new(0)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         io::{Read as _, Write as _},
         net::TcpListener,
+        sync::Arc,
         thread,
         time::Duration,
     };
@@ -241,10 +268,14 @@ mod tests {
             scope: None,
         };
         let runtime = Runtime::new()?;
+        let module_transport: SharedModuleTransport = Arc::new(
+            crate::modules::logos_core::UnavailableModuleTransport::basecamp_host_not_configured(),
+        );
 
-        let error = hydrate_shared_idl_payload(&runtime, &storage, false, &mut payload)
-            .err()
-            .context("oversized shared IDL should fail")?;
+        let error =
+            hydrate_shared_idl_payload(&runtime, &storage, &module_transport, false, &mut payload)
+                .err()
+                .context("oversized shared IDL should fail")?;
         server
             .join()
             .map_err(|_| anyhow::anyhow!("shared IDL test server panicked"))??;

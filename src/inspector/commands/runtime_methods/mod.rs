@@ -226,6 +226,10 @@ mod tests {
         assert!(lookup("modules").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(lookup("storageExists").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(
+            lookup("acceptedSharedIdlEntriesFromStoreWithStorage")
+                .is_some_and(|entry| !entry.allows_host_synchronous_call())
+        );
+        assert!(
             lookup("localNodePackageCatalog")
                 .is_some_and(|entry| !entry.allows_host_synchronous_call())
         );
