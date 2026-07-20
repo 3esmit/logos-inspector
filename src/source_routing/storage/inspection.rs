@@ -1,3 +1,4 @@
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
@@ -23,6 +24,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StorageProbeNormalizer {
     Identity,
+    Space,
     Manifests,
     Spr,
     PeerId,
@@ -92,7 +94,7 @@ fn storage_rest_probe_plan(
             SourceProbeKey::StorageSpace,
             "storage_rest.space",
             "/space",
-            StorageProbeNormalizer::Identity,
+            StorageProbeNormalizer::Space,
         ),
         StorageProbeStep::new(
             SourceProbeKey::StorageSpr,
@@ -165,13 +167,14 @@ async fn http_json_probe(endpoint: &str, step: &StorageProbeStep) -> ProbeReport
         http::rest_url(endpoint, &step.path),
         transport::probe_value(endpoint, &step.path)
             .await
-            .map(|value| normalize_http_probe_value(value, &step.normalizer)),
+            .and_then(|value| normalize_http_probe_value(value, &step.normalizer)),
     )
 }
 
-fn normalize_http_probe_value(value: Value, normalizer: &StorageProbeNormalizer) -> Value {
+fn normalize_http_probe_value(value: Value, normalizer: &StorageProbeNormalizer) -> Result<Value> {
     match normalizer {
-        StorageProbeNormalizer::Identity => value,
+        StorageProbeNormalizer::Identity => Ok(value),
+        StorageProbeNormalizer::Space => normalize_storage_space(value),
         StorageProbeNormalizer::Manifests => normalize_storage_manifests(value),
         StorageProbeNormalizer::Spr => normalize_storage_spr(value),
         StorageProbeNormalizer::PeerId => normalize_storage_peer_id(value),
@@ -270,30 +273,76 @@ fn unsupported_storage_source_report(mode: &str) -> SourceReport {
     )
 }
 
-fn normalize_storage_manifests(value: Value) -> Value {
+fn normalize_storage_space(value: Value) -> Result<Value> {
+    let object = value
+        .as_object()
+        .context("storage REST space response must be an object")?;
+    for field in [
+        "totalBlocks",
+        "quotaMaxBytes",
+        "quotaUsedBytes",
+        "quotaReservedBytes",
+    ] {
+        if object.get(field).and_then(Value::as_u64).is_none() {
+            bail!("storage REST space response has no nonnegative integer `{field}`");
+        }
+    }
+    Ok(value)
+}
+
+fn normalize_storage_manifests(value: Value) -> Result<Value> {
     match value {
         Value::Object(mut object) => match object.remove("content") {
-            Some(Value::Array(items)) => Value::Array(items),
-            Some(content) => {
-                object.insert("content".to_owned(), content);
-                Value::Object(object)
-            }
-            None => Value::Object(object),
+            Some(Value::Array(items)) => Ok(Value::Array(items)),
+            _ => bail!("storage REST manifests response must contain a `content` array"),
         },
-        value => value,
+        // Older compatible Storage endpoints returned the content list directly.
+        Value::Array(items) => Ok(Value::Array(items)),
+        _ => bail!("storage REST manifests response must be an object or array"),
     }
 }
 
-fn normalize_storage_spr(value: Value) -> Value {
-    scalar_field(&value, &["spr", "value", "result"]).unwrap_or(value)
+fn normalize_storage_spr(value: Value) -> Result<Value> {
+    normalize_required_text(value, &["spr", "value", "result"], "SPR", |value| {
+        value.starts_with("spr:")
+    })
 }
 
-fn normalize_storage_peer_id(value: Value) -> Value {
-    scalar_field(&value, &["peerId", "peer_id", "id", "value", "result"]).unwrap_or(value)
+fn normalize_storage_peer_id(value: Value) -> Result<Value> {
+    normalize_required_text(
+        value,
+        &["peerId", "peer_id", "id", "value", "result"],
+        "peer ID",
+        |value| !value.chars().any(char::is_whitespace),
+    )
 }
 
-fn normalize_storage_exists(value: Value, cid: &str) -> Value {
-    scalar_field(&value, &[cid, "exists", "has", "value", "result"]).unwrap_or(value)
+fn normalize_storage_exists(value: Value, cid: &str) -> Result<Value> {
+    let value = scalar_field(&value, &[cid, "exists", "has", "value", "result"])
+        .context("storage REST exists response has no boolean value")?;
+    if !value.is_boolean() {
+        bail!("storage REST exists response must contain a boolean value");
+    }
+    Ok(value)
+}
+
+fn normalize_required_text(
+    value: Value,
+    keys: &[&str],
+    label: &str,
+    accepts_legacy_text: impl FnOnce(&str) -> bool,
+) -> Result<Value> {
+    let structured = value.is_object();
+    let value = scalar_field(&value, keys).unwrap_or(value);
+    let value = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("storage REST {label} response must be a non-empty string"))?;
+    if !structured && !accepts_legacy_text(value) {
+        bail!("storage REST {label} response must use the documented JSON shape");
+    }
+    Ok(Value::String(value.to_owned()))
 }
 
 fn optional(value: Option<&str>) -> Option<&str> {
@@ -367,23 +416,58 @@ mod tests {
     }
 
     #[test]
-    fn rest_normalizers_unwrap_current_scalar_shapes() {
+    fn rest_normalizers_unwrap_current_scalar_shapes() -> Result<()> {
         assert_eq!(
-            normalize_storage_peer_id(json!({ "id": "peer-a" })),
+            normalize_storage_peer_id(json!({ "id": "peer-a" }))?,
             json!("peer-a")
         );
         assert_eq!(
-            normalize_storage_spr(json!({ "spr": "spr-a" })),
+            normalize_storage_spr(json!({ "spr": "spr-a" }))?,
             json!("spr-a")
         );
         assert_eq!(
-            normalize_storage_exists(json!({ "cid-a": true }), "cid-a"),
+            normalize_storage_exists(json!({ "cid-a": true }), "cid-a")?,
             json!(true)
         );
         assert_eq!(
-            normalize_storage_exists(json!({ "has": false }), "cid-a"),
+            normalize_storage_exists(json!({ "has": false }), "cid-a")?,
             json!(false)
         );
+        assert_eq!(
+            normalize_storage_space(json!({
+                "totalBlocks": 1,
+                "quotaMaxBytes": 2,
+                "quotaUsedBytes": 3,
+                "quotaReservedBytes": 4,
+            }))?,
+            json!({
+                "totalBlocks": 1,
+                "quotaMaxBytes": 2,
+                "quotaUsedBytes": 3,
+                "quotaReservedBytes": 4,
+            })
+        );
+        assert_eq!(
+            normalize_storage_manifests(json!({ "content": [] }))?,
+            json!([])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn core_rest_normalizers_reject_plaintext_proxy_responses() {
+        let proxy_response = json!("Used HTTP Method is not allowed. POST is required");
+        for normalizer in [
+            StorageProbeNormalizer::Space,
+            StorageProbeNormalizer::Spr,
+            StorageProbeNormalizer::PeerId,
+            StorageProbeNormalizer::Manifests,
+        ] {
+            assert!(
+                normalize_http_probe_value(proxy_response.clone(), &normalizer).is_err(),
+                "plaintext proxy response was accepted by {normalizer:?}"
+            );
+        }
     }
 
     #[test]

@@ -337,7 +337,7 @@ pub(super) async fn exists(endpoint: &str, cid: &str) -> Result<Value> {
 pub(super) async fn probe_value(endpoint: &str, path: &str) -> Result<Value> {
     let url = http::rest_url(endpoint, path);
     let text = http::raw_http_text_url(&url).await?;
-    Ok(parse_probe_text(&text))
+    parse_probe_text(&text)
 }
 
 pub(super) async fn probe_metrics(endpoint: &str) -> Result<String> {
@@ -386,8 +386,9 @@ pub(super) async fn upload(endpoint: &str, path: &str, block_size: u64) -> Resul
         );
     }
     let text = http::send_text(request, "storage upload").await?;
+    let cid = parse_upload_cid(&text)?;
     Ok(json!({
-        "cid": text.trim(),
+        "cid": cid,
         "path": path,
         "bytes": bytes,
         "endpoint": endpoint,
@@ -418,8 +419,9 @@ pub(super) async fn upload_bytes(
         "storage settings backup upload",
     )
     .await?;
+    let cid = parse_upload_cid(&text)?;
     Ok(json!({
-        "cid": text.trim(),
+        "cid": cid,
         "filename": filename,
         "bytes": bytes.len(),
         "endpoint": endpoint,
@@ -1688,12 +1690,46 @@ fn command_interruption<T>(control: &CommandControl) -> Result<T> {
     }
 }
 
-fn parse_probe_text(text: &str) -> Value {
+fn parse_upload_cid(text: &str) -> Result<String> {
+    let trimmed = text.trim();
+    let cid = match serde_json::from_str::<Value>(trimmed) {
+        Ok(value) => {
+            reject_json_rpc_error(&value, "storage upload")?;
+            match value {
+                Value::String(cid) => cid,
+                Value::Object(object) => object
+                    .get("cid")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .context("storage upload JSON response has no CID")?,
+                _ => bail!("storage upload returned a JSON response without a CID"),
+            }
+        }
+        Err(_) => trimmed.to_owned(),
+    };
+    super::parse_storage_cid(cid).context("storage upload returned invalid CID")
+}
+
+fn parse_probe_text(text: &str) -> Result<Value> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Value::Null;
+        return Ok(Value::Null);
     }
-    serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()))
+    let value = serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()));
+    reject_json_rpc_error(&value, "storage REST probe")?;
+    Ok(value)
+}
+
+fn reject_json_rpc_error(value: &Value, context: &str) -> Result<()> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    if object.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
+        if let Some(error) = object.get("error") {
+            bail!("{context} returned JSON-RPC error: {error}");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1750,6 +1786,42 @@ mod tests {
             "invalid download CID reached route construction"
         );
         Ok(())
+    }
+
+    #[test]
+    fn upload_response_rejects_rpc_errors_and_invalid_cid_text() -> Result<()> {
+        anyhow::ensure!(
+            parse_upload_cid(
+                r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}"#
+            )
+            .is_err_and(|error| error.to_string().contains("JSON-RPC error")),
+            "JSON-RPC error response was accepted as an upload CID"
+        );
+        anyhow::ensure!(
+            parse_upload_cid("Used HTTP Method is not allowed. POST is required")
+                .is_err_and(|error| error.to_string().contains("invalid CID")),
+            "plaintext proxy response was accepted as an upload CID"
+        );
+        anyhow::ensure!(
+            parse_upload_cid("cid-1")? == "cid-1",
+            "valid plain-text upload CID was changed"
+        );
+        anyhow::ensure!(
+            parse_upload_cid(r#"{"cid":"cid-2"}"#)? == "cid-2",
+            "valid JSON upload CID was not normalized"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_probe_rejects_json_rpc_error_envelope() {
+        assert!(
+            parse_probe_text(
+                r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}"#
+            )
+            .is_err_and(|error| error.to_string().contains("JSON-RPC error")),
+            "JSON-RPC error envelope was accepted as a Storage REST probe"
+        );
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
