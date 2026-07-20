@@ -522,18 +522,47 @@ fn record_warning(report: &mut InspectionTargetResolutionReport, failure: L2Read
     }
 }
 
-fn candidate_sort_key(candidate: &InspectionTargetCandidate) -> (u8, String) {
+fn candidate_sort_key(candidate: &InspectionTargetCandidate) -> (u8, u8, u8, String, u8, String) {
     match &candidate.entity_ref {
-        InspectionEntityRef::Zone { channel_id, .. } => (0, channel_id.clone()),
-        InspectionEntityRef::L1 { canonical_key, .. } => (1, canonical_key.clone()),
+        InspectionEntityRef::Zone { channel_id, .. } => {
+            (0, 0, 0, channel_id.clone(), 0, String::new())
+        }
+        InspectionEntityRef::L1 { canonical_key, .. } => {
+            (1, 0, 0, canonical_key.clone(), 0, String::new())
+        }
         InspectionEntityRef::L2 { entity } => {
-            let rank = match entity.entity_kind {
+            let entity_rank = match entity.entity_kind {
                 ZoneL2EntityKind::Block => 2,
                 ZoneL2EntityKind::Transaction => 3,
                 ZoneL2EntityKind::Account => 4,
                 ZoneL2EntityKind::Program => 5,
             };
-            (rank, entity.canonical_key.clone())
+            let finality_rank = match candidate.finality {
+                Some(L2RouteFinality::Finalized) => 0,
+                Some(L2RouteFinality::Provisional) => 1,
+                None => 2,
+            };
+            let (source_rank, source_id) = match &entity.source {
+                ZoneL2SourceQualifier::Exact {
+                    source_id,
+                    source_role,
+                } => (
+                    match source_role {
+                        ZoneSourceRole::Indexer => 0,
+                        ZoneSourceRole::Sequencer => 1,
+                    },
+                    source_id.clone(),
+                ),
+                ZoneL2SourceQualifier::Policy => (2, String::new()),
+            };
+            (
+                2,
+                entity_rank,
+                finality_rank,
+                entity.canonical_key.clone(),
+                source_rank,
+                source_id,
+            )
         }
     }
 }
@@ -553,6 +582,8 @@ fn finalize_report(report: &mut InspectionTargetResolutionReport) {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Result, bail};
+
     use super::*;
 
     #[test]
@@ -590,5 +621,89 @@ mod tests {
             ParsedTarget::parse(&"22".repeat(32)),
             Some(ParsedTarget::UnprefixedHash(_))
         ));
+    }
+
+    #[test]
+    fn finalization_ranks_finalized_exact_candidates_before_provisional() -> Result<()> {
+        let network_scope = NetworkScope::GenesisId {
+            genesis_id: "11".repeat(32),
+        };
+        let exact_block =
+            |source_id: &str, source_role: ZoneSourceRole, finality: L2RouteFinality| {
+                InspectionTargetCandidate {
+                    entity_ref: InspectionEntityRef::L2 {
+                        entity: ZoneL2EntityRef {
+                            network_scope: network_scope.clone(),
+                            channel_id: "22".repeat(32),
+                            zone_kind: crate::inspection::ZoneKind::SequencerZone,
+                            entity_kind: ZoneL2EntityKind::Block,
+                            canonical_key: "block:42:".to_owned() + &"aa".repeat(32),
+                            source: ZoneL2SourceQualifier::Exact {
+                                source_id: source_id.to_owned(),
+                                source_role,
+                            },
+                        },
+                    },
+                    finality: Some(finality),
+                }
+            };
+        let mut report = InspectionTargetResolutionReport {
+            report_kind: INSPECTION_RESOLUTION_REPORT_KIND.to_owned(),
+            schema_version: INSPECTION_RESOLUTION_SCHEMA_VERSION,
+            query: "42".to_owned(),
+            request_revision: 1,
+            context_revision: Some(1),
+            status: InspectionTargetResolutionStatus::NotFound,
+            candidates: vec![
+                exact_block(
+                    "sequencer-source",
+                    ZoneSourceRole::Sequencer,
+                    L2RouteFinality::Provisional,
+                ),
+                exact_block(
+                    "indexer-source",
+                    ZoneSourceRole::Indexer,
+                    L2RouteFinality::Finalized,
+                ),
+                l1_block_candidate(network_scope, 42, None),
+            ],
+            recovery: None,
+            warnings: Vec::new(),
+        };
+
+        finalize_report(&mut report);
+
+        let mut candidates = report.candidates.iter();
+        let Some(first) = candidates.next() else {
+            bail!("missing L1 candidate");
+        };
+        if !matches!(&first.entity_ref, InspectionEntityRef::L1 { .. }) {
+            bail!("L1 candidate was not ranked first: {first:?}");
+        }
+        let Some(second) = candidates.next() else {
+            bail!("missing finalized candidate");
+        };
+        let Some(third) = candidates.next() else {
+            bail!("missing provisional candidate");
+        };
+        if second.finality != Some(L2RouteFinality::Finalized)
+            || third.finality != Some(L2RouteFinality::Provisional)
+        {
+            bail!("finality priority was not deterministic: {report:?}");
+        }
+        let InspectionEntityRef::L2 { entity } = &second.entity_ref else {
+            bail!("finalized result lost its L2 entity reference");
+        };
+        if !matches!(
+            &entity.source,
+            ZoneL2SourceQualifier::Exact { source_id, source_role }
+                if source_id == "indexer-source" && *source_role == ZoneSourceRole::Indexer
+        ) {
+            bail!("finalized result lost exact Indexer provenance: {entity:?}");
+        }
+        if candidates.next().is_some() {
+            bail!("candidate finalization changed result count");
+        }
+        Ok(())
     }
 }

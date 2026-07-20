@@ -5,6 +5,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../../../components"
 import "../../../components/common"
+import "../../../state/app/AppModelSearch.js" as Search
 import "../../../theme"
 import "../controls"
 import "../ZonePresentation.js" as Presentation
@@ -106,7 +107,7 @@ ColumnLayout {
             theme: root.theme
             tone: "warning"
             title: qsTr("Search is ambiguous")
-            message: qsTr("Select a typed target. Source order is not used as a tie-breaker.")
+            message: qsTr("Results are ordered by target type and source finality. Select a typed target; choices remain available until the next search.")
             Layout.fillWidth: true
         }
 
@@ -114,17 +115,19 @@ ColumnLayout {
             objectName: "inspectionTargetCandidatesTable"
             theme: root.theme
             headerCells: [
+                { text: qsTr("Priority"), width: 72 },
                 { text: qsTr("Layer"), width: 72 },
                 { text: qsTr("Entity"), width: 120 },
                 { text: qsTr("Canonical key"), width: 320, fill: true },
-                { text: qsTr("Source"), width: 220, fill: true }
+                { text: qsTr("Source / finality"), width: 260, fill: true }
             ]
             rows: root.targetCandidateRows()
             Layout.fillWidth: true
             onCellActivated: function (row, column, cell, rowData) {
                 const candidate = rowData.candidate
-                root.zoneState.resetTargetResolution()
-                root.model.openInspectionCandidate(candidate, false)
+                if (root.model && typeof root.model.openInspectionCandidate === "function") {
+                    root.model.openInspectionCandidate(candidate, false)
+                }
             }
         }
     }
@@ -412,23 +415,91 @@ ColumnLayout {
         const candidates = root.zoneState && Array.isArray(
             root.zoneState.targetResolutionCandidates)
             ? root.zoneState.targetResolutionCandidates : []
-        return candidates.map(function (candidate) {
+        return Search.rankInspectionCandidates(candidates).map(function (candidate, index) {
             const entity = candidate && candidate.entity_ref ? candidate.entity_ref : ({})
-            const source = entity.source || ({})
-            const sourceText = String(source.kind || "") === "exact"
-                ? String(source.source_role || "") + " / " + String(source.source_id || "")
-                : String(source.kind || "-")
             const canonicalKey = String(entity.canonical_key || entity.channel_id || "")
+            const priority = index + 1
+            const sourceText = root.targetCandidateSourceText(candidate)
             return {
                 cells: [
+                    {
+                        text: String(priority),
+                        width: 72,
+                        monospace: false,
+                        accessibleName: qsTr("Result priority %1").arg(priority)
+                    },
                     { text: String(entity.layer || "-").toUpperCase(), width: 72, monospace: false },
                     { text: Presentation.words(entity.entity_kind || "zone"), width: 120, monospace: false },
-                    { text: canonicalKey, width: 320, fill: true, link: true, copyText: canonicalKey },
-                    { text: sourceText, width: 220, fill: true, monospace: false }
+                    {
+                        text: canonicalKey,
+                        width: 320,
+                        fill: true,
+                        link: true,
+                        copyText: canonicalKey,
+                        accessibleName: qsTr("Open result %1: %2").arg(priority).arg(canonicalKey),
+                        accessibleDescription: sourceText
+                    },
+                    {
+                        text: sourceText,
+                        width: 260,
+                        fill: true,
+                        monospace: false,
+                        accessibleName: qsTr("Result %1 source and finality: %2")
+                            .arg(priority).arg(sourceText)
+                    }
                 ],
                 candidate: candidate
             }
         })
+    }
+
+    function targetCandidateSourceText(candidate) {
+        const value = candidate && typeof candidate === "object" ? candidate : ({})
+        const entity = value.entity_ref && typeof value.entity_ref === "object"
+            ? value.entity_ref : ({})
+        const layer = String(entity.layer || "")
+        if (layer === "l1") {
+            return qsTr("L1 catalog")
+        }
+        if (layer === "zone") {
+            return qsTr("Catalog")
+        }
+        const source = entity.source && typeof entity.source === "object"
+            ? entity.source : ({})
+        const kind = String(source.kind || "")
+        if (kind !== "exact") {
+            return kind === "policy" ? qsTr("Active Zone policy") : qsTr("Not available")
+        }
+        const role = root.targetCandidateSourceRole(String(source.source_role || ""))
+        const finality = root.targetCandidateFinalityText(String(value.finality || ""))
+        const sourceId = String(source.source_id || "")
+        if (finality.length === 0) {
+            return sourceId.length > 0
+                ? qsTr("%1 / %2").arg(role).arg(sourceId) : role
+        }
+        return sourceId.length > 0
+            ? qsTr("%1 / %2 / %3").arg(role).arg(finality).arg(sourceId)
+            : qsTr("%1 / %2").arg(role).arg(finality)
+    }
+
+    function targetCandidateSourceRole(value) {
+        if (value === "indexer") {
+            return qsTr("Indexer")
+        }
+        if (value === "sequencer") {
+            return qsTr("Sequencer")
+        }
+        return qsTr("Exact source")
+    }
+
+    function targetCandidateFinalityText(value) {
+        if (value === "finalized") {
+            return qsTr("Finalized")
+        }
+        if (value === "provisional") {
+            return qsTr("Provisional")
+        }
+        return ""
     }
 
     function catalogSubtitle() {

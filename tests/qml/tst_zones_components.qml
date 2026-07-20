@@ -108,6 +108,8 @@ TestCase {
         property var programExecution: programExecutionMock
         property var favoriteStore: favoriteState
         property var shell: shellMock
+        property var openedInspectionCandidate: null
+        property bool openInspectionCandidateSucceeds: true
 
         function idlEntryAt(index) {
             return null
@@ -119,6 +121,11 @@ TestCase {
 
         function selectView(view) {
             selectedView = String(view || "")
+        }
+
+        function openInspectionCandidate(candidate, recordHistory) {
+            openedInspectionCandidate = candidate
+            return openInspectionCandidateSucceeds
         }
     }
 
@@ -226,6 +233,8 @@ TestCase {
         appModel.selectedView = ""
         appModel.programTab = ""
         appModel.pendingInspectionEntityRef = null
+        appModel.openedInspectionCandidate = null
+        appModel.openInspectionCandidateSucceeds = true
         favoriteState.clear()
         isolatedProgramState.l2ProgramsReport = zoneState.l2ProgramsReport
         isolatedProgramState.l2Programs = FixtureData.l2Programs()
@@ -266,6 +275,75 @@ TestCase {
 
         shellMock.resultValue = { report_kind: "unrelated.result" }
         tryCompare(recovery, "visible", false)
+    }
+
+    function test_ambiguous_search_renders_ranked_source_choices_and_keeps_choices_after_selection() {
+        const blockHash = "a".repeat(64)
+        const canonicalKey = "block:42:" + blockHash
+        const finalized = {
+            entity_ref: {
+                layer: "l2",
+                network_scope: FixtureData.networkScope(),
+                channel_id: FixtureData.identity("1"),
+                zone_kind: "sequencer_zone",
+                entity_kind: "block",
+                canonical_key: canonicalKey,
+                source: {
+                    kind: "exact",
+                    source_id: "idx-a",
+                    source_role: "indexer"
+                }
+            },
+            finality: "finalized"
+        }
+        const provisional = {
+            entity_ref: {
+                layer: "l2",
+                network_scope: FixtureData.networkScope(),
+                channel_id: FixtureData.identity("1"),
+                zone_kind: "sequencer_zone",
+                entity_kind: "block",
+                canonical_key: canonicalKey,
+                source: {
+                    kind: "exact",
+                    source_id: "seq-a",
+                    source_role: "sequencer"
+                }
+            },
+            finality: "provisional"
+        }
+        zoneState.targetResolutionReport = {
+            report_kind: "inspection.target_resolution",
+            status: "ambiguous",
+            candidates: [finalized, provisional]
+        }
+        zoneState.targetResolutionCandidates = [finalized, provisional]
+        zoneState.targetResolutionStatus = "ambiguous"
+        wait(0)
+
+        const table = findChild(page, "inspectionTargetCandidatesTable")
+        verify(table !== null, "Object exists")
+        compare(table.headerCells[0].text, "Priority")
+        compare(table.headerCells[4].text, "Source / finality")
+
+        const rows = page.targetCandidateRows()
+        compare(rows.length, 2)
+        compare(rows[0].cells[0].text, "1")
+        compare(rows[0].cells[3].accessibleName,
+            "Open result 1: " + canonicalKey)
+        compare(rows[0].cells[4].text, "Indexer / Finalized / idx-a")
+        compare(rows[1].cells[0].text, "2")
+        compare(rows[1].cells[4].text, "Sequencer / Provisional / seq-a")
+
+        appModel.openInspectionCandidateSucceeds = false
+        table.cellActivated(0, 3, rows[0].cells[3], rows[0])
+        compare(appModel.openedInspectionCandidate.entity_ref.source.source_id, "idx-a")
+        compare(zoneState.targetResolutionCandidates.length, 2)
+
+        appModel.openInspectionCandidateSucceeds = true
+        table.cellActivated(1, 3, rows[1].cells[3], rows[1])
+        compare(appModel.openedInspectionCandidate.entity_ref.source.source_id, "seq-a")
+        compare(zoneState.targetResolutionCandidates.length, 2)
     }
 
     function test_catalog_status_exposes_complete_fact_and_error_text() {
