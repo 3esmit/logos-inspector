@@ -109,6 +109,7 @@ TestCase {
         property var favoriteStore: favoriteState
         property var shell: shellMock
         property var openedInspectionCandidate: null
+        property var openedSettings: null
         property bool openInspectionCandidateSucceeds: true
 
         function idlEntryAt(index) {
@@ -121,6 +122,14 @@ TestCase {
 
         function selectView(view) {
             selectedView = String(view || "")
+        }
+
+        function openSettings(section, subsection) {
+            openedSettings = {
+                section: String(section || ""),
+                subsection: String(subsection || "")
+            }
+            return true
         }
 
         function openInspectionCandidate(candidate, recordHistory) {
@@ -198,6 +207,7 @@ TestCase {
         zoneState.currentError = ""
         zoneState.statusError = ""
         zoneState.configureError = ""
+        zoneState.catalogSourceUnavailable = false
         zoneState.readiness = null
         zoneState.summaryStale = false
         zoneState.requestedDetailTab = "overview"
@@ -235,6 +245,7 @@ TestCase {
         appModel.programTab = ""
         appModel.pendingInspectionEntityRef = null
         appModel.openedInspectionCandidate = null
+        appModel.openedSettings = null
         appModel.openInspectionCandidateSucceeds = true
         favoriteState.clear()
         isolatedProgramState.l2ProgramsReport = zoneState.l2ProgramsReport
@@ -276,6 +287,24 @@ TestCase {
 
         shellMock.resultValue = { report_kind: "unrelated.result" }
         tryCompare(recovery, "visible", false)
+    }
+
+    function test_unavailable_catalog_opens_bedrock_settings_instead_of_retry() {
+        zoneState.configureError = "Zone Catalog requires a Direct RPC Bedrock source."
+        zoneState.catalogSourceUnavailable = true
+        wait(0)
+
+        const settingsAction = findChild(page, "zoneCatalogOpenSettingsAction")
+        const retryAction = findChild(page, "zoneCatalogRetryAction")
+        verify(settingsAction !== null)
+        verify(settingsAction.visible)
+        verify(settingsAction.enabled)
+        verify(hasAccessibleNode(page, "Open Bedrock settings", Accessible.Button))
+        verify(retryAction === null || !retryAction.visible)
+
+        settingsAction.clicked()
+        compare(appModel.openedSettings.section, "network")
+        compare(appModel.openedSettings.subsection, "blockchain")
     }
 
     function test_ambiguous_search_renders_ranked_source_choices_and_keeps_choices_after_selection() {
