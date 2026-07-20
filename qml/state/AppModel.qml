@@ -1654,6 +1654,7 @@ QtObject {
                 short_channel_id: String(channel.short_channel_id || channel.channel_id || ""),
                 label: String(channel.label || channel.short_channel_id || channel.channel_id || ""),
                 status: String(indexer.status || "unknown").toLowerCase(),
+                indexer_state: String(indexer.indexer_state || "").toLowerCase(),
                 head: indexer.head === undefined ? null : indexer.head,
                 upstream_head: sequencer.head === undefined ? null : sequencer.head
             })
@@ -1675,6 +1676,7 @@ QtObject {
         }
         return {
             status: status,
+            indexer_state: String(indexer.indexer_state || "").toLowerCase(),
             head: metricsState.overviewProbeValue("indexer", "head"),
             upstream_head: metricsState.overviewProbeValue("sequencer", "head"),
             detail: healthValue === "unknown" ? "" : healthValue,

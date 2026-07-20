@@ -131,6 +131,8 @@ pub struct ChannelSourceLastGood {
     pub observed_at_unix: u64,
     pub latency_millis: u64,
     pub health_ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_state: Option<String>,
     pub reported_channel_id: Option<String>,
     pub head: Option<ChannelSourceBlockObservation>,
 }
@@ -1138,7 +1140,7 @@ fn complete_observation(
     observed_at_unix: u64,
     latency_millis: u64,
 ) -> Option<ChannelSourceLastGood> {
-    let (health_ok, reported_channel_id, head) = match output {
+    let (health_ok, indexer_state, reported_channel_id, head) = match output {
         ChannelSourceProbeOutput::Sequencer(output) => {
             let ChannelSourceProbeFact::Observed(identity) = &output.channel_id else {
                 return None;
@@ -1148,6 +1150,7 @@ fn complete_observation(
             };
             (
                 matches!(output.health, ChannelSourceProbeFact::Observed(())),
+                None,
                 matches!(identity.basis, SequencerSourceIdentityBasis::RpcReported)
                     .then(|| identity.channel_id.clone()),
                 Some(block_observation(head, observed_at_unix)),
@@ -1158,7 +1161,11 @@ fn complete_observation(
                 return None;
             };
             (
-                matches!(output.health, ChannelSourceProbeFact::Observed(())),
+                matches!(&output.health, ChannelSourceProbeFact::Observed(_)),
+                match &output.health {
+                    ChannelSourceProbeFact::Observed(state) => state.clone(),
+                    ChannelSourceProbeFact::Failed(_) => None,
+                },
                 None,
                 head.as_ref()
                     .map(|head| block_observation(head, observed_at_unix)),
@@ -1169,6 +1176,7 @@ fn complete_observation(
         observed_at_unix,
         latency_millis,
         health_ok,
+        indexer_state,
         reported_channel_id,
         head,
     })

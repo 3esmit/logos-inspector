@@ -238,6 +238,30 @@ TestCase {
         compare(groups[1].items[2].tone, "warning")
     }
 
+    function test_indexer_ingestion_state_controls_footer_status_without_hiding_head() {
+        const source = {
+            configured: true,
+            status: "reachable",
+            indexer_state: "syncing",
+            head: 26001
+        }
+
+        compare(FooterStatusProjection.channelSourceValue(footerRoot, source), "26001")
+        compare(FooterStatusProjection.channelSourceAccessibleValue(footerRoot, source),
+                "syncing; head 26001")
+        compare(FooterStatusProjection.channelSourceTone(source), "warning")
+
+        source.indexer_state = "caught_up"
+        compare(FooterStatusProjection.channelSourceAccessibleValue(footerRoot, source),
+                "caught up; head 26001")
+        compare(FooterStatusProjection.channelSourceTone(source), "success")
+
+        source.indexer_state = "stalled"
+        compare(FooterStatusProjection.channelSourceAccessibleValue(footerRoot, source),
+                "stalled; head 26001")
+        compare(FooterStatusProjection.channelSourceTone(source), "error")
+    }
+
     function test_configured_channel_footer_groups_follow_individual_toggles() {
         const alphaId = "a".repeat(64)
         const betaId = "b".repeat(64)

@@ -473,7 +473,7 @@ async fn explicit_source_refresh_bypasses_unavailable_backoff() -> Result<()> {
     );
     refreshed.respond_regular(ChannelSourceProbeOutput::Indexer(
         IndexerSourceProbeOutput {
-            health: ChannelSourceProbeFact::Observed(()),
+            health: ChannelSourceProbeFact::Observed(Some("caught_up".to_owned())),
             head: ChannelSourceProbeFact::Observed(Some(block(100, "recovered"))),
         },
     ))?;
@@ -485,6 +485,11 @@ async fn explicit_source_refresh_bypasses_unavailable_backoff() -> Result<()> {
                     .as_ref()
                     .and_then(|last_good| last_good.head.as_ref())
                     .is_some_and(|head| head.block_id == 100)
+                && observation
+                    .last_good
+                    .as_ref()
+                    .and_then(|last_good| last_good.indexer_state.as_deref())
+                    == Some("caught_up")
         })
     })
     .await?;

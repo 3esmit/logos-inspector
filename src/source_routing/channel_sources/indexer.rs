@@ -168,18 +168,18 @@ impl<'a> IndexerAdapter<'a> {
         }
     }
 
-    pub(crate) async fn health(&self) -> ExecutionZoneReadResult<()> {
+    pub(crate) async fn health(&self) -> ExecutionZoneReadResult<Option<String>> {
         match self {
             Self::Rpc { endpoint } => crate::lez::indexer_health(endpoint)
                 .await
-                .map(|_| ())
+                .map(|_| None)
                 .map_err(map_read_error),
             Self::Module {
                 transport,
                 transport_kind,
-            } => module_adapters::indexer_health(transport, *transport_kind)
+            } => module_adapters::indexer_status(transport, *transport_kind)
                 .await
-                .map(|_| ())
+                .map(|status| Some(normalized_runtime_state(&status.state)))
                 .map_err(map_read_error),
         }
     }
@@ -326,6 +326,26 @@ impl<'a> IndexerAdapter<'a> {
             .map_err(map_read_error),
         }
     }
+}
+
+fn normalized_runtime_state(value: &str) -> String {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    match normalized.as_str() {
+        "starting" => "starting",
+        "syncing" => "syncing",
+        "caughtup" => "caught_up",
+        "running" => "running",
+        "stopped" | "notinitialized" => "stopped",
+        "error" | "failed" => "error",
+        "stalled" => "stalled",
+        "unavailable" | "offline" => "unavailable",
+        _ => "unknown",
+    }
+    .to_owned()
 }
 
 #[must_use]
@@ -491,6 +511,35 @@ mod tests {
         anyhow::ensure!(call.transport() == ModuleTransportKind::Module);
         anyhow::ensure!(call.module() == MODULE_ID);
         anyhow::ensure!(call.method() == "getLastFinalizedBlockId");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_adapter_preserves_normalized_runtime_state() -> Result<()> {
+        let target = ChannelSourceTarget::Module {
+            module_id: MODULE_ID.to_owned(),
+        };
+        let (transport, calls) = recording_transport(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+            json!({"state": "CaughtUp", "indexedBlockId": "26001"}),
+        );
+        let Ok(adapter) =
+            IndexerAdapter::connect(&target, &transport, ModuleTransportKind::LogoscoreCli)
+        else {
+            bail!("Indexer module adapter did not connect");
+        };
+        let Ok(state) = adapter.health().await else {
+            bail!("Indexer module status request failed");
+        };
+        anyhow::ensure!(state.as_deref() == Some("caught_up"));
+        let calls = calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("calls lock poisoned"))?;
+        let call = calls
+            .first()
+            .context("Indexer status call was not recorded")?;
+        anyhow::ensure!(call.method() == "getStatus");
         Ok(())
     }
 

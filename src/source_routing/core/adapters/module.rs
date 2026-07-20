@@ -132,18 +132,7 @@ async fn transport_call_value(
     .map(|reply| reply.into_value())
 }
 
-pub(crate) async fn indexer_health(
-    transport: &SharedModuleTransport,
-    transport_kind: ModuleTransportKind,
-) -> Result<Value> {
-    let status = indexer_status(transport, transport_kind).await?;
-    Ok(json!({
-        "status": "healthy",
-        "health": status,
-    }))
-}
-
-async fn indexer_status(
+pub(crate) async fn indexer_status(
     transport: &SharedModuleTransport,
     transport_kind: ModuleTransportKind,
 ) -> Result<IndexerStatusReport> {

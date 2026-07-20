@@ -181,13 +181,46 @@ function channelSourceAccessibleValue(root, source) {
 
 function channelSourceStatus(source) {
     const value = source || ({})
-    return String(value.status || "unknown").toLowerCase()
+    const status = String(value.status || "unknown").toLowerCase()
+    if (status !== "reachable") {
+        return status
+    }
+    switch (String(value.indexer_state || "").toLowerCase()) {
+    case "starting":
+    case "syncing":
+    case "caught_up":
+    case "running":
+    case "stopped":
+    case "error":
+    case "failed":
+    case "stalled":
+    case "unavailable":
+    case "offline":
+        return String(value.indexer_state).toLowerCase()
+    default:
+        return status
+    }
 }
 
 function channelSourceStatusText(status) {
     switch (String(status || "unknown")) {
     case "reachable":
         return qsTr("reachable")
+    case "starting":
+        return qsTr("starting")
+    case "syncing":
+        return qsTr("syncing")
+    case "caught_up":
+        return qsTr("caught up")
+    case "running":
+        return qsTr("running")
+    case "stopped":
+        return qsTr("stopped")
+    case "error":
+    case "failed":
+        return qsTr("error")
+    case "stalled":
+        return qsTr("stalled")
     case "degraded":
         return qsTr("degraded")
     case "stale":
@@ -208,10 +241,20 @@ function channelSourceTone(source) {
     }
     switch (channelSourceStatus(value)) {
     case "reachable":
+    case "caught_up":
+    case "running":
         return "success"
+    case "starting":
+    case "syncing":
     case "degraded":
     case "stale":
         return "warning"
+    case "stopped":
+    case "error":
+    case "failed":
+    case "stalled":
+    case "unavailable":
+    case "offline":
     case "unreachable":
         return "error"
     default:

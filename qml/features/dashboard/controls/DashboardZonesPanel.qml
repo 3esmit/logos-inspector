@@ -210,14 +210,49 @@ Frame {
         if (String(zone && zone.kind || "") !== "sequencer_zone") {
             return ""
         }
-        return String(zone && zone.l2_zone
-            && zone.l2_zone.indexer_source_status || "unknown")
+        const sourceStatus = String(zone && zone.l2_zone
+            && zone.l2_zone.indexer_source_status || "unknown").toLowerCase()
+        if (sourceStatus !== "reachable") {
+            return sourceStatus
+        }
+        const indexerState = String(zone && zone.l2_zone
+            && zone.l2_zone.indexer_state || "").toLowerCase()
+        switch (indexerState) {
+        case "starting":
+        case "syncing":
+        case "caught_up":
+        case "running":
+        case "stopped":
+        case "error":
+        case "failed":
+        case "stalled":
+        case "unavailable":
+        case "offline":
+            return indexerState
+        default:
+            return sourceStatus
+        }
     }
 
     function sourceStatusText(status) {
         switch (String(status || "")) {
         case "reachable":
             return qsTr("Ready")
+        case "starting":
+            return qsTr("Starting")
+        case "syncing":
+            return qsTr("Syncing")
+        case "caught_up":
+            return qsTr("Caught up")
+        case "running":
+            return qsTr("Running")
+        case "stopped":
+            return qsTr("Stopped")
+        case "error":
+        case "failed":
+            return qsTr("Error")
+        case "stalled":
+            return qsTr("Stalled")
         case "unreachable":
             return qsTr("Offline")
         case "unconfigured":
@@ -241,10 +276,20 @@ Frame {
         }
         switch (String(status || "")) {
         case "reachable":
+        case "caught_up":
+        case "running":
             return "success"
+        case "starting":
+        case "syncing":
         case "degraded":
         case "stale":
             return "warning"
+        case "stopped":
+        case "error":
+        case "failed":
+        case "stalled":
+        case "unavailable":
+        case "offline":
         case "unreachable":
             return "error"
         default:
