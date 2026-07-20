@@ -720,6 +720,10 @@ QtObject {
         }
         const observation = observedNode(key)
         const status = String(observation && observation.status || "unknown").toLowerCase()
+        if (key === "indexer" && observation
+                && Array.isArray(observation.channels) && observation.channels.length > 0) {
+            return channelIndexerObservedRunState(observation.channels)
+        }
         const reachable = status === "healthy" || status === "ready"
             || status === "reachable" || status === "online"
         if (reachable && key === "indexer") {
@@ -742,6 +746,35 @@ QtObject {
             return "unavailable"
         }
         return "unknown"
+    }
+
+    function channelIndexerObservedRunState(channels) {
+        const rows = Array.isArray(channels) ? channels : []
+        let unresolved = false
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || ({})
+            const status = String(row.status || "unknown").toLowerCase()
+            if (status === "unavailable" || status === "unreachable"
+                    || status === "failed" || status === "offline") {
+                return "unavailable"
+            }
+            if (status === "syncing" || status === "degraded"
+                    || status === "stale" || status === "backfilling") {
+                return "syncing"
+            }
+            if (status !== "healthy" && status !== "ready"
+                    && status !== "reachable" && status !== "online") {
+                unresolved = true
+                continue
+            }
+            const head = observationNumber(row.head)
+            const upstreamHead = observationNumber(row.upstream_head)
+            if (head !== null && upstreamHead !== null
+                    && Math.max(0, upstreamHead - head) > publicTestnetFinalityWindowBlocks) {
+                return "syncing"
+            }
+        }
+        return unresolved ? "unknown" : "online"
     }
 
     function managedLifecycleRunState(kind) {

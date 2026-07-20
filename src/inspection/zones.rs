@@ -454,6 +454,8 @@ pub enum SettlementLinkSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct L2ZoneSummary {
     pub source_status: L2SourceStatus,
+    #[serde(default = "default_indexer_source_status")]
+    pub indexer_source_status: L2SourceStatus,
     pub selected_source_id: Option<String>,
     pub configured_source_count: u64,
     pub observed_source_count: u64,
@@ -474,6 +476,10 @@ pub enum L2SourceStatus {
     Stale,
     Degraded,
     Unknown,
+}
+
+fn default_indexer_source_status() -> L2SourceStatus {
+    L2SourceStatus::Unknown
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -930,6 +936,11 @@ fn project_l2_zone(config: Option<&ChannelSourceConfig>) -> L2ZoneSummary {
             L2SourceStatus::Unconfigured
         } else {
             L2SourceStatus::Unknown
+        },
+        indexer_source_status: if config.is_some_and(|config| config.indexer_source.is_some()) {
+            L2SourceStatus::Unknown
+        } else {
+            L2SourceStatus::Unconfigured
         },
         selected_source_id,
         configured_source_count,

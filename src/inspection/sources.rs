@@ -40,6 +40,8 @@ pub struct ZoneSourceProjection {
 impl ZoneSourceProjection {
     pub fn apply_to_l2_zone(&self, l2_zone: &mut L2ZoneSummary) {
         l2_zone.source_status = self.source_status;
+        l2_zone.indexer_source_status =
+            project_indexer_source_status(&self.observations, l2_zone.indexer_source_status);
         l2_zone.observed_source_count = self.observed_source_count;
         l2_zone.latest_block_id = self.selected_head.as_ref().map(|head| head.block_id);
         l2_zone.latest_block_hash = self
@@ -48,6 +50,27 @@ impl ZoneSourceProjection {
             .and_then(|head| head.header_hash.clone());
         l2_zone.finalized_block_id = self.finalized_head.as_ref().map(|head| head.block_id);
         l2_zone.agreement_state = self.agreement.state;
+    }
+}
+
+fn project_indexer_source_status(
+    observations: &[ZoneSourceObservation],
+    fallback: L2SourceStatus,
+) -> L2SourceStatus {
+    let Some(observation) = observations
+        .iter()
+        .find(|observation| observation.role == ZoneSourceRole::Indexer)
+    else {
+        return fallback;
+    };
+    match observation.health {
+        ZoneSourceHealth::Reachable => L2SourceStatus::Reachable,
+        ZoneSourceHealth::Degraded => L2SourceStatus::Degraded,
+        ZoneSourceHealth::Stale => L2SourceStatus::Stale,
+        ZoneSourceHealth::Unreachable | ZoneSourceHealth::ChannelMismatch => {
+            L2SourceStatus::Unreachable
+        }
+        ZoneSourceHealth::Pending | ZoneSourceHealth::Unknown => L2SourceStatus::Unknown,
     }
 }
 

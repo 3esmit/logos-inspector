@@ -23,12 +23,14 @@ TestCase {
         property var configuredSourceObservations: ({})
         property var moduleReports: ({})
         property var connectionStates: ({})
+        property var dashboardChannelStatuses: []
         readonly property var metrics: model
 
         function footerFieldEnabled(key) {
             return key === "overall.status"
                 || key === "overall.main_risk"
                 || key === "overall.operator_action"
+                || key === "channels.summary"
                 || key === "storage.node_reachable"
         }
 
@@ -164,6 +166,7 @@ TestCase {
         model.configuredSourceObservations = ({})
         model.moduleReports = ({})
         model.connectionStates = ({})
+        model.dashboardChannelStatuses = []
     }
 
     function test_overall_rows_are_projected_from_health_facts() {
@@ -202,6 +205,64 @@ TestCase {
                 return item.fullName === "Overall"
             })
         }))
+    }
+
+    function test_configured_channels_render_independent_sequencer_and_indexer_statuses() {
+        model.dashboardChannelStatuses = [{
+            channel_id: "a".repeat(64),
+            short_channel_id: "aaaa…aaaa",
+            label: "Alpha",
+            sequencer: { configured: true, status: "reachable", head: 104 },
+            indexer: { configured: true, status: "reachable", head: 101 }
+        }, {
+            channel_id: "b".repeat(64),
+            short_channel_id: "bbbb…bbbb",
+            label: "Beta",
+            sequencer: { configured: true, status: "unreachable", head: null },
+            indexer: { configured: true, status: "degraded", head: 88 }
+        }]
+
+        const groups = FooterStatusProjection.channelFooterGroups(footerRoot)
+
+        compare(groups.length, 2)
+        compare(groups[0].items[0].fullName, "Channel Alpha")
+        compare(groups[0].items[1].accessibleValue, "reachable; head 104")
+        compare(groups[0].items[2].tone, "success")
+        compare(groups[1].items[1].value, "unreachable")
+        compare(groups[1].items[1].tone, "error")
+        compare(groups[1].items[2].tone, "warning")
+    }
+
+    function test_channel_health_replaces_stale_single_zone_risk() {
+        model.dashboardChannelStatuses = [{
+            channel_id: "a".repeat(64),
+            short_channel_id: "aaaa…aaaa",
+            label: "Alpha",
+            sequencer: { configured: true, status: "reachable", head: 104 },
+            indexer: { configured: true, status: "reachable", head: 101 }
+        }]
+
+        let status = FooterStatusProjection.footerFieldItem(footerRoot, "overall.status")
+        let risk = FooterStatusProjection.footerFieldItem(footerRoot, "overall.main_risk")
+        compare(status.value, "")
+        compare(status.tone, "success")
+        compare(risk.value, "none")
+        verify(risk.hidden)
+
+        model.dashboardChannelStatuses = [{
+            channel_id: "b".repeat(64),
+            short_channel_id: "bbbb…bbbb",
+            label: "Beta",
+            sequencer: { configured: true, status: "reachable", head: 104 },
+            indexer: { configured: true, status: "unreachable", head: null }
+        }]
+
+        status = FooterStatusProjection.footerFieldItem(footerRoot, "overall.status")
+        risk = FooterStatusProjection.footerFieldItem(footerRoot, "overall.main_risk")
+        const action = FooterStatusProjection.footerFieldItem(footerRoot, "overall.operator_action")
+        compare(status.value, "down")
+        compare(risk.value, "channel bbbb…bbbb indexer")
+        compare(action.value, "check channel source")
     }
 
     function test_module_status_and_configured_source_status_are_distinct() {

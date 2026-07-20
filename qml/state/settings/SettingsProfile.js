@@ -1,3 +1,5 @@
+.import "../status/StatusFieldCatalog.js" as StatusFieldCatalog
+
 function defaultBackupContents() {
     return {
         settings: true,
@@ -60,8 +62,8 @@ function applySettingsState(root, value) {
         root.metrics.storageRefreshRate = root.metrics.canonicalRefreshRate(
             root.numberSetting(value, "storage_refresh_rate", root.metrics.storageRefreshRate))
         if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
-            root.metrics.footerFieldSelections = root.mergeMap(
-                root.metrics.defaultFooterFieldSelections(), value.footer_fields)
+            root.metrics.footerFieldSelections = StatusFieldCatalog
+                .normalizedFooterFieldSelections(value.footer_fields)
             root.metrics.footerFieldRevision += 1
         }
         if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {

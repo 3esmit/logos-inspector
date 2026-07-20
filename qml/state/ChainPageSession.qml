@@ -31,6 +31,7 @@ QtObject {
     property var dashboardBlocks: []
     property var dashboardProvisionalBlocks: []
     property var dashboardLezBlockRows: []
+    property var dashboardChannelStatuses: []
     property string dashboardError: ""
     property var blockDetailValue: null
     property string blockDetailError: ""

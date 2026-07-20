@@ -207,6 +207,7 @@ QtObject {
                 chainPageState.dashboardBlocks = []
                 chainPageState.dashboardProvisionalBlocks = []
                 chainPageState.dashboardLezBlockRows = []
+                chainPageState.dashboardChannelStatuses = []
             }
 
             function invalidateDashboardOperations(reason) {
@@ -297,6 +298,7 @@ QtObject {
     property alias dashboardBlocks: chainPageState.dashboardBlocks
     property alias dashboardProvisionalBlocks: chainPageState.dashboardProvisionalBlocks
     property alias dashboardLezBlockRows: chainPageState.dashboardLezBlockRows
+    property alias dashboardChannelStatuses: chainPageState.dashboardChannelStatuses
     property alias blockDetailValue: chainPageState.blockDetailValue
     property alias blockDetailError: chainPageState.blockDetailError
     property alias transactionDetailValue: chainPageState.transactionDetailValue
@@ -917,6 +919,7 @@ QtObject {
 
         function onZoneSummariesChanged() {
             Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+            entityNavigationState.projectZoneDashboard()
         }
 
         function onCatalogConfiguredChanged() {
@@ -1603,6 +1606,28 @@ QtObject {
     }
 
     function localNodeIndexerObservation() {
+        const channelStatuses = Array.isArray(dashboardChannelStatuses)
+            ? dashboardChannelStatuses : []
+        const channelIndexers = []
+        for (let i = 0; i < channelStatuses.length; ++i) {
+            const channel = channelStatuses[i] || ({})
+            const indexer = channel.indexer || ({})
+            if (indexer.configured !== true) {
+                continue
+            }
+            const sequencer = channel.sequencer || ({})
+            channelIndexers.push({
+                channel_id: String(channel.channel_id || ""),
+                short_channel_id: String(channel.short_channel_id || channel.channel_id || ""),
+                label: String(channel.label || channel.short_channel_id || channel.channel_id || ""),
+                status: String(indexer.status || "unknown").toLowerCase(),
+                head: indexer.head === undefined ? null : indexer.head,
+                upstream_head: sequencer.head === undefined ? null : sequencer.head
+            })
+        }
+        if (channelStatuses.length > 0) {
+            return channelIndexerObservation(channelIndexers)
+        }
         const overview = metricsState.dashboardOverview || ({})
         const indexer = overview.indexer || ({})
         const health = indexer.health || null
@@ -1621,6 +1646,45 @@ QtObject {
             upstream_head: metricsState.overviewProbeValue("sequencer", "head"),
             detail: healthValue === "unknown" ? "" : healthValue,
             provenance: ["zone_source_observation", "indexer"]
+        }
+    }
+
+    function channelIndexerObservation(channels) {
+        const rows = Array.isArray(channels) ? channels : []
+        if (!rows.length) {
+            return {
+                status: "unknown",
+                head: null,
+                upstream_head: null,
+                channels: [],
+                detail: qsTr("No Channel Indexer is configured."),
+                provenance: ["channel_source_observation", "indexer", "multi_channel"]
+            }
+        }
+        let status = "reachable"
+        const details = []
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || ({})
+            const sourceStatus = String(row.status || "unknown").toLowerCase()
+            if (sourceStatus === "unreachable") {
+                status = "unavailable"
+            } else if (status !== "unavailable"
+                    && (sourceStatus === "degraded" || sourceStatus === "stale")) {
+                status = "degraded"
+            } else if (status === "reachable" && sourceStatus !== "reachable") {
+                status = "unknown"
+            }
+            details.push(qsTr("%1: %2")
+                .arg(String(row.short_channel_id || row.channel_id || qsTr("Channel")))
+                .arg(sourceStatus))
+        }
+        return {
+            status: status,
+            head: null,
+            upstream_head: null,
+            channels: rows,
+            detail: details.join(" · "),
+            provenance: ["channel_source_observation", "indexer", "multi_channel"]
         }
     }
 

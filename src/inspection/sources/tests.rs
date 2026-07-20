@@ -240,6 +240,39 @@ fn finalized_conflict_has_deterministic_highest_severity() -> Result<()> {
         projection.finalized_head.as_ref().map(|head| head.block_id) == Some(10),
         "Indexer finalized head was not projected"
     );
+    ensure!(
+        project_indexer_source_status(&projection.observations, L2SourceStatus::Unknown)
+            == L2SourceStatus::Reachable,
+        "reachable Indexer observation was not projected into summary status"
+    );
+    Ok(())
+}
+
+#[test]
+fn projects_unreachable_indexer_health_without_reusing_sequencer_status() -> Result<()> {
+    let channel_id = id('8');
+    let config = config(&channel_id, &[1], true);
+    let mut stopped_indexer = indexer(99, 10, "final");
+    stopped_indexer.health = ChannelSourceHealthState::Unreachable;
+    let projection = project_zone_sources(
+        ZoneKind::SequencerZone,
+        &channel_id,
+        Some(&config),
+        &snapshot(
+            &config,
+            vec![sequencer(1, &channel_id, 12, Some("head")), stopped_indexer],
+        ),
+    );
+
+    ensure!(
+        projection.source_status == L2SourceStatus::Reachable,
+        "reachable Sequencer status changed with Indexer failure"
+    );
+    ensure!(
+        project_indexer_source_status(&projection.observations, L2SourceStatus::Unknown)
+            == L2SourceStatus::Unreachable,
+        "unreachable Indexer observation was not projected independently"
+    );
     Ok(())
 }
 

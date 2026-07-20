@@ -56,6 +56,7 @@ pub(super) fn linked_sequencer_zone() -> ZoneSummary {
         facts: ZoneFacts::SequencerZone {
             l2_zone: L2ZoneSummary {
                 source_status: L2SourceStatus::Reachable,
+                indexer_source_status: L2SourceStatus::Reachable,
                 selected_source_id: Some("seq-primary".to_owned()),
                 configured_source_count: 2,
                 observed_source_count: 2,
@@ -120,6 +121,7 @@ pub(super) fn l1_only_sequencer_zone() -> ZoneSummary {
         facts: ZoneFacts::SequencerZone {
             l2_zone: L2ZoneSummary {
                 source_status: L2SourceStatus::Unconfigured,
+                indexer_source_status: L2SourceStatus::Unconfigured,
                 selected_source_id: None,
                 configured_source_count: 0,
                 observed_source_count: 0,
