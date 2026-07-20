@@ -340,7 +340,7 @@ TestCase {
             key: "token-idl",
             name: "Token",
             programIdHex: "33".repeat(32),
-            programBinary: "",
+            programBinary: "/tmp/token.bin",
             json: tokenIdl()
         })
     }
@@ -824,7 +824,7 @@ TestCase {
         compare(gateway.callsFor("localWalletInstructionSubmit").length, 0)
     }
 
-    function test_edit_invalidates_preview_and_private_reference_blocks_send() {
+    function test_edit_invalidates_preview_and_private_reference_reaches_submission() {
         prepareInstructionFields()
         fillPublicTransfer()
         verify(interaction.previewInstruction() !== null)
@@ -844,11 +844,29 @@ TestCase {
         verify(interaction.privateDraft())
         const previewButton = findChild(interaction, "zoneProgramPreviewButton")
         verify(previewButton !== null)
-        verify(!previewButton.enabled)
-        verify(hasVisibleText(interaction, "Private interaction not enabled here"),
-            "private warning missing; privateDraft=" + interaction.privateDraft()
-            + " planPrivate=" + (interaction.plan && interaction.plan.private_mode))
-        compare(gateway.callsFor("localWalletInstructionSubmit").length, 0)
+        verify(previewButton.enabled)
+        verify(interaction.previewInstruction() !== null)
+        const privatePreviewCall = gateway.pendingCall("localWalletInstructionPreview")
+        verify(privatePreviewCall !== null)
+        compare(privatePreviewCall.args[0].programBinary, "/tmp/token.bin")
+        compare(privatePreviewCall.args[0].accounts.sender, "Private/sender-account")
+        const privatePreview = previewValue()
+        privatePreview.mode = "private"
+        privatePreview.program_binary_required = true
+        privatePreview.accounts[0].privacy = "private"
+        verify(gateway.completeCall(privatePreviewCall, success(privatePreview)))
+        verify(interaction.previewCurrent())
+        verify(interaction.openConfirmation())
+        verify(interaction.confirmInstruction() !== null)
+        const privateSubmitCall = gateway.pendingCall("localWalletInstructionSubmit")
+        verify(privateSubmitCall !== null)
+        compare(privateSubmitCall.args[1].programBinary, "/tmp/token.bin")
+        compare(privateSubmitCall.args[1].accounts.sender, "Private/sender-account")
+        compare(gateway.callsFor("localWalletInstructionSubmit").length, 1)
+        const privateReceipt = receiptValue()
+        privateReceipt.mode = "private"
+        verify(gateway.completeCall(privateSubmitCall, success(privateReceipt)))
+        verify(!interaction.submitPending())
 
         verify(interaction.setFieldValue(
             "accounts", "sender", "Public/sender-account"))

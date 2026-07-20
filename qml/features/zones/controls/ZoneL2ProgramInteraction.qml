@@ -112,8 +112,8 @@ ColumnLayout {
 
         ZoneKindChip {
             theme: root.theme
-            label: qsTr("Public transaction")
-            tone: "info"
+            label: root.privateDraft() ? qsTr("Private transaction") : qsTr("Public transaction")
+            tone: root.privateDraft() ? "warning" : "info"
         }
     }
 
@@ -341,15 +341,6 @@ ColumnLayout {
         }
     }
 
-    StatusMessage {
-        visible: root.privateDraft()
-        theme: root.theme
-        tone: "warning"
-        title: qsTr("Private interaction not enabled here")
-        message: qsTr("This Testnet workflow submits public transactions only. Replace Private/ account references with Public/ accounts.")
-        Layout.fillWidth: true
-    }
-
     RowLayout {
         visible: root.renderedPlan !== null && root.selectedInstruction.length > 0
         spacing: root.theme.gapSmall
@@ -361,7 +352,6 @@ ColumnLayout {
             text: qsTr("Preview")
             primary: !root.previewCurrent()
             enabled: root.planReady() && root.targetDisplayReady()
-                && !root.privateDraft()
                 && !root.previewPending() && !root.submitPending()
             Layout.preferredWidth: 116
             onClicked: root.previewInstruction()
@@ -820,7 +810,7 @@ ColumnLayout {
     }
 
     function previewInstruction() {
-        if (!root.execution || !root.planReady() || root.privateDraft()) {
+        if (!root.execution || !root.planReady()) {
             return null
         }
         return root.execution.previewIdlInstructionDraft()
