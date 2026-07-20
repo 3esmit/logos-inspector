@@ -1028,6 +1028,20 @@ TestCase {
         compare(gateway.requestCount("zoneCatalogConfigure"), 1)
     }
 
+    function test_unchanged_direct_source_retains_configuration_error() {
+        zoneState.sourceDescriptor = {
+            kind: "direct_http",
+            endpoint: "https://l1.example"
+        }
+        zoneState.start()
+        gateway.respondNext("zoneCatalogConfigure", failed("Bedrock unavailable"))
+        compare(zoneState.configureError, "Bedrock unavailable")
+
+        verify(!zoneState.syncCatalogSource())
+        compare(zoneState.configureError, "Bedrock unavailable")
+        compare(gateway.requestCount("zoneCatalogConfigure"), 2)
+    }
+
     function test_testnet_default_topology_is_explicit_in_catalog_configuration() {
         zoneState.sourceDescriptor = {
             kind: "direct_http",
