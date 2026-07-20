@@ -99,11 +99,17 @@ async fn handle_helper_request(request: HelperRequest) -> Result<HelperSuccess> 
 }
 
 async fn submit_private_idl(request: SubmitPrivateIdlRequest) -> Result<HelperSuccess> {
-    let wallet = open_legacy_wallet(
+    let mut wallet = open_legacy_wallet(
         request.wallet_home.clone(),
         request.sequencer_endpoint.as_deref(),
     )?;
     verify_testnet_v02_profile(&wallet).await?;
+    if requires_private_state_sync(&request.accounts) {
+        wallet
+            .sync_to_latest_block()
+            .await
+            .context("failed to synchronize private wallet state before building the instruction")?;
+    }
     let program =
         load_program_with_dependencies(&request.program_binary, &request.dependency_binaries)?;
     if program.program.id() != request.expected_program_id {
@@ -145,6 +151,12 @@ fn accepted_submission(tx_hash: String, shared_secret_count: usize) -> HelperSuc
         tx_hash,
         shared_secret_count,
     }
+}
+
+fn requires_private_state_sync(accounts: &[HelperAccount]) -> bool {
+    accounts
+        .iter()
+        .any(|account| matches!(account.privacy, HelperAccountPrivacy::Private))
 }
 
 fn account_identity(account: &HelperAccount) -> AccountIdentity {
@@ -301,5 +313,22 @@ mod tests {
             bail!("accepted private submission changed its receipt");
         }
         Ok(())
+    }
+
+    #[test]
+    fn private_accounts_require_state_sync_before_submission() {
+        let public = HelperAccount {
+            account_id: [1; 32],
+            privacy: HelperAccountPrivacy::Public,
+            signer: true,
+        };
+        let private = HelperAccount {
+            account_id: [2; 32],
+            privacy: HelperAccountPrivacy::Private,
+            signer: false,
+        };
+
+        assert!(!requires_private_state_sync(&[public]));
+        assert!(requires_private_state_sync(&[private]));
     }
 }
