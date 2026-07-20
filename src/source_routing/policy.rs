@@ -893,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn only_direct_l1_rpc_advertises_live_block_observation() {
+    fn every_implemented_bedrock_source_advertises_live_block_observation() {
         let policy = source_policy_report();
         let supports_live_blocks = |key: &str| {
             policy
@@ -909,8 +909,8 @@ mod tests {
         };
 
         assert!(supports_live_blocks("rpc"));
-        assert!(!supports_live_blocks("module"));
-        assert!(!supports_live_blocks("logoscore_cli"));
+        assert!(supports_live_blocks("module"));
+        assert!(supports_live_blocks("logoscore_cli"));
     }
 
     fn generated_source_policy_catalog() -> Result<String, serde_json::Error> {
