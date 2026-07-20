@@ -179,6 +179,21 @@ TestCase {
         tryCompare(popup, "title", data.title)
     }
 
+    function test_operations_tab_mouse_selects_operations_page() {
+        let operationsTab = null
+        tryVerify(function () {
+            operationsTab = findAccessibleByName(page, qsTr("Operations"))
+            return operationsTab !== null
+        })
+        verify(!!operationsTab, "Object exists")
+        compare(operationsTab.Accessible.role, Accessible.PageTab)
+
+        mouseClick(operationsTab, operationsTab.width / 2, operationsTab.height / 2)
+
+        tryCompare(model, "localWalletTab", "operations")
+        tryCompare(operationsTab, "checked", true)
+    }
+
     function test_accepting_create_account_popup_calls_model_command() {
         model.walletCreatePrivacy = "private"
         model.walletCreateLabel = "receiver"
@@ -314,5 +329,23 @@ TestCase {
     function test_short_text_keeps_middle_truncation() {
         compare(page.shortText("", 12), "-")
         compare(page.shortText("abcdefghijklmnopqrstuvwxyz", 12), "abcd...uvwxyz")
+    }
+
+    function findAccessibleByName(item, expectedName) {
+        if (!item) {
+            return null
+        }
+        if (item.Accessible && String(item.Accessible.name || "") === expectedName
+                && item.visible) {
+            return item
+        }
+        const children = item.children || []
+        for (let index = 0; index < children.length; ++index) {
+            const match = findAccessibleByName(children[index], expectedName)
+            if (match) {
+                return match
+            }
+        }
+        return null
     }
 }
