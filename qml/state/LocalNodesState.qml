@@ -806,22 +806,37 @@ QtObject {
 
     function observedSummary() {
         const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
-        const summary = { total: nodes.length, online: 0, syncing: 0, unavailable: 0, unknown: 0 }
+        const summary = { total: 0, online: 0, syncing: 0, unavailable: 0, unknown: 0 }
         for (let i = 0; i < nodes.length; ++i) {
             const node = nodes[i] || ({})
-            const state = observedRunState(node.key || node.kind)
-            if (state === "online") {
-                summary.online += 1
-            } else if (state === "syncing" || state === "initializing"
-                    || state === "starting" || state === "stopping") {
-                summary.syncing += 1
-            } else if (state === "unavailable") {
-                summary.unavailable += 1
+            const key = String(node.key || node.kind || "")
+            const observation = observedNode(key)
+            const channels = key === "indexer" && observation
+                && Array.isArray(observation.channels) ? observation.channels : []
+            if (channels.length > 0) {
+                for (let channelIndex = 0; channelIndex < channels.length; ++channelIndex) {
+                    recordObservedSummaryState(summary,
+                        channelIndexerObservedRunState([channels[channelIndex]]))
+                }
             } else {
-                summary.unknown += 1
+                recordObservedSummaryState(summary, observedRunState(key))
             }
         }
         return summary
+    }
+
+    function recordObservedSummaryState(summary, state) {
+        summary.total += 1
+        if (state === "online") {
+            summary.online += 1
+        } else if (state === "syncing" || state === "initializing"
+                || state === "starting" || state === "stopping") {
+            summary.syncing += 1
+        } else if (state === "unavailable") {
+            summary.unavailable += 1
+        } else {
+            summary.unknown += 1
+        }
     }
 
     function controlState(node) {

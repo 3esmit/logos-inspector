@@ -562,6 +562,50 @@ TestCase {
         compare(state.observedRunState("indexer"), "syncing")
     }
 
+    function test_testnet_summary_counts_configured_channel_indexers_individually() {
+        state.report = testnetReport()
+        state.observedNodes = ({
+            bedrock: { status: "healthy" },
+            indexer: {
+                channels: [{
+                    channel_id: "a".repeat(64),
+                    status: "reachable",
+                    head: 101,
+                    upstream_head: 104
+                }, {
+                    channel_id: "b".repeat(64),
+                    status: "reachable",
+                    head: 90,
+                    upstream_head: 91
+                }]
+            },
+            storage: { status: "healthy" },
+            messaging: { status: "healthy" }
+        })
+
+        compare(state.summaryText(), "5/5 online")
+        compare(state.summaryTone(), "success")
+
+        state.observedNodes = Object.assign({}, state.observedNodes, {
+            indexer: {
+                channels: [{
+                    channel_id: "a".repeat(64),
+                    status: "reachable",
+                    head: 101,
+                    upstream_head: 104
+                }, {
+                    channel_id: "b".repeat(64),
+                    status: "unreachable",
+                    head: null,
+                    upstream_head: 91
+                }]
+            }
+        })
+
+        compare(state.summaryText(), "4/5 online")
+        compare(state.summaryTone(), "error")
+    }
+
     function test_testnet_indexer_finality_window_preserves_reachability() {
         state.report = testnetReport()
         state.observedNodes = ({
