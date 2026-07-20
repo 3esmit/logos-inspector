@@ -134,6 +134,7 @@ TestCase {
         model.programExecution.dismissIdlInstructionReceipt()
         model.dashboardNode = null
         model.dashboardProvisionalBlocks = []
+        model.dashboardChannelStatuses = []
         model.metrics.blockchainSourceReport = null
         model.metrics.blockchainModuleReport = null
         model.metrics.storageModuleReport = null
@@ -7255,6 +7256,57 @@ TestCase {
         compare(model.dashboardOverview.node, bedrockNode)
         verify(model.dashboardOverview.sequencer === undefined)
         verify(model.dashboardOverview.indexer === undefined)
+    }
+
+    function test_zone_projection_and_local_nodes_keep_channel_indexers_separate() {
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        model.zoneInspection.networkScope = scope
+        model.zoneInspection.zoneSummaries = [{
+            channel_id: "a".repeat(64),
+            kind: "sequencer_zone",
+            display: { title: "Alpha", short_channel_id: "aaaa…aaaa" },
+            active_zone_context_fields: {
+                selected_sequencer_source_id: "seq-a",
+                indexer_source_id: "idx-a"
+            },
+            l2_zone: {
+                source_status: "reachable",
+                indexer_source_status: "reachable",
+                latest_block_id: 104,
+                finalized_block_id: 101
+            }
+        }, {
+            channel_id: "b".repeat(64),
+            kind: "sequencer_zone",
+            display: { title: "Beta", short_channel_id: "bbbb…bbbb" },
+            active_zone_context_fields: {
+                selected_sequencer_source_id: "seq-b",
+                indexer_source_id: "idx-b"
+            },
+            l2_zone: {
+                source_status: "reachable",
+                indexer_source_status: "unreachable",
+                latest_block_id: 90,
+                finalized_block_id: null
+            }
+        }]
+        model.zoneInspection.activeZoneContext = null
+
+        model.entityNavigation.projectZoneDashboard()
+
+        compare(model.dashboardChannelStatuses.length, 2)
+        compare(model.dashboardChannelStatuses[0].label, "Alpha")
+        compare(model.dashboardChannelStatuses[0].sequencer.head, 104)
+        compare(model.dashboardChannelStatuses[0].indexer.head, 101)
+        compare(model.dashboardChannelStatuses[1].label, "Beta")
+        compare(model.dashboardChannelStatuses[1].indexer.status, "unreachable")
+
+        const observation = model.localNodeIndexerObservation()
+        compare(observation.status, "unavailable")
+        compare(observation.channels.length, 2)
+        compare(observation.channels[0].head, 101)
+        compare(observation.channels[1].upstream_head, 90)
+        compare(model.localNodes.channelIndexerObservedRunState(observation.channels), "unavailable")
     }
 
     function setTipMinusLib(value) {

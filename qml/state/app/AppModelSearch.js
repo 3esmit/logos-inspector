@@ -1,6 +1,7 @@
 function projectZoneDashboard(root) {
     with (root) {
         const state = zoneInspection
+        dashboardChannelStatuses = projectChannelStatuses(state)
         const context = state ? state.activeZoneContext : null
         const currentOverview = dashboardOverview
             && typeof dashboardOverview === "object"
@@ -114,6 +115,71 @@ function zoneDashboardSummary(state) {
         }
     }
     return null
+}
+
+function projectChannelStatuses(state) {
+    const rows = state && Array.isArray(state.zoneSummaries) ? state.zoneSummaries : []
+    const projected = []
+    for (let i = 0; i < rows.length; ++i) {
+        const row = rows[i] || ({})
+        if (String(row.kind || "") !== "sequencer_zone") {
+            continue
+        }
+        const fields = row.active_zone_context_fields || ({})
+        const settlement = row.settlement_link || ({})
+        const l2 = row.l2_zone || ({})
+        const channelId = String(row.channel_id || "")
+        const sequencerSourceId = String(fields.selected_sequencer_source_id
+            || settlement.selected_sequencer_source_id || "")
+        const indexerSourceId = String(fields.indexer_source_id
+            || settlement.indexer_source_id || "")
+        if (!channelId.length || (!sequencerSourceId.length && !indexerSourceId.length)) {
+            continue
+        }
+        const display = row.display || ({})
+        const shortChannelId = String(display.short_channel_id || "")
+        const finalizedBlock = l2.finalized_block_id === undefined
+            ? (l2.safe_block_id === undefined ? null : l2.safe_block_id)
+            : l2.finalized_block_id
+        projected.push({
+            channel_id: channelId,
+            short_channel_id: shortChannelId.length > 0
+                ? shortChannelId : abbreviatedChannelId(channelId),
+            label: String(display.alias || display.title || shortChannelId || channelId),
+            sequencer: {
+                configured: sequencerSourceId.length > 0,
+                source_id: sequencerSourceId,
+                status: channelSourceStatus(l2.source_status, sequencerSourceId.length > 0),
+                head: l2.latest_block_id === undefined ? null : l2.latest_block_id
+            },
+            indexer: {
+                configured: indexerSourceId.length > 0,
+                source_id: indexerSourceId,
+                status: channelSourceStatus(l2.indexer_source_status, indexerSourceId.length > 0),
+                head: finalizedBlock
+            }
+        })
+    }
+    projected.sort(function (left, right) {
+        return String(left.channel_id || "").localeCompare(String(right.channel_id || ""))
+    })
+    return projected
+}
+
+function channelSourceStatus(value, configured) {
+    if (!configured) {
+        return "unconfigured"
+    }
+    const status = String(value || "unknown").toLowerCase()
+    return status.length > 0 ? status : "unknown"
+}
+
+function abbreviatedChannelId(channelId) {
+    const value = String(channelId || "")
+    if (value.length <= 12) {
+        return value
+    }
+    return value.slice(0, 6) + "…" + value.slice(-6)
 }
 
 function zoneDashboardRows(state) {

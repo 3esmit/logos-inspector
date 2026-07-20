@@ -27,10 +27,25 @@ TestCase {
         const dashboard = StatusFieldCatalog.defaultDashboardGraphSelections()
 
         verify(footer["overall.status"])
+        verify(footer["channels.summary"])
         verify(footer["storage.failed_transfers_recent"])
         verify(!footer["network.chain_id"])
         verify(dashboard["bedrock.finality_lag_seconds"])
         verify(!dashboard["messaging.publish_latency_ms"])
+    }
+
+    function test_footer_selection_migration_removes_single_zone_fields() {
+        const selections = StatusFieldCatalog.normalizedFooterFieldSelections({
+            "lez.rpc_health": true,
+            "indexer.rpc_health": true,
+            "channels.summary": false,
+            "storage.module": false
+        })
+
+        verify(selections["lez.rpc_health"] === undefined)
+        verify(selections["indexer.rpc_health"] === undefined)
+        verify(!selections["channels.summary"])
+        verify(!selections["storage.module"])
     }
 
     function test_footer_row_policy_uses_catalog_metadata() {

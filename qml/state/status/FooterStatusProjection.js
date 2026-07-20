@@ -11,6 +11,16 @@ function footerRegions(root) {
     const regions = { left: [], right: [] }
     for (let i = 0; i < groups.length; ++i) {
         const group = groups[i]
+        if (String(group.dynamic || "") === "channels") {
+            const channelGroups = channelFooterGroups(root)
+            for (let j = 0; j < channelGroups.length; ++j) {
+                regions.left.push({
+                    first: regions.left.length === 0,
+                    items: channelGroups[j].items
+                })
+            }
+            continue
+        }
         const alignRight = group.alignRight === true
         const items = footerGroupItems(root, group)
         if (items.length > 0) {
@@ -57,6 +67,203 @@ function footerGroupVisible(root, keys) {
 
 function footerSourceGroups() {
     return StatusFieldCatalog.footerSourceGroups()
+}
+
+function channelFooterGroups(root) {
+    if (!root || !root.model || !root.model.metrics
+            || !root.model.metrics.footerFieldEnabled("channels.summary")) {
+        return []
+    }
+    const statuses = channelStatuses(root)
+    return statuses.map(function (status) {
+        return { items: channelStatusItems(root, status) }
+    })
+}
+
+function channelStatuses(root) {
+    const rows = root && root.model && Array.isArray(root.model.dashboardChannelStatuses)
+        ? root.model.dashboardChannelStatuses : []
+    return rows.filter(function (row) {
+        const value = row || ({})
+        const sequencer = value.sequencer || ({})
+        const indexer = value.indexer || ({})
+        return sequencer.configured === true || indexer.configured === true
+    })
+}
+
+function channelStatusItems(root, channel) {
+    const value = channel || ({})
+    const sequencer = value.sequencer || ({})
+    const indexer = value.indexer || ({})
+    const channelText = channelShortId(value)
+    const channelName = channelDisplayName(value)
+    return [{
+        label: qsTr("Ch"),
+        fullName: qsTr("Channel %1").arg(channelName),
+        value: channelText,
+        accessibleValue: channelAccessibleValue(value),
+        tone: channelTone(value),
+        maximumWidth: 156,
+        priority: "normal",
+        valueVisible: true,
+        showDot: true
+    }, channelSourceItem(root, value, sequencer, qsTr("Seq"), qsTr("Sequencer")),
+        channelSourceItem(root, value, indexer, qsTr("Idx"), qsTr("Indexer"))]
+}
+
+function channelSourceItem(root, channel, source, label, sourceName) {
+    return {
+        label: label,
+        fullName: qsTr("%1 %2").arg(channelDisplayName(channel)).arg(sourceName),
+        value: channelSourceValue(root, source),
+        accessibleValue: channelSourceAccessibleValue(root, source),
+        tone: channelSourceTone(source),
+        maximumWidth: 132,
+        priority: "normal",
+        valueVisible: true,
+        showDot: true
+    }
+}
+
+function channelDisplayName(channel) {
+    const value = channel || ({})
+    const label = String(value.label || "")
+    return label.length > 0 ? label : channelShortId(value)
+}
+
+function channelShortId(channel) {
+    const value = channel || ({})
+    const shortId = String(value.short_channel_id || "")
+    if (shortId.length > 0) {
+        return shortId
+    }
+    const channelId = String(value.channel_id || "")
+    if (channelId.length <= 12) {
+        return channelId
+    }
+    return channelId.slice(0, 6) + "…" + channelId.slice(-6)
+}
+
+function channelAccessibleValue(channel) {
+    const value = channel || ({})
+    const id = String(value.channel_id || "")
+    const label = channelDisplayName(value)
+    return id.length > 0 && label !== id ? qsTr("%1 (%2)").arg(label).arg(id) : label
+}
+
+function channelSourceValue(root, source) {
+    const value = source || ({})
+    if (value.configured !== true) {
+        return qsTr("off")
+    }
+    const head = value.head
+    if (head !== undefined && head !== null && String(head).length > 0) {
+        return root.numberText(head)
+    }
+    const status = channelSourceStatus(value)
+    return status === "reachable" ? qsTr("ready") : channelSourceStatusText(status)
+}
+
+function channelSourceAccessibleValue(root, source) {
+    const value = source || ({})
+    if (value.configured !== true) {
+        return qsTr("not configured")
+    }
+    const status = channelSourceStatusText(channelSourceStatus(value))
+    const head = value.head
+    if (head === undefined || head === null || String(head).length === 0) {
+        return status
+    }
+    return qsTr("%1; head %2").arg(status).arg(root.numberText(head))
+}
+
+function channelSourceStatus(source) {
+    const value = source || ({})
+    return String(value.status || "unknown").toLowerCase()
+}
+
+function channelSourceStatusText(status) {
+    switch (String(status || "unknown")) {
+    case "reachable":
+        return qsTr("reachable")
+    case "degraded":
+        return qsTr("degraded")
+    case "stale":
+        return qsTr("stale")
+    case "unreachable":
+        return qsTr("unreachable")
+    case "unconfigured":
+        return qsTr("not configured")
+    default:
+        return qsTr("unknown")
+    }
+}
+
+function channelSourceTone(source) {
+    const value = source || ({})
+    if (value.configured !== true) {
+        return "neutral"
+    }
+    switch (channelSourceStatus(value)) {
+    case "reachable":
+        return "success"
+    case "degraded":
+    case "stale":
+        return "warning"
+    case "unreachable":
+        return "error"
+    default:
+        return "neutral"
+    }
+}
+
+function channelTone(channel) {
+    const value = channel || ({})
+    const tones = [channelSourceTone(value.sequencer), channelSourceTone(value.indexer)]
+    if (tones.indexOf("error") >= 0) {
+        return "error"
+    }
+    if (tones.indexOf("warning") >= 0) {
+        return "warning"
+    }
+    if (tones.indexOf("success") >= 0) {
+        return "success"
+    }
+    return "neutral"
+}
+
+function channelSourceFacts(root) {
+    const facts = []
+    const statuses = channelStatuses(root)
+    for (let i = 0; i < statuses.length; ++i) {
+        const channel = statuses[i] || ({})
+        const sequencer = channel.sequencer || ({})
+        const indexer = channel.indexer || ({})
+        if (sequencer.configured === true) {
+            facts.push({ channel: channel, role: "sequencer", source: sequencer })
+        }
+        if (indexer.configured === true) {
+            facts.push({ channel: channel, role: "indexer", source: indexer })
+        }
+    }
+    return facts
+}
+
+function channelFleetTone(root) {
+    const facts = channelSourceFacts(root)
+    let tone = "neutral"
+    for (let i = 0; i < facts.length; ++i) {
+        const current = channelSourceTone(facts[i].source)
+        if (current === "error") {
+            return "error"
+        }
+        if (current === "warning") {
+            tone = "warning"
+        } else if (current === "success" && tone === "neutral") {
+            tone = "success"
+        }
+    }
+    return tone
 }
 
 function footerFieldItem(root, key) {
@@ -115,6 +322,8 @@ function footerFieldValue(root, key) {
         return qsTr("n/a")
     case "bedrock.finality_lag_seconds":
         return root.valueOrNa(root.finalityLagSeconds())
+    case "channels.summary":
+        return root.numberText(channelFooterGroups(root).length)
     case "lez.rpc_health":
         return root.healthDisplayText("sequencer", "health")
     case "lez.last_lez_block_id":
@@ -345,9 +554,13 @@ function footerFieldHidden(root, key) {
 }
 
 function overallTone(root) {
+    const facts = channelSourceFacts(root)
+    const channelToneValue = channelFleetTone(root)
+    const legacyZoneStatus = facts.length === 0
     if (root.toneForProbe("node", "consensus") === "error"
-            || root.toneForProbe("sequencer", "health") === "error"
-            || root.indexerStatusTone() === "error"
+            || channelToneValue === "error"
+            || (legacyZoneStatus && (root.toneForProbe("sequencer", "health") === "error"
+                || root.indexerStatusTone() === "error"))
             || root.moduleTone("storage") === "error"
             || root.moduleTone("messaging") === "error"
             || root.connectionTone("storage") === "error"
@@ -355,8 +568,9 @@ function overallTone(root) {
         return "error"
     }
     if (root.toneForProbe("node", "consensus") === "warning"
-            || root.toneForProbe("sequencer", "health") === "warning"
-            || root.indexerStatusTone() === "warning"
+            || channelToneValue === "warning"
+            || (legacyZoneStatus && (root.toneForProbe("sequencer", "health") === "warning"
+                || root.indexerStatusTone() === "warning"))
             || root.moduleTone("storage") === "warning"
             || root.moduleTone("messaging") === "warning"
             || root.connectionTone("storage") === "warning"
@@ -392,11 +606,17 @@ function mainRisk(root) {
     if (root.toneForProbe("node", "consensus") === "error") {
         return qsTr("bedrock")
     }
-    if (root.toneForProbe("sequencer", "health") === "error") {
-        return qsTr("lez rpc")
+    const channelRisk = channelMainRisk(root)
+    if (channelRisk.length > 0) {
+        return channelRisk
     }
-    if (root.indexerStatusTone() === "error" || root.indexerStatusTone() === "warning") {
-        return qsTr("indexer")
+    if (channelSourceFacts(root).length === 0) {
+        if (root.toneForProbe("sequencer", "health") === "error") {
+            return qsTr("lez rpc")
+        }
+        if (root.indexerStatusTone() === "error" || root.indexerStatusTone() === "warning") {
+            return qsTr("indexer")
+        }
     }
     if (root.moduleTone("storage") === "error"
             || root.connectionTone("storage") === "error") {
@@ -407,6 +627,27 @@ function mainRisk(root) {
         return qsTr("messaging")
     }
     return qsTr("none")
+}
+
+function channelMainRisk(root) {
+    const facts = channelSourceFacts(root)
+    for (let i = 0; i < facts.length; ++i) {
+        if (channelSourceTone(facts[i].source) === "error") {
+            return channelRiskText(facts[i])
+        }
+    }
+    for (let i = 0; i < facts.length; ++i) {
+        if (channelSourceTone(facts[i].source) === "warning") {
+            return channelRiskText(facts[i])
+        }
+    }
+    return ""
+}
+
+function channelRiskText(fact) {
+    const value = fact || ({})
+    const sourceName = String(value.role || "source")
+    return qsTr("channel %1 %2").arg(channelShortId(value.channel)).arg(sourceName)
 }
 
 function operatorAction(root) {
@@ -425,6 +666,9 @@ function operatorAction(root) {
     }
     if (risk === qsTr("messaging")) {
         return qsTr("check messaging")
+    }
+    if (risk.indexOf(qsTr("channel ")) === 0) {
+        return qsTr("check channel source")
     }
     return qsTr("check rpc")
 }

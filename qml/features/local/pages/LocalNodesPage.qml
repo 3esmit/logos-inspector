@@ -48,7 +48,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / System / Local Nodes")
         title: qsTr("Local Nodes")
         layerLabel: qsTr("System")
-        subtitle: qsTr("Local Bedrock, Indexer, Delivery, and Storage connected to Logos Testnet.")
+        subtitle: qsTr("Local Bedrock, Channel Indexer package, Delivery, and Storage connected to Logos Testnet.")
         Layout.fillWidth: true
     }
 
@@ -145,7 +145,7 @@ ColumnLayout {
         theme: root.theme
         tone: "info"
         title: qsTr("Logos Testnet topology")
-        message: qsTr("Local Bedrock feeds the UI and Local Indexer. Channel Zones use Local Indexer history with the remote Testnet Sequencer.")
+        message: qsTr("Local Bedrock feeds the UI. Each Channel Zone uses its configured Channel Indexer history with its configured Testnet Sequencer.")
         Layout.fillWidth: true
     }
 
@@ -489,7 +489,7 @@ ColumnLayout {
 
     Panel {
         theme: root.theme
-        title: qsTr("Node Status")
+        title: qsTr("System and Channel Status")
 
         DataTableFrame {
             theme: root.theme
@@ -901,17 +901,22 @@ ColumnLayout {
             ];
         }
         return nodes.map(function (node) {
+            const nodeKey = String(node.key || node.kind || "")
             const controlState = root.model.controlState(node)
             const runState = root.model.publicTestnetMode()
-                ? root.model.observedRunState(node.key || node.kind)
+                ? root.model.observedRunState(nodeKey)
                 : String(node.run_state || "unknown")
-            const observation = root.model.observedNode(node.key || node.kind)
+            const observation = root.model.observedNode(nodeKey)
             const observationDetail = String(observation && observation.detail || "")
+            const channelIndexers = nodeKey === "indexer" && observation
+                && Array.isArray(observation.channels) ? observation.channels : []
+            const multiChannelIndexer = channelIndexers.length > 0
             return {
-                key: String(node.key || node.kind || ""),
+                key: nodeKey,
                 cells: [
                     {
-                        text: String(node.label || node.kind || "-"),
+                        text: multiChannelIndexer ? qsTr("Channel Indexers")
+                            : String(node.label || node.kind || "-"),
                         width: 150,
                         monospace: false
                     },
@@ -928,15 +933,20 @@ ColumnLayout {
                         monospace: false
                     },
                     {
-                        text: String(node.endpoint || "-"),
+                        text: multiChannelIndexer
+                            ? qsTr("%1 configured Channels").arg(channelIndexers.length)
+                            : String(node.endpoint || "-"),
                         width: 230,
                         fill: true,
-                        copyText: String(node.endpoint || "")
+                        copyText: multiChannelIndexer ? "" : String(node.endpoint || "")
                     },
                     {
-                        text: root.shortText(node.data_dir || "-", 32),
+                        text: multiChannelIndexer
+                            ? root.shortText(root.channelIndexerHeads(channelIndexers), 32)
+                            : root.shortText(node.data_dir || "-", 32),
                         width: 190,
-                        copyText: String(node.data_dir || "")
+                        copyText: multiChannelIndexer ? root.channelIndexerHeads(channelIndexers)
+                            : String(node.data_dir || "")
                     },
                     {
                         text: observationDetail.length > 0
@@ -947,6 +957,17 @@ ColumnLayout {
                 ]
             };
         });
+    }
+
+    function channelIndexerHeads(channels) {
+        const rows = Array.isArray(channels) ? channels : []
+        return rows.map(function (row) {
+            const value = row || ({})
+            const channel = String(value.short_channel_id || value.channel_id || qsTr("Channel"))
+            const head = value.head === null || value.head === undefined
+                ? String(value.status || qsTr("unknown")) : String(value.head)
+            return channel + " " + head
+        }).join(" · ")
     }
 
     function actionRows() {

@@ -22,31 +22,8 @@ function footerSelectorGroups() {
             "bedrock.last_lib_time",
             "bedrock.finality_lag_seconds"
         ]) },
-        { title: qsTr("LEZ Sequencer"), fields: fields([
-            "lez.rpc_health",
-            "lez.sequencer_version",
-            "lez.last_lez_block_id",
-            "lez.last_lez_block_hash",
-            "lez.last_lez_block_time",
-            "lez.pending_tx_count",
-            "lez.mempool_tx_count",
-            "lez.rejected_tx_count_recent",
-            "lez.blocks_produced_recent",
-            "lez.publish_to_bedrock_status",
-            "lez.last_published_channel_update",
-            "lez.last_finalized_callback_height",
-            "lez.pending_blocks_count"
-        ]) },
-        { title: qsTr("Indexer"), fields: fields([
-            "indexer.rpc_health",
-            "indexer.indexer_version",
-            "indexer.indexed_finalized_height",
-            "indexer.indexed_finalized_hash",
-            "indexer.indexed_channel_message",
-            "indexer.indexer_lag_vs_sequencer_head",
-            "indexer.last_indexed_time",
-            "indexer.db_health",
-            "indexer.ingestion_status"
+        { title: qsTr("Configured Channels"), fields: fields([
+            "channels.summary"
         ]) },
         { title: qsTr("Storage"), fields: fields([
             "storage.module",
@@ -96,14 +73,14 @@ function dashboardGraphGroups() {
             "bedrock.tip_minus_lib",
             "bedrock.finality_lag_seconds"
         ], "dashboard") },
-        { title: qsTr("LEZ Sequencer"), fields: fields([
+        { title: qsTr("Selected Channel Sequencer"), fields: fields([
             "lez.pending_tx_count",
             "lez.mempool_tx_count",
             "lez.rejected_tx_count_recent",
             "lez.blocks_produced_recent",
             "lez.pending_blocks_count"
         ], "dashboard") },
-        { title: qsTr("Indexer"), fields: fields([
+        { title: qsTr("Selected Channel Indexer"), fields: fields([
             "indexer.indexer_lag_vs_sequencer_head"
         ], "dashboard") },
         { title: qsTr("Storage"), fields: fields([
@@ -142,6 +119,7 @@ function footerSourceGroups() {
         const statusKey = keys.length ? keys[0] : ""
         return {
             statusKey: statusKey,
+            dynamic: statusKey === "channels.summary" ? "channels" : "",
             alignRight: statusKey === "overall.status",
             keys: keys
         }
@@ -156,10 +134,7 @@ function defaultFooterFieldSelections() {
         "bedrock.sync_state",
         "bedrock.tip_height",
         "bedrock.tip_minus_lib",
-        "lez.rpc_health",
-        "lez.last_lez_block_id",
-        "indexer.rpc_health",
-        "indexer.indexed_finalized_height",
+        "channels.summary",
         "messaging.connection_state",
         "messaging.peer_count",
         "messaging.message_error_events_recent",
@@ -181,6 +156,26 @@ function defaultDashboardGraphSelections() {
         "lez.blocks_produced_recent",
         "indexer.indexer_lag_vs_sequencer_head"
     ])
+}
+
+function normalizedFooterFieldSelections(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value)
+        ? value : ({})
+    const defaults = defaultFooterFieldSelections()
+    const normalized = {}
+    const groups = footerSelectorGroups()
+    for (let i = 0; i < groups.length; ++i) {
+        const fields = groups[i].fields || []
+        for (let j = 0; j < fields.length; ++j) {
+            const key = String(fields[j].key || "")
+            if (!key.length) {
+                continue
+            }
+            normalized[key] = source[key] === undefined
+                ? defaults[key] === true : source[key] === true
+        }
+    }
+    return normalized
 }
 
 function fieldLabel(key) {
@@ -349,6 +344,7 @@ function selectorLabels() {
         "bedrock.last_tip_time": qsTr("last_tip_time"),
         "bedrock.last_lib_time": qsTr("last_lib_time"),
         "bedrock.finality_lag_seconds": qsTr("finality_lag_seconds"),
+        "channels.summary": qsTr("configured_channels"),
         "lez.rpc_health": qsTr("rpc_health"),
         "lez.sequencer_version": qsTr("sequencer_version"),
         "lez.last_lez_block_id": qsTr("last_lez_block_id"),
@@ -425,6 +421,7 @@ function footerDetails() {
         "bedrock.last_tip_time": qsTr("Last tip observation time"),
         "bedrock.last_lib_time": qsTr("Last LIB observation time"),
         "bedrock.finality_lag_seconds": qsTr("Approximate finality lag"),
+        "channels.summary": qsTr("One live Sequencer and Indexer status group for every configured Channel"),
         "lez.rpc_health": qsTr("Sequencer RPC availability"),
         "lez.sequencer_version": qsTr("Sequencer version"),
         "lez.last_lez_block_id": qsTr("Latest LEZ block id"),

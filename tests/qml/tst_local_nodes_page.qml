@@ -145,6 +145,39 @@ Item {
             verify(!installButton.enabled)
         }
 
+        function test_node_status_projects_channel_indexers_individually() {
+            const page = createPage(sampleReport("running"), samplePackageCatalog(null))
+            state.observedNodes = ({
+                indexer: {
+                    status: "unavailable",
+                    detail: "aaaa…aaaa: reachable · bbbb…bbbb: unreachable",
+                    channels: [{
+                        channel_id: "a".repeat(64),
+                        short_channel_id: "aaaa…aaaa",
+                        status: "reachable",
+                        head: 101,
+                        upstream_head: 104
+                    }, {
+                        channel_id: "b".repeat(64),
+                        short_channel_id: "bbbb…bbbb",
+                        status: "unreachable",
+                        head: null,
+                        upstream_head: 90
+                    }]
+                }
+            })
+
+            const rows = page.nodeTableRows()
+            const indexer = rows.filter(function (row) { return row.key === "indexer" })[0]
+
+            verify(indexer !== undefined)
+            compare(indexer.cells[0].text, "Channel Indexers")
+            compare(indexer.cells[2].text, "Unavailable")
+            compare(indexer.cells[3].text, "2 configured Channels")
+            compare(indexer.cells[4].copyText, "aaaa…aaaa 101 · bbbb…bbbb unreachable")
+            compare(indexer.cells[5].text, "aaaa…aaaa: reachable · bbbb…bbbb: unreachable")
+        }
+
         function test_canceling_messaging_stop_clears_identity_acknowledgement() {
             const page = createPage(sampleReport("running"), samplePackageCatalog(null))
             const popup = findChild(page, "localNodesConfirmPopup")
