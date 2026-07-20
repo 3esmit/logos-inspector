@@ -178,7 +178,8 @@ TestCase {
         compare(row.cells[0].text, "Devnet Settlement / 11111111...111111")
         compare(row.cells[1].text, "Active")
         compare(row.cells[2].text, "Reachable")
-        compare(row.cells[3].text, "Safe")
+        compare(row.cells[3].text, "Reachable")
+        compare(row.cells[4].text, "Safe")
 
         model.dashboardLezBlockRows = [{
             block_id: 999,
@@ -187,6 +188,38 @@ TestCase {
         }]
         compare(panel.zones.length, 3)
         verify(!hasVisibleText(page, "999"))
+    }
+
+    function test_dashboard_exposes_independent_sequencer_and_indexer_health() {
+        const panel = findChild(page, "dashboardZonesPanel")
+        const configured = dashboardZones()[0]
+        const channelId = String(configured.channel_id || "")
+        const mixedHealth = Object.assign({}, configured, {
+            activity_state: "unknown",
+            l2_zone: Object.assign({}, configured.l2_zone, {
+                source_status: "reachable",
+                indexer_source_status: "unreachable"
+            })
+        })
+        model.zoneInspection.zoneSummaries = [mixedHealth]
+        wait(0)
+
+        const row = findChild(panel, "dashboardZoneRow_" + channelId)
+        verify(row !== null)
+        compare(row.cells.length, 5)
+        compare(row.cells[1].text, "Unknown")
+        compare(row.cells[2].text, "Reachable")
+        compare(row.cells[2].tone, "success")
+        compare(row.cells[3].text, "Unreachable")
+        compare(row.cells[3].tone, "error")
+        compare(row.cells[4].text, "Safe")
+
+        const sequencer = findAccessibleByName(
+            row, "Sequencer source: Reachable")
+        const indexer = findAccessibleByName(
+            row, "Indexer source: Unreachable")
+        verifyAccessibleControl(sequencer, Accessible.StaticText)
+        verifyAccessibleControl(indexer, Accessible.StaticText)
     }
 
     function test_dashboard_view_all_actions_are_contextual_and_routed() {

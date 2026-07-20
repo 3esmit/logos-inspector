@@ -107,8 +107,9 @@ Frame {
             headerHeight: 34
             cells: [
                 { text: qsTr("Zone"), width: 142, fill: true },
-                { text: qsTr("Status"), width: 72 },
-                { text: qsTr("Source"), width: 72 },
+                { text: qsTr("Activity"), width: 72 },
+                { text: qsTr("Seq"), width: 64 },
+                { text: qsTr("Idx"), width: 64 },
                 { text: qsTr("Finality"), width: 76 }
             ]
         }
@@ -197,13 +198,49 @@ Frame {
             : title
     }
 
-    function sourceText(zone) {
-        if (String(zone && zone.kind || "") === "sequencer_zone") {
-            return Presentation.words(zone && zone.l2_zone
-                && zone.l2_zone.source_status)
+    function sequencerSourceStatus(zone) {
+        if (String(zone && zone.kind || "") !== "sequencer_zone") {
+            return ""
         }
-        return Presentation.words(zone && zone.settlement_link
-            && zone.settlement_link.source)
+        return String(zone && zone.l2_zone
+            && zone.l2_zone.source_status || "unknown")
+    }
+
+    function indexerSourceStatus(zone) {
+        if (String(zone && zone.kind || "") !== "sequencer_zone") {
+            return ""
+        }
+        return String(zone && zone.l2_zone
+            && zone.l2_zone.indexer_source_status || "unknown")
+    }
+
+    function sourceStatusText(status) {
+        return String(status || "").length > 0
+            ? Presentation.words(status) : "-"
+    }
+
+    function sourceStatusTone(status) {
+        if (root.stale) {
+            return "neutral"
+        }
+        switch (String(status || "")) {
+        case "reachable":
+            return "success"
+        case "degraded":
+        case "stale":
+            return "warning"
+        case "unreachable":
+            return "error"
+        default:
+            return "neutral"
+        }
+    }
+
+    function sourceAccessibleName(role, status) {
+        const text = root.sourceStatusText(status)
+        return String(status || "").length > 0
+            ? qsTr("%1 source: %2").arg(role).arg(text)
+            : qsTr("%1 source: not applicable").arg(role)
     }
 
     function zoneFinalityTone(zone) {
@@ -222,6 +259,8 @@ Frame {
     function zoneCells(zone) {
         const channelId = String(zone && zone.channel_id || "")
         const actionable = !root.stale && channelId.length > 0
+        const sequencerStatus = root.sequencerSourceStatus(zone)
+        const indexerStatus = root.indexerSourceStatus(zone)
         return [
             {
                 text: root.zoneLabel(zone),
@@ -241,8 +280,19 @@ Frame {
                 monospace: false
             },
             {
-                text: root.sourceText(zone),
-                width: 72,
+                text: root.sourceStatusText(sequencerStatus),
+                width: 64,
+                tone: root.sourceStatusTone(sequencerStatus),
+                accessibleName: root.sourceAccessibleName(
+                    qsTr("Sequencer"), sequencerStatus),
+                monospace: false
+            },
+            {
+                text: root.sourceStatusText(indexerStatus),
+                width: 64,
+                tone: root.sourceStatusTone(indexerStatus),
+                accessibleName: root.sourceAccessibleName(
+                    qsTr("Indexer"), indexerStatus),
                 monospace: false
             },
             {
