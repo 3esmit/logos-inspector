@@ -1691,6 +1691,7 @@ mod tests {
             source_fingerprint: Some("sha256:test".to_owned()),
             verification_state: CatalogVerificationState::Verified,
             catalog: Some(Arc::new(catalog)),
+            readiness: None,
             current_error: None,
             worker_running: false,
         }

@@ -388,6 +388,7 @@ impl ZoneCatalogCommandInterface {
             verification: service.verification_state,
             coverage,
             ingestion,
+            readiness: service.readiness,
             current_error: service.current_error,
         })
     }
@@ -796,9 +797,10 @@ mod tests {
             catalog::{
                 CatalogBlockCheckpoint, CatalogBlockReference, CatalogEvidenceUse, CatalogFrontier,
                 CatalogMetadata, CatalogSnapshot, CatalogSnapshotOrigin, CoverageSegment,
-                ZoneCatalogPublication, ZoneCatalogRecord, ZoneCatalogRunContext,
-                ZoneCatalogRunMode, ZoneCatalogSourceDescriptor, ZoneCatalogWorkerFuture,
-                ZoneClassificationCounters, ZoneEvidenceKind, ZoneEvidenceReference,
+                ZoneCatalogPublication, ZoneCatalogReadinessPhase, ZoneCatalogReadinessReport,
+                ZoneCatalogRecord, ZoneCatalogRunContext, ZoneCatalogRunMode,
+                ZoneCatalogSourceDescriptor, ZoneCatalogWorkerFuture, ZoneClassificationCounters,
+                ZoneEvidenceKind, ZoneEvidenceReference,
             },
         },
         inspector::commands::zone_evidence::EvidenceBlockFuture,
@@ -994,6 +996,7 @@ mod tests {
         if status.get("report_kind").and_then(Value::as_str) != Some("zones.catalog_status")
             || status.get("verification").and_then(Value::as_str) != Some("verified")
             || status.get("catalog_revision").and_then(Value::as_u64) != Some(7)
+            || status.get("readiness").is_some()
             || status.get("rows").is_some()
             || status.get("zones").is_some()
         {
@@ -1186,6 +1189,51 @@ mod tests {
             != Some("reset")
         {
             bail!("summary delta crossed a source revision: {reset_after_source_change}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_status_exposes_live_bedrock_readiness() -> Result<()> {
+        let runtime = Runtime::new()?;
+        let store = Arc::new(FakeSourceStore::new(Vec::new()));
+        let monitor = Arc::new(FakeMonitor::default());
+        let (worker, mut started) = PublishingWorker::source_behind(snapshot(scope('1')));
+        let interface = ZoneCatalogCommandInterface::with_dependencies(
+            &runtime,
+            Arc::new(worker),
+            store,
+            monitor,
+        );
+
+        interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{
+                "source": {
+                    "kind": "direct_http",
+                    "endpoint": "https://l1.example"
+                }
+            }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("source-behind catalog worker did not publish")?;
+        let status = interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
+
+        if status.get("verification").and_then(Value::as_str) != Some("source_behind")
+            || status.pointer("/readiness/phase").and_then(Value::as_str)
+                != Some("waiting_for_bedrock")
+            || status
+                .pointer("/readiness/finalized_lib_slot")
+                .and_then(Value::as_u64)
+                != Some(0)
+            || status
+                .pointer("/readiness/required_checkpoint_slot")
+                .and_then(Value::as_u64)
+                != Some(691_337)
+        {
+            bail!("source-behind status omitted live Bedrock readiness: {status}");
         }
         Ok(())
     }
@@ -1622,6 +1670,9 @@ mod tests {
 
     struct PublishingWorker {
         snapshot: Arc<CatalogSnapshot>,
+        verification_state: CatalogVerificationState,
+        readiness: Option<ZoneCatalogReadinessReport>,
+        current_error: Option<String>,
         started: mpsc::UnboundedSender<ZoneCatalogRunMode>,
     }
 
@@ -1651,10 +1702,27 @@ mod tests {
             (
                 Self {
                     snapshot: Arc::new(snapshot),
+                    verification_state: CatalogVerificationState::Verified,
+                    readiness: None,
+                    current_error: None,
                     started,
                 },
                 receiver,
             )
+        }
+
+        fn source_behind(
+            snapshot: CatalogSnapshot,
+        ) -> (Self, mpsc::UnboundedReceiver<ZoneCatalogRunMode>) {
+            let (mut worker, receiver) = Self::new(snapshot);
+            worker.verification_state = CatalogVerificationState::SourceBehind;
+            worker.readiness = Some(ZoneCatalogReadinessReport {
+                phase: ZoneCatalogReadinessPhase::WaitingForBedrock,
+                finalized_lib_slot: 0,
+                required_checkpoint_slot: 691_337,
+            });
+            worker.current_error = Some("Bedrock is still syncing".to_owned());
+            (worker, receiver)
         }
     }
 
@@ -1666,9 +1734,10 @@ mod tests {
         ) -> ZoneCatalogWorkerFuture {
             Box::pin(async move {
                 let _published = context.publish(ZoneCatalogPublication {
-                    verification_state: CatalogVerificationState::Verified,
+                    verification_state: self.verification_state,
                     catalog: Some(self.snapshot.clone()),
-                    current_error: None,
+                    readiness: self.readiness,
+                    current_error: self.current_error.clone(),
                 });
                 self.started.send(context.run_mode()).map_err(|_| {
                     crate::inspection::catalog::ZoneCatalogServiceError::Worker(

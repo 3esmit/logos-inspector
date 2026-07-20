@@ -198,6 +198,7 @@ TestCase {
         zoneState.currentError = ""
         zoneState.statusError = ""
         zoneState.configureError = ""
+        zoneState.readiness = null
         zoneState.summaryStale = false
         zoneState.requestedDetailTab = "overview"
         zoneState.activeZoneId = FixtureData.identity("1")
@@ -379,6 +380,77 @@ TestCase {
             verify(error !== null)
             compare(error.Accessible.role, Accessible.StaticText)
             compare(error.Accessible.name, errorText)
+        } finally {
+            status.destroy()
+        }
+    }
+
+    function test_catalog_status_exposes_structured_bedrock_readiness() {
+        zoneState.verification = "source_behind"
+        zoneState.readiness = {
+            phase: "waiting_for_bedrock",
+            finalized_lib_slot: 0,
+            required_checkpoint_slot: 691337
+        }
+        zoneState.currentError = "Bedrock is still syncing"
+        const status = catalogStatusFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: zoneState,
+            width: 900
+        })
+        verify(status !== null)
+        try {
+            const notice = findChild(status, "zoneCatalogBedrockReadiness")
+            const synchronization = findChild(status, "zoneCatalogFact_4")
+            const finalized = findChild(status, "zoneCatalogFact_5")
+            const remaining = findChild(status, "zoneCatalogFact_6")
+            const error = findChild(status, "zoneCatalogError")
+
+            verify(notice !== null)
+            verify(notice.visible)
+            compare(notice.Accessible.name,
+                "Bedrock synchronization in progress. Finalized LIB 0 of Zone Catalog checkpoint 691337. 691337 slots remain. Zones resume automatically when this checkpoint is reached.")
+            verify(synchronization !== null)
+            compare(synchronization.Accessible.name,
+                    "Bedrock synchronization: Waiting for Bedrock")
+            verify(finalized !== null)
+            compare(finalized.Accessible.name,
+                    "Finalized LIB: 0 / checkpoint 691337")
+            verify(remaining !== null)
+            compare(remaining.Accessible.name,
+                    "Remaining until catalog: 691337 slots")
+            verify(error !== null)
+            verify(!error.visible)
+        } finally {
+            status.destroy()
+        }
+    }
+
+    function test_bedrock_readiness_keeps_later_status_failure_actionable() {
+        zoneState.verification = "source_behind"
+        zoneState.readiness = {
+            phase: "waiting_for_bedrock",
+            finalized_lib_slot: 0,
+            required_checkpoint_slot: 691337
+        }
+        zoneState.currentError = "Bedrock is still syncing"
+        zoneState.statusError = "Could not refresh the Zone Catalog status."
+        const status = catalogStatusFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: zoneState,
+            width: 900
+        })
+        verify(status !== null)
+        try {
+            const error = findChild(status, "zoneCatalogError")
+
+            verify(error !== null)
+            verify(error.visible)
+            compare(error.text, zoneState.statusError)
+            compare(error.Accessible.name, zoneState.statusError)
+            tryVerify(function () {
+                return hasAccessibleNode(page, "Retry catalog", Accessible.Button)
+            })
         } finally {
             status.destroy()
         }

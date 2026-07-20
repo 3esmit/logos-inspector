@@ -30,6 +30,7 @@ QtObject {
         ingestion_cursor_slot: 187085,
         discovered_zone_count: 3
     })
+    property var readiness: null
     property string currentError: ""
     property string statusError: ""
     property string configureError: ""

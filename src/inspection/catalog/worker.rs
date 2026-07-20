@@ -11,13 +11,14 @@ use super::{
     CatalogCandidateActivation, CatalogEngineContext, CatalogL1RangePage, CatalogL1RangeRequest,
     CatalogL1Source, CatalogMetadata, CatalogPageReduction, CatalogRepairConfirmation,
     CatalogSnapshot, ChannelSourceCatalogIdentityRebinder, DirectCatalogL1Source,
-    MAX_CATALOG_L1_RANGE_BLOCKS, ZoneCatalog, ZoneCatalogPublication, ZoneCatalogRunContext,
-    ZoneCatalogRunMode, ZoneCatalogServiceError, ZoneCatalogServiceResult,
-    ZoneCatalogSourceDescriptor, ZoneCatalogWorker, ZoneCatalogWorkerFuture,
-    apply_catalog_identity_promotion, catalog_gap_repair_request, catalog_prefix_repair_request,
-    confirm_catalog_repair_gap, prepare_catalog_catch_up, prepare_resumed_catalog_catch_up,
-    reduce_catalog_gap_repair, reduce_catalog_page, reduce_catalog_prefix_repair,
-    reduce_catalog_repair, repair_catalog_ancestry, verify_catalog_candidate,
+    MAX_CATALOG_L1_RANGE_BLOCKS, ZoneCatalog, ZoneCatalogPublication, ZoneCatalogReadinessPhase,
+    ZoneCatalogReadinessReport, ZoneCatalogRunContext, ZoneCatalogRunMode, ZoneCatalogServiceError,
+    ZoneCatalogServiceResult, ZoneCatalogSourceDescriptor, ZoneCatalogWorker,
+    ZoneCatalogWorkerFuture, apply_catalog_identity_promotion, catalog_gap_repair_request,
+    catalog_prefix_repair_request, confirm_catalog_repair_gap, prepare_catalog_catch_up,
+    prepare_resumed_catalog_catch_up, reduce_catalog_gap_repair, reduce_catalog_page,
+    reduce_catalog_prefix_repair, reduce_catalog_repair, repair_catalog_ancestry,
+    verify_catalog_candidate,
 };
 use crate::{
     inspection::{CatalogVerificationState, NetworkScope},
@@ -125,6 +126,7 @@ impl DirectZoneCatalogWorker {
             let _published = context.publish(ZoneCatalogPublication {
                 verification_state: CatalogVerificationState::CachedUnverified,
                 catalog: Some(Arc::new(snapshot.clone())),
+                readiness: None,
                 current_error: None,
             });
             loop {
@@ -157,6 +159,11 @@ impl DirectZoneCatalogWorker {
                         let _published = context.publish(ZoneCatalogPublication {
                             verification_state: CatalogVerificationState::SourceBehind,
                             catalog: Some(Arc::new(snapshot.clone())),
+                            readiness: Some(ZoneCatalogReadinessReport {
+                                phase: ZoneCatalogReadinessPhase::WaitingForBedrock,
+                                finalized_lib_slot: source_lib_slot,
+                                required_checkpoint_slot: required_slot,
+                            }),
                             current_error: Some(source_behind_message(
                                 source_lib_slot,
                                 required_slot,
@@ -168,6 +175,7 @@ impl DirectZoneCatalogWorker {
                         let _published = context.publish(ZoneCatalogPublication {
                             verification_state: CatalogVerificationState::CachedUnverified,
                             catalog: Some(Arc::new(snapshot.clone())),
+                            readiness: None,
                             current_error: Some(detail),
                         });
                         wait_for_retry(context, CATALOG_POLL_INTERVAL).await?;
@@ -176,6 +184,7 @@ impl DirectZoneCatalogWorker {
                         let _published = context.publish(ZoneCatalogPublication {
                             verification_state: CatalogVerificationState::Mismatch,
                             catalog: None,
+                            readiness: None,
                             current_error: Some(detail),
                         });
                         quarantine_catalog(path, "mismatch", context).await?;
@@ -623,6 +632,7 @@ fn publish_verified(context: &ZoneCatalogRunContext, snapshot: CatalogSnapshot) 
     let _published = context.publish(ZoneCatalogPublication {
         verification_state: CatalogVerificationState::Verified,
         catalog: Some(Arc::new(snapshot)),
+        readiness: None,
         current_error: None,
     });
 }

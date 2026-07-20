@@ -14,8 +14,8 @@ use super::*;
 use crate::inspection::catalog::{
     CatalogEngineContext, CatalogL1Block, CatalogL1BlockEvent, CatalogL1ChainSnapshot,
     CatalogL1ChainStatus, CatalogL1RangePage, CatalogL1RangeRequest, CatalogL1SourceFuture,
-    CatalogL1TimeStatus, CatalogMetadata, CatalogPageReduction, prepare_catalog_catch_up,
-    reduce_catalog_page,
+    CatalogL1TimeStatus, CatalogMetadata, CatalogPageReduction, ZoneCatalogReadinessPhase,
+    prepare_catalog_catch_up, reduce_catalog_page,
 };
 
 #[test]
@@ -202,6 +202,60 @@ fn verification_distinguishes_source_behind_and_identity_mismatch() -> Result<()
         );
         Ok(())
     })
+}
+
+#[test]
+fn source_behind_readiness_is_published_and_cleared() -> Result<()> {
+    let (context, reports) = test_run_context_with_reports(7);
+    let waiting = ZoneCatalogReadinessReport {
+        phase: ZoneCatalogReadinessPhase::WaitingForBedrock,
+        finalized_lib_slot: 0,
+        required_checkpoint_slot: 691_337,
+    };
+
+    ensure!(
+        context.publish(ZoneCatalogPublication {
+            verification_state: CatalogVerificationState::SourceBehind,
+            catalog: None,
+            readiness: Some(waiting),
+            current_error: Some("Bedrock is still syncing".to_owned()),
+        }),
+        "source-behind publication was rejected"
+    );
+    ensure!(
+        reports.borrow().readiness == Some(waiting),
+        "source-behind readiness was not published"
+    );
+
+    ensure!(
+        context.publish(ZoneCatalogPublication {
+            verification_state: CatalogVerificationState::Verified,
+            catalog: None,
+            readiness: None,
+            current_error: None,
+        }),
+        "verified publication was rejected"
+    );
+    ensure!(
+        reports.borrow().readiness.is_none(),
+        "verified publication retained stale readiness"
+    );
+
+    ensure!(
+        context.publish(ZoneCatalogPublication {
+            verification_state: CatalogVerificationState::SourceBehind,
+            catalog: None,
+            readiness: Some(waiting),
+            current_error: Some("Bedrock is still syncing".to_owned()),
+        }),
+        "second source-behind publication was rejected"
+    );
+    context.finish(Some("worker failed".to_owned()));
+    ensure!(
+        reports.borrow().readiness.is_none(),
+        "terminal worker error retained stale readiness"
+    );
+    Ok(())
 }
 
 #[test]
@@ -401,25 +455,38 @@ fn verified_promotion(activation: CatalogCandidateActivation) -> Result<CatalogI
 }
 
 fn test_run_context(source_revision: u64) -> ZoneCatalogRunContext {
+    test_run_context_with_reports(source_revision).0
+}
+
+fn test_run_context_with_reports(
+    source_revision: u64,
+) -> (
+    ZoneCatalogRunContext,
+    watch::Receiver<ZoneCatalogServiceReport>,
+) {
     let desired_revision = Arc::new(AtomicU64::new(source_revision));
-    let (reports, _receiver) = watch::channel(ZoneCatalogServiceReport {
+    let (reports, receiver) = watch::channel(ZoneCatalogServiceReport {
         source_revision,
         source_fingerprint: Some("test-source".to_owned()),
         verification_state: CatalogVerificationState::Verifying,
         catalog: None,
+        readiness: None,
         current_error: None,
         worker_running: true,
     });
-    ZoneCatalogRunContext {
-        source_revision,
-        source_fingerprint: "test-source".to_owned(),
-        run_mode: ZoneCatalogRunMode::Resume,
-        cancellation: CancellationToken::new(),
-        publisher: CatalogRunPublisher {
-            desired_revision,
-            reports,
+    (
+        ZoneCatalogRunContext {
+            source_revision,
+            source_fingerprint: "test-source".to_owned(),
+            run_mode: ZoneCatalogRunMode::Resume,
+            cancellation: CancellationToken::new(),
+            publisher: CatalogRunPublisher {
+                desired_revision,
+                reports,
+            },
         },
-    }
+        receiver,
+    )
 }
 
 fn anchor_scope(slot: u64, block_id: char, parent_id: char) -> NetworkScope {
@@ -672,6 +739,7 @@ impl ZoneCatalogWorker for LifecycleWorker {
                 let accepted = context.publish(ZoneCatalogPublication {
                     verification_state: CatalogVerificationState::Verified,
                     catalog: None,
+                    readiness: None,
                     current_error: None,
                 });
                 self.stale_publish_accepted.send(accepted).map_err(|_| {

@@ -72,8 +72,11 @@ ColumnLayout {
         subtitle: root.catalogSubtitle()
 
         ActionButton {
-            visible: root.zoneState && (root.zoneState.currentError.length > 0
-                || root.zoneState.statusError.length > 0)
+            visible: root.zoneState && (root.zoneState.statusError.length > 0
+                || root.zoneState.configureError.length > 0
+                || (!(root.zoneState.readiness
+                    && String(root.zoneState.readiness.phase || "") === "waiting_for_bedrock")
+                    && root.zoneState.currentError.length > 0))
             theme: root.theme
             text: qsTr("Retry catalog")
             enabled: !root.zoneState.controlInFlight
