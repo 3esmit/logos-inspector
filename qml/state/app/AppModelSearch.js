@@ -296,7 +296,7 @@ function resolveInspectionTarget(root, query) {
                     candidates.push({ entity_ref: Object.assign({ layer: "l2" }, localProgramRef) })
                 }
             }
-            report.candidates = dedupeInspectionCandidates(candidates)
+            report.candidates = rankInspectionCandidates(candidates)
             zoneInspection.targetResolutionReport = report
             zoneInspection.targetResolutionCandidates = report.candidates
             if (report.candidates.length === 1) {
@@ -384,6 +384,60 @@ function dedupeInspectionCandidates(candidates) {
         result.push(candidate)
     }
     return result
+}
+
+function rankInspectionCandidates(candidates) {
+    const result = dedupeInspectionCandidates(candidates)
+    result.sort(compareInspectionCandidates)
+    return result
+}
+
+function compareInspectionCandidates(left, right) {
+    const leftKey = inspectionCandidateSortKey(left)
+    const rightKey = inspectionCandidateSortKey(right)
+    for (let index = 0; index < leftKey.length; ++index) {
+        if (leftKey[index] === rightKey[index]) {
+            continue
+        }
+        return leftKey[index] < rightKey[index] ? -1 : 1
+    }
+    return 0
+}
+
+function inspectionCandidateSortKey(candidate) {
+    const value = candidate && typeof candidate === "object" ? candidate : ({})
+    const entity = value.entity_ref && typeof value.entity_ref === "object"
+        ? value.entity_ref : ({})
+    const layer = String(entity.layer || "")
+    const source = entity.source && typeof entity.source === "object"
+        ? entity.source : ({})
+    const sourceKind = String(source.kind || "")
+    const sourceRole = String(source.source_role || "")
+    const finality = String(value.finality || "")
+    const layerRank = layer === "zone" ? 0 : (layer === "l1" ? 1
+        : (layer === "l2" ? 2 : 3))
+    let entityRank = 0
+    if (layer === "l2") {
+        const entityKind = String(entity.entity_kind || "")
+        entityRank = entityKind === "block" ? 0
+            : (entityKind === "transaction" ? 1
+                : (entityKind === "account" ? 2
+                    : (entityKind === "program" ? 3 : 4)))
+    }
+    const finalityRank = finality === "finalized" ? 0
+        : (finality === "provisional" ? 1 : 2)
+    const sourceRank = sourceKind === "exact"
+        ? (sourceRole === "indexer" ? 0
+            : (sourceRole === "sequencer" ? 1 : 2))
+        : (sourceKind === "policy" ? 2 : 3)
+    return [
+        layerRank,
+        entityRank,
+        finalityRank,
+        String(entity.canonical_key || entity.channel_id || ""),
+        sourceRank,
+        String(source.source_id || "")
+    ]
 }
 
 function openInspectionCandidate(root, candidate, recordHistory) {

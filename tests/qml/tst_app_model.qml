@@ -3115,6 +3115,61 @@ TestCase {
         compare(callCountFor("inspectionResolveTarget"), 0)
     }
 
+    function test_chain_search_ranks_ambiguous_candidates_by_finality() {
+        setActiveZone("")
+        fakeHost.responses = {
+            inspectionResolveTarget: function(args) {
+                const request = args[0]
+                return {
+                    ok: true,
+                    value: {
+                        report_kind: "inspection.target_resolution",
+                        schema_version: 1,
+                        query: request.query,
+                        request_revision: request.request_revision,
+                        context_revision: request.active_zone_context.context_revision,
+                        status: "ambiguous",
+                        candidates: [{
+                            entity_ref: Object.assign({ layer: "l2" },
+                                zoneEntityRef("block", "block:42:" + "a".repeat(64),
+                                    "seq-a", "sequencer")),
+                            finality: "provisional"
+                        }, {
+                            entity_ref: Object.assign({ layer: "l2" },
+                                zoneEntityRef("block", "block:42:" + "a".repeat(64),
+                                    "idx-a", "indexer")),
+                            finality: "finalized"
+                        }, {
+                            entity_ref: {
+                                layer: "l1",
+                                network_scope: request.active_zone_context.network_scope,
+                                entity_kind: "block",
+                                canonical_key: "block:42",
+                                block_id: 42,
+                                block_hash: null
+                            }
+                        }],
+                        recovery: null,
+                        warnings: []
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.entityNavigation.routeSearch("42")
+
+        tryCompare(model.zoneInspection, "targetResolutionStatus", "ambiguous")
+        const candidates = model.zoneInspection.targetResolutionCandidates
+        compare(candidates.length, 3)
+        compare(candidates[0].entity_ref.layer, "l1")
+        compare(candidates[1].finality, "finalized")
+        compare(candidates[1].entity_ref.source.source_id, "idx-a")
+        compare(candidates[2].finality, "provisional")
+        compare(candidates[2].entity_ref.source.source_id, "seq-a")
+    }
+
     function test_chain_search_source_unavailable_reports_retry_action() {
         setActiveZone("")
         fakeHost.responses = {
