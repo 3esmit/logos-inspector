@@ -53,6 +53,7 @@ function sequencerZone() {
         kind: "sequencer_zone",
         l2_zone: {
             source_status: "reachable",
+            indexer_source_status: "reachable",
             selected_source_id: "src_11111111111111111111111111111111",
             configured_source_count: 2,
             observed_source_count: 2,
