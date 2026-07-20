@@ -1617,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn logoscore_storage_enables_shared_idl_upload_without_sync_read() -> Result<()> {
+    fn logoscore_storage_enables_shared_idl_sync_capabilities() -> Result<()> {
         let inputs = serde_json::json!({
             "network_connector_config": {
                 "scopes": {
@@ -1647,11 +1647,13 @@ mod tests {
             bail!("storage capability missing: {value}");
         };
 
-        if unavailable_contains(storage, "storage.shared_idl.sync_upload") {
-            bail!("LogosCore CLI should allow Shared IDL upload: {storage}");
-        }
-        if !unavailable_contains(storage, "storage.shared_idl.sync_read") {
-            bail!("LogosCore CLI must not claim Shared IDL synchronous reads: {storage}");
+        for capability in [
+            "storage.shared_idl.sync_read",
+            "storage.shared_idl.sync_upload",
+        ] {
+            if unavailable_contains(storage, capability) {
+                bail!("LogosCore CLI should allow `{capability}`: {storage}");
+            }
         }
         Ok(())
     }
