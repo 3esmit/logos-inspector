@@ -26,6 +26,10 @@ ColumnLayout {
         .l2SubmittedTransactionLocalDecodeWarning || "")
     readonly property string localSubmissionDecodeError: String(root.zoneState
         .l2SubmittedTransactionLocalDecodeError || "")
+    readonly property bool localSubmissionPrivateSyncPending: !!(
+        root.zoneState.l2SubmittedTransactionReceiptTraceInput
+        && root.zoneState.l2SubmittedTransactionReceiptTraceInput.privateSyncPending
+            === true)
     readonly property var appModel: root.zoneState.appModel || null
     readonly property var entityRef: typeof root.zoneState.l2TransactionEntityRef === "function"
         ? root.zoneState.l2TransactionEntityRef(root.detail) : null
@@ -317,6 +321,15 @@ ColumnLayout {
             tone: "info"
             title: qsTr("Locally decoded submitted instruction")
             message: qsTr("Privacy envelope does not expose program or instruction words. Decoded automatically from frozen local submission metadata held by this Inspector session and matched to this exact-source transaction.")
+            Layout.fillWidth: true
+        }
+
+        StatusMessage {
+            visible: root.localSubmissionPrivateSyncPending
+            theme: root.theme
+            tone: "warning"
+            title: qsTr("Private sync pending")
+            message: qsTr("Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state.")
             Layout.fillWidth: true
         }
 

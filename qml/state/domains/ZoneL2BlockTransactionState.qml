@@ -658,7 +658,8 @@ QtObject {
             idlJson: String(input.idlJson),
             programIdHex: String(input.programIdHex).toLowerCase(),
             instructionWords: words,
-            accountIds: accountIds
+            accountIds: accountIds,
+            privateSyncPending: input.privateSyncPending === true
         })
     }
 
