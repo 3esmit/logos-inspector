@@ -1343,6 +1343,28 @@ TestCase {
         compare(sourceEditorState.managedIndexerResult, "Indexer start accepted")
         compare(sourceEditorState.managedIndexerNode.managed_channel_id, "zone-a")
 
+        const sourceRefresh = gateway.lastRequest("channelIndexerSourceRefresh")
+        verify(sourceRefresh !== null)
+        compare(sourceRefresh.args, [{
+            source_revision: zoneState.sourceRevision,
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            source_config_revision: zoneState.activeZoneContext.source_config_revision,
+            source_id: "idx-a"
+        }])
+        const statusRefreshesBefore = statusRefreshSpy.count
+        gateway.respond(sourceRefresh, ok({
+            report_kind: "zones.channel_indexer_source_refresh",
+            schema_version: 1,
+            source_revision: zoneState.sourceRevision,
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            source_config_revision: zoneState.activeZoneContext.source_config_revision,
+            source_id: "idx-a",
+            observation_revision: 2
+        }))
+        compare(statusRefreshSpy.count, statusRefreshesBefore + 1)
+
         zoneState.desiredSource = null
         compare(sourceEditorState.bedrockEndpoint(), "")
     }
@@ -1382,6 +1404,7 @@ TestCase {
         compare(sourceEditorState.managedIndexerError,
             "start an Inspector-managed logoscore runtime")
         compare(sourceEditorState.managedIndexerStatusStale, false)
+        compare(gateway.requestCount("channelIndexerSourceRefresh"), 0)
     }
 
     function test_managed_indexer_status_refresh_clears_stale_success() {

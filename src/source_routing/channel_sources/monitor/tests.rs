@@ -426,6 +426,73 @@ async fn scheduler_uses_deterministic_jittered_failure_backoff() -> Result<()> {
 }
 
 #[tokio::test]
+async fn explicit_source_refresh_bypasses_unavailable_backoff() -> Result<()> {
+    let (monitor, clock, mut calls) = test_monitor();
+    let mut config = config(17, 0, false);
+    let indexer_source_id = source_id(99);
+    config.indexer_source = Some(ConfiguredIndexerSource {
+        source_id: indexer_source_id.clone(),
+        label: None,
+        target: ChannelSourceTarget::Module {
+            module_id: "lez_indexer_module".to_owned(),
+        },
+    });
+    let config_revision = config.config_revision;
+
+    monitor.configure(scope(), true, vec![config]).await?;
+    let first = receive_call(&mut calls).await?;
+    ensure!(first.source_id == indexer_source_id, "wrong initial source");
+    first.respond_regular(failed_output_for(
+        ChannelSourceRole::Indexer,
+        super::super::ChannelSourceFailureKind::Unavailable,
+    ))?;
+    wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.health == ChannelSourceHealthState::Unreachable
+                && observation.current_failure.is_some()
+        })
+    })
+    .await?;
+
+    monitor
+        .refresh_source(
+            scope(),
+            channel_id(),
+            config_revision,
+            indexer_source_id.clone(),
+        )
+        .await?;
+    let refreshed = receive_call(&mut calls).await?;
+    ensure!(
+        refreshed.source_id == indexer_source_id,
+        "wrong refreshed source"
+    );
+    ensure!(
+        clock.monotonic_millis() == 0,
+        "explicit refresh waited for unavailable-source backoff"
+    );
+    refreshed.respond_regular(ChannelSourceProbeOutput::Indexer(
+        IndexerSourceProbeOutput {
+            health: ChannelSourceProbeFact::Observed(()),
+            head: ChannelSourceProbeFact::Observed(Some(block(100, "recovered"))),
+        },
+    ))?;
+    wait_for_snapshot(&monitor, |snapshot| {
+        first_observation(snapshot).is_some_and(|observation| {
+            observation.health == ChannelSourceHealthState::Reachable
+                && observation
+                    .last_good
+                    .as_ref()
+                    .and_then(|last_good| last_good.head.as_ref())
+                    .is_some_and(|head| head.block_id == 100)
+        })
+    })
+    .await?;
+    monitor.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn last_good_and_runtime_attestation_survive_failure_but_mismatch_latches() -> Result<()> {
     let (monitor, clock, mut calls) = test_monitor();
     monitor

@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
@@ -38,7 +39,7 @@ use crate::{
     source_routing::channel_sources::{
         ChannelSourceAttestationOutcome, ChannelSourceConfig, ChannelSourceConfigMutation,
         ChannelSourceConfigMutationInterface, ChannelSourceMonitor, ChannelSourceMonitorSnapshot,
-        SequencerLegacyAnchorState, SettingsChannelSourceConfigMutation,
+        SequencerLegacyAnchorState, SettingsChannelSourceConfigMutation, indexer,
     },
 };
 
@@ -52,13 +53,14 @@ pub(crate) enum ZoneCatalogCommand {
     Rebuild,
     CurrentSourceConfig,
     ApplySourceConfig,
+    RefreshIndexerSource,
     EvidencePage,
     EvidenceDetail,
     EvidencePayloadChunk,
     EvidencePayloadRelease,
 }
 
-const COMMANDS: [(&str, ZoneCatalogCommand); 12] = [
+const COMMANDS: [(&str, ZoneCatalogCommand); 13] = [
     ("zoneCatalogConfigure", ZoneCatalogCommand::Configure),
     ("zoneCatalogStatus", ZoneCatalogCommand::Status),
     ("zonesSummary", ZoneCatalogCommand::Summaries),
@@ -72,6 +74,10 @@ const COMMANDS: [(&str, ZoneCatalogCommand); 12] = [
     (
         "channelSourceConfigApply",
         ZoneCatalogCommand::ApplySourceConfig,
+    ),
+    (
+        "channelIndexerSourceRefresh",
+        ZoneCatalogCommand::RefreshIndexerSource,
     ),
     ("zoneEvidencePage", ZoneCatalogCommand::EvidencePage),
     ("zoneEvidenceDetail", ZoneCatalogCommand::EvidenceDetail),
@@ -96,6 +102,28 @@ pub(crate) fn zone_catalog_command_names() -> impl Iterator<Item = &'static str>
     COMMANDS.iter().map(|(name, _)| *name)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelIndexerSourceRefreshRequest {
+    source_revision: u64,
+    network_scope: NetworkScope,
+    channel_id: String,
+    source_config_revision: u64,
+    source_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ChannelIndexerSourceRefreshReport {
+    report_kind: &'static str,
+    schema_version: u32,
+    source_revision: u64,
+    network_scope: NetworkScope,
+    channel_id: String,
+    source_config_revision: u64,
+    source_id: String,
+    observation_revision: u64,
+}
+
 type SourceMonitorFuture<'a> = Pin<Box<dyn Future<Output = Result<u64>> + Send + 'a>>;
 type SourceMonitorShutdownFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
@@ -107,6 +135,14 @@ trait ZoneSourceMonitor: Send + Sync {
         network_scope: NetworkScope,
         catalog_verified: bool,
         configs: Vec<ChannelSourceConfig>,
+    ) -> SourceMonitorFuture<'a>;
+
+    fn refresh_source<'a>(
+        &'a self,
+        network_scope: NetworkScope,
+        channel_id: String,
+        source_config_revision: u64,
+        source_id: String,
     ) -> SourceMonitorFuture<'a>;
 
     fn shutdown(&self) -> SourceMonitorShutdownFuture<'_>;
@@ -127,6 +163,26 @@ impl ZoneSourceMonitor for ChannelSourceMonitor {
             self.configure(network_scope, catalog_verified, configs)
                 .await
                 .map_err(anyhow::Error::from)
+        })
+    }
+
+    fn refresh_source<'a>(
+        &'a self,
+        network_scope: NetworkScope,
+        channel_id: String,
+        source_config_revision: u64,
+        source_id: String,
+    ) -> SourceMonitorFuture<'a> {
+        Box::pin(async move {
+            ChannelSourceMonitor::refresh_source(
+                self,
+                network_scope,
+                channel_id,
+                source_config_revision,
+                source_id,
+            )
+            .await
+            .map_err(anyhow::Error::from)
         })
     }
 
@@ -238,6 +294,10 @@ impl ZoneCatalogCommandInterface {
             ZoneCatalogCommand::ApplySourceConfig => {
                 let request = decode_object_request(args, "channelSourceConfigApply")?;
                 to_value(self.apply_source_config(runtime, request)?)
+            }
+            ZoneCatalogCommand::RefreshIndexerSource => {
+                let request = decode_object_request(args, "channelIndexerSourceRefresh")?;
+                to_value(self.refresh_indexer_source(runtime, request)?)
             }
             ZoneCatalogCommand::EvidencePage => {
                 let request = decode_object_request(args, "zoneEvidencePage")?;
@@ -488,6 +548,75 @@ impl ZoneCatalogCommandInterface {
         })
     }
 
+    fn refresh_indexer_source(
+        &self,
+        runtime: &Runtime,
+        request: ChannelIndexerSourceRefreshRequest,
+    ) -> Result<ChannelIndexerSourceRefreshReport> {
+        self.refresh(runtime)?;
+        let service = self.service.report();
+        require_verified(&service.verification_state)?;
+        if request.source_revision != service.source_revision {
+            bail!(
+                "Zone Catalog source revision conflict: expected {}, current {}",
+                request.source_revision,
+                service.source_revision
+            );
+        }
+        let catalog = service
+            .catalog
+            .context("verified Zone Catalog is unavailable")?;
+        if request.network_scope != catalog.metadata.network_scope {
+            bail!("Channel source refresh belongs to a stale network scope");
+        }
+        {
+            let state = self.lock_state()?;
+            if !state.contains_channel(&request.channel_id) {
+                bail!("Channel is not present in current Zone Catalog projection");
+            }
+        }
+        let config = self
+            .source_store
+            .load()?
+            .into_iter()
+            .find(|config| {
+                config.network_scope == request.network_scope
+                    && config.channel_id == request.channel_id
+            })
+            .context("Channel source configuration is unavailable for this Channel")?;
+        if config.config_revision != request.source_config_revision {
+            bail!("Channel source configuration changed before the refresh could run");
+        }
+        let source = config
+            .indexer_source
+            .as_ref()
+            .filter(|source| source.source_id == request.source_id)
+            .context("Channel Indexer source is unavailable for this Channel")?;
+        if !matches!(
+            &source.target,
+            crate::source_routing::channel_sources::ChannelSourceTarget::Module { module_id }
+                if module_id == indexer::MODULE_ID
+        ) {
+            bail!("Channel Indexer source is not the managed Indexer module");
+        }
+        let observation_revision = runtime.block_on(self.monitor.refresh_source(
+            request.network_scope.clone(),
+            request.channel_id.clone(),
+            request.source_config_revision,
+            request.source_id.clone(),
+        ))?;
+        Ok(ChannelIndexerSourceRefreshReport {
+            report_kind: "zones.channel_indexer_source_refresh",
+            schema_version: ZONE_CATALOG_REPORT_SCHEMA_VERSION,
+            source_revision: service.source_revision,
+            network_scope: request.network_scope,
+            channel_id: request.channel_id,
+            source_config_revision: request.source_config_revision,
+            source_id: request.source_id,
+            observation_revision,
+        })
+    }
+
     fn evidence_page(
         &self,
         runtime: &Runtime,
@@ -674,7 +803,8 @@ mod tests {
         },
         inspector::commands::zone_evidence::EvidenceBlockFuture,
         source_routing::channel_sources::{
-            ChannelSourceTarget, ConfiguredSequencerSource, PersistedSequencerAttestation,
+            ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
+            PersistedSequencerAttestation,
         },
     };
 
@@ -1056,6 +1186,96 @@ mod tests {
             != Some("reset")
         {
             bail!("summary delta crossed a source revision: {reset_after_source_change}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn managed_indexer_source_refresh_is_fenced_to_the_exact_configured_source() -> Result<()> {
+        let runtime = Runtime::new()?;
+        let network_scope = scope('4');
+        let channel_id = identity('a');
+        let indexer_source_id = source_id('i');
+        let mut channel_config = config(&network_scope, &channel_id, 'c', 1, 1);
+        channel_config.indexer_source = Some(ConfiguredIndexerSource {
+            source_id: indexer_source_id.clone(),
+            label: Some("Managed Indexer".to_owned()),
+            target: ChannelSourceTarget::Module {
+                module_id: indexer::MODULE_ID.to_owned(),
+            },
+        });
+        let store = Arc::new(FakeSourceStore::new(vec![channel_config]));
+        let monitor = Arc::new(FakeMonitor::default());
+        let block = evidence_block(&channel_id, b"managed-indexer");
+        let (worker, mut started) = PublishingWorker::new(evidence_snapshot(
+            network_scope.clone(),
+            &channel_id,
+            &block,
+        ));
+        let interface = ZoneCatalogCommandInterface::with_dependencies(
+            &runtime,
+            Arc::new(worker),
+            store,
+            monitor.clone(),
+        );
+
+        interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{ "source": { "kind": "direct_http", "endpoint": "https://l1.example" } }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("catalog worker did not publish")?;
+        let status = interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
+        let source_revision = required_u64(&status, "source_revision")?;
+        let command = zone_catalog_command("channelIndexerSourceRefresh")
+            .context("Indexer source refresh command is missing")?;
+        let refreshed = interface.bridge_call(
+            &runtime,
+            command,
+            &json!([{
+                "source_revision": source_revision,
+                "network_scope": network_scope,
+                "channel_id": channel_id,
+                "source_config_revision": 1,
+                "source_id": indexer_source_id
+            }]),
+        )?;
+        if refreshed.get("report_kind").and_then(Value::as_str)
+            != Some("zones.channel_indexer_source_refresh")
+            || refreshed
+                .get("source_config_revision")
+                .and_then(Value::as_u64)
+                != Some(1)
+        {
+            bail!("unexpected Indexer source refresh report: {refreshed}");
+        }
+        let refreshes = monitor
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fake monitor lock poisoned"))?
+            .source_refreshes
+            .clone();
+        if refreshes != vec![(scope('4'), identity('a'), 1, source_id('i'))] {
+            bail!("Indexer source refresh lost exact binding: {refreshes:?}");
+        }
+        let stale = interface.bridge_call(
+            &runtime,
+            command,
+            &json!([{
+                "source_revision": source_revision,
+                "network_scope": scope('4'),
+                "channel_id": identity('a'),
+                "source_config_revision": 2,
+                "source_id": source_id('i')
+            }]),
+        );
+        let Err(error) = stale else {
+            bail!("stale Indexer source refresh unexpectedly succeeded");
+        };
+        if !error.to_string().contains("configuration changed") {
+            bail!("unexpected stale Indexer source refresh error: {error:#}");
         }
         Ok(())
     }
@@ -1564,6 +1784,7 @@ mod tests {
     struct FakeMonitorState {
         snapshot: ChannelSourceMonitorSnapshot,
         configs: Vec<ChannelSourceConfig>,
+        source_refreshes: Vec<(NetworkScope, String, u64, String)>,
     }
 
     impl ZoneSourceMonitor for FakeMonitor {
@@ -1599,6 +1820,45 @@ mod tests {
                     state.snapshot.channels.clear();
                     state.configs = configs;
                 }
+                Ok(state.snapshot.observation_revision)
+            })
+        }
+
+        fn refresh_source<'a>(
+            &'a self,
+            network_scope: NetworkScope,
+            channel_id: String,
+            source_config_revision: u64,
+            source_id: String,
+        ) -> SourceMonitorFuture<'a> {
+            Box::pin(async move {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("fake monitor lock poisoned"))?;
+                let config = state
+                    .configs
+                    .iter()
+                    .find(|config| {
+                        config.network_scope == network_scope && config.channel_id == channel_id
+                    })
+                    .context("fake monitor Channel source configuration is missing")?;
+                if config.config_revision != source_config_revision {
+                    bail!("fake monitor Channel source configuration changed");
+                }
+                if config
+                    .indexer_source
+                    .as_ref()
+                    .is_none_or(|source| source.source_id != source_id)
+                {
+                    bail!("fake monitor Channel Indexer source is missing");
+                }
+                state.source_refreshes.push((
+                    network_scope,
+                    channel_id,
+                    source_config_revision,
+                    source_id,
+                ));
                 Ok(state.snapshot.observation_revision)
             })
         }
