@@ -39,6 +39,13 @@
       rapidsnarkTargets = buildArtifacts.rapidsnark.targets;
       lezRevision = buildArtifacts.lez.revision;
       lezSourceHash = buildArtifacts.lez.sourceHash;
+      # Testnet v0.2 sequencers were deployed with these proof artifacts.
+      # Keep their prover in a separate binary so current and historical
+      # artifact trees are never linked into the same Cargo build.
+      testnetV02LezRevision = "1a94c8612fa7fcc4acecde44b973d942eab19f11";
+      testnetV02LezSourceHash = "sha256-GBvyfRoJc41wBE4XG1mf5vSWLbR1V17wrqdHi9RHze8=";
+      testnetV02HelperBinaryName = "logos-inspector-testnet-v02-helper";
+      risc0RecursionArtifactHash = "744b999f0a35b3c86753311c7efb2a0054be21727095cf105af6ee7d3f4d8849";
 
       standaloneShareDir = "share/logos-inspector";
       standaloneQmlEnvVar = "LOGOS_INSPECTOR_QML_DIR";
@@ -70,6 +77,18 @@
         pkgs.fetchzip {
           url = "https://github.com/logos-blockchain/logos-execution-zone/archive/${lezRevision}.tar.gz";
           hash = lezSourceHash;
+        };
+
+      mkTestnetV02LezSource = pkgs:
+        pkgs.fetchzip {
+          url = "https://github.com/logos-blockchain/logos-execution-zone/archive/${testnetV02LezRevision}.tar.gz";
+          hash = testnetV02LezSourceHash;
+        };
+
+      mkRisc0RecursionArtifact = pkgs:
+        pkgs.fetchurl {
+          url = "https://risc0-artifacts.s3.us-west-2.amazonaws.com/zkr/${risc0RecursionArtifactHash}.zip";
+          sha256 = risc0RecursionArtifactHash;
         };
 
       mkCircuitsArtifact = pkgs:
@@ -170,6 +189,52 @@ EOF
       standaloneAssetSource = sourceSets.standaloneAssets;
       coreModuleSource = sourceSets.coreModule;
 
+      mkTestnetV02HelperBinary = pkgs:
+        let
+          circuitBuild = mkCircuitBuildContext pkgs { };
+          testnetV02LezSource = mkTestnetV02LezSource pkgs;
+          risc0RecursionArtifact = mkRisc0RecursionArtifact pkgs;
+          # RISC Zero invokes `xcrun metal` and `xcrun metallib` on Darwin.
+          # Nix's SDK variables hide the host Metal toolchain, so clear them
+          # only for those calls while preserving the regular Nix environment.
+          metalXcrun = pkgs.writeShellScriptBin "xcrun" ''
+            tool=
+            for argument in "$@"; do
+              case "$argument" in metal|metallib) tool=1 ;; esac
+            done
+            if [ -n "$tool" ]; then
+              unset DEVELOPER_DIR SDKROOT
+            fi
+            exec /usr/bin/xcrun "$@"
+          '';
+        in
+        pkgs.rustPlatform.buildRustPackage {
+          pname = testnetV02HelperBinaryName;
+          version = packageVersion;
+          src = standaloneRustSource;
+          cargoRoot = "crates/testnet-v02-helper";
+          # buildRustPackage installs from the source-root target directory.
+          # Keep this nested workspace's build output there instead of passing
+          # a manifest path that makes Cargo write under the helper directory.
+          buildAndTestSubdir = "crates/testnet-v02-helper";
+          cargoLock = {
+            lockFile = ./crates/testnet-v02-helper/Cargo.lock;
+            allowBuiltinFetchGit = true;
+          };
+          env = circuitBuild.env // {
+            RECURSION_SRC_PATH = "${risc0RecursionArtifact}";
+          };
+          nativeBuildInputs = [ pkgs.python3 ];
+          preBuild = ''
+            export HOME=$(mktemp -d)
+            ${linkLezArtifacts testnetV02LezSource}
+          '' + lib.optionalString pkgs.stdenv.isDarwin ''
+            export PATH="${metalXcrun}/bin:$PATH:/usr/bin"
+          '';
+          doCheck = false;
+          meta.mainProgram = testnetV02HelperBinaryName;
+        };
+
       qmlModule = logos-module-builder.lib.mkLogosQmlModule {
         src = source;
         configFile = ./metadata.json;
@@ -181,6 +246,7 @@ EOF
           circuitBuild = mkCircuitBuildContext pkgs {
             includeLogosBlockchainCircuits = true;
           };
+          testnetV02Helper = mkTestnetV02HelperBinary pkgs;
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "logos-inspector-core-ffi";
@@ -194,7 +260,9 @@ EOF
             "--package"
             "logos-inspector-core-ffi"
           ];
-          env = circuitBuild.env;
+          env = circuitBuild.env // {
+            LOGOS_INSPECTOR_TESTNET_V02_HELPER = "${testnetV02Helper}/bin/${testnetV02HelperBinaryName}";
+          };
           nativeBuildInputs = [ pkgs.python3 ];
           preBuild = linkLezArtifacts circuitBuild.lezSource;
           postInstall = ''
@@ -231,6 +299,7 @@ EOF
       mkStandaloneBinary = pkgs: { buildType, staticRapidsnarkFeature }:
         let
           circuitBuild = mkCircuitBuildContext pkgs { };
+          testnetV02Helper = mkTestnetV02HelperBinary pkgs;
           qtInputs = with pkgs.qt6; [
             qtbase
             qtdeclarative
@@ -265,6 +334,7 @@ EOF
           buildInputs = qtInputs;
           env = circuitBuild.env // {
             QT_VERSION_MAJOR = "6";
+            LOGOS_INSPECTOR_TESTNET_V02_HELPER = "${testnetV02Helper}/bin/${testnetV02HelperBinaryName}";
           };
           doCheck = false;
           preBuild = ''
@@ -321,6 +391,8 @@ EOF
           staticRapidsnarkFeature = false;
         }));
 
+      testnetV02HelperPackages = forSystems standaloneSystems mkTestnetV02HelperBinary;
+
       mkRenamedLgxPackage = pkgs: { source, outputName }:
         pkgs.runCommand (lib.removeSuffix ".lgx" outputName) { } ''
           shopt -s nullglob
@@ -362,6 +434,8 @@ EOF
             standalone = standalonePackages.${system};
           } // lib.optionalAttrs (builtins.hasAttr system standaloneDevPackages) {
             standalone-dev = standaloneDevPackages.${system};
+          } // lib.optionalAttrs (builtins.hasAttr system testnetV02HelperPackages) {
+            "testnet-v02-helper" = testnetV02HelperPackages.${system};
           } // lib.optionalAttrs (builtins.elem system coreSystems) {
             core = coreModule.packages.${system}.default;
             core-ffi = coreFfiPackages.${system}.default;

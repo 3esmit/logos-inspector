@@ -1,0 +1,31 @@
+[package]
+name = "logos-inspector-testnet-v02-helper"
+version = "0.2.0-rc6"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[[bin]]
+name = "logos-inspector-testnet-v02-helper"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+url = "2.5"
+logos-inspector-testnet-v02-helper-protocol = { path = "../testnet-v02-helper-protocol" }
+
+common_testnet_v02 = { package = "common", git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "1a94c8612fa7fcc4acecde44b973d942eab19f11" }
+lee_testnet_v02 = { package = "lee", git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "1a94c8612fa7fcc4acecde44b973d942eab19f11", features = ["prove"] }
+programs_testnet_v02 = { package = "programs", git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "1a94c8612fa7fcc4acecde44b973d942eab19f11", features = ["artifacts"] }
+sequencer_service_rpc_testnet_v02 = { package = "sequencer_service_rpc", git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "1a94c8612fa7fcc4acecde44b973d942eab19f11", features = ["client"] }
+wallet_testnet_v02 = { package = "wallet", git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "1a94c8612fa7fcc4acecde44b973d942eab19f11" }
+
+[workspace]

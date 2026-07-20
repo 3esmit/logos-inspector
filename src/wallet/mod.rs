@@ -15,6 +15,7 @@ use crate::{
 mod instruction;
 mod profile;
 mod runner;
+mod testnet_v02;
 
 use crate::support::command_runner::CommandControl;
 pub(crate) use instruction::local_wallet_instruction_submit_to;
@@ -35,7 +36,6 @@ use runner::{
     CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
     local_wallet_accounts_output_text, local_wallet_output_text,
 };
-
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LEGACY_LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
