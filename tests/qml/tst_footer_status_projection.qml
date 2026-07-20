@@ -199,7 +199,7 @@ TestCase {
         verify(Array.isArray(regions.right))
         verify(regions.left.some(function (group) {
             return group.items.some(function (item) {
-                return item.fullName === "ST node"
+                return item.fullName === "Storage node"
             })
         }))
         verify(regions.right.some(function (group) {
@@ -230,6 +230,9 @@ TestCase {
         const groups = FooterStatusProjection.channelFooterGroups(footerRoot)
 
         compare(groups.length, 2)
+        compare(groups[0].items[0].label, "Channel")
+        compare(groups[0].items[1].label, "Sequencer")
+        compare(groups[0].items[2].label, "Indexer")
         compare(groups[0].items[0].fullName, "Channel Alpha")
         compare(groups[0].items[1].accessibleValue, "reachable; head 104")
         compare(groups[0].items[2].tone, "success")

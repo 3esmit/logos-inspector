@@ -256,10 +256,10 @@ function fieldDetail(key, mode) {
 
 function shortLabel(key) {
     const lookup = {
-        "network.network": qsTr("Net"),
+        "network.network": qsTr("Network"),
         "network.chain_id": qsTr("Chain"),
         "network.zone_id": qsTr("Zone"),
-        "network.channel_id": qsTr("Chan"),
+        "network.channel_id": qsTr("Channel"),
         "network.report_time": qsTr("Report"),
         "bedrock.node_health": qsTr("Bedrock"),
         "bedrock.peer_count": qsTr("Peers"),
@@ -295,12 +295,12 @@ function shortLabel(key) {
         "indexer.db_health": qsTr("DB"),
         "indexer.ingestion_status": qsTr("Ingest"),
         "storage.module": qsTr("Storage"),
-        "storage.network": qsTr("ST net"),
-        "storage.node_reachable": qsTr("ST node"),
+        "storage.network": qsTr("Storage net"),
+        "storage.node_reachable": qsTr("Storage node"),
         "storage.nat_mode": qsTr("NAT"),
         "storage.udp_discovery_port": qsTr("UDP"),
         "storage.tcp_transfer_port": qsTr("TCP"),
-        "storage.peer_count": qsTr("ST peers"),
+        "storage.peer_count": qsTr("Storage peers"),
         "storage.dht_connected": qsTr("DHT"),
         "storage.shared_files_count": qsTr("Files"),
         "storage.manifest_count": qsTr("Manifests"),
@@ -310,18 +310,18 @@ function shortLabel(key) {
         "storage.failed_transfers_recent": qsTr("Failures win"),
         "storage.failed_transfers_total": qsTr("Failures total"),
         "storage.cid_fetch_test": qsTr("CID"),
-        "storage.last_error": qsTr("ST error"),
-        "messaging.module": qsTr("Delivery"),
-        "messaging.connection_state": qsTr("Conn"),
+        "storage.last_error": qsTr("Storage error"),
+        "messaging.module": qsTr("Delivery src"),
+        "messaging.connection_state": qsTr("Delivery"),
         "messaging.bootstrap_connected": qsTr("Bootstrap"),
-        "messaging.peer_count": qsTr("DLV peers"),
-        "messaging.active_subscriptions": qsTr("Subs"),
+        "messaging.peer_count": qsTr("Delivery peers"),
+        "messaging.active_subscriptions": qsTr("Subscriptions"),
         "messaging.content_topics": qsTr("Topics"),
         "messaging.outbound_queue": qsTr("Queue"),
-        "messaging.message_sent_events_recent": qsTr("Sent win"),
-        "messaging.message_propagated_events_recent": qsTr("Prop win"),
-        "messaging.message_received_events_recent": qsTr("Msgs win"),
-        "messaging.message_error_events_recent": qsTr("Errors win"),
+        "messaging.message_sent_events_recent": qsTr("Sent"),
+        "messaging.message_propagated_events_recent": qsTr("Propagated"),
+        "messaging.message_received_events_recent": qsTr("Received"),
+        "messaging.message_error_events_recent": qsTr("Errors"),
         "messaging.publish_latency_ms": qsTr("Pub n/a"),
         "messaging.receive_latency_ms": qsTr("Recv n/a"),
         "messaging.last_error": qsTr("Delivery error"),
@@ -335,6 +335,9 @@ function shortLabel(key) {
 function fieldWidth(key) {
     if (key.indexOf("hash") >= 0 || key.indexOf("error") >= 0 || key === "overall.operator_action" || key === "overall.main_risk") {
         return 190
+    }
+    if (key.indexOf("storage.") === 0 || key.indexOf("messaging.") === 0) {
+        return 176
     }
     return 150
 }

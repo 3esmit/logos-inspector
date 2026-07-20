@@ -77,11 +77,20 @@ TestCase {
     }
 
     function test_footer_row_policy_uses_catalog_metadata() {
-        compare(StatusFieldCatalog.shortLabel("storage.node_reachable"), "ST node")
+        compare(StatusFieldCatalog.shortLabel("storage.node_reachable"), "Storage node")
         compare(StatusFieldCatalog.fieldWidth("overall.operator_action"), 190)
         compare(StatusFieldCatalog.fieldPriority("network.report_time"), "low")
         verify(StatusFieldCatalog.usesColorOnly("overall.status"))
         verify(StatusFieldCatalog.showsDot("network.network"))
+    }
+
+    function test_footer_labels_name_the_service_and_status() {
+        compare(StatusFieldCatalog.shortLabel("messaging.connection_state"), "Delivery")
+        compare(StatusFieldCatalog.shortLabel("messaging.peer_count"), "Delivery peers")
+        compare(StatusFieldCatalog.shortLabel("messaging.message_error_events_recent"), "Errors")
+        compare(StatusFieldCatalog.shortLabel("storage.module"), "Storage")
+        compare(StatusFieldCatalog.shortLabel("storage.peer_count"), "Storage peers")
+        compare(StatusFieldCatalog.fieldWidth("messaging.peer_count"), 176)
     }
 
     function test_available_provisional_block_labels_do_not_claim_a_time_window() {

@@ -100,17 +100,17 @@ function channelStatusItems(root, channel) {
     const channelText = channelShortId(value)
     const channelName = channelDisplayName(value)
     return [{
-        label: qsTr("Ch"),
+        label: qsTr("Channel"),
         fullName: qsTr("Channel %1").arg(channelName),
         value: channelText,
         accessibleValue: channelAccessibleValue(value),
         tone: channelTone(value),
-        maximumWidth: 156,
+        maximumWidth: 176,
         priority: "normal",
         valueVisible: true,
         showDot: true
-    }, channelSourceItem(root, value, sequencer, qsTr("Seq"), qsTr("Sequencer")),
-        channelSourceItem(root, value, indexer, qsTr("Idx"), qsTr("Indexer"))]
+    }, channelSourceItem(root, value, sequencer, qsTr("Sequencer"), qsTr("Sequencer")),
+        channelSourceItem(root, value, indexer, qsTr("Indexer"), qsTr("Indexer"))]
 }
 
 function channelSourceItem(root, channel, source, label, sourceName) {
@@ -120,7 +120,7 @@ function channelSourceItem(root, channel, source, label, sourceName) {
         value: channelSourceValue(root, source),
         accessibleValue: channelSourceAccessibleValue(root, source),
         tone: channelSourceTone(source),
-        maximumWidth: 132,
+        maximumWidth: 176,
         priority: "normal",
         valueVisible: true,
         showDot: true
