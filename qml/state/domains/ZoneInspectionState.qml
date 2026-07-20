@@ -80,6 +80,9 @@ QtObject {
 
     property var desiredSource: null
     property string desiredSourceKey: ""
+    readonly property bool catalogSourceUnavailable: desiredSource === null
+        && sourceDescriptor !== null
+        && String(sourceDescriptor.kind || "") === "unavailable"
     property int sourceGeneration: 0
     property int configureRequestRevision: 0
     property int statusRequestRevision: 0
@@ -898,6 +901,9 @@ QtObject {
     }
 
     function retryCatalog() {
+        if (!catalogConfigured) {
+            return beginConfigure()
+        }
         return runCatalogControl("zoneCatalogRetry", false)
     }
 

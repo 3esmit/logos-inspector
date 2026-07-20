@@ -34,6 +34,7 @@ QtObject {
     property string currentError: ""
     property string statusError: ""
     property string configureError: ""
+    property bool catalogSourceUnavailable: false
     property string summaryError: ""
     property string detailError: ""
     property string sourceMutationError: ""

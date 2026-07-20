@@ -1017,8 +1017,10 @@ TestCase {
 
         compare(gateway.requests.length, 0)
         compare(zoneState.configureError, reason)
+        verify(zoneState.catalogSourceUnavailable)
         verify(!zoneState.catalogConfigured)
         verify(!zoneState.statusPollingEnabled)
+        compare(zoneState.retryCatalog(), null)
 
         zoneState.sourceDescriptor = {
             kind: "direct_http",
@@ -1037,7 +1039,7 @@ TestCase {
         gateway.respondNext("zoneCatalogConfigure", failed("Bedrock unavailable"))
         compare(zoneState.configureError, "Bedrock unavailable")
 
-        verify(!zoneState.syncCatalogSource())
+        verify(zoneState.retryCatalog() !== null)
         compare(zoneState.configureError, "Bedrock unavailable")
         compare(gateway.requestCount("zoneCatalogConfigure"), 2)
     }

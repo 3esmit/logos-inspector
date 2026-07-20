@@ -42,6 +42,8 @@ ColumnLayout {
         && root.model.shell.resultIsError === true
         && root.model.shell.resultValue === root.zoneState.targetResolutionReport
         && String(root.model.shell.resultText || "").length > 0
+    readonly property bool catalogSourceUnavailable: root.zoneState
+        && root.zoneState.catalogSourceUnavailable === true
 
     onHasDirtyDraftChanged: {
         if (hasDirtyDraft) {
@@ -72,7 +74,19 @@ ColumnLayout {
         subtitle: root.catalogSubtitle()
 
         ActionButton {
-            visible: root.zoneState && (root.zoneState.statusError.length > 0
+            objectName: "zoneCatalogOpenSettingsAction"
+            visible: root.catalogSourceUnavailable
+            theme: root.theme
+            text: qsTr("Open Bedrock settings")
+            accessibleName: qsTr("Open Bedrock settings")
+            enabled: !(root.model && root.model.shell && root.model.shell.busy)
+            onClicked: root.model.openSettings("network", "blockchain")
+        }
+
+        ActionButton {
+            objectName: "zoneCatalogRetryAction"
+            visible: root.zoneState && !root.catalogSourceUnavailable
+                && (root.zoneState.statusError.length > 0
                 || root.zoneState.configureError.length > 0
                 || (!(root.zoneState.readiness
                     && String(root.zoneState.readiness.phase || "") === "waiting_for_bedrock")
