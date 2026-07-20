@@ -756,7 +756,7 @@ fn chain_state_for_block(
     })
 }
 
-fn normalize_cryptarchia_info(raw: Value) -> Value {
+pub(crate) fn normalize_cryptarchia_info(raw: Value) -> Value {
     let source = raw
         .get("cryptarchia_info")
         .filter(|value| value.is_object())

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
@@ -18,6 +20,14 @@ pub(crate) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 pub(crate) const INDEXER_MODULE: &str = "lez_indexer_module";
 pub(crate) const LEZ_CORE_MODULE: &str = "lez_core";
 
+const CLI_TIP_PARENT_WALK_MAX_BLOCKS: usize = 500;
+
+#[derive(Debug)]
+pub(crate) struct BlockchainBlocksRead {
+    pub(crate) value: Value,
+    pub(crate) used_tip_parent_walk: bool,
+}
+
 pub(crate) async fn blockchain_node_report(
     transport: &SharedModuleTransport,
     transport_kind: ModuleTransportKind,
@@ -34,7 +44,8 @@ pub(crate) async fn blockchain_node_report(
                 "get_cryptarchia_info",
                 Vec::new(),
             )
-            .await,
+            .await
+            .map(crate::blockchain::normalize_cryptarchia_info),
         ),
         headers: ProbeReport::err(
             "headers",
@@ -60,15 +71,42 @@ pub(crate) async fn blockchain_blocks(
     slot_from: u64,
     slot_to: u64,
 ) -> Result<Value> {
+    Ok(
+        blockchain_blocks_read(transport, transport_kind, slot_from, slot_to)
+            .await?
+            .value,
+    )
+}
+
+async fn blockchain_blocks_read(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    slot_from: u64,
+    slot_to: u64,
+) -> Result<BlockchainBlocksRead> {
     crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
-    transport_call_value(
+    let blocks = transport_call_value(
         transport,
         transport_kind,
         BLOCKCHAIN_MODULE,
         "get_blocks",
         vec![json!(slot_from), json!(slot_to)],
     )
-    .await
+    .await?;
+    if transport_kind != ModuleTransportKind::LogoscoreCli
+        || slot_to == 0
+        || !blocks.as_array().is_some_and(Vec::is_empty)
+    {
+        return Ok(BlockchainBlocksRead {
+            value: blocks,
+            used_tip_parent_walk: false,
+        });
+    }
+
+    Ok(BlockchainBlocksRead {
+        value: cli_tip_parent_blocks(transport, slot_from, slot_to).await?,
+        used_tip_parent_walk: true,
+    })
 }
 
 pub(crate) async fn blockchain_recent_blocks(
@@ -78,8 +116,23 @@ pub(crate) async fn blockchain_recent_blocks(
     slot_to: u64,
     limit: u64,
 ) -> Result<Value> {
-    let blocks = blockchain_blocks(transport, transport_kind, slot_from, slot_to).await?;
-    Ok(sort_and_limit_blocks(blocks, limit.clamp(1, 500)))
+    Ok(
+        blockchain_recent_blocks_read(transport, transport_kind, slot_from, slot_to, limit)
+            .await?
+            .value,
+    )
+}
+
+pub(crate) async fn blockchain_recent_blocks_read(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+) -> Result<BlockchainBlocksRead> {
+    let mut blocks = blockchain_blocks_read(transport, transport_kind, slot_from, slot_to).await?;
+    blocks.value = sort_and_limit_blocks(blocks.value, limit.clamp(1, 500));
+    Ok(blocks)
 }
 
 pub(crate) async fn blockchain_block(
@@ -337,6 +390,273 @@ fn block_slot(block: &Value) -> u64 {
         .unwrap_or_default()
 }
 
+async fn cli_tip_parent_blocks(
+    transport: &SharedModuleTransport,
+    slot_from: u64,
+    slot_to: u64,
+) -> Result<Value> {
+    let info = transport_call_value(
+        transport,
+        ModuleTransportKind::LogoscoreCli,
+        BLOCKCHAIN_MODULE,
+        "get_cryptarchia_info",
+        Vec::new(),
+    )
+    .await?;
+    let mut block_id = cli_tip_block_id(&info)?;
+    let mut visited = HashSet::new();
+    let mut blocks = Vec::new();
+
+    for _ in 0..CLI_TIP_PARENT_WALK_MAX_BLOCKS {
+        if !visited.insert(block_id.clone()) {
+            bail!(
+                "blockchain_module tip-parent traversal encountered a repeated block id `{block_id}`"
+            );
+        }
+        let block = transport_call_value(
+            transport,
+            ModuleTransportKind::LogoscoreCli,
+            BLOCKCHAIN_MODULE,
+            "get_block",
+            vec![json!(block_id)],
+        )
+        .await?;
+        let block = normalize_tip_parent_block(block, &block_id)?;
+        let slot = tip_parent_block_slot(&block)?;
+        if slot < slot_from {
+            return Ok(sort_and_limit_blocks(
+                Value::Array(blocks),
+                CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64,
+            ));
+        }
+        let parent = tip_parent_id(&block)?;
+        if slot <= slot_to {
+            blocks.push(block);
+        }
+        if slot == 0 {
+            return Ok(sort_and_limit_blocks(
+                Value::Array(blocks),
+                CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64,
+            ));
+        }
+        let Some(parent) = parent else {
+            return Ok(sort_and_limit_blocks(
+                Value::Array(blocks),
+                CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64,
+            ));
+        };
+        block_id = parent;
+    }
+
+    bail!(
+        "blockchain_module.get_blocks returned an empty array and tip-parent traversal reached its {CLI_TIP_PARENT_WALK_MAX_BLOCKS}-block safety limit"
+    )
+}
+
+fn cli_tip_block_id(info: &Value) -> Result<String> {
+    let source = info
+        .get("cryptarchia_info")
+        .filter(|value| value.is_object())
+        .unwrap_or(info);
+    let tip = source
+        .get("tip")
+        .or_else(|| source.get("tip_hash"))
+        .and_then(Value::as_str)
+        .context("blockchain_module.get_cryptarchia_info did not include a tip block id")?;
+    normalize_block_id_text(tip)
+        .context("blockchain_module.get_cryptarchia_info returned an invalid tip block id")
+}
+
+fn normalize_tip_parent_block(mut block: Value, requested_id: &str) -> Result<Value> {
+    let header = block
+        .get_mut("header")
+        .and_then(Value::as_object_mut)
+        .context("blockchain_module.get_block did not return a header object")?;
+    if let Some(actual_id) = header
+        .get("id")
+        .or_else(|| header.get("hash"))
+        .and_then(Value::as_str)
+    {
+        let actual_id = normalize_block_id_text(actual_id)
+            .context("blockchain_module.get_block returned an invalid header id")?;
+        anyhow::ensure!(
+            actual_id == requested_id,
+            "blockchain_module.get_block returned header id `{actual_id}` for requested block `{requested_id}`"
+        );
+    } else {
+        header.insert("id".to_owned(), json!(requested_id));
+    }
+    Ok(block)
+}
+
+fn tip_parent_block_slot(block: &Value) -> Result<u64> {
+    block
+        .get("header")
+        .and_then(|header| header.get("slot"))
+        .and_then(Value::as_u64)
+        .or_else(|| block.get("slot").and_then(Value::as_u64))
+        .context("blockchain_module.get_block did not return a numeric slot")
+}
+
+fn tip_parent_id(block: &Value) -> Result<Option<String>> {
+    let Some(parent) = block.get("header").and_then(|header| {
+        header
+            .get("parent_block")
+            .or_else(|| header.get("parent_hash"))
+    }) else {
+        return Ok(None);
+    };
+    let parent = parent
+        .as_str()
+        .context("blockchain_module.get_block returned a non-text parent block id")?;
+    let parent = normalize_block_id_text(parent)
+        .context("blockchain_module.get_block returned an invalid parent block id")?;
+    Ok((parent != "0".repeat(64)).then_some(parent))
+}
+
 fn empty_module_lookup(value: &Value) -> bool {
     value.is_null() || value.as_str().is_some_and(|value| value.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport,
+    };
+
+    struct TipParentTransport {
+        calls: Mutex<Vec<ModuleCall>>,
+    }
+
+    impl TipParentTransport {
+        const fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn call_methods(&self) -> Vec<String> {
+            let calls = match self.calls.lock() {
+                Ok(calls) => calls,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            calls.iter().map(|call| call.method().to_owned()).collect()
+        }
+    }
+
+    impl ModuleTransport for TipParentTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let transport = call.transport();
+            let module = call.module().to_owned();
+            let method = call.method().to_owned();
+            let args = call.args().to_vec();
+            match self.calls.lock() {
+                Ok(mut calls) => calls.push(call),
+                Err(poisoned) => poisoned.into_inner().push(call),
+            }
+            let reply = if module != BLOCKCHAIN_MODULE {
+                Err(anyhow::anyhow!("unexpected module `{module}`"))
+            } else if method == "get_blocks" && args == vec![json!(100_u64), json!(130_u64)] {
+                Ok(json!([]))
+            } else if method == "get_cryptarchia_info" && args.is_empty() {
+                Ok(json!({ "tip": test_hash('a'), "slot": 130 }))
+            } else if method == "get_block" && args == vec![json!(test_hash('a'))] {
+                Ok(test_block(130, test_hash('b'), 2))
+            } else if method == "get_block" && args == vec![json!(test_hash('b'))] {
+                Ok(test_block(115, test_hash('c'), 1))
+            } else if method == "get_block" && args == vec![json!(test_hash('c'))] {
+                Ok(test_block(90, "0".repeat(64), 0))
+            } else {
+                Err(anyhow::anyhow!(
+                    "unexpected CLI tip-parent call {method} with {args:?}"
+                ))
+            };
+            Box::pin(async move { reply.map(|value| ModuleCallReply::new(transport, value)) })
+        }
+    }
+
+    fn test_hash(character: char) -> String {
+        character.to_string().repeat(64)
+    }
+
+    fn test_block(slot: u64, parent: String, transaction_count: u64) -> Value {
+        json!({
+            "header": {
+                "slot": slot,
+                "parent_block": parent,
+            },
+            "transactions": (0..transaction_count)
+                .map(|index| json!({ "id": format!("transaction-{slot}-{index}") }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    #[tokio::test]
+    async fn cli_empty_block_range_falls_back_to_tip_parent_chain() -> Result<()> {
+        let harness = Arc::new(TipParentTransport::new());
+        let transport: SharedModuleTransport = harness.clone();
+
+        let value =
+            blockchain_blocks(&transport, ModuleTransportKind::LogoscoreCli, 100, 130).await?;
+        let blocks = value
+            .as_array()
+            .context("CLI tip-parent range did not return an array")?;
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].pointer("/header/slot"), Some(&json!(130)));
+        assert_eq!(blocks[1].pointer("/header/slot"), Some(&json!(115)));
+        assert_eq!(
+            blocks[0].pointer("/header/id"),
+            Some(&json!(test_hash('a')))
+        );
+        assert_eq!(
+            blocks[1].pointer("/header/id"),
+            Some(&json!(test_hash('b')))
+        );
+        assert_eq!(
+            harness.call_methods(),
+            vec![
+                "get_blocks",
+                "get_cryptarchia_info",
+                "get_block",
+                "get_block",
+                "get_block",
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_node_report_uses_the_canonical_cryptarchia_shape() -> Result<()> {
+        let harness = Arc::new(TipParentTransport::new());
+        let transport: SharedModuleTransport = harness.clone();
+
+        let report = blockchain_node_report(&transport, ModuleTransportKind::LogoscoreCli).await;
+        assert!(report.cryptarchia_info.ok);
+        assert_eq!(
+            report
+                .cryptarchia_info
+                .value
+                .as_ref()
+                .and_then(|value| value.pointer("/cryptarchia_info/slot")),
+            Some(&json!(130))
+        );
+        assert_eq!(
+            report
+                .cryptarchia_info
+                .value
+                .as_ref()
+                .and_then(|value| value.pointer("/cryptarchia_info/tip")),
+            Some(&json!(test_hash('a')))
+        );
+        assert_eq!(harness.call_methods(), vec!["get_cryptarchia_info"]);
+        Ok(())
+    }
 }
