@@ -13,6 +13,7 @@ pub(super) fn report_from_prepared(
         &prepared.instruction,
         tx_hash.as_deref(),
         prepared.instruction_words.len(),
+        status == "submitted" && prepared.mode.as_str() == "private",
     );
     LocalWalletInstructionReport {
         source: "local_wallet_direct".to_owned(),
@@ -45,6 +46,7 @@ pub(super) fn report_from_prepared(
         instruction_words: prepared.instruction_words,
         tx_hash,
         shared_secret_count,
+        private_sync_pending: status == "submitted" && prepared.mode.as_str() == "private",
         submitted_at,
     }
 }
@@ -54,9 +56,15 @@ fn instruction_operation_detail(
     instruction: &str,
     tx_hash: Option<&str>,
     word_count: usize,
+    private_sync_pending: bool,
 ) -> String {
     if let Some(tx_hash) = tx_hash.filter(|value| !value.is_empty()) {
-        return format!("{mode} {instruction}, tx {}", short_hash(tx_hash));
+        let detail = format!("{mode} {instruction}, tx {}", short_hash(tx_hash));
+        return if private_sync_pending {
+            format!("{detail}; private sync pending")
+        } else {
+            detail
+        };
     }
     format!("{mode} {instruction}, {word_count} word(s)")
 }
