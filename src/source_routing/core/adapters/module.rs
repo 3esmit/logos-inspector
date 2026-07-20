@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context as _, Result, bail};
+use lb_core::mantle::{MantleTx, Transaction as _};
 use serde_json::{Value, json};
 
 use crate::{
@@ -85,7 +86,7 @@ async fn blockchain_blocks_read(
     slot_to: u64,
 ) -> Result<BlockchainBlocksRead> {
     crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
-    let blocks = transport_call_value(
+    let mut blocks = transport_call_value(
         transport,
         transport_kind,
         BLOCKCHAIN_MODULE,
@@ -93,6 +94,9 @@ async fn blockchain_blocks_read(
         vec![json!(slot_from), json!(slot_to)],
     )
     .await?;
+    if transport_kind == ModuleTransportKind::LogoscoreCli {
+        blocks = enrich_cli_mantle_transaction_hashes(blocks);
+    }
     if transport_kind != ModuleTransportKind::LogoscoreCli
         || slot_to == 0
         || !blocks.as_array().is_some_and(Vec::is_empty)
@@ -141,14 +145,20 @@ pub(crate) async fn blockchain_block(
     block_id: &str,
 ) -> Result<Value> {
     let block_id = normalize_block_id_text(block_id)?;
-    transport_call_value(
+    let block = transport_call_value(
         transport,
         transport_kind,
         BLOCKCHAIN_MODULE,
         "get_block",
         vec![json!(block_id)],
     )
-    .await
+    .await?;
+    if transport_kind != ModuleTransportKind::LogoscoreCli {
+        return Ok(block);
+    }
+    Ok(enrich_cli_mantle_transaction_hashes(
+        normalize_tip_parent_block(block, &block_id)?,
+    ))
 }
 
 pub(crate) async fn blockchain_transaction(
@@ -421,7 +431,8 @@ async fn cli_tip_parent_blocks(
             vec![json!(block_id)],
         )
         .await?;
-        let block = normalize_tip_parent_block(block, &block_id)?;
+        let block =
+            enrich_cli_mantle_transaction_hashes(normalize_tip_parent_block(block, &block_id)?);
         let slot = tip_parent_block_slot(&block)?;
         if slot < slot_from {
             return Ok(sort_and_limit_blocks(
@@ -487,6 +498,54 @@ fn normalize_tip_parent_block(mut block: Value, requested_id: &str) -> Result<Va
         header.insert("id".to_owned(), json!(requested_id));
     }
     Ok(block)
+}
+
+/// Restore the canonical Mantle transaction identity omitted by the current
+/// `blockchain_module` CLI serializer. The module still supplies the exact
+/// Mantle transaction payload, so derive only absent hashes with the same
+/// protocol implementation that defines the serialized HTTP API.
+fn enrich_cli_mantle_transaction_hashes(mut value: Value) -> Value {
+    match &mut value {
+        Value::Array(blocks) => {
+            for block in blocks {
+                enrich_cli_block_mantle_transaction_hashes(block);
+            }
+        }
+        Value::Object(_) => enrich_cli_block_mantle_transaction_hashes(&mut value),
+        _ => {}
+    }
+    value
+}
+
+fn enrich_cli_block_mantle_transaction_hashes(block: &mut Value) {
+    let Some(transactions) = block.get_mut("transactions").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for transaction in transactions {
+        let Some(mantle_transaction) = transaction.get_mut("mantle_tx") else {
+            continue;
+        };
+        let hash_is_present = mantle_transaction
+            .get("hash")
+            .and_then(Value::as_str)
+            .is_some_and(|hash| !hash.trim().is_empty());
+        if hash_is_present {
+            continue;
+        }
+        let Some(hash) = canonical_mantle_transaction_hash(mantle_transaction) else {
+            continue;
+        };
+        let Some(mantle_transaction) = mantle_transaction.as_object_mut() else {
+            continue;
+        };
+        mantle_transaction.insert("hash".to_owned(), Value::String(hash));
+    }
+}
+
+fn canonical_mantle_transaction_hash(mantle_transaction: &Value) -> Option<String> {
+    let transaction = serde_json::from_value::<MantleTx>(mantle_transaction.clone()).ok()?;
+    let hash = transaction.hash();
+    Some(hex::encode(hash.0))
 }
 
 fn tip_parent_block_slot(block: &Value) -> Result<u64> {
@@ -596,6 +655,53 @@ mod tests {
                 .map(|index| json!({ "id": format!("transaction-{slot}-{index}") }))
                 .collect::<Vec<_>>(),
         })
+    }
+
+    fn unhashed_cli_mantle_transaction() -> Value {
+        json!({
+            "mantle_tx": {
+                "ops": [{
+                    "opcode": 17,
+                    "payload": {
+                        "channel_id": "01".repeat(32),
+                        "inscription": "00",
+                        "parent": "00".repeat(32),
+                        "signer": "00".repeat(32),
+                    }
+                }]
+            },
+            "ops_proofs": []
+        })
+    }
+
+    #[test]
+    fn cli_blocks_restore_missing_canonical_mantle_transaction_hashes() -> Result<()> {
+        let transaction = unhashed_cli_mantle_transaction();
+        let mantle = transaction
+            .get("mantle_tx")
+            .cloned()
+            .context("test transaction did not include mantle_tx")?;
+        let mantle_transaction = serde_json::from_value::<MantleTx>(mantle)
+            .context("test transaction did not deserialize as MantleTx")?;
+        let expected = hex::encode(mantle_transaction.hash().0);
+        let supplied_hash = "f".repeat(64);
+        let enriched = enrich_cli_mantle_transaction_hashes(json!([{
+            "header": { "slot": 42 },
+            "transactions": [
+                transaction,
+                { "mantle_tx": { "hash": supplied_hash, "ops": [] } }
+            ]
+        }]));
+
+        assert_eq!(
+            enriched.pointer("/0/transactions/0/mantle_tx/hash"),
+            Some(&json!(expected))
+        );
+        assert_eq!(
+            enriched.pointer("/0/transactions/1/mantle_tx/hash"),
+            Some(&json!(supplied_hash))
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -4756,6 +4756,7 @@ dependencies = [
  "k256",
  "lee",
  "lee_core",
+ "logos-blockchain-core",
  "logos-inspector-testnet-v02-helper-protocol",
  "nix",
  "redb",
