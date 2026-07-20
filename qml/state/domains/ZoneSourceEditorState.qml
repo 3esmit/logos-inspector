@@ -35,6 +35,7 @@ QtObject {
 
     signal sourceMutationFinished(var response)
     signal sourceMutationAccepted(var report)
+    signal managedIndexerLifecycleChanged()
 
     function resetSourceEditorState(preserveMutationWarning) {
         const retainedWarning = preserveMutationWarning === true
@@ -222,6 +223,7 @@ QtObject {
             } else {
                 managedIndexerError = ""
                 managedIndexerResult = detail.length ? detail : status
+                managedIndexerLifecycleChanged()
             }
             if (callback) {
                 callback(response)

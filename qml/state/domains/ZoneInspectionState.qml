@@ -126,6 +126,8 @@ QtObject {
         onSourceMutationAccepted: function (report) {
             root.acceptSourceMutationReport(report)
         }
+
+        onManagedIndexerLifecycleChanged: root.refreshManagedIndexerSource()
     }
 
     signal statusRefreshRequested()
@@ -796,6 +798,42 @@ QtObject {
             fetchActiveZoneDetail()
         }
         return false
+    }
+
+    function refreshManagedIndexerSource() {
+        if (!activeZoneContext || verification !== "verified"
+                || !networkScope || activeZoneId.length === 0) {
+            return null
+        }
+        const sourceId = String(activeZoneContext.indexer_source_id || "").trim()
+        const configRevision = numericRevision(activeZoneContext.source_config_revision)
+        const catalogSourceRevision = numericRevision(sourceRevision)
+        if (sourceId.length === 0 || configRevision <= 0 || catalogSourceRevision <= 0) {
+            return null
+        }
+        const generation = sourceGeneration
+        const scope = networkScopeKey
+        const channelId = activeZoneId
+        return dispatch("channelIndexerSourceRefresh", {
+            source_revision: catalogSourceRevision,
+            network_scope: networkScope,
+            channel_id: channelId,
+            source_config_revision: configRevision,
+            source_id: sourceId
+        }, function (response) {
+            if (!validReportResponse(response, "zones.channel_indexer_source_refresh")) {
+                return
+            }
+            const report = response.value
+            if (generation !== sourceGeneration || scope !== networkScopeKey
+                    || !activeZoneContext || channelId !== activeZoneId
+                    || numericRevision(report.source_revision) !== sourceRevision
+                    || numericRevision(report.source_config_revision) !== configRevision
+                    || String(report.source_id || "") !== sourceId) {
+                return
+            }
+            statusRefreshRequested()
+        })
     }
 
     function fetchActiveZoneDetail() {

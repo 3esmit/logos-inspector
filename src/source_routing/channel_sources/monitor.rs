@@ -276,6 +276,33 @@ impl ChannelSourceMonitor {
         })?
     }
 
+    pub(crate) async fn refresh_source(
+        &self,
+        network_scope: NetworkScope,
+        channel_id: String,
+        source_config_revision: u64,
+        source_id: String,
+    ) -> ChannelSourceMonitorResult<u64> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(MonitorCommand::RefreshSource {
+                network_scope,
+                channel_id,
+                source_config_revision,
+                source_id,
+                response,
+            })
+            .await
+            .map_err(|_| {
+                ChannelSourceMonitorError::InvalidState("monitor controller is stopped".to_owned())
+            })?;
+        result.await.map_err(|_| {
+            ChannelSourceMonitorError::InvalidState(
+                "monitor controller dropped its refresh response".to_owned(),
+            )
+        })?
+    }
+
     pub async fn shutdown(&self) -> ChannelSourceMonitorResult<()> {
         let controller = {
             let mut controller = self.controller.lock().map_err(|_| {
@@ -323,6 +350,13 @@ enum MonitorCommand {
         configs: Vec<ChannelSourceConfig>,
         response: oneshot::Sender<ChannelSourceMonitorResult<u64>>,
     },
+    RefreshSource {
+        network_scope: NetworkScope,
+        channel_id: String,
+        source_config_revision: u64,
+        source_id: String,
+        response: oneshot::Sender<ChannelSourceMonitorResult<u64>>,
+    },
     Shutdown {
         response: oneshot::Sender<ChannelSourceMonitorResult<()>>,
     },
@@ -353,6 +387,7 @@ struct SourceRuntime {
     pending_samples: BTreeSet<u64>,
     consecutive_failures: u32,
     next_probe_at_millis: u64,
+    refresh_requested: bool,
     in_flight: bool,
 }
 
@@ -439,6 +474,23 @@ async fn run_monitor_controller(
                             network_scope,
                             catalog_verified,
                             configs,
+                        );
+                        drop(response.send(result));
+                    }
+                    Some(MonitorCommand::RefreshSource {
+                        network_scope,
+                        channel_id,
+                        source_config_revision,
+                        source_id,
+                        response,
+                    }) => {
+                        let result = refresh_source(
+                            &mut state,
+                            clock.monotonic_millis(),
+                            network_scope,
+                            channel_id,
+                            source_config_revision,
+                            source_id,
                         );
                         drop(response.send(result));
                     }
@@ -547,6 +599,41 @@ fn configure_monitor(
 
     if changed {
         publish_state(state, reports);
+    }
+    Ok(state.observation_revision)
+}
+
+fn refresh_source(
+    state: &mut MonitorState,
+    now_millis: u64,
+    network_scope: NetworkScope,
+    channel_id: String,
+    source_config_revision: u64,
+    source_id: String,
+) -> ChannelSourceMonitorResult<u64> {
+    if state.network_scope.as_ref() != Some(&network_scope) || !state.catalog_verified {
+        return Err(ChannelSourceMonitorError::InvalidState(
+            "Channel source monitor has no matching verified catalog".to_owned(),
+        ));
+    }
+    let channel = state.channels.get_mut(&channel_id).ok_or_else(|| {
+        ChannelSourceMonitorError::InvalidState(
+            "Channel source monitor has no configuration for this Channel".to_owned(),
+        )
+    })?;
+    if channel.config.config_revision != source_config_revision {
+        return Err(ChannelSourceMonitorError::InvalidState(
+            "Channel source configuration changed before the refresh could run".to_owned(),
+        ));
+    }
+    let source = channel.sources.get_mut(&source_id).ok_or_else(|| {
+        ChannelSourceMonitorError::InvalidState(
+            "Channel source monitor has no configuration for this source".to_owned(),
+        )
+    })?;
+    source.refresh_requested = true;
+    if !source.in_flight {
+        source.next_probe_at_millis = now_millis;
     }
     Ok(state.observation_revision)
 }
@@ -696,6 +783,7 @@ impl SourceRuntime {
             pending_samples: BTreeSet::new(),
             consecutive_failures: 0,
             next_probe_at_millis: now_millis,
+            refresh_requested: false,
             in_flight: false,
         }
     }
@@ -783,6 +871,25 @@ fn launch_ready_jobs(
 
 fn take_ready_job(state: &mut MonitorState, now_millis: u64) -> Option<ProbeJob> {
     let network_scope = state.network_scope.clone()?;
+    for channel in state.channels.values_mut() {
+        let channel_id = channel.config.channel_id.clone();
+        let config_revision = channel.config.config_revision;
+        let cancellation = channel.cancellation.clone();
+        for source in channel.sources.values_mut() {
+            if !source.in_flight && source.refresh_requested {
+                source.refresh_requested = false;
+                source.in_flight = true;
+                return Some(probe_job(
+                    &network_scope,
+                    &channel_id,
+                    config_revision,
+                    cancellation,
+                    source,
+                    ProbeJobKind::Regular,
+                ));
+            }
+        }
+    }
     for channel in state.channels.values_mut() {
         let channel_id = channel.config.channel_id.clone();
         let config_revision = channel.config.config_revision;
@@ -1302,10 +1409,10 @@ fn next_probe_deadline(state: &MonitorState, active_tasks: usize) -> Option<u64>
         .flat_map(|channel| channel.sources.values())
         .filter(|source| !source.in_flight)
         .map(|source| {
-            if source.pending_samples.is_empty() {
-                source.next_probe_at_millis
-            } else {
+            if source.refresh_requested || !source.pending_samples.is_empty() {
                 0
+            } else {
+                source.next_probe_at_millis
             }
         })
         .min()
