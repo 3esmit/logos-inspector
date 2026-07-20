@@ -58,10 +58,14 @@ Panel {
                         detail: String(modelData.detail || "")
                         checked: root.mode === "dashboard"
                             ? root.modelRef.metrics.dashboardGraphEnabled(fieldKey)
+                            : root.mode === "navigation"
+                                ? root.modelRef.zoneMenuEnabled(fieldKey)
                             : root.modelRef.metrics.footerFieldEnabled(fieldKey)
                         onToggled: {
                             if (root.mode === "dashboard") {
                                 root.modelRef.metrics.setDashboardGraphEnabled(fieldKey, checked)
+                            } else if (root.mode === "navigation") {
+                                root.modelRef.setZoneMenuEnabled(fieldKey, checked)
                             } else {
                                 root.modelRef.metrics.setFooterFieldEnabled(fieldKey, checked)
                             }

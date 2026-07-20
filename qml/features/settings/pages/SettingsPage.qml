@@ -48,6 +48,7 @@ ColumnLayout {
 
         ListElement { value: "footer"; label: "Footer" }
         ListElement { value: "dashboard"; label: "Dashboard" }
+        ListElement { value: "navigation"; label: "Navigation" }
     }
 
     ListModel {
@@ -1211,6 +1212,19 @@ ColumnLayout {
         }
     }
 
+    Component {
+        id: zoneNavigationSettings
+
+        FieldSelector {
+            theme: settingsRoot.theme
+            title: qsTr("Zones menu")
+            description: qsTr("Choose which verified configured Zone dashboards appear in the Zones menu. Zone Catalog is always available.")
+            groups: settingsRoot.zoneMenuGroups()
+            mode: "navigation"
+            modelRef: settingsRoot.model
+        }
+    }
+
     function sectionComponent(section) {
         switch (section) {
         case "network":
@@ -1236,7 +1250,14 @@ ColumnLayout {
     }
 
     function uiComponent(section) {
-        return section === "dashboard" ? dashboardSettings : footerSettings
+        switch (section) {
+        case "dashboard":
+            return dashboardSettings
+        case "navigation":
+            return zoneNavigationSettings
+        default:
+            return footerSettings
+        }
     }
 
     function connectionStatus(kind) { return SettingsProfileWorkspace.connectionStatus(settingsRoot, kind) }
@@ -1292,5 +1313,6 @@ ColumnLayout {
     function shortEndpoint(value) { return SettingsProfileWorkspace.shortEndpoint(value) }
     function footerFieldGroups() { return SettingsProfileWorkspace.footerFieldGroups(settingsRoot) }
     function dashboardGraphGroups() { return SettingsProfileWorkspace.dashboardGraphGroups() }
+    function zoneMenuGroups() { return settingsRoot.model.zoneMenuGroups() }
 
 }

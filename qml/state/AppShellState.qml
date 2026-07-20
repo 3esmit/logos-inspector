@@ -17,6 +17,8 @@ QtObject {
     property int resultGeneration: 0
     property var navExpanded: ({ l1: true, zones: true, network: true, diagnostics: false, local: true, system: true })
     property int navRevision: 0
+    property var zoneMenuSelections: ({})
+    property int zoneMenuRevision: 0
     property var navigationBackStack: []
     property var navigationForwardStack: []
     property int navigationRevision: 0
@@ -38,6 +40,9 @@ QtObject {
     function navTokenForView(view) { return AppModelCore.navTokenForView(model, view) }
     function navItemForQuery(query) { return AppModelCore.navItemForQuery(model, query) }
     function navItemMatches(item, normalized) { return AppModelCore.navItemMatches(model, item, normalized) }
+    function zoneMenuEnabled(key) { return AppModelCore.zoneMenuEnabled(model, key) }
+    function setZoneMenuEnabled(key, enabled) { return AppModelCore.setZoneMenuEnabled(model, key, enabled) }
+    function zoneMenuGroups() { return AppModelCore.zoneMenuGroups(model) }
     function viewTitle() { return AppModelCore.viewTitle(model) }
     function normalizedNavigationView(view) { return AppModelCore.normalizedNavigationView(model, view) }
     function navigationSnapshot() { return AppModelCore.navigationSnapshot(model) }

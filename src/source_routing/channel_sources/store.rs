@@ -916,6 +916,7 @@ impl Default for SettingsDocument {
             "favorites": [],
             "footer_fields": {},
             "dashboard_graphs": {},
+            "zone_navigation": {},
             "testnet_default_scopes": []
         })
         .as_object()
@@ -1452,6 +1453,7 @@ mod tests {
         let restored = store.restore_defaults()?;
         if restored.get("network_profile").and_then(Value::as_str) != Some("default")
             || restored.get("local_nodes_enabled").and_then(Value::as_bool) != Some(true)
+            || restored["zone_navigation"] != json!({})
             || fs::read(&wallet_path)? != wallet
             || fs::read(&idl_path)? != idls
         {

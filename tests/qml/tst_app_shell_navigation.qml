@@ -404,7 +404,14 @@ TestCase {
         model.zoneInspection.activeZoneContext = null
         model.shell.navExpanded = ({ l1: true, zones: true, network: true,
             diagnostics: false, local: true, system: true })
+        model.zoneMenuSelections = ({})
         model.shell.selectView("overview")
+
+        verify(findChild(shell, "navButton_zone_" + channelId) === null)
+        const groups = model.zoneMenuGroups()
+        compare(groups.length, 1)
+        compare(groups[0].fields.length, 1)
+        verify(model.setZoneMenuEnabled(String(groups[0].fields[0].key || ""), true))
 
         let button = null
         tryVerify(function () {
