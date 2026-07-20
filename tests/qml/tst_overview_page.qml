@@ -177,8 +177,8 @@ TestCase {
         verify(row !== null)
         compare(row.cells[0].text, "Devnet Settlement / 11111111...111111")
         compare(row.cells[1].text, "Active")
-        compare(row.cells[2].text, "Reachable")
-        compare(row.cells[3].text, "Reachable")
+        compare(row.cells[2].text, "Ready")
+        compare(row.cells[3].text, "Ready")
         compare(row.cells[4].text, "Safe")
 
         model.dashboardLezBlockRows = [{
@@ -208,9 +208,9 @@ TestCase {
         verify(row !== null)
         compare(row.cells.length, 5)
         compare(row.cells[1].text, "Unknown")
-        compare(row.cells[2].text, "Reachable")
+        compare(row.cells[2].text, "Ready")
         compare(row.cells[2].tone, "success")
-        compare(row.cells[3].text, "Unreachable")
+        compare(row.cells[3].text, "Offline")
         compare(row.cells[3].tone, "error")
         compare(row.cells[4].text, "Safe")
 
