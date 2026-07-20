@@ -170,10 +170,19 @@ impl<'a> IndexerAdapter<'a> {
 
     pub(crate) async fn health(&self) -> ExecutionZoneReadResult<Option<String>> {
         match self {
-            Self::Rpc { endpoint } => crate::lez::indexer_health(endpoint)
-                .await
-                .map(|_| None)
-                .map_err(map_read_error),
+            Self::Rpc { endpoint } => {
+                let (health, runtime_status) = tokio::join!(
+                    crate::lez::indexer_health(endpoint),
+                    crate::lez::indexer_runtime_status(endpoint),
+                );
+                health.map_err(map_read_error)?;
+                // `getStatus` is supplementary: older compatible Indexer RPCs
+                // expose only `checkHealth`, which remains sufficient for reachability.
+                Ok(runtime_status
+                    .ok()
+                    .flatten()
+                    .map(|status| normalized_runtime_state(&status.state)))
+            }
             Self::Module {
                 transport,
                 transport_kind,

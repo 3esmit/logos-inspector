@@ -151,3 +151,56 @@ pub async fn indexer_health(endpoint: &str) -> Result<Value> {
         .await
         .context("failed to check indexer health")
 }
+
+pub(crate) async fn indexer_runtime_status(endpoint: &str) -> Result<Option<IndexerStatusReport>> {
+    let response = raw_json_rpc(endpoint, "getStatus", Value::Array(vec![]))
+        .await
+        .context("failed to fetch indexer runtime status")?;
+    Ok(indexer_runtime_status_response(&response))
+}
+
+fn indexer_runtime_status_response(response: &Value) -> Option<IndexerStatusReport> {
+    (!json_rpc_method_is_unavailable(response)).then(|| summarize_indexer_status_response(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use serde_json::json;
+
+    use super::indexer_runtime_status_response;
+
+    #[test]
+    fn runtime_status_response_preserves_caught_up_state() -> Result<()> {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "state": "CaughtUp",
+                "indexed_block_id": 28632,
+                "last_error": null
+            }
+        });
+        let Some(status) = indexer_runtime_status_response(&response) else {
+            anyhow::bail!("getStatus response was unexpectedly treated as unsupported");
+        };
+
+        anyhow::ensure!(status.state == "CaughtUp");
+        anyhow::ensure!(status.indexed_block_id.as_deref() == Some("28632"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_status_response_keeps_legacy_rpc_compatible() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32601,
+                "message": "Method not found"
+            }
+        });
+
+        assert!(indexer_runtime_status_response(&response).is_none());
+    }
+}
