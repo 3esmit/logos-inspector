@@ -200,6 +200,13 @@ QtObject {
         }
     }
 
+    function sourceDescriptorError(value) {
+        if (!value || typeof value !== "object" || String(value.kind || "") !== "unavailable") {
+            return ""
+        }
+        return String(value.reason || "").trim()
+    }
+
     function sourceKey(value) {
         return value ? String(value.kind || "") + "\n" + String(value.endpoint || "")
             + "\n" + String(value.default_topology || "") : ""
@@ -208,7 +215,9 @@ QtObject {
     function syncCatalogSource() {
         const nextSource = normalizedSource(sourceDescriptor)
         const nextKey = sourceKey(nextSource)
+        const nextError = sourceDescriptorError(sourceDescriptor)
         if (nextKey === desiredSourceKey) {
+            configureError = nextError
             if (started && nextSource && !catalogConfigured && !configureInFlight) {
                 beginConfigure()
             }
@@ -220,7 +229,7 @@ QtObject {
         sourceGeneration += 1
         catalogConfigured = false
         sourceRevision = 0
-        configureError = ""
+        configureError = nextError
         invalidateCatalogState(true)
         if (started && nextSource) {
             beginConfigure()

@@ -1007,6 +1007,27 @@ TestCase {
         verify(!zoneState.statusPollingEnabled)
     }
 
+    function test_unavailable_l1_source_explains_why_without_configuring() {
+        const reason = "Zone Catalog requires a Direct RPC Bedrock source."
+        zoneState.sourceDescriptor = {
+            kind: "unavailable",
+            reason: reason
+        }
+        zoneState.start()
+
+        compare(gateway.requests.length, 0)
+        compare(zoneState.configureError, reason)
+        verify(!zoneState.catalogConfigured)
+        verify(!zoneState.statusPollingEnabled)
+
+        zoneState.sourceDescriptor = {
+            kind: "direct_http",
+            endpoint: "https://l1.example"
+        }
+        compare(zoneState.configureError, "")
+        compare(gateway.requestCount("zoneCatalogConfigure"), 1)
+    }
+
     function test_testnet_default_topology_is_explicit_in_catalog_configuration() {
         zoneState.sourceDescriptor = {
             kind: "direct_http",

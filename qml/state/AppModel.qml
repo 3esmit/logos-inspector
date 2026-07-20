@@ -1267,15 +1267,18 @@ QtObject {
             }
             return descriptor
         }
-        const localEndpoint = String(nodeUrl || "").trim()
-        if (localNodesEnabled && networkProfile === "default" && localEndpoint.length > 0) {
+        const sourceLabel = String(source && source.label || qsTr("selected Bedrock source"))
+        if (source && String(source.effectiveMode || "") !== "rpc") {
             return {
-                kind: "direct_http",
-                endpoint: localEndpoint,
-                default_topology: "logos_testnet"
+                kind: "unavailable",
+                reason: qsTr("Zone Catalog requires a Direct RPC Bedrock source. %1 does not expose the finalized range and time data required to verify Zones.")
+                    .arg(sourceLabel)
             }
         }
-        return null
+        return {
+            kind: "unavailable",
+            reason: qsTr("Zone Catalog requires a Direct RPC Bedrock endpoint. Configure one in Network settings.")
+        }
     }
 
     function startBlockchainOperation(callerKey, method, args, label, callback) {
