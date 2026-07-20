@@ -129,6 +129,8 @@ TestCase {
         model.navigationForwardStack = []
         model.navigationRevision = 0
         model.navigationRestoring = false
+        model.zoneMenuSelections = ({})
+        model.zoneMenuRevision = 0
         model.favoriteStore.clear()
         resetFavoriteZoneNavigationState()
         model.programExecution.dismissIdlInstructionReceipt()
@@ -2577,6 +2579,39 @@ TestCase {
         compare(fakeHost.lastMethod, "saveSettingsState")
         compare(fakeHost.lastArgs[0].storage_refresh_rate, 33)
         verify(fakeHost.lastArgs[0].footer_fields["overall.status"])
+    }
+
+    function test_zone_menu_preferences_round_trip_settings_state() {
+        const key = "zone:genesis_id:" + "11".repeat(32) + ":" + "22".repeat(32)
+        const revision = model.zoneMenuRevision
+        const selections = {}
+        selections[key] = true
+        selections["zone:malformed"] = true
+        selections.ignored = true
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    zone_navigation: selections
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        verify(model.zoneMenuEnabled(key))
+        compare(model.zoneMenuRevision, revision + 1)
+        const payload = model.settingsStatePayload()
+        verify(payload.zone_navigation[key])
+        verify(payload.zone_navigation["zone:malformed"] === undefined)
+        verify(payload.zone_navigation.ignored === undefined)
+
+        fakeHost.calls = []
+        verify(model.setZoneMenuEnabled(key, false))
+        compare(fakeHost.lastMethod, "saveSettingsState")
+        verify(!fakeHost.lastArgs[0].zone_navigation[key])
     }
 
     function test_storage_path_privacy_setting_ignores_legacy_configured_path() {

@@ -864,6 +864,8 @@ QtObject {
     property alias accountAutoDecodeSerial: programDecodeState.accountAutoDecodeSerial
     property alias navExpanded: appShellState.navExpanded
     property alias navRevision: appShellState.navRevision
+    property alias zoneMenuSelections: appShellState.zoneMenuSelections
+    property alias zoneMenuRevision: appShellState.zoneMenuRevision
     property alias navigationBackStack: appShellState.navigationBackStack
     property alias navigationForwardStack: appShellState.navigationForwardStack
     property alias navigationRevision: appShellState.navigationRevision
@@ -1062,6 +1064,10 @@ QtObject {
         function onCurrentViewChanged() {
             root.expandNavGroupForView(appShellState.currentView)
         }
+
+        function onZoneMenuRevisionChanged() {
+            root.saveSettingsState()
+        }
     }
 
     property Connections socialSettingsConnections: Connections {
@@ -1157,6 +1163,14 @@ QtObject {
     function navItemForQuery(query) { return appShellState.navItemForQuery(query) }
 
     function navItemMatches(item, normalized) { return appShellState.navItemMatches(item, normalized) }
+
+    function zoneMenuEnabled(key) { return appShellState.zoneMenuEnabled(key) }
+
+    function setZoneMenuEnabled(key, enabled) {
+        return appShellState.setZoneMenuEnabled(key, enabled)
+    }
+
+    function zoneMenuGroups() { return appShellState.zoneMenuGroups() }
 
     function viewTitle() { return appShellState.viewTitle() }
 

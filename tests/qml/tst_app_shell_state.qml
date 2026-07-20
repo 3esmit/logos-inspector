@@ -41,6 +41,8 @@ TestCase {
         model.shell.settingsNetworkSection = "blockchain"
         model.shell.settingsUiSection = "footer"
         model.shell.navExpanded = ({ l1: true, zones: true, network: true, diagnostics: false, local: true, system: true })
+        model.shell.zoneMenuSelections = ({})
+        model.shell.zoneMenuRevision = 0
         model.deliveryDiagnosticsTab = "overview"
         model.zoneInspection.verification = "empty"
         model.zoneInspection.networkScopeKey = ""
@@ -120,6 +122,17 @@ TestCase {
         model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
         wait(0)
 
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.view || "") === "sequencerDashboard"
+        }))
+        const groups = model.zoneMenuGroups()
+        compare(groups.length, 1)
+        compare(groups[0].fields.length, 1)
+        const menuKey = String(groups[0].fields[0].key || "")
+        verify(menuKey.length > 0)
+        verify(!model.zoneMenuEnabled(menuKey))
+        verify(model.setZoneMenuEnabled(menuKey, true))
+
         const rows = model.shell.navRows()
         const sequencer = rows.filter(function (row) {
             return String(row.view || "") === "sequencerDashboard"
@@ -146,6 +159,11 @@ TestCase {
         const snapshot = model.shell.navigationSnapshot()
         verify(snapshot.values.inspectionEntityRef !== null)
         compare(snapshot.values.inspectionEntityRef.canonical_key, "account-a")
+
+        verify(model.setZoneMenuEnabled(menuKey, false))
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.view || "") === "sequencerDashboard"
+        }))
     }
 
     function test_zones_group_hides_unverified_configured_dashboards() {
@@ -157,6 +175,34 @@ TestCase {
 
         verify(!model.shell.navRows().some(function (row) {
             return String(row.view || "") === "sequencerDashboard"
+        }))
+    }
+
+    function test_zones_menu_selection_is_scoped_to_the_verified_network() {
+        const channelId = "22".repeat(32)
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.networkScopeKey = "genesis_id:" + "11".repeat(32)
+        model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
+        wait(0)
+
+        const firstGroups = model.zoneMenuGroups()
+        compare(firstGroups.length, 1)
+        const firstKey = String(firstGroups[0].fields[0].key || "")
+        verify(model.setZoneMenuEnabled(firstKey, true))
+        verify(model.shell.navRows().some(function (row) {
+            return String(row.channelId || "") === channelId
+        }))
+
+        model.zoneInspection.networkScopeKey = "genesis_id:" + "33".repeat(32)
+        wait(0)
+
+        const secondGroups = model.zoneMenuGroups()
+        compare(secondGroups.length, 1)
+        const secondKey = String(secondGroups[0].fields[0].key || "")
+        verify(secondKey !== firstKey)
+        verify(!model.zoneMenuEnabled(secondKey))
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.channelId || "") === channelId
         }))
     }
 

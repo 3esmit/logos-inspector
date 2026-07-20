@@ -71,6 +71,9 @@ function applySettingsState(root, value) {
                 root.metrics.defaultDashboardGraphSelections(), value.dashboard_graphs)
             root.metrics.dashboardGraphRevision += 1
         }
+        root.zoneMenuSelections = normalizedZoneMenuSelections(value.zone_navigation)
+        root.zoneMenuRevision += 1
+        root.navRevision += 1
         root.social.loadSettings(value)
         root.favoriteStore.load(value.favorites)
         settingsStateLoaded = true
@@ -107,9 +110,25 @@ function settingsStatePayload(root) {
             storage_refresh_rate: root.metrics.canonicalRefreshRate(root.metrics.storageRefreshRate),
             footer_fields: root.metrics.footerFieldSelections || {},
             dashboard_graphs: root.metrics.dashboardGraphSelections || {},
+            zone_navigation: root.zoneMenuSelections || {},
             favorites: root.favoriteStore.payload()
         }, social)
     }
+}
+
+function normalizedZoneMenuSelections(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value)
+        ? value : ({})
+    const normalized = {}
+    for (const key in source) {
+        const selectionKey = String(key || "")
+        if (/^zone:.+:[0-9a-f]{64}$/.test(selectionKey)
+                && selectionKey.length <= 1024
+                && (source[key] === true || source[key] === false)) {
+            normalized[selectionKey] = source[key] === true
+        }
+    }
+    return normalized
 }
 
 function saveSelectedBackupContents(root, selectedContents) {

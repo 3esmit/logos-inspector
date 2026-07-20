@@ -170,6 +170,32 @@ function navItemMatches(root, item, normalized) {
     return PageRegistry.navItemMatches(item, normalized)
 }
 
+function zoneMenuEnabled(root, key) {
+    const revision = root.shell.zoneMenuRevision
+    return root.shell.zoneMenuSelections[String(key || "")] === true
+}
+
+function setZoneMenuEnabled(root, key, enabled) {
+    const selectionKey = String(key || "")
+    if (!/^zone:.+:[0-9a-f]{64}$/.test(selectionKey)) {
+        return false
+    }
+    const selected = enabled === true
+    if (root.shell.zoneMenuSelections[selectionKey] === selected) {
+        return false
+    }
+    const next = root.copyMap(root.shell.zoneMenuSelections)
+    next[selectionKey] = selected
+    root.shell.zoneMenuSelections = next
+    root.shell.zoneMenuRevision += 1
+    root.shell.navRevision += 1
+    return true
+}
+
+function zoneMenuGroups(root) {
+    return PageRegistry.zoneMenuSelectorGroups(root)
+}
+
 function viewTitle(root) {
     return PageRegistry.viewTitle(root)
 }

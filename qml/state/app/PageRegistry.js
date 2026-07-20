@@ -80,13 +80,18 @@ function navTreeItems(root) {
 }
 
 function configuredZoneNavigationItems(root) {
+    return configuredZoneMenuCandidates(root).filter(function (item) {
+        return root.zoneMenuEnabled(String(item.menuKey || ""))
+    })
+}
+
+function configuredZoneMenuCandidates(root) {
     const state = root && root.zoneInspection ? root.zoneInspection : null
     if (!state || String(state.verification || "") !== "verified"
             || state.summaryStale === true) {
         return []
     }
-    const rows = state && Array.isArray(state.zoneSummaries)
-        ? state.zoneSummaries : []
+    const rows = Array.isArray(state.zoneSummaries) ? state.zoneSummaries : []
     const items = []
     const seen = {}
     for (let i = 0; i < rows.length; ++i) {
@@ -98,8 +103,9 @@ function configuredZoneNavigationItems(root) {
             || link.selected_sequencer_source_id || "")
         const indexerSourceId = String(fields.indexer_source_id
             || link.indexer_source_id || "")
+        const menuKey = configuredZoneMenuKey(state, channelId)
         if (String(zone.kind || "") !== "sequencer_zone" || !channelId.length
-                || seen[channelId]
+                || !menuKey.length || seen[channelId]
                 || (!sequencerSourceId.length && !indexerSourceId.length)) {
             continue
         }
@@ -109,6 +115,7 @@ function configuredZoneNavigationItems(root) {
             key: "zone." + channelId,
             view: sequencerSourceId.length > 0 ? "sequencerDashboard" : "zones",
             channelId: channelId,
+            menuKey: menuKey,
             label: label,
             token: "ZON",
             layer: "l2",
@@ -120,6 +127,40 @@ function configuredZoneNavigationItems(root) {
         return String(left.channelId || "").localeCompare(String(right.channelId || ""))
     })
     return items
+}
+
+function configuredZoneMenuKey(state, channelId) {
+    const scope = String(state && state.networkScopeKey || "")
+    const channel = String(channelId || "").toLowerCase()
+    return scope.length > 0 && /^[0-9a-f]{64}$/.test(channel)
+        ? "zone:" + scope + ":" + channel : ""
+}
+
+function zoneMenuSelectorGroups(root) {
+    const items = configuredZoneMenuCandidates(root)
+    if (!items.length) {
+        return []
+    }
+    return [{
+        title: qsTr("Configured Zones"),
+        fields: items.map(function (item) {
+            return {
+                key: String(item.menuKey || ""),
+                label: zoneMenuSelectorLabel(item),
+                detail: qsTr("Add this Zone dashboard to the navigation menu. Channel: %1")
+                    .arg(String(item.channelId || ""))
+            }
+        })
+    }]
+}
+
+function zoneMenuSelectorLabel(item) {
+    const label = String(item && item.label || "")
+    const channelId = String(item && item.channelId || "")
+    const shortId = channelId.length > 12
+        ? channelId.slice(0, 6) + "…" + channelId.slice(-6) : channelId
+    return label.length > 0 && shortId.length > 0 && label !== shortId
+        ? qsTr("%1 · %2").arg(label).arg(shortId) : label
 }
 
 function configuredZoneNavigationLabel(zone) {
