@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result};
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 
@@ -128,6 +128,7 @@ const MODULE_BEDROCK_CAPABILITIES: &[&str] = &[
     "l1.transactions.read",
     "l1.channels.read",
     "l1.wallet_balance.read",
+    "l1.live_blocks.observe",
 ];
 
 pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
@@ -276,15 +277,34 @@ pub(crate) async fn live_blocks(
     slot_from: u64,
     slot_to: u64,
     limit: u64,
-    _module_transport: &SharedModuleTransport,
+    module_transport: &SharedModuleTransport,
 ) -> Result<BlockchainLiveBlocksReport> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => {
             crate::blockchain::blockchain_live_blocks_snapshot(endpoint, slot_from, slot_to, limit)
                 .await
         }
-        BedrockAdapter::Module { .. } => {
-            bail!("module adapter does not support live-block observation")
+        BedrockAdapter::Module { transport } => {
+            let blocks = adapters::blockchain_recent_blocks(
+                module_transport,
+                transport,
+                slot_from,
+                slot_to,
+                limit,
+            )
+            .await?
+            .as_array()
+            .cloned()
+            .context("blockchain_module.get_blocks must return an array")?;
+            Ok(BlockchainLiveBlocksReport {
+                endpoint: BLOCKCHAIN_MODULE.to_owned(),
+                source: match transport {
+                    ModuleTransportKind::Module => "module_get_blocks".to_owned(),
+                    ModuleTransportKind::LogoscoreCli => "logoscore_cli_get_blocks".to_owned(),
+                },
+                blocks,
+                unknown_events: Vec::new(),
+            })
         }
     }
 }
@@ -399,7 +419,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::modules::logos_core::UnavailableModuleTransport;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport,
+    };
     use crate::source_routing::adapter::{
         ManagedNodeAction,
         contract_tests::{assert_layer_contract, assert_managed_module_contract},
@@ -439,31 +461,54 @@ mod tests {
         );
     }
 
+    struct LiveBlocksTransport {
+        kind: ModuleTransportKind,
+    }
+
+    impl ModuleTransport for LiveBlocksTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            self.kind
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let transport = call.transport();
+            Box::pin(async move {
+                anyhow::ensure!(
+                    call.module() == BLOCKCHAIN_MODULE
+                        && call.method() == "get_blocks"
+                        && call.args() == [json!(40_u64), json!(50_u64)],
+                    "live block snapshot used an unexpected module call: {call:?}"
+                );
+                Ok(ModuleCallReply::new(
+                    transport,
+                    json!([
+                        { "header": { "slot": 41, "id": "block-41" }, "transactions": [] },
+                        { "header": { "slot": 49, "id": "block-49" }, "transactions": [] }
+                    ]),
+                ))
+            })
+        }
+    }
+
     #[tokio::test]
-    async fn module_adapter_rejects_live_blocks_before_transport_dispatch() -> Result<()> {
-        let transport: SharedModuleTransport =
-            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
-
-        let result = live_blocks(
-            BedrockAdapter::module(ModuleTransportKind::Module),
-            0,
-            9_007_199_254_740_991,
-            5,
-            &transport,
-        )
-        .await;
-        let Err(error) = result else {
-            return Err(anyhow::anyhow!(
-                "module live blocks unexpectedly reached transport"
-            ));
-        };
-
-        anyhow::ensure!(
-            error
-                .to_string()
-                .contains("module adapter does not support live-block observation"),
-            "unexpected module adapter error: {error:#}"
-        );
+    async fn module_adapters_read_live_block_snapshots_through_get_blocks() -> Result<()> {
+        for (kind, expected_source) in [
+            (ModuleTransportKind::Module, "module_get_blocks"),
+            (
+                ModuleTransportKind::LogoscoreCli,
+                "logoscore_cli_get_blocks",
+            ),
+        ] {
+            let transport: SharedModuleTransport = Arc::new(LiveBlocksTransport { kind });
+            let report = live_blocks(BedrockAdapter::module(kind), 40, 50, 5, &transport).await?;
+            anyhow::ensure!(
+                report.endpoint == BLOCKCHAIN_MODULE
+                    && report.source == expected_source
+                    && report.blocks.len() == 2
+                    && report.unknown_events.is_empty(),
+                "unexpected module live block report: {report:?}"
+            );
+        }
         Ok(())
     }
 }

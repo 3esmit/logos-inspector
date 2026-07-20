@@ -269,6 +269,14 @@ QtObject {
             && String(source && source.target || "") === moduleName
     }
 
+    function acceptsTrustedLogoscoreCliBlockchainEvents() {
+        const source = coreSourceView("blockchain")
+        const moduleName = String(blockchainModule || "").trim()
+        return moduleName.length > 0
+            && String(source && source.resolvedMode || "") === "logoscore_cli"
+            && String(source && source.target || "") === moduleName
+    }
+
     function deliverySourceLabel() {
         return sourceLabel("delivery", connectorSourceMode("delivery", messagingSourceMode), qsTr("Direct Waku REST"))
     }

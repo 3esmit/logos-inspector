@@ -99,6 +99,7 @@ TestCase {
             }
         })
         verify(!state.acceptsUntaggedBlockchainModuleEvents())
+        verify(!state.acceptsTrustedLogoscoreCliBlockchainEvents())
 
         state.connectorConfig = ({
             scopes: {
@@ -109,6 +110,7 @@ TestCase {
             }
         })
         verify(state.acceptsUntaggedBlockchainModuleEvents())
+        verify(!state.acceptsTrustedLogoscoreCliBlockchainEvents())
 
         state.connectorConfig = ({
             scopes: {
@@ -119,6 +121,7 @@ TestCase {
             }
         })
         verify(!state.acceptsUntaggedBlockchainModuleEvents())
+        verify(state.acceptsTrustedLogoscoreCliBlockchainEvents())
     }
 
     function test_source_report_view_does_not_change_configured_connector() {

@@ -688,4 +688,45 @@ TestCase {
         compare(model.blockchainModuleEventRevision, 0)
         compare(model.blockchainLastEventText, "")
     }
+
+    function test_logoscore_cli_accepts_only_typed_blockchain_watch_event() {
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: {
+                    connector_id: "logoscore_cli_blockchain_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.blockchainSourceMode = "logoscore_cli"
+        wait(0)
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30-cli" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+
+        verify(!intake.ingest(model.blockchainModule, "newBlock", [{
+            source: "logoscore_cli_watch",
+            protocol: "logoscore.watch",
+            version: 2,
+            payload: { header: { slot: 31, id: "slot-31-wrong-version" }, transactions: [] }
+        }]))
+        compare(model.blocksPageRows.length, 1)
+        compare(model.blockchainModuleEventRevision, 0)
+
+        verify(intake.ingest(model.blockchainModule, "newBlock", [{
+            source: "logoscore_cli_watch",
+            protocol: "logoscore.watch",
+            version: 1,
+            timestamp: 1784558400000,
+            payload: { header: { slot: 31, id: "slot-31-cli-watch" }, transactions: [] }
+        }]))
+
+        compare(model.blocksPageRows.length, 2)
+        compare(model.blocksPageRows[0].header.id, "slot-31-cli-watch")
+        compare(model.blocksPageSlotTo, 31)
+        compare(model.blocksLiveSource, "logoscore_cli_watch")
+        verify(model.blockchainModuleEventRevision > 0)
+    }
 }

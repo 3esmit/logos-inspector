@@ -48,6 +48,11 @@ const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
 const DELIVERY_MODULE: &str = "delivery_module";
+const BLOCKCHAIN_MODULE: &str = "blockchain_module";
+const BLOCKCHAIN_NEW_BLOCK_EVENT: &str = "newBlock";
+const BLOCKCHAIN_EVENT_STREAM_SOURCE: &str = "logoscore_cli_watch";
+const BLOCKCHAIN_EVENT_STREAM_READY: &str = "eventStreamReady";
+const BLOCKCHAIN_EVENT_STREAM_UNAVAILABLE: &str = "eventStreamUnavailable";
 const DELIVERY_EVENT_STREAM_READY: &str = "eventStreamReady";
 const DELIVERY_EVENT_STREAM_UNAVAILABLE: &str = "eventStreamUnavailable";
 const DELIVERY_EVENT_STREAM_SOURCE: &str = "logoscore_cli_watch";
@@ -65,16 +70,18 @@ const STORAGE_LISTEN_PORT: u16 = 8091;
 const INDEXER_WATCHER_MODULE: &str = "lez_indexer_module";
 const SEQUENCER_WATCHER_MODULE: &str = "sequencer_service";
 
-/// Owns daemon/module polling, lifecycle transition synthesis, the persistent
-/// Delivery event stream, and bounded fanout behind start, subscribe, and stop.
+/// Owns daemon/module polling, lifecycle transition synthesis, persistent
+/// Delivery and Bedrock event streams, and bounded fanout behind start,
+/// subscribe, and stop.
 pub struct LocalNodeModuleWatcher {
     cancellation: CancellationToken,
     poll_worker: Option<thread::JoinHandle<()>>,
     delivery_worker: Option<thread::JoinHandle<()>>,
+    blockchain_worker: Option<thread::JoinHandle<()>>,
     subscribers: Arc<Mutex<SubscriberHub>>,
 }
 
-type SharedDeliveryWatchHealth = Arc<Mutex<DeliveryWatchHealthObservation>>;
+type SharedModuleWatchHealth = Arc<Mutex<ModuleWatchHealthObservation>>;
 
 /// Receives synthesized module events from a [`LocalNodeModuleWatcher`].
 pub struct LocalNodeModuleSubscription {
@@ -157,13 +164,17 @@ impl LocalNodeModuleWatcher {
     /// Starts polling before any module is available so later daemon changes are observed.
     pub fn start() -> Result<Self> {
         let cancellation = CancellationToken::new();
-        let delivery_watch_health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
-            DeliveryWatchHealth::Unknown,
+        let delivery_watch_health = Arc::new(Mutex::new(ModuleWatchHealthObservation::new(
+            ModuleWatchHealth::Unknown,
+        )));
+        let blockchain_watch_health = Arc::new(Mutex::new(ModuleWatchHealthObservation::new(
+            ModuleWatchHealth::Unknown,
         )));
         let worker_cancellation = cancellation.clone();
         let subscribers = Arc::new(Mutex::new(SubscriberHub::default()));
         let worker_subscribers = Arc::clone(&subscribers);
         let worker_delivery_watch_health = Arc::clone(&delivery_watch_health);
+        let worker_blockchain_watch_health = Arc::clone(&blockchain_watch_health);
         let worker = thread::Builder::new()
             .name("logoscore-module-poll-watcher".to_owned())
             .spawn(move || {
@@ -171,6 +182,7 @@ impl LocalNodeModuleWatcher {
                     worker_cancellation,
                     worker_subscribers,
                     worker_delivery_watch_health,
+                    worker_blockchain_watch_health,
                 );
             })
             .context("failed to start LogosCore module polling watcher")?;
@@ -199,10 +211,41 @@ impl LocalNodeModuleWatcher {
                 return Err(error);
             }
         };
+        let blockchain_cancellation = cancellation.clone();
+        let blockchain_subscribers = Arc::clone(&subscribers);
+        let blockchain_worker_health = Arc::clone(&blockchain_watch_health);
+        let blockchain_worker = match thread::Builder::new()
+            .name("logoscore-blockchain-event-watcher".to_owned())
+            .spawn(move || {
+                run_blockchain_event_watcher(
+                    blockchain_cancellation,
+                    blockchain_subscribers,
+                    blockchain_worker_health,
+                );
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                cancellation.cancel();
+                let delivery_cleanup = delivery_worker.join();
+                let poll_cleanup = worker.join();
+                let mut error = anyhow::Error::new(error)
+                    .context("failed to start LogosCore Bedrock event watcher");
+                if delivery_cleanup.is_err() {
+                    error =
+                        error.context("LogosCore Delivery event watcher panicked during cleanup");
+                }
+                if poll_cleanup.is_err() {
+                    error =
+                        error.context("LogosCore module polling watcher panicked during cleanup");
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
             cancellation,
             poll_worker: Some(worker),
             delivery_worker: Some(delivery_worker),
+            blockchain_worker: Some(blockchain_worker),
             subscribers,
         })
     }
@@ -216,7 +259,7 @@ impl LocalNodeModuleWatcher {
         subscribe_to_hub(&mut subscribers)
     }
 
-    /// Stops polling and event streaming, then waits for both workers to exit.
+    /// Stops polling and event streaming, then waits for every worker to exit.
     pub fn stop(&mut self) -> Result<()> {
         self.cancellation.cancel();
         let poll_result = self.poll_worker.take().map_or(Ok(()), |worker| {
@@ -229,6 +272,11 @@ impl LocalNodeModuleWatcher {
                 .join()
                 .map_err(|_| anyhow::anyhow!("LogosCore Delivery event watcher panicked"))
         });
+        let blockchain_result = self.blockchain_worker.take().map_or(Ok(()), |worker| {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("LogosCore Bedrock event watcher panicked"))
+        });
         let subscriber_result = self
             .subscribers
             .lock()
@@ -237,7 +285,10 @@ impl LocalNodeModuleWatcher {
                 subscribers.senders.clear();
                 subscribers.snapshot.clear();
             });
-        poll_result.and(delivery_result).and(subscriber_result)
+        poll_result
+            .and(delivery_result)
+            .and(blockchain_result)
+            .and(subscriber_result)
     }
 }
 
@@ -381,7 +432,8 @@ struct IndexerStatusObservation {
 fn run_module_watcher(
     cancellation: CancellationToken,
     subscribers: Arc<Mutex<SubscriberHub>>,
-    delivery_watch_health: SharedDeliveryWatchHealth,
+    delivery_watch_health: SharedModuleWatchHealth,
+    blockchain_watch_health: SharedModuleWatchHealth,
 ) {
     let mut observation = WatcherObservation::default();
     while !cancellation.is_cancelled() {
@@ -392,7 +444,8 @@ fn run_module_watcher(
         }
         let interval = match poll {
             Ok(poll) => {
-                record_delivery_watch_poll_health(&delivery_watch_health, &poll);
+                record_module_watch_poll_health(&delivery_watch_health, &poll, DELIVERY_MODULE);
+                record_module_watch_poll_health(&blockchain_watch_health, &poll, BLOCKCHAIN_MODULE);
                 let snapshot = snapshot_events(&poll);
                 let mut events = observation_events(&mut observation, &poll);
                 events.extend(poll.lifecycle_events.iter().cloned());
@@ -400,9 +453,14 @@ fn run_module_watcher(
                 poll.poll_interval
             }
             Err(_) => {
-                record_delivery_watch_health(
+                record_module_watch_health(
                     &delivery_watch_health,
-                    DeliveryWatchHealth::PollUnavailable,
+                    ModuleWatchHealth::PollUnavailable,
+                    Instant::now(),
+                );
+                record_module_watch_health(
+                    &blockchain_watch_health,
+                    ModuleWatchHealth::PollUnavailable,
                     Instant::now(),
                 );
                 DAEMON_RETRY_INTERVAL
@@ -421,7 +479,7 @@ enum DeliveryEventStreamState {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum DeliveryWatchHealth {
+enum ModuleWatchHealth {
     #[default]
     Unknown,
     Ready,
@@ -432,13 +490,13 @@ enum DeliveryWatchHealth {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DeliveryWatchHealthObservation {
-    health: DeliveryWatchHealth,
+struct ModuleWatchHealthObservation {
+    health: ModuleWatchHealth,
     observed_at: Instant,
 }
 
-impl DeliveryWatchHealthObservation {
-    fn new(health: DeliveryWatchHealth) -> Self {
+impl ModuleWatchHealthObservation {
+    fn new(health: ModuleWatchHealth) -> Self {
         Self {
             health,
             observed_at: Instant::now(),
@@ -446,62 +504,72 @@ impl DeliveryWatchHealthObservation {
     }
 }
 
-impl DeliveryWatchHealth {
-    fn from_poll(poll: &ModuleWatcherPoll) -> Self {
+impl ModuleWatchHealth {
+    fn from_poll(poll: &ModuleWatcherPoll, module: &str) -> Self {
         match poll.daemon {
             DaemonState::Stopped => Self::DaemonStopped,
             DaemonState::Unavailable => Self::DaemonUnavailable,
-            DaemonState::Running if !poll.loaded_modules.contains(DELIVERY_MODULE) => {
+            DaemonState::Running if !poll.loaded_modules.contains(module) => {
                 Self::ModuleUnavailable
             }
             DaemonState::Running => Self::Ready,
         }
     }
 
-    fn unavailable_reason(self) -> Option<&'static str> {
+    fn unavailable_reason(self, label: &str) -> Option<String> {
         match self {
             Self::Unknown | Self::Ready => None,
-            Self::DaemonStopped => Some("LogosCore daemon stopped during Delivery event watch"),
-            Self::DaemonUnavailable => {
-                Some("LogosCore daemon became unavailable during Delivery event watch")
+            Self::DaemonStopped => Some(format!(
+                "LogosCore daemon stopped during {label} event watch"
+            )),
+            Self::DaemonUnavailable => Some(format!(
+                "LogosCore daemon became unavailable during {label} event watch"
+            )),
+            Self::ModuleUnavailable => {
+                Some(format!("LogosCore {label} module is no longer loaded"))
             }
-            Self::ModuleUnavailable => Some("LogosCore Delivery module is no longer loaded"),
-            Self::PollUnavailable => Some("LogosCore module status polling became unavailable"),
+            Self::PollUnavailable => {
+                Some("LogosCore module status polling became unavailable".to_owned())
+            }
         }
     }
 }
 
-fn record_delivery_watch_poll_health(health: &SharedDeliveryWatchHealth, poll: &ModuleWatcherPoll) {
-    record_delivery_watch_health(
+fn record_module_watch_poll_health(
+    health: &SharedModuleWatchHealth,
+    poll: &ModuleWatcherPoll,
+    module: &str,
+) {
+    record_module_watch_health(
         health,
-        DeliveryWatchHealth::from_poll(poll),
+        ModuleWatchHealth::from_poll(poll, module),
         poll.status_observed_at,
     );
 }
 
-fn record_delivery_watch_health(
-    health: &SharedDeliveryWatchHealth,
-    next: DeliveryWatchHealth,
+fn record_module_watch_health(
+    health: &SharedModuleWatchHealth,
+    next: ModuleWatchHealth,
     observed_at: Instant,
 ) {
     if let Ok(mut current) = health.lock() {
-        *current = DeliveryWatchHealthObservation {
+        *current = ModuleWatchHealthObservation {
             health: next,
             observed_at,
         };
     }
 }
 
-fn ensure_delivery_watch_health(health: &SharedDeliveryWatchHealth) -> Result<()> {
+fn ensure_module_watch_health(health: &SharedModuleWatchHealth, label: &str) -> Result<()> {
     let current = *health
         .lock()
-        .map_err(|_| anyhow::anyhow!("LogosCore Delivery watch health is unavailable"))?;
-    if let Some(reason) = current.health.unavailable_reason() {
+        .map_err(|_| anyhow::anyhow!("LogosCore {label} watch health is unavailable"))?;
+    if let Some(reason) = current.health.unavailable_reason(label) {
         anyhow::bail!(reason);
     }
     anyhow::ensure!(
         current.observed_at.elapsed() <= DELIVERY_WATCH_HEALTH_MAX_AGE,
-        "LogosCore module status polling is stale"
+        "LogosCore module status polling is stale for {label} event watch"
     );
     Ok(())
 }
@@ -509,7 +577,7 @@ fn ensure_delivery_watch_health(health: &SharedDeliveryWatchHealth) -> Result<()
 fn run_delivery_event_watcher(
     cancellation: CancellationToken,
     subscribers: Arc<Mutex<SubscriberHub>>,
-    delivery_watch_health: SharedDeliveryWatchHealth,
+    delivery_watch_health: SharedModuleWatchHealth,
 ) {
     let mut state = DeliveryEventStreamState::Unknown;
     while !cancellation.is_cancelled() {
@@ -543,7 +611,7 @@ fn run_delivery_event_watcher(
 fn watch_delivery_events_once(
     cancellation: &CancellationToken,
     subscribers: &Arc<Mutex<SubscriberHub>>,
-    delivery_watch_health: &SharedDeliveryWatchHealth,
+    delivery_watch_health: &SharedModuleWatchHealth,
     state: &mut DeliveryEventStreamState,
 ) -> Result<()> {
     let runtime = ready_delivery_watch_runtime(cancellation)?;
@@ -560,7 +628,7 @@ fn watch_delivery_events_once(
         };
     }
     let stream_result = (|| {
-        ensure_delivery_watch_health(delivery_watch_health)?;
+        ensure_module_watch_health(delivery_watch_health, "Delivery")?;
         anyhow::ensure!(
             publish_delivery_stream_transition(
                 subscribers,
@@ -585,13 +653,13 @@ fn watch_delivery_events_once(
 fn read_delivery_events(
     cancellation: &CancellationToken,
     subscribers: &Arc<Mutex<SubscriberHub>>,
-    delivery_watch_health: &SharedDeliveryWatchHealth,
+    delivery_watch_health: &SharedModuleWatchHealth,
     runtime: &LogoscoreCliRuntime,
     watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
 ) -> Result<()> {
     let mut runtime_probe = Instant::now();
     while !cancellation.is_cancelled() {
-        ensure_delivery_watch_health(delivery_watch_health)?;
+        ensure_module_watch_health(delivery_watch_health, "Delivery")?;
         let control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
         if let Some(value) = watch.next_value_within(&control, DELIVERY_EVENT_READ_INTERVAL)? {
             let event = module_transport_event_from_watch_frame(&value, DELIVERY_MODULE)?;
@@ -603,7 +671,7 @@ fn read_delivery_events(
             }
         }
         if runtime_probe.elapsed() >= DAEMON_RETRY_INTERVAL {
-            let current = delivery_watch_runtime()?;
+            let current = module_watch_runtime()?;
             anyhow::ensure!(
                 current == *runtime,
                 "LogosCore Delivery event stream runtime changed"
@@ -614,8 +682,192 @@ fn read_delivery_events(
     Ok(())
 }
 
+fn run_blockchain_event_watcher(
+    cancellation: CancellationToken,
+    subscribers: Arc<Mutex<SubscriberHub>>,
+    blockchain_watch_health: SharedModuleWatchHealth,
+) {
+    let mut state = DeliveryEventStreamState::Unknown;
+    while !cancellation.is_cancelled() {
+        let result = watch_blockchain_events_once(
+            &cancellation,
+            &subscribers,
+            &blockchain_watch_health,
+            &mut state,
+        );
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let reason = result.err().map_or_else(
+            || "event stream ended".to_owned(),
+            |error| error.to_string(),
+        );
+        while !cancellation.is_cancelled()
+            && !publish_blockchain_stream_transition(
+                &subscribers,
+                &mut state,
+                DeliveryEventStreamState::Unavailable,
+                &reason,
+            )
+        {
+            wait_for_poll_interval(&cancellation, DELIVERY_EVENT_READ_INTERVAL);
+        }
+        wait_for_poll_interval(&cancellation, DAEMON_RETRY_INTERVAL);
+    }
+}
+
+fn watch_blockchain_events_once(
+    cancellation: &CancellationToken,
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    blockchain_watch_health: &SharedModuleWatchHealth,
+    state: &mut DeliveryEventStreamState,
+) -> Result<()> {
+    let runtime = ready_blockchain_watch_runtime(cancellation)?;
+    let startup_control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
+    let mut watch = runtime.start_event_watch(
+        BLOCKCHAIN_MODULE,
+        BLOCKCHAIN_NEW_BLOCK_EVENT,
+        &startup_control,
+    )?;
+    let ready_result = watch.wait_ready(&startup_control);
+    if let Err(error) = ready_result {
+        let cleanup_result = watch.stop();
+        return match cleanup_result {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(error.context(format!(
+                "failed to clean up rejected LogosCore Bedrock event watch: {cleanup:#}"
+            ))),
+        };
+    }
+    let stream_result = (|| {
+        ensure_module_watch_health(blockchain_watch_health, "Bedrock")?;
+        anyhow::ensure!(
+            publish_blockchain_stream_transition(
+                subscribers,
+                state,
+                DeliveryEventStreamState::Ready,
+                "subscription active",
+            ),
+            "Bedrock event stream readiness could not reach every subscriber"
+        );
+        read_blockchain_events(
+            cancellation,
+            subscribers,
+            blockchain_watch_health,
+            &runtime,
+            &mut watch,
+        )
+    })();
+    let cleanup_result = watch.stop();
+    stream_result.and(cleanup_result)
+}
+
+fn read_blockchain_events(
+    cancellation: &CancellationToken,
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    blockchain_watch_health: &SharedModuleWatchHealth,
+    runtime: &LogoscoreCliRuntime,
+    watch: &mut crate::modules::logos_core::LogoscoreEventWatch,
+) -> Result<()> {
+    let mut runtime_probe = Instant::now();
+    while !cancellation.is_cancelled() {
+        ensure_module_watch_health(blockchain_watch_health, "Bedrock")?;
+        let control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
+        if let Some(value) = watch.next_value_within(&control, DELIVERY_EVENT_READ_INTERVAL)? {
+            let event = module_transport_event_from_watch_frame(&value, BLOCKCHAIN_MODULE)?;
+            let event = trusted_blockchain_watch_event(event)?;
+            anyhow::ensure!(
+                publish_incremental_events(subscribers, vec![event]),
+                "Bedrock subscriber queue overflowed"
+            );
+        }
+        if runtime_probe.elapsed() >= DAEMON_RETRY_INTERVAL {
+            let current = module_watch_runtime()?;
+            anyhow::ensure!(
+                current == *runtime,
+                "LogosCore Bedrock event stream runtime changed"
+            );
+            runtime_probe = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+fn trusted_blockchain_watch_event(event: ModuleTransportEvent) -> Result<ModuleTransportEvent> {
+    anyhow::ensure!(
+        event.module() == BLOCKCHAIN_MODULE,
+        "typed Bedrock watch event used an unexpected module"
+    );
+    anyhow::ensure!(
+        event.event() == BLOCKCHAIN_NEW_BLOCK_EVENT,
+        "typed Bedrock watch event used an unexpected event"
+    );
+    let [payload] = event.args() else {
+        anyhow::bail!("typed Bedrock newBlock event must contain one payload");
+    };
+    ModuleTransportEvent::new(
+        BLOCKCHAIN_MODULE,
+        BLOCKCHAIN_NEW_BLOCK_EVENT,
+        vec![json!({
+            "source": BLOCKCHAIN_EVENT_STREAM_SOURCE,
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "payload": payload,
+            "timestamp": now_millis(),
+        })],
+    )
+}
+
+fn publish_blockchain_stream_transition(
+    subscribers: &Arc<Mutex<SubscriberHub>>,
+    state: &mut DeliveryEventStreamState,
+    next: DeliveryEventStreamState,
+    reason: &str,
+) -> bool {
+    if *state == next || next == DeliveryEventStreamState::Unknown {
+        return true;
+    }
+    let (event_name, status) = match next {
+        DeliveryEventStreamState::Ready => (BLOCKCHAIN_EVENT_STREAM_READY, "ready"),
+        DeliveryEventStreamState::Unavailable => {
+            (BLOCKCHAIN_EVENT_STREAM_UNAVAILABLE, "unavailable")
+        }
+        DeliveryEventStreamState::Unknown => return true,
+    };
+    let event = ModuleTransportEvent::new(
+        BLOCKCHAIN_MODULE,
+        event_name,
+        vec![json!({
+            "source": BLOCKCHAIN_EVENT_STREAM_SOURCE,
+            "status": status,
+            "reason": bounded_delivery_event_reason(reason),
+            "timestamp": now_millis(),
+        })],
+    );
+    if let Ok(event) = event {
+        let delivered = publish_incremental_events(subscribers, vec![event]);
+        if delivered {
+            *state = next;
+        }
+        return delivered;
+    }
+    false
+}
+
 fn ready_delivery_watch_runtime(cancellation: &CancellationToken) -> Result<LogoscoreCliRuntime> {
-    let runtime = delivery_watch_runtime()?;
+    ready_module_watch_runtime(cancellation, DELIVERY_MODULE, "Delivery")
+}
+
+fn ready_blockchain_watch_runtime(cancellation: &CancellationToken) -> Result<LogoscoreCliRuntime> {
+    ready_module_watch_runtime(cancellation, BLOCKCHAIN_MODULE, "Bedrock")
+}
+
+fn ready_module_watch_runtime(
+    cancellation: &CancellationToken,
+    module: &str,
+    label: &str,
+) -> Result<LogoscoreCliRuntime> {
+    let runtime = module_watch_runtime()?;
     let control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
     let status = runtime.status_controlled(control)?;
     anyhow::ensure!(
@@ -627,13 +879,13 @@ fn ready_delivery_watch_runtime(cancellation: &CancellationToken) -> Result<Logo
         "LogosCore daemon is not running"
     );
     anyhow::ensure!(
-        loaded_modules(&status.value).contains(DELIVERY_MODULE),
-        "LogosCore Delivery module is not loaded"
+        loaded_modules(&status.value).contains(module),
+        "LogosCore {label} module is not loaded"
     );
     Ok(runtime)
 }
 
-fn delivery_watch_runtime() -> Result<LogoscoreCliRuntime> {
+fn module_watch_runtime() -> Result<LogoscoreCliRuntime> {
     let engine = LocalNodeActionEngine::system()?;
     let profile = engine.runtime_profile()?;
     let managed = profile.as_ref().filter(|profile| profile.is_managed());
@@ -3185,8 +3437,8 @@ mod tests {
 
     #[test]
     fn delivery_stream_health_invalidates_ready_watch_after_module_loss() -> Result<()> {
-        let health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
-            DeliveryWatchHealth::Unknown,
+        let health = Arc::new(Mutex::new(ModuleWatchHealthObservation::new(
+            ModuleWatchHealth::Unknown,
         )));
         let ready = ModuleWatcherPoll {
             daemon: DaemonState::Running,
@@ -3195,8 +3447,8 @@ mod tests {
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_POLL_INTERVAL,
         };
-        record_delivery_watch_poll_health(&health, &ready);
-        ensure_delivery_watch_health(&health)?;
+        record_module_watch_poll_health(&health, &ready, DELIVERY_MODULE);
+        ensure_module_watch_health(&health, "Delivery")?;
 
         let module_lost = ModuleWatcherPoll {
             daemon: DaemonState::Running,
@@ -3205,9 +3457,9 @@ mod tests {
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_POLL_INTERVAL,
         };
-        record_delivery_watch_poll_health(&health, &module_lost);
+        record_module_watch_poll_health(&health, &module_lost, DELIVERY_MODULE);
 
-        let Err(error) = ensure_delivery_watch_health(&health) else {
+        let Err(error) = ensure_module_watch_health(&health, "Delivery") else {
             anyhow::bail!("module loss did not invalidate an idle Delivery watch");
         };
         anyhow::ensure!(error.to_string().contains("no longer loaded"));
@@ -3216,16 +3468,12 @@ mod tests {
 
     #[test]
     fn delivery_stream_health_invalidates_ready_watch_after_poll_failure() -> Result<()> {
-        let health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
-            DeliveryWatchHealth::Ready,
+        let health = Arc::new(Mutex::new(ModuleWatchHealthObservation::new(
+            ModuleWatchHealth::Ready,
         )));
-        record_delivery_watch_health(
-            &health,
-            DeliveryWatchHealth::PollUnavailable,
-            Instant::now(),
-        );
+        record_module_watch_health(&health, ModuleWatchHealth::PollUnavailable, Instant::now());
 
-        let Err(error) = ensure_delivery_watch_health(&health) else {
+        let Err(error) = ensure_module_watch_health(&health, "Delivery") else {
             anyhow::bail!("poll failure did not invalidate authoritative Delivery coverage");
         };
         anyhow::ensure!(error.to_string().contains("polling became unavailable"));
@@ -3247,15 +3495,51 @@ mod tests {
             lifecycle_events: Vec::new(),
             poll_interval: DAEMON_POLL_INTERVAL,
         };
-        let health = Arc::new(Mutex::new(DeliveryWatchHealthObservation::new(
-            DeliveryWatchHealth::Unknown,
+        let health = Arc::new(Mutex::new(ModuleWatchHealthObservation::new(
+            ModuleWatchHealth::Unknown,
         )));
-        record_delivery_watch_poll_health(&health, &stale_poll);
+        record_module_watch_poll_health(&health, &stale_poll, DELIVERY_MODULE);
 
-        let Err(error) = ensure_delivery_watch_health(&health) else {
+        let Err(error) = ensure_module_watch_health(&health, "Delivery") else {
             anyhow::bail!("stale poll health did not invalidate an idle Delivery watch");
         };
         anyhow::ensure!(error.to_string().contains("polling is stale"));
+        Ok(())
+    }
+
+    #[test]
+    fn typed_blockchain_watch_event_is_tagged_without_losing_the_block_payload() -> Result<()> {
+        let frame = json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-20T12:00:00Z",
+            "module": BLOCKCHAIN_MODULE,
+            "event": BLOCKCHAIN_NEW_BLOCK_EVENT,
+            "data": {
+                "arg0": "{\"header\":{\"slot\":42,\"id\":\"block-42\"},\"transactions\":[]}"
+            }
+        });
+
+        let typed = module_transport_event_from_watch_frame(&frame, BLOCKCHAIN_MODULE)?;
+        let tagged = trusted_blockchain_watch_event(typed)?;
+        let payload = tagged
+            .args()
+            .first()
+            .and_then(Value::as_object)
+            .context("tagged Bedrock event payload was not an object")?;
+
+        anyhow::ensure!(
+            payload.get("source").and_then(Value::as_str) == Some(BLOCKCHAIN_EVENT_STREAM_SOURCE)
+                && payload.get("protocol").and_then(Value::as_str) == Some("logoscore.watch")
+                && payload.get("version").and_then(Value::as_u64) == Some(1),
+            "typed Bedrock watch event lost its trusted provenance tag"
+        );
+        anyhow::ensure!(
+            payload.get("payload").and_then(Value::as_str)
+                == Some("{\"header\":{\"slot\":42,\"id\":\"block-42\"},\"transactions\":[]}"),
+            "typed Bedrock watch event lost its block payload"
+        );
         Ok(())
     }
 
