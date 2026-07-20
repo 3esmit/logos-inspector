@@ -73,7 +73,7 @@ pub(crate) async fn blockchain_blocks(
     slot_to: u64,
 ) -> Result<Value> {
     Ok(
-        blockchain_blocks_read(transport, transport_kind, slot_from, slot_to)
+        blockchain_blocks_read(transport, transport_kind, slot_from, slot_to, None)
             .await?
             .value,
     )
@@ -84,6 +84,7 @@ async fn blockchain_blocks_read(
     transport_kind: ModuleTransportKind,
     slot_from: u64,
     slot_to: u64,
+    tip_parent_limit: Option<usize>,
 ) -> Result<BlockchainBlocksRead> {
     crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
     let mut blocks = transport_call_value(
@@ -108,7 +109,7 @@ async fn blockchain_blocks_read(
     }
 
     Ok(BlockchainBlocksRead {
-        value: cli_tip_parent_blocks(transport, slot_from, slot_to).await?,
+        value: cli_tip_parent_blocks(transport, slot_from, slot_to, tip_parent_limit).await?,
         used_tip_parent_walk: true,
     })
 }
@@ -134,8 +135,18 @@ pub(crate) async fn blockchain_recent_blocks_read(
     slot_to: u64,
     limit: u64,
 ) -> Result<BlockchainBlocksRead> {
-    let mut blocks = blockchain_blocks_read(transport, transport_kind, slot_from, slot_to).await?;
-    blocks.value = sort_and_limit_blocks(blocks.value, limit.clamp(1, 500));
+    let limit = limit.clamp(1, CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64);
+    let tip_parent_limit =
+        usize::try_from(limit).context("recent block limit does not fit the current platform")?;
+    let mut blocks = blockchain_blocks_read(
+        transport,
+        transport_kind,
+        slot_from,
+        slot_to,
+        Some(tip_parent_limit),
+    )
+    .await?;
+    blocks.value = sort_and_limit_blocks(blocks.value, limit);
     Ok(blocks)
 }
 
@@ -404,6 +415,7 @@ async fn cli_tip_parent_blocks(
     transport: &SharedModuleTransport,
     slot_from: u64,
     slot_to: u64,
+    result_limit: Option<usize>,
 ) -> Result<Value> {
     let info = transport_call_value(
         transport,
@@ -443,6 +455,12 @@ async fn cli_tip_parent_blocks(
         let parent = tip_parent_id(&block)?;
         if slot <= slot_to {
             blocks.push(block);
+            if result_limit.is_some_and(|limit| blocks.len() >= limit) {
+                return Ok(sort_and_limit_blocks(
+                    Value::Array(blocks),
+                    CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64,
+                ));
+            }
         }
         if slot == 0 {
             return Ok(sort_and_limit_blocks(
@@ -732,6 +750,33 @@ mod tests {
                 "get_blocks",
                 "get_cryptarchia_info",
                 "get_block",
+                "get_block",
+                "get_block",
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_recent_block_range_stops_tip_parent_walk_at_requested_limit() -> Result<()> {
+        let harness = Arc::new(TipParentTransport::new());
+        let transport: SharedModuleTransport = harness.clone();
+
+        let value =
+            blockchain_recent_blocks(&transport, ModuleTransportKind::LogoscoreCli, 100, 130, 2)
+                .await?;
+        let blocks = value
+            .as_array()
+            .context("CLI recent tip-parent range did not return an array")?;
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].pointer("/header/slot"), Some(&json!(130)));
+        assert_eq!(blocks[1].pointer("/header/slot"), Some(&json!(115)));
+        assert_eq!(
+            harness.call_methods(),
+            vec![
+                "get_blocks",
+                "get_cryptarchia_info",
                 "get_block",
                 "get_block",
             ]
