@@ -1200,6 +1200,17 @@ QtObject {
         return appShellState.selectView(view, recordHistory)
     }
 
+    function openZoneDashboard(channelId, recordHistory) {
+        const target = String(channelId || "")
+        if (root.navigationGuarded("open_zone_dashboard", {
+                channelId: target,
+                recordHistory: recordHistory
+            })) {
+            return false
+        }
+        return entityNavigationState.openZoneDashboard(target, recordHistory)
+    }
+
     function openSettings(section, subsection, recordHistory) {
         if (root.navigationGuarded("open_settings", {
                 section: section,

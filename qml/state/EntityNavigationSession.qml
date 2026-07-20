@@ -10,6 +10,10 @@ QtObject {
 
     function projectZoneDashboard() { return AppModelSearch.projectZoneDashboard(model) }
 
+    function openZoneDashboard(channelId, recordHistory) {
+        return AppModelSearch.openZoneDashboard(model, channelId, recordHistory)
+    }
+
     function routeSearch(query) { return AppModelSearch.routeSearch(model, query) }
 
     function resolveInspectionTarget(query) { return AppModelSearch.resolveInspectionTarget(model, query) }

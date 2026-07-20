@@ -28,6 +28,12 @@ TestCase {
         }
     }
 
+    SignalSpy {
+        id: zoneNavigationSpy
+
+        signalName: "navigationRequested"
+    }
+
     function test_visible_nav_buttons_replace_loaded_page() {
         const model = findChild(shell, "appModel")
         const loader = findChild(shell, "pageLoader")
@@ -59,6 +65,7 @@ TestCase {
 
     function init() {
         testWindow.width = testRoot.width
+        zoneNavigationSpy.target = null
     }
 
     function cleanup() {
@@ -354,6 +361,72 @@ TestCase {
         mouseClick(discard, discard.width / 2, discard.height / 2)
         tryCompare(model.shell, "currentView", "overview")
         tryVerify(function () { return loader.item !== zonesPage })
+    }
+
+    function test_configured_zone_navigation_opens_its_exact_dashboard() {
+        const model = findChild(shell, "appModel")
+        const loader = findChild(shell, "pageLoader")
+        const navigation = findChild(shell, "mainNavigation")
+        verify(model !== null)
+        verify(loader !== null)
+        verify(navigation !== null)
+
+        model.stopZoneInspection()
+        wait(0)
+        model.stopZoneInspection()
+        const channelId = ZoneFixtureData.identity("2")
+        const scope = ZoneFixtureData.networkScope()
+        const sourceZone = ZoneFixtureData.zones()[0]
+        const configuredZone = Object.assign({}, sourceZone, {
+            channel_id: channelId,
+            display: Object.assign({}, sourceZone.display, {
+                alias: "Nav Alpha",
+                short_channel_id: "22222222...222222"
+            }),
+            active_zone_context_fields: {
+                network_scope: scope,
+                channel_id: channelId,
+                zone_kind: "sequencer_zone",
+                selected_sequencer_source_id: "seq-nav-alpha",
+                indexer_source_id: "idx-nav-alpha",
+                source_config_revision: 1
+            },
+            settlement_link: Object.assign({}, sourceZone.settlement_link, {
+                selected_sequencer_source_id: "seq-nav-alpha",
+                indexer_source_id: "idx-nav-alpha"
+            })
+        })
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.summaryStale = false
+        model.zoneInspection.networkScope = scope
+        model.zoneInspection.networkScopeKey = "genesis_id:" + scope.genesis_id
+        model.zoneInspection.zoneSummaries = [configuredZone]
+        model.zoneInspection.activeZoneContext = null
+        model.shell.navExpanded = ({ l1: true, zones: true, network: true,
+            diagnostics: false, local: true, system: true })
+        model.shell.selectView("overview")
+
+        let button = null
+        tryVerify(function () {
+            button = findChild(shell, "navButton_zone_" + channelId)
+            return button !== null && button.visible
+        })
+        compare(button.Accessible.name,
+                "Open Zone dashboard for Nav Alpha (" + channelId + ")")
+
+        zoneNavigationSpy.target = navigation
+        zoneNavigationSpy.clear()
+        button.click()
+
+        tryCompare(zoneNavigationSpy, "count", 1)
+        compare(zoneNavigationSpy.signalArguments[0][0], "sequencerDashboard")
+        compare(zoneNavigationSpy.signalArguments[0][1], channelId)
+        tryCompare(model.zoneInspection, "activeZoneId", channelId)
+        tryCompare(model.shell, "currentView", "sequencerDashboard")
+        tryVerify(function () {
+            return loader.item !== null
+                && String(loader.item.objectName || "") === "sequencerDashboardPage"
+        })
     }
 
     function verifyButtonNavigation(model, loader, view) {

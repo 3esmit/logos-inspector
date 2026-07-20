@@ -84,6 +84,22 @@ function projectZoneDashboard(root) {
     }
 }
 
+function openZoneDashboard(root, channelId, recordHistory) {
+    with (root) {
+        const target = String(channelId || "")
+        const state = zoneInspection
+        if (!target.length || !state || typeof state.activateZone !== "function"
+                || !state.activateZone(target)) {
+            return false
+        }
+        const context = state.activeZoneContext || ({})
+        const view = String(context.selected_sequencer_source_id || "").length > 0
+            ? "sequencerDashboard" : "zones"
+        shell.selectView(view, recordHistory)
+        return true
+    }
+}
+
 function zoneSourceObservation(state, sourceId, role) {
     const id = String(sourceId || "")
     const rows = state && state.zoneDetail

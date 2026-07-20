@@ -74,13 +74,17 @@ function appendNavRows(root, rows, items, depth, parentKey) {
             type: isGroup ? "group" : "item",
             key: item.key,
             view: item.view,
+            channelId: item.channelId,
             label: item.label,
+            accessibleName: item.accessibleName,
             token: item.token,
             layer: item.layer,
             parentKey: parentKey,
             active: isGroup
-                ? PageRegistry.navItemContainsView(item, root.shell.currentView)
-                : root.shell.currentView === item.view,
+                ? PageRegistry.navItemContainsView(item, root.shell.currentView,
+                    root.zoneInspection && root.zoneInspection.activeZoneId)
+                : PageRegistry.navItemIsActive(item, root.shell.currentView,
+                    root.zoneInspection && root.zoneInspection.activeZoneId),
             depth: depth
         }
         if (isGroup) {

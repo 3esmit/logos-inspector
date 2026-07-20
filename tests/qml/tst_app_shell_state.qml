@@ -40,8 +40,12 @@ TestCase {
         model.shell.settingsSection = "general"
         model.shell.settingsNetworkSection = "blockchain"
         model.shell.settingsUiSection = "footer"
+        model.shell.navExpanded = ({ l1: true, zones: true, network: true, diagnostics: false, local: true, system: true })
         model.deliveryDiagnosticsTab = "overview"
         model.zoneInspection.verification = "empty"
+        model.zoneInspection.networkScopeKey = ""
+        model.zoneInspection.summaryStale = false
+        model.zoneInspection.zoneSummaries = []
         model.zoneInspection.activeZoneContext = null
     }
 
@@ -89,36 +93,31 @@ TestCase {
         compare(model.deliveryDiagnosticsTab, "store")
     }
 
-    function test_zones_route_has_l1_metadata_and_nav_entry() {
+    function test_zones_route_has_zone_group_metadata_and_catalog_entry() {
         model.shell.selectView("zones")
 
         compare(model.shell.currentView, "zones")
-        compare(model.shell.viewTitle(), "Zones")
-        compare(model.shell.parentNavKeyForView("zones"), "l1")
+        compare(model.shell.viewTitle(), "Zone Catalog")
+        compare(model.shell.parentNavKeyForView("zones"), "zones")
         const rows = model.shell.navRows()
+        verify(rows.some(function (row) {
+            return String(row.type || "") === "group"
+                && String(row.key || "") === "zones"
+        }))
         verify(rows.some(function (row) {
             return String(row.view || "") === "zones"
         }))
     }
 
-    function test_sequencer_route_appears_only_for_selected_source() {
+    function test_zones_group_lists_each_configured_dashboard() {
         verify(!model.shell.navRows().some(function (row) {
             return String(row.view || "") === "sequencerDashboard"
         }))
 
+        const channelId = "22".repeat(32)
         model.zoneInspection.verification = "verified"
-        model.zoneInspection.activeZoneContext = {
-            network_scope: {
-                kind: "genesis_id",
-                genesis_id: "11".repeat(32)
-            },
-            channel_id: "22".repeat(32),
-            zone_kind: "sequencer_zone",
-            selected_sequencer_source_id: "seq-a",
-            indexer_source_id: "idx-a",
-            source_config_revision: 1,
-            context_revision: 1
-        }
+        model.zoneInspection.networkScopeKey = "genesis_id:" + "11".repeat(32)
+        model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
         wait(0)
 
         const rows = model.shell.navRows()
@@ -126,21 +125,65 @@ TestCase {
             return String(row.view || "") === "sequencerDashboard"
         })
         compare(sequencer.length, 1)
+        compare(sequencer[0].channelId, channelId)
+        compare(sequencer[0].label, "Alpha")
+        compare(sequencer[0].accessibleName,
+                "Open Zone dashboard for Alpha (" + channelId + ")")
         compare(sequencer[0].parentKey, "zones")
-        compare(sequencer[0].depth, 2)
-        compare(model.shell.parentNavKeyForView("sequencerDashboard"), "l1")
+        compare(sequencer[0].depth, 1)
+        compare(model.shell.parentNavKeyForView("sequencerDashboard"), "zones")
 
-        model.shell.selectView("sequencerDashboard")
+        verify(model.openZoneDashboard(channelId))
+        compare(model.zoneInspection.activeZoneId, channelId)
         compare(model.shell.currentView, "sequencerDashboard")
-        compare(model.shell.viewTitle(), "Sequencer")
+        compare(model.shell.viewTitle(), "Alpha")
         model.currentInspectionEntityRef = {
             layer: "l2",
-            channel_id: "22".repeat(32),
+            channel_id: channelId,
             entity_kind: "account",
             canonical_key: "account-a"
         }
         const snapshot = model.shell.navigationSnapshot()
         verify(snapshot.values.inspectionEntityRef !== null)
         compare(snapshot.values.inspectionEntityRef.canonical_key, "account-a")
+    }
+
+    function test_zones_group_hides_unverified_configured_dashboards() {
+        const channelId = "22".repeat(32)
+        model.zoneInspection.networkScopeKey = "genesis_id:" + "11".repeat(32)
+        model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
+        model.zoneInspection.verification = "checking"
+        wait(0)
+
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.view || "") === "sequencerDashboard"
+        }))
+    }
+
+    function configuredZone(channelId) {
+        return {
+            channel_id: channelId,
+            kind: "sequencer_zone",
+            display: {
+                alias: "Alpha",
+                title: "Alpha Zone",
+                short_channel_id: "2222…2222"
+            },
+            active_zone_context_fields: {
+                network_scope: {
+                    kind: "genesis_id",
+                    genesis_id: "11".repeat(32)
+                },
+                channel_id: channelId,
+                zone_kind: "sequencer_zone",
+                selected_sequencer_source_id: "seq-a",
+                indexer_source_id: "idx-a",
+                source_config_revision: 1
+            },
+            settlement_link: {
+                selected_sequencer_source_id: "seq-a",
+                indexer_source_id: "idx-a"
+            }
+        }
     }
 }
