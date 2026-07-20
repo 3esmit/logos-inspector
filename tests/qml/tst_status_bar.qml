@@ -122,6 +122,30 @@ TestCase {
         tryCompare(lookup, "text", "")
     }
 
+    function test_transaction_prefix_search_opens_the_cached_transaction_data() {
+        return [
+            { tag: "tx", query: "tx:" + transactionHash },
+            { tag: "transaction", query: "transaction:" + transactionHash }
+        ]
+    }
+
+    function test_transaction_prefix_search_opens_the_cached_transaction(data) {
+        const lookup = findChild(statusBar, "globalReferenceLookup")
+        const search = findChild(statusBar, "globalReferenceSearch")
+
+        verify(lookup !== null)
+        verify(search !== null)
+        lookup.text = data.query
+        tryCompare(search, "enabled", true)
+
+        mouseClick(search, search.width / 2, search.height / 2)
+
+        tryCompare(model.shell, "currentView", "transactionDetail")
+        compare(model.transactionDetailValue.hash, transactionHash)
+        verify(callFor("inspectionResolveTarget") === null)
+        tryCompare(lookup, "text", "")
+    }
+
     function test_resolver_prefixes_are_searchable_data() {
         const account = "9JDLE5Qr8dXKBstucN5sZi5tCCYy7SnfCEKax77JZTd7"
         return [

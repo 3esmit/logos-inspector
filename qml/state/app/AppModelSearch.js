@@ -270,7 +270,8 @@ function routeSearch(root, query) {
 
 function isLocalSearchPrefix(prefix) {
     const value = String(prefix || "").toLowerCase()
-    return value === "mantle" || value === "private" || value === "recipient"
+    return value === "mantle" || value === "tx" || value === "transaction"
+        || value === "private" || value === "recipient"
         || value === "wallet" || value === "cid" || value === "storage"
         || value === "l1-wallet" || value === "note" || value === "module"
 }
@@ -881,7 +882,7 @@ function routePrefixedSearch(root, query) {
 
         const prefix = parsed.prefix
         const target = parsed.target
-        if (prefix === "mantle") {
+        if (prefix === "mantle" || prefix === "tx" || prefix === "transaction") {
             if (target.length > 0) {
                 entityNavigation.openMantleTransaction(target)
             } else {
@@ -935,7 +936,8 @@ function searchPrefix(root, query) {
 function isSearchPrefix(root, prefix) {
     with (root) {
         const value = String(prefix || "").toLowerCase()
-        return value === "mantle" || value === "private" || value === "wallet"
+        return value === "mantle" || value === "tx" || value === "transaction"
+            || value === "private" || value === "wallet"
             || value === "l1-wallet" || value === "note" || value === "module"
             || value === "cid" || value === "storage"
     }
