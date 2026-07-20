@@ -657,14 +657,16 @@ QtObject {
                     error: ""
                 }
             }
-            if (active && active.runtimeDiagnosticsEnabled === true
-                    && runtimeDiagnosticsEnabled !== true) {
+            if (active && ((active.runtimeDiagnosticsEnabled === true
+                    && runtimeDiagnosticsEnabled !== true)
+                    || (!passiveSourceObservation(active.origin)
+                    && passiveSourceObservation(requestOrigin)))) {
                 const response = {
                     ok: false,
                     pending: true,
                     skipped: true,
                     text: "",
-                    error: qsTr("A full source observation is already pending.")
+                    error: qsTr("A higher-priority source observation is already pending.")
                 }
                 if (waiter) {
                     completeObservationPresentation(waiter, response)
@@ -838,6 +840,9 @@ QtObject {
         return (target === "storage" || target === "messaging")
             && String(active.requestBaseKey || "") === String(requestBaseKey || "")
             && sensitiveProbe !== true
+            && !(target === "storage"
+                && active.sensitiveProbe === true
+                && passiveSourceObservation(active.origin))
             && (runtimeDiagnosticsEnabled !== true
                 || active.runtimeDiagnosticsEnabled === true)
     }
@@ -1039,6 +1044,11 @@ QtObject {
                 || args.length === 0
                 || !args[0]
                 || typeof args[0] !== "object") {
+            return false
+        }
+        // Storage reports provide normal liveness and capability evidence.
+        // Keep that evidence on passive polls so normal operations stay available.
+        if (String(kind || "") === "storage") {
             return false
         }
         const request = args[0]

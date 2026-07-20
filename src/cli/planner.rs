@@ -437,6 +437,7 @@ fn storage_report_initialization(
         "options": {
             "cid": cid.unwrap_or_default(),
             "privileged_debug_enabled": false,
+            "runtime_diagnostics_enabled": true,
         },
     })
 }
@@ -714,7 +715,39 @@ mod tests {
                     },
                     "options": {
                         "cid": "cid-a",
-                        "privileged_debug_enabled": false
+                        "privileged_debug_enabled": false,
+                        "runtime_diagnostics_enabled": true
+                    }
+                }]),
+            "unexpected args: {}",
+            invocation.args
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_logoscore_cli_command_enables_runtime_capability_observations() -> Result<()> {
+        let invocation = CliCommand::Storage {
+            cid: None,
+            source_mode: "logoscore_cli".to_owned(),
+            rest_url: None,
+            metrics_url: None,
+        }
+        .invocation()?;
+
+        ensure!(
+            invocation.method == "storageSourceReport",
+            "unexpected method"
+        );
+        ensure!(
+            invocation.args
+                == json!([{
+                    "source_mode": "logoscore_cli",
+                    "inputs": {},
+                    "options": {
+                        "cid": "",
+                        "privileged_debug_enabled": false,
+                        "runtime_diagnostics_enabled": true
                     }
                 }]),
             "unexpected args: {}",
