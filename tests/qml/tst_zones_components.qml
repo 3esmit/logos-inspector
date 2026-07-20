@@ -1084,6 +1084,57 @@ TestCase {
             zoneState.l2TransactionDetail.source.source_id))
     }
 
+    function test_private_l2_transaction_shows_local_submission_decode_separately() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("l2"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Inspector") !== null
+        })
+        const inspector = findChild(detail, "zoneL2Inspector")
+        const blocks = findChild(inspector, "zoneL2Blocks")
+        const row = zoneState.l2BlockRows[0]
+        blocks.blockRequested(row.summary, row.observations[0].source_id)
+        const blockDetail = findChild(inspector, "zoneL2BlockDetail")
+        const transaction = zoneState.l2BlockDetail.transactions[0]
+        blockDetail.transactionRequested(transaction.hash,
+            zoneState.l2BlockDetail.source.source_id)
+
+        tryCompare(inspector, "currentView", "transaction")
+        const transactionDetail = findChild(inspector, "zoneL2TransactionDetail")
+        verify(transactionDetail !== null && transactionDetail.visible)
+        transactionDetail.currentTab = "trace"
+        const remoteTrace = JSON.parse(JSON.stringify(zoneState.l2TransactionTrace))
+        remoteTrace.trace.kind = "PrivacyPreserving"
+        remoteTrace.trace.decoded_instruction = null
+        zoneState.l2TransactionTrace = remoteTrace
+        zoneState.l2SubmittedTransactionLocalDecode = {
+            program_id: "ab".repeat(32),
+            idl_name: "token",
+            instruction: "transfer",
+            variant_index: 0,
+            accounts: [{ path: "sender", value: "Public/sender" }, {
+                path: "recipient", value: "Private/recipient"
+            }],
+            args: [{ path: "amount", value: "1" }],
+            remaining_words: []
+        }
+        zoneState.l2SubmittedTransactionLocalDecodeWarning = "invalid option tag 7"
+
+        tryVerify(function () {
+            return hasVisibleText(transactionDetail,
+                "Locally decoded submitted instruction")
+        })
+        verify(hasVisibleText(transactionDetail, "Local submission metadata"))
+        verify(hasVisibleText(transactionDetail, "Local submission decoded partially"))
+        verify(hasVisibleText(transactionDetail, "invalid option tag 7"))
+        verify(hasVisibleText(transactionDetail,
+            "Privacy envelope does not expose program or instruction words. Decoded automatically from frozen local submission metadata held by this Inspector session and matched to this exact-source transaction."))
+        verify(hasVisibleText(transactionDetail, "transfer"))
+        verify(hasVisibleText(transactionDetail, "token"))
+        verify(!hasVisibleText(transactionDetail, "Decoded Instruction"))
+        verify(!hasVisibleText(transactionDetail, "Local submission decode unavailable"))
+    }
+
     function test_l2_accounts_keep_snapshots_separate_and_activity_oldest_first() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("accounts"))

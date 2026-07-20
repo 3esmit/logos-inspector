@@ -20,6 +20,12 @@ ColumnLayout {
     readonly property var inspection: root.detail ? root.detail.inspection : null
     readonly property var traceValue: root.zoneState.l2TransactionTrace
     readonly property var trace: root.traceValue ? root.traceValue.trace : null
+    readonly property var localSubmissionDecode: root.zoneState
+        .l2SubmittedTransactionLocalDecode
+    readonly property string localSubmissionDecodeWarning: String(root.zoneState
+        .l2SubmittedTransactionLocalDecodeWarning || "")
+    readonly property string localSubmissionDecodeError: String(root.zoneState
+        .l2SubmittedTransactionLocalDecodeError || "")
     readonly property var appModel: root.zoneState.appModel || null
     readonly property var entityRef: typeof root.zoneState.l2TransactionEntityRef === "function"
         ? root.zoneState.l2TransactionEntityRef(root.detail) : null
@@ -305,6 +311,43 @@ ColumnLayout {
             Layout.fillWidth: true
         }
 
+        StatusMessage {
+            visible: root.localSubmissionDecode !== null
+            theme: root.theme
+            tone: "info"
+            title: qsTr("Locally decoded submitted instruction")
+            message: qsTr("Privacy envelope does not expose program or instruction words. Decoded automatically from frozen local submission metadata held by this Inspector session and matched to this exact-source transaction.")
+            Layout.fillWidth: true
+        }
+
+        StatusMessage {
+            visible: root.localSubmissionDecode !== null
+                && root.localSubmissionDecodeWarning.length > 0
+            theme: root.theme
+            tone: "warning"
+            title: qsTr("Local submission decoded partially")
+            message: root.localSubmissionDecodeWarning
+            Layout.fillWidth: true
+        }
+
+        StatusMessage {
+            visible: root.localSubmissionDecode === null
+                && root.localSubmissionDecodeError.length > 0
+            theme: root.theme
+            tone: "warning"
+            title: qsTr("Local submission decode unavailable")
+            message: root.localSubmissionDecodeError
+            Layout.fillWidth: true
+        }
+
+        ZoneFactSection {
+            visible: root.localSubmissionDecode !== null
+            theme: root.theme
+            title: qsTr("Local submission metadata")
+            rows: root.localSubmissionDecodedRows()
+            Layout.fillWidth: true
+        }
+
         TraceSummary {
             objectName: "zoneL2TraceSummary"
             visible: root.trace !== null && !root.traceSourceMismatch()
@@ -388,6 +431,14 @@ ColumnLayout {
     function decodedRows() {
         const decoded = root.trace && root.trace.decoded_instruction
             ? root.trace.decoded_instruction : ({})
+        return root.instructionDecodeRows(decoded)
+    }
+
+    function localSubmissionDecodedRows() {
+        return root.instructionDecodeRows(root.localSubmissionDecode || ({}))
+    }
+
+    function instructionDecodeRows(decoded) {
         const rows = [{
             label: qsTr("Instruction"),
             value: Presentation.text(decoded.instruction)

@@ -73,6 +73,13 @@ QtObject {
     property int l2SubmittedTransactionReadbackMaxAttempts: 37
     property int l2SubmittedTransactionReadbackIntervalMs: 5000
     property var l2SubmittedTransactionReadbackContext: null
+    property var l2SubmittedTransactionReceiptTraceInput: null
+    property var l2SubmittedTransactionLocalDecode: null
+    property string l2SubmittedTransactionLocalDecodeWarning: ""
+    property string l2SubmittedTransactionLocalDecodeError: ""
+    property bool l2SubmittedTransactionLocalDecodeInFlight: false
+    property int l2SubmittedTransactionLocalDecodeRequestRevision: 0
+    property bool l2SubmittedTransactionLocalDecodeQueued: false
     property int l2BlocksRequestRevision: 0
     property int l2BlockDetailRequestRevision: 0
     property int l2TransactionDetailRequestRevision: 0
@@ -86,6 +93,8 @@ QtObject {
 
     onRegisteredIdlCountChanged: {
         l2TransactionIdlRegistryRevision += 1
+        resetL2SubmittedTransactionLocalDecodeResult()
+        queueSubmittedTransactionLocalDecode()
         queueL2TransactionTraceRedecode()
     }
 
@@ -123,6 +132,7 @@ QtObject {
 
     function resetL2TransactionInspectionState() {
         resetSubmittedL2TransactionReadback()
+        resetSubmittedTransactionLocalDecodeState()
         l2TransactionDetailRequestRevision += 1
         l2TransactionDetailInFlight = false
         l2TransactionId = ""
@@ -159,6 +169,19 @@ QtObject {
         l2TransactionTraceIdlRegistryRevision = -1
         l2TransactionTraceError = ""
         l2TransactionTraceErrorDetails = null
+    }
+
+    function resetSubmittedTransactionLocalDecodeState() {
+        resetL2SubmittedTransactionLocalDecodeResult()
+        l2SubmittedTransactionReceiptTraceInput = null
+    }
+
+    function resetL2SubmittedTransactionLocalDecodeResult() {
+        l2SubmittedTransactionLocalDecodeRequestRevision += 1
+        l2SubmittedTransactionLocalDecodeInFlight = false
+        l2SubmittedTransactionLocalDecode = null
+        l2SubmittedTransactionLocalDecodeWarning = ""
+        l2SubmittedTransactionLocalDecodeError = ""
     }
 
     function refreshL2Blocks() {
@@ -401,16 +424,19 @@ QtObject {
         return startL2TransactionReadback(transactionId, exactSourceId, false)
     }
 
-    function openSubmittedL2Transaction(transactionId, exactSourceId) {
+    function openSubmittedL2Transaction(transactionId, exactSourceId,
+            receiptTraceInput) {
         const sourceId = String(exactSourceId || "").trim()
         if (!l2Context.l2SequencerReadEnabled || sourceId.length === 0
                 || sourceId !== l2Context.l2SequencerSourceId()) {
             return null
         }
-        return startL2TransactionReadback(transactionId, sourceId, true)
+        return startL2TransactionReadback(transactionId, sourceId, true,
+            receiptTraceInput)
     }
 
-    function startL2TransactionReadback(transactionId, exactSourceId, submitted) {
+    function startL2TransactionReadback(transactionId, exactSourceId, submitted,
+            receiptTraceInput) {
         const normalizedId = String(transactionId || "").trim()
         if (!l2Context.l2ReadEnabled || normalizedId.length === 0) {
             return null
@@ -425,6 +451,9 @@ QtObject {
         l2SubmittedTransactionReadbackActive = submitted === true
         l2SubmittedTransactionReadbackContext = submitted === true
             ? requestContext : null
+        l2SubmittedTransactionReceiptTraceInput = submitted === true
+            ? submittedReceiptTraceInputForRequest(normalizedId, sourceId,
+                requestContext, receiptTraceInput) : null
         return requestL2TransactionDetail(normalizedId, sourceId,
             requestRevision, requestContext)
     }
@@ -471,10 +500,16 @@ QtObject {
                     return
                 }
                 l2TransactionDetail = outcome.value
-                finishSubmittedL2TransactionReadback()
                 const source = outcome.value.source || ({})
                 const returnedSourceId = String(source.source_id || sourceId)
+                const localReceiptInput = submittedReceiptTraceInputForDetail(
+                    normalizedId, returnedSourceId, requestContext, outcome.value)
+                finishSubmittedL2TransactionReadback()
                 requestL2TransactionTrace(normalizedId, returnedSourceId)
+                if (localReceiptInput) {
+                    requestSubmittedTransactionLocalDecode(normalizedId,
+                        returnedSourceId, requestContext)
+                }
                 return
             }
             if (kind === "ambiguous") {
@@ -591,6 +626,178 @@ QtObject {
                 l2TransactionTraceError = qsTr("Transaction trace returned an invalid outcome.")
             }
         })
+    }
+
+    function submittedReceiptTraceInputForRequest(transactionId, sourceId,
+            requestContext, value) {
+        const input = value || ({})
+        const normalizedId = String(transactionId || "").trim()
+        const requestedSourceId = String(sourceId || "").trim()
+        const inputContext = input.context || null
+        const words = normalizedSubmittedInstructionWords(input.instructionWords)
+        const accountIds = normalizedSubmittedAccountIds(input.accountIds)
+        if (String(input.txHash || "") !== normalizedId
+                || String(input.mode || "") !== "private"
+                || !inputContext || !requestContext
+                || !l2Context.sameFullL2Context(inputContext, requestContext)
+                || !l2Context.l2RequestContextIsCurrent(inputContext)
+                || !submittedReceiptTargetMatchesContext(input.target, inputContext,
+                    requestedSourceId)
+                || String(input.idlKey || "").length === 0
+                || String(input.idlJson || "").length === 0
+                || String(input.programIdHex || "").length === 0
+                || words.length === 0 || accountIds === null) {
+            return null
+        }
+        return frozenValue({
+            txHash: normalizedId,
+            mode: "private",
+            target: input.target,
+            context: inputContext,
+            idlKey: String(input.idlKey),
+            idlJson: String(input.idlJson),
+            programIdHex: String(input.programIdHex).toLowerCase(),
+            instructionWords: words,
+            accountIds: accountIds
+        })
+    }
+
+    function submittedReceiptTraceInputForDetail(transactionId, sourceId,
+            requestContext, detail) {
+        const input = l2SubmittedTransactionReceiptTraceInput
+        const validInput = submittedReceiptTraceInputForRequest(transactionId,
+            sourceId, requestContext, input)
+        const transaction = detail && detail.transaction ? detail.transaction : null
+        const source = detail && detail.source ? detail.source : null
+        if (!validInput || !transaction || !source
+                || String(transaction.hash || "") !== String(transactionId || "")
+                || String(transaction.kind || "").toLowerCase()
+                    !== "privacypreserving"
+                || String(source.source_id || "") !== String(sourceId || "")
+                || String(source.source_role || "") !== "sequencer"
+                || Number(source.source_config_revision || 0)
+                    !== Number(validInput.context.source_config_revision || 0)
+                || localReceiptDecodeEntry(validInput) === null) {
+            return null
+        }
+        return validInput
+    }
+
+    function submittedReceiptTargetMatchesContext(target, context, sourceId) {
+        const actual = target || ({})
+        const expected = context || ({})
+        return l2Context.scopeKey(actual.network_scope)
+                === l2Context.scopeKey(expected.network_scope)
+            && String(actual.channel_id || "") === String(expected.channel_id || "")
+            && String(actual.source_id || "") === String(sourceId || "")
+            && String(expected.selected_sequencer_source_id || "")
+                === String(sourceId || "")
+            && Number(actual.source_config_revision || 0)
+                === Number(expected.source_config_revision || 0)
+            && Number(actual.context_revision || 0)
+                === Number(expected.context_revision || 0)
+    }
+
+    function localReceiptDecodeEntry(input) {
+        const model = appModel
+        if (!model || typeof model.idlEntryForKey !== "function") {
+            return null
+        }
+        const entry = model.idlEntryForKey(String(input && input.idlKey || ""))
+        if (!entry || String(entry.json || "") !== String(input && input.idlJson || "")
+                || String(entry.programIdHex || "").toLowerCase()
+                    !== String(input && input.programIdHex || "").toLowerCase()) {
+            return null
+        }
+        return entry
+    }
+
+    function requestSubmittedTransactionLocalDecode(transactionId, sourceId,
+            requestContext) {
+        const normalizedId = String(transactionId || "").trim()
+        const input = submittedReceiptTraceInputForDetail(normalizedId, sourceId,
+            requestContext, l2TransactionDetail)
+        if (!input || !appModel || typeof appModel.decodeInstructionAsync !== "function") {
+            return null
+        }
+        const ticket = l2SubmittedTransactionLocalDecodeRequestRevision + 1
+        l2SubmittedTransactionLocalDecodeRequestRevision = ticket
+        l2SubmittedTransactionLocalDecodeInFlight = true
+        l2SubmittedTransactionLocalDecode = null
+        l2SubmittedTransactionLocalDecodeWarning = ""
+        l2SubmittedTransactionLocalDecodeError = ""
+        return appModel.decodeInstructionAsync(input.programIdHex,
+            input.instructionWords, input.idlJson, input.accountIds,
+            function (response) {
+                if (ticket !== l2SubmittedTransactionLocalDecodeRequestRevision) {
+                    return
+                }
+                l2SubmittedTransactionLocalDecodeInFlight = false
+                if (!submittedReceiptTraceInputForDetail(normalizedId, sourceId,
+                        requestContext, l2TransactionDetail)) {
+                    return
+                }
+                if (!response || response.ok !== true || !response.value
+                        || typeof response.value !== "object") {
+                    l2SubmittedTransactionLocalDecodeError = String(response
+                        && response.error || qsTr("Local submission decode failed."))
+                    return
+                }
+                l2SubmittedTransactionLocalDecode = frozenValue(response.value)
+                l2SubmittedTransactionLocalDecodeWarning = String(response.value.decode_error || "")
+            })
+    }
+
+    function queueSubmittedTransactionLocalDecode() {
+        if (l2SubmittedTransactionLocalDecodeQueued) {
+            return
+        }
+        l2SubmittedTransactionLocalDecodeQueued = true
+        Qt.callLater(function () {
+            l2SubmittedTransactionLocalDecodeQueued = false
+            if (!l2TransactionDetail || l2TransactionId.length === 0) {
+                return
+            }
+            const source = l2TransactionDetail.source || ({})
+            requestSubmittedTransactionLocalDecode(l2TransactionId,
+                String(source.source_id || ""), l2Context.l2RequestContext())
+        })
+    }
+
+    function normalizedSubmittedInstructionWords(value) {
+        if (!Array.isArray(value) || value.length === 0) {
+            return []
+        }
+        const words = []
+        for (let index = 0; index < value.length; ++index) {
+            const word = Number(value[index])
+            if (!Number.isFinite(word) || word < 0 || word > 4294967295
+                    || Math.floor(word) !== word) {
+                return []
+            }
+            words.push(word)
+        }
+        return words
+    }
+
+    function normalizedSubmittedAccountIds(value) {
+        if (!Array.isArray(value)) {
+            return null
+        }
+        const accountIds = []
+        for (let index = 0; index < value.length; ++index) {
+            const accountId = String(value[index] || "").trim()
+            if (accountId.length === 0) {
+                return null
+            }
+            accountIds.push(accountId)
+        }
+        return accountIds
+    }
+
+    function frozenValue(value) {
+        return value === undefined || value === null
+            ? null : JSON.parse(JSON.stringify(value))
     }
 
     function automaticL2TransactionIdlProgramId() {

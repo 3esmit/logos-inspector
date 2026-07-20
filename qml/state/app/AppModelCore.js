@@ -739,6 +739,18 @@ function decodeTransactionSummaryAsync(root, summary, idlJson, callback) {
     }
 }
 
+function decodeInstructionAsync(root, programId, instructionWords, idlJson,
+        accounts, callback) {
+    with (root) {
+        return requestModuleAsync(inspectorModule, "decodeInstruction", [
+            String(programId || ""),
+            Array.isArray(instructionWords) ? instructionWords : [],
+            String(idlJson || ""),
+            Array.isArray(accounts) ? accounts : []
+        ], qsTr("Instruction decode"), false, callback)
+    }
+}
+
 function resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, callback) {
     return selectAccountDecodeSessionAsync(root, dataHex, accountId, "", candidates, callback)
 }

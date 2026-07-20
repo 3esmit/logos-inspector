@@ -1344,6 +1344,8 @@ QtObject {
 
     function decodeTransactionSummaryAsync(summary, idlJson, callback) { return AppModelCore.decodeTransactionSummaryAsync(root, summary, idlJson, callback) }
 
+    function decodeInstructionAsync(programId, instructionWords, idlJson, accounts, callback) { return AppModelCore.decodeInstructionAsync(root, programId, instructionWords, idlJson, accounts, callback) }
+
     function resolveAccountDecodeSessionAsync(dataHex, accountId, candidates, callback) { return AppModelCore.resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, callback) }
 
     function selectAccountDecodeSessionAsync(dataHex, accountId, ownerProgramId, candidates, callback) { return AppModelCore.selectAccountDecodeSessionAsync(root, dataHex, accountId, ownerProgramId, candidates, callback) }
@@ -1478,6 +1480,11 @@ QtObject {
         const transactionId = String(response && response.ok === true
             && response.value && response.value.tx_hash || "").trim()
         const target = backendTarget || ({})
+        const receiptTraceInput = root.programExecution
+            ? root.programExecution.idlInstructionReceiptTraceInput : null
+        const matchingReceiptTraceInput = receiptTraceInput
+                && String(receiptTraceInput.txHash || "") === transactionId
+            ? receiptTraceInput : null
         const context = root.zoneInspection.activeZoneContext
         const sourceId = String(target.source_id || "").trim()
         if (!transactionId.length || !sourceId.length || !context
@@ -1493,7 +1500,8 @@ QtObject {
         }
         root.zoneInspection.requestedDetailTab = "l2"
         root.zoneInspection.requestedL2View = "transaction"
-        root.zoneInspection.l2.blocks.openSubmittedL2Transaction(transactionId, sourceId)
+        root.zoneInspection.l2.blocks.openSubmittedL2Transaction(transactionId,
+            sourceId, matchingReceiptTraceInput)
         root.selectView("sequencerDashboard")
         return true
     }

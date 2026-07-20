@@ -273,6 +273,20 @@ TestCase {
         }
     }
 
+    function privateSubmitValue(hash, sourceId) {
+        const value = submitValue(hash, sourceId || "seq-a")
+        value.status = "submitted"
+        value.mode = "private"
+        value.program_id_hex = "33".repeat(32)
+        value.instruction_words = [0, 7, 9]
+        value.accounts = [{
+            account_id: "Public/sender"
+        }, {
+            account_id: "Private/recipient"
+        }]
+        return value
+    }
+
     function preparePreview(amount, display) {
         execution.reviseIdlInstructionDraft(
             entry("Token"),
@@ -454,6 +468,34 @@ TestCase {
         compare(callbackResponse.value.tx_hash, "0xsubmitted")
         compare(callbackTarget.source_id, "seq-bound")
         compare(gateway.history.length, 1)
+    }
+
+    function test_private_submission_freezes_local_trace_input_and_dismiss_clears_it() {
+        preparePreview("1", targetDisplay("seq-a"))
+        verify(execution.beginIdlInstructionConfirmation())
+        execution.confirmIdlInstruction()
+        const submitIndex = gateway.calls.length - 1
+
+        execution.reviseIdlInstructionDraft(entry("Token"),
+            instructionRequest("2"), targetDisplay("seq-a"))
+        verify(gateway.complete(submitIndex,
+            success(privateSubmitValue("ab".repeat(32), "seq-a"))))
+
+        const traceInput = execution.idlInstructionReceiptTraceInput
+        verify(traceInput !== null)
+        compare(traceInput.txHash, "ab".repeat(32))
+        compare(traceInput.mode, "private")
+        compare(traceInput.target.source_id, "seq-a")
+        compare(traceInput.context.selected_sequencer_source_id, "seq-a")
+        compare(traceInput.idlKey, "idl-token")
+        compare(traceInput.programIdHex, "33".repeat(32))
+        compare(traceInput.instructionWords.join(","), "0,7,9")
+        compare(traceInput.accountIds.join(","),
+            "Public/sender,Private/recipient")
+        compare(JSON.parse(traceInput.idlJson).name, "token")
+
+        execution.dismissIdlInstructionReceipt()
+        compare(execution.idlInstructionReceiptTraceInput, null)
     }
 
     function test_full_context_change_invalidates_preview_and_confirmation() {
