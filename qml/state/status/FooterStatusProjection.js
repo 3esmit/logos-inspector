@@ -70,12 +70,14 @@ function footerSourceGroups() {
 }
 
 function channelFooterGroups(root) {
-    if (!root || !root.model || !root.model.metrics
-            || !root.model.metrics.footerFieldEnabled("channels.summary")) {
+    if (!root || !root.model || !root.model.metrics) {
         return []
     }
     const statuses = channelStatuses(root)
-    return statuses.map(function (status) {
+    return statuses.filter(function (status) {
+        return root.model.metrics.footerFieldEnabled(
+            StatusFieldCatalog.channelFooterKey(status && status.channel_id))
+    }).map(function (status) {
         return { items: channelStatusItems(root, status) }
     })
 }
@@ -322,8 +324,6 @@ function footerFieldValue(root, key) {
         return qsTr("n/a")
     case "bedrock.finality_lag_seconds":
         return root.valueOrNa(root.finalityLagSeconds())
-    case "channels.summary":
-        return root.numberText(channelFooterGroups(root).length)
     case "lez.rpc_health":
         return root.healthDisplayText("sequencer", "health")
     case "lez.last_lez_block_id":

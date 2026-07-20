@@ -1290,7 +1290,7 @@ ColumnLayout {
     function profileDetail() { return SettingsProfileWorkspace.profileDetail(settingsRoot) }
     function normalizeEndpoint(value) { return SettingsProfileWorkspace.normalizeEndpoint(settingsRoot, value) }
     function shortEndpoint(value) { return SettingsProfileWorkspace.shortEndpoint(value) }
-    function footerFieldGroups() { return SettingsProfileWorkspace.footerFieldGroups() }
+    function footerFieldGroups() { return SettingsProfileWorkspace.footerFieldGroups(settingsRoot) }
     function dashboardGraphGroups() { return SettingsProfileWorkspace.dashboardGraphGroups() }
 
 }
