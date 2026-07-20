@@ -7,13 +7,12 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use common_testnet_v02::transaction::LeeTransaction;
 use logos_inspector_testnet_v02_helper_protocol::{
     HELPER_MODE, HelperAccount, HelperAccountPrivacy, HelperRequest, HelperResponse, HelperSuccess,
     SubmitPrivateIdlRequest,
 };
 use sequencer_service_rpc_testnet_v02::RpcClient as _;
-use wallet_testnet_v02::{AccDecodeData, AccountIdentity, WalletCore};
+use wallet_testnet_v02::{AccountIdentity, WalletCore};
 
 fn main() -> Result<()> {
     let request_path = request_path_from_args()?;
@@ -100,7 +99,7 @@ async fn handle_helper_request(request: HelperRequest) -> Result<HelperSuccess> 
 }
 
 async fn submit_private_idl(request: SubmitPrivateIdlRequest) -> Result<HelperSuccess> {
-    let mut wallet = open_legacy_wallet(
+    let wallet = open_legacy_wallet(
         request.wallet_home.clone(),
         request.sequencer_endpoint.as_deref(),
     )?;
@@ -111,12 +110,11 @@ async fn submit_private_idl(request: SubmitPrivateIdlRequest) -> Result<HelperSu
         bail!("private instruction program binary does not match the selected IDL program ID");
     }
 
-    let private_accounts = request
+    let private_account_count = request
         .accounts
         .iter()
         .filter(|account| matches!(account.privacy, HelperAccountPrivacy::Private))
-        .map(|account| lee_testnet_v02::AccountId::new(account.account_id))
-        .collect::<Vec<_>>();
+        .count();
     let accounts = request
         .accounts
         .iter()
@@ -129,56 +127,24 @@ async fn submit_private_idl(request: SubmitPrivateIdlRequest) -> Result<HelperSu
             anyhow::anyhow!("failed to submit private Testnet instruction: {error}")
         })?;
     let tx_hash_text = tx_hash.to_string();
-    if shared_secrets.len() != private_accounts.len() {
+    if shared_secrets.len() != private_account_count {
         bail!("private Testnet helper produced an unexpected number of account secrets");
     }
 
-    let transaction = wallet.poll_native_token_transfer(tx_hash).await.with_context(|| {
-        format!(
-            "private Testnet instruction {tx_hash_text} was submitted but confirmation is pending; run private sync before retrying"
-        )
-    })?;
-    let LeeTransaction::PrivacyPreserving(transaction) = transaction else {
-        bail!("private Testnet instruction {tx_hash_text} resolved to a non-private transaction");
-    };
-    let decode_mask = shared_secrets
-        .into_iter()
-        .zip(private_accounts)
-        .map(|(secret, account_id)| AccDecodeData::Decode(secret, account_id))
-        .collect::<Vec<_>>();
-    wallet
-        .decode_insert_privacy_preserving_transaction_results(&transaction, &decode_mask)
-        .map_err(|error| {
-            submitted_recovery_error(
-                &tx_hash_text,
-                "private results could not be decoded locally",
-                error,
-            )
-        })?;
-    wallet
-        .store_persistent_data()
-        .map_err(|error| {
-            submitted_recovery_error(
-                &tx_hash_text,
-                "the updated private wallet state could not be saved locally",
-                error,
-            )
-        })?;
+    // The RPC accepted this exact transaction once it returned its hash.
+    // Inspector owns the exact-source readback; private wallet state is
+    // reconciled through the explicit local-wallet sync workflow after
+    // inclusion. Waiting for the legacy wallet poll here can hide a submitted
+    // transaction for its full polling window and encourages an unsafe retry.
 
-    Ok(HelperSuccess::Submitted {
-        tx_hash: tx_hash_text,
-        shared_secret_count: decode_mask.len(),
-    })
+    Ok(accepted_submission(tx_hash_text, shared_secrets.len()))
 }
 
-fn submitted_recovery_error(
-    tx_hash: &str,
-    failed_step: &str,
-    error: impl std::fmt::Display,
-) -> anyhow::Error {
-    anyhow::anyhow!(
-        "private Testnet instruction {tx_hash} was confirmed, but {failed_step}; do not retry it. Run private sync before submitting another instruction: {error}"
-    )
+fn accepted_submission(tx_hash: String, shared_secret_count: usize) -> HelperSuccess {
+    HelperSuccess::Submitted {
+        tx_hash,
+        shared_secret_count,
+    }
 }
 
 fn account_identity(account: &HelperAccount) -> AccountIdentity {
@@ -316,15 +282,24 @@ fn validated_sequencer_endpoint(value: &str) -> Result<url::Url> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Result, bail};
+
     use super::*;
 
     #[test]
-    fn confirmed_submission_failure_provides_recovery_guidance() {
-        let detail = submitted_recovery_error("abc123", "wallet data could not be saved", "disk full")
-            .to_string();
-        assert!(detail.contains("abc123"));
-        assert!(detail.contains("was confirmed"));
-        assert!(detail.contains("do not retry"));
-        assert!(detail.contains("Run private sync"));
+    fn accepted_submission_preserves_transaction_receipt() -> Result<()> {
+        let response = accepted_submission("abc123".to_owned(), 2);
+        let HelperSuccess::Submitted {
+            tx_hash,
+            shared_secret_count,
+        } = response
+        else {
+            bail!("accepted private submission did not produce a receipt");
+        };
+
+        if tx_hash != "abc123" || shared_secret_count != 2 {
+            bail!("accepted private submission changed its receipt");
+        }
+        Ok(())
     }
 }

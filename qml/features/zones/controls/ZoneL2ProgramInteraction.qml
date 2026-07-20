@@ -24,6 +24,8 @@ ColumnLayout {
         ? root.execution.idlInstructionPreviewValue : null
     readonly property var receipt: root.execution
         ? root.execution.idlInstructionReceipt : null
+    readonly property bool privateSyncPending: root.receipt
+        && root.receipt.private_sync_pending === true
 
     property string selectedIdlKey: ""
     property string selectedInstruction: ""
@@ -463,6 +465,15 @@ ColumnLayout {
                 : qsTr("Transaction %1 was accepted by source %2, but the active Zone or Sequencer changed. Return to that exact source to inspect it.")
                     .arg(root.shortValue(root.receipt && root.receipt.tx_hash))
                     .arg(root.shortValue(root.receiptSourceId()))
+            Layout.fillWidth: true
+        }
+
+        StatusMessage {
+            visible: root.privateSyncPending
+            theme: root.theme
+            tone: "warning"
+            title: qsTr("Private sync pending")
+            message: qsTr("Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state.")
             Layout.fillWidth: true
         }
 

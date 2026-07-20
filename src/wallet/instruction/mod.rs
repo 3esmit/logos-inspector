@@ -55,8 +55,14 @@ pub struct LocalWalletInstructionReport {
     pub tx_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shared_secret_count: Option<usize>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub private_sync_pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted_at: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub use plan::{InstructionPlanField, LocalWalletInstructionPlanReport};
@@ -455,6 +461,25 @@ mod tests {
             .unwrap_or_default();
         if !error.contains("program binary") {
             bail!("unexpected error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn submitted_private_instruction_reports_private_sync_pending() -> Result<()> {
+        let account = format!("Private/0x{}", "33".repeat(32));
+        let mut request = sample_request(&account);
+        let program_binary = tempfile::NamedTempFile::new()?;
+        request.program_binary = program_binary.path().to_string_lossy().into_owned();
+        let prepared = prepare_instruction(&request)?;
+        let report =
+            report::report_from_prepared(prepared, "submitted", Some("ab".repeat(32)), Some(1));
+
+        if !report.private_sync_pending {
+            bail!("submitted private instruction did not require private sync");
+        }
+        if !report.operation_detail.contains("private sync pending") {
+            bail!("private sync state was not included in the instruction receipt");
         }
         Ok(())
     }

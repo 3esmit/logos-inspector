@@ -865,8 +865,12 @@ TestCase {
         compare(gateway.callsFor("localWalletInstructionSubmit").length, 1)
         const privateReceipt = receiptValue()
         privateReceipt.mode = "private"
+        privateReceipt.private_sync_pending = true
         verify(gateway.completeCall(privateSubmitCall, success(privateReceipt)))
         verify(!interaction.submitPending())
+        verify(hasVisibleText(interaction, "Private sync pending"))
+        verify(hasVisibleText(interaction,
+            "Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state."))
 
         verify(interaction.setFieldValue(
             "accounts", "sender", "Public/sender-account"))
