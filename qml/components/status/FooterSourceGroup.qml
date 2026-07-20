@@ -88,7 +88,7 @@ RowLayout {
                 font.weight: Font.DemiBold
                 font.capitalization: Font.AllUppercase
                 elide: Text.ElideRight
-                Layout.maximumWidth: 74
+                Layout.maximumWidth: Math.max(74, token.maximumTokenWidth - 70)
             }
 
             Text {
