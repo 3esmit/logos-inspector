@@ -9,9 +9,10 @@ TestCase {
         const selectorGroups = StatusFieldCatalog.footerSelectorGroups()
         const sourceGroups = StatusFieldCatalog.footerSourceGroups()
 
-        compare(selectorGroups.length, sourceGroups.length)
+        compare(sourceGroups.length, selectorGroups.length + 1)
         compare(selectorGroups[0].fields[0].key, "network.network")
         compare(sourceGroups[0].statusKey, "network.network")
+        compare(sourceGroups[2].dynamic, "channels")
         compare(sourceGroups[sourceGroups.length - 1].alignRight, true)
     }
 
@@ -27,7 +28,7 @@ TestCase {
         const dashboard = StatusFieldCatalog.defaultDashboardGraphSelections()
 
         verify(footer["overall.status"])
-        verify(footer["channels.summary"])
+        verify(footer["channels.summary"] === undefined)
         verify(footer["storage.failed_transfers_recent"])
         verify(!footer["network.chain_id"])
         verify(dashboard["bedrock.finality_lag_seconds"])
@@ -35,17 +36,44 @@ TestCase {
     }
 
     function test_footer_selection_migration_removes_single_zone_fields() {
-        const selections = StatusFieldCatalog.normalizedFooterFieldSelections({
+        const source = {
             "lez.rpc_health": true,
             "indexer.rpc_health": true,
             "channels.summary": false,
             "storage.module": false
-        })
+        }
+        source["channel." + "a".repeat(64)] = true
+        const selections = StatusFieldCatalog.normalizedFooterFieldSelections(source)
 
         verify(selections["lez.rpc_health"] === undefined)
         verify(selections["indexer.rpc_health"] === undefined)
-        verify(!selections["channels.summary"])
+        verify(selections["channels.summary"] === undefined)
+        verify(selections["channel." + "a".repeat(64)])
         verify(!selections["storage.module"])
+    }
+
+    function test_configured_zones_are_individual_footer_toggles() {
+        const fields = StatusFieldCatalog.footerSelectorGroups([{
+            channel_id: "a".repeat(64),
+            short_channel_id: "aaaa…aaaa",
+            label: "Alpha",
+            sequencer: { configured: true },
+            indexer: { configured: true }
+        }, {
+            channel_id: "b".repeat(64),
+            short_channel_id: "bbbb…bbbb",
+            label: "Beta",
+            sequencer: { configured: true },
+            indexer: { configured: false }
+        }]).filter(function (group) {
+            return group.title === "Configured Zones"
+        })[0].fields
+
+        compare(fields.length, 2)
+        compare(fields[0].key, "channel." + "a".repeat(64))
+        compare(fields[0].label, "Alpha · aaaa…aaaa")
+        compare(fields[1].key, "channel." + "b".repeat(64))
+        compare(fields[1].label, "Beta · bbbb…bbbb")
     }
 
     function test_footer_row_policy_uses_catalog_metadata() {

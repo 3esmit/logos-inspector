@@ -1,7 +1,7 @@
 let cachedFooterSourceGroups = null
 
-function footerSelectorGroups() {
-    return [
+function footerSelectorGroups(channelStatuses) {
+    const groups = [
         { title: qsTr("Network"), fields: fields([
             "network.network",
             "network.chain_id",
@@ -21,9 +21,6 @@ function footerSelectorGroups() {
             "bedrock.last_tip_time",
             "bedrock.last_lib_time",
             "bedrock.finality_lag_seconds"
-        ]) },
-        { title: qsTr("Configured Channels"), fields: fields([
-            "channels.summary"
         ]) },
         { title: qsTr("Storage"), fields: fields([
             "storage.module",
@@ -64,6 +61,14 @@ function footerSelectorGroups() {
             "overall.operator_action"
         ]) }
     ]
+    const channels = configuredChannelFooterFields(channelStatuses)
+    if (channels.length > 0) {
+        groups.splice(2, 0, {
+            title: qsTr("Configured Zones"),
+            fields: channels
+        })
+    }
+    return groups
 }
 
 function dashboardGraphGroups() {
@@ -119,10 +124,15 @@ function footerSourceGroups() {
         const statusKey = keys.length ? keys[0] : ""
         return {
             statusKey: statusKey,
-            dynamic: statusKey === "channels.summary" ? "channels" : "",
             alignRight: statusKey === "overall.status",
             keys: keys
         }
+    })
+    cachedFooterSourceGroups.splice(2, 0, {
+        statusKey: "",
+        dynamic: "channels",
+        alignRight: false,
+        keys: []
     })
     return cachedFooterSourceGroups
 }
@@ -134,7 +144,6 @@ function defaultFooterFieldSelections() {
         "bedrock.sync_state",
         "bedrock.tip_height",
         "bedrock.tip_minus_lib",
-        "channels.summary",
         "messaging.connection_state",
         "messaging.peer_count",
         "messaging.message_error_events_recent",
@@ -175,7 +184,64 @@ function normalizedFooterFieldSelections(value) {
                 ? defaults[key] === true : source[key] === true
         }
     }
+    for (const key in source) {
+        if (isChannelFooterKey(key)) {
+            normalized[key] = source[key] === true
+        }
+    }
     return normalized
+}
+
+function channelFooterKey(channelId) {
+    return "channel." + String(channelId || "").toLowerCase()
+}
+
+function isChannelFooterKey(key) {
+    return /^channel\.[0-9a-f]{64}$/.test(String(key || "").toLowerCase())
+}
+
+function configuredChannelFooterFields(channelStatuses) {
+    const rows = Array.isArray(channelStatuses) ? channelStatuses : []
+    const channels = []
+    const seen = {}
+    for (let i = 0; i < rows.length; ++i) {
+        const channel = rows[i] || ({})
+        const channelId = String(channel.channel_id || "").toLowerCase()
+        const sequencer = channel.sequencer || ({})
+        const indexer = channel.indexer || ({})
+        if (!/^[0-9a-f]{64}$/.test(channelId) || seen[channelId]
+                || (sequencer.configured !== true && indexer.configured !== true)) {
+            continue
+        }
+        seen[channelId] = true
+        channels.push({
+            key: channelFooterKey(channelId),
+            label: channelFooterLabel(channel),
+            detail: qsTr("Show this Zone's Sequencer and Indexer status in the footer.")
+        })
+    }
+    channels.sort(function (left, right) {
+        return String(left.key || "").localeCompare(String(right.key || ""))
+    })
+    return channels
+}
+
+function channelFooterLabel(channel) {
+    const value = channel || ({})
+    const label = String(value.label || "")
+    const shortId = String(value.short_channel_id || "")
+    if (label.length > 0 && shortId.length > 0 && label !== shortId) {
+        return qsTr("%1 · %2").arg(label).arg(shortId)
+    }
+    if (label.length > 0) {
+        return label
+    }
+    if (shortId.length > 0) {
+        return shortId
+    }
+    const channelId = String(value.channel_id || "")
+    return channelId.length > 12
+        ? channelId.slice(0, 6) + "…" + channelId.slice(-6) : channelId
 }
 
 function fieldLabel(key) {
@@ -344,7 +410,6 @@ function selectorLabels() {
         "bedrock.last_tip_time": qsTr("last_tip_time"),
         "bedrock.last_lib_time": qsTr("last_lib_time"),
         "bedrock.finality_lag_seconds": qsTr("finality_lag_seconds"),
-        "channels.summary": qsTr("configured_channels"),
         "lez.rpc_health": qsTr("rpc_health"),
         "lez.sequencer_version": qsTr("sequencer_version"),
         "lez.last_lez_block_id": qsTr("last_lez_block_id"),
@@ -421,7 +486,6 @@ function footerDetails() {
         "bedrock.last_tip_time": qsTr("Last tip observation time"),
         "bedrock.last_lib_time": qsTr("Last LIB observation time"),
         "bedrock.finality_lag_seconds": qsTr("Approximate finality lag"),
-        "channels.summary": qsTr("One live Sequencer and Indexer status group for every configured Channel"),
         "lez.rpc_health": qsTr("Sequencer RPC availability"),
         "lez.sequencer_version": qsTr("Sequencer version"),
         "lez.last_lez_block_id": qsTr("Latest LEZ block id"),

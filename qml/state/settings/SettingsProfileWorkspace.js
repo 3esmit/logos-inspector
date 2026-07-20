@@ -177,8 +177,11 @@ function shortEndpoint(value) {
     return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
 }
 
-function footerFieldGroups() {
-    return StatusFieldCatalog.footerSelectorGroups()
+function footerFieldGroups(root) {
+    const model = root && root.model ? root.model : null
+    const statuses = model && Array.isArray(model.dashboardChannelStatuses)
+        ? model.dashboardChannelStatuses : []
+    return StatusFieldCatalog.footerSelectorGroups(statuses)
 }
 
 function dashboardGraphGroups() {

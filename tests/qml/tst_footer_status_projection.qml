@@ -24,14 +24,15 @@ TestCase {
         property var moduleReports: ({})
         property var connectionStates: ({})
         property var dashboardChannelStatuses: []
+        property var enabledFooterFields: ({})
         readonly property var metrics: model
 
         function footerFieldEnabled(key) {
             return key === "overall.status"
                 || key === "overall.main_risk"
                 || key === "overall.operator_action"
-                || key === "channels.summary"
                 || key === "storage.node_reachable"
+                || enabledFooterFields[String(key || "")] === true
         }
 
         function scalarValue(value) { return value }
@@ -167,6 +168,7 @@ TestCase {
         model.moduleReports = ({})
         model.connectionStates = ({})
         model.dashboardChannelStatuses = []
+        model.enabledFooterFields = ({})
     }
 
     function test_overall_rows_are_projected_from_health_facts() {
@@ -208,14 +210,17 @@ TestCase {
     }
 
     function test_configured_channels_render_independent_sequencer_and_indexer_statuses() {
+        const alphaId = "a".repeat(64)
+        const betaId = "b".repeat(64)
+        model.enabledFooterFields = channelSelections([alphaId, betaId])
         model.dashboardChannelStatuses = [{
-            channel_id: "a".repeat(64),
+            channel_id: alphaId,
             short_channel_id: "aaaa…aaaa",
             label: "Alpha",
             sequencer: { configured: true, status: "reachable", head: 104 },
             indexer: { configured: true, status: "reachable", head: 101 }
         }, {
-            channel_id: "b".repeat(64),
+            channel_id: betaId,
             short_channel_id: "bbbb…bbbb",
             label: "Beta",
             sequencer: { configured: true, status: "unreachable", head: null },
@@ -231,6 +236,34 @@ TestCase {
         compare(groups[1].items[1].value, "unreachable")
         compare(groups[1].items[1].tone, "error")
         compare(groups[1].items[2].tone, "warning")
+    }
+
+    function test_configured_channel_footer_groups_follow_individual_toggles() {
+        const alphaId = "a".repeat(64)
+        const betaId = "b".repeat(64)
+        model.dashboardChannelStatuses = [{
+            channel_id: alphaId,
+            short_channel_id: "aaaa…aaaa",
+            label: "Alpha",
+            sequencer: { configured: true, status: "reachable", head: 104 },
+            indexer: { configured: true, status: "reachable", head: 101 }
+        }, {
+            channel_id: betaId,
+            short_channel_id: "bbbb…bbbb",
+            label: "Beta",
+            sequencer: { configured: true, status: "reachable", head: 90 },
+            indexer: { configured: true, status: "reachable", head: 88 }
+        }]
+
+        model.enabledFooterFields = channelSelections([alphaId])
+        let groups = FooterStatusProjection.channelFooterGroups(footerRoot)
+        compare(groups.length, 1)
+        compare(groups[0].items[0].fullName, "Channel Alpha")
+
+        model.enabledFooterFields = channelSelections([betaId])
+        groups = FooterStatusProjection.channelFooterGroups(footerRoot)
+        compare(groups.length, 1)
+        compare(groups[0].items[0].fullName, "Channel Beta")
     }
 
     function test_channel_health_replaces_stale_single_zone_risk() {
@@ -316,5 +349,14 @@ TestCase {
         })
 
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "capacity unavailable")
+    }
+
+    function channelSelections(channelIds) {
+        const values = {}
+        const ids = Array.isArray(channelIds) ? channelIds : []
+        for (let i = 0; i < ids.length; ++i) {
+            values["channel." + String(ids[i] || "").toLowerCase()] = true
+        }
+        return values
     }
 }
