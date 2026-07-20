@@ -12,8 +12,10 @@ use ::wallet::{
 use anyhow::{Context as _, Result, bail};
 use common::config::BasicAuth;
 use lee::program::Program;
+use sequencer_service_rpc::RpcClient as _;
 use url::Url;
 
+use super::super::testnet_v02::{HelperAccount, HelperAccountPrivacy, SubmitPrivateIdlRequest};
 use super::{
     LocalWalletInstructionRequest,
     model::{AccountPrivacy, InstructionMode, PreparedAccount, PreparedInstruction},
@@ -60,6 +62,32 @@ pub(super) async fn submit_instruction(
             Ok((tx_hash.to_string(), None))
         }
         InstructionMode::Private => {
+            let privacy_circuit = wallet
+                .sequencer_client
+                .get_program_ids()
+                .await
+                .context("failed to query the Sequencer program profile")?
+                .get("privacy_preserving_circuit")
+                .copied()
+                .context("Sequencer did not report a privacy circuit program")?;
+            if privacy_circuit != lee::PRIVACY_PRESERVING_CIRCUIT_ID {
+                drop(wallet);
+                return super::super::testnet_v02::submit_private_idl(SubmitPrivateIdlRequest {
+                    wallet_home,
+                    sequencer_endpoint: sequencer_endpoint.map(ToOwned::to_owned),
+                    expected_program_id: prepared.program_id,
+                    program_binary: PathBuf::from(&prepared.program_binary),
+                    dependency_binaries: request
+                        .dependency_binaries
+                        .iter()
+                        .map(PathBuf::from)
+                        .collect(),
+                    accounts: prepared.accounts.iter().map(helper_account).collect(),
+                    instruction_words: prepared.instruction_words.clone(),
+                })
+                .await
+                .map(|(tx_hash, secret_count)| (tx_hash, Some(secret_count)));
+            }
             let program = load_program_with_dependencies(
                 Path::new(&prepared.program_binary),
                 &request.dependency_binaries,
@@ -77,6 +105,17 @@ pub(super) async fn submit_instruction(
                 })?;
             Ok((tx_hash.to_string(), Some(shared_secrets.len())))
         }
+    }
+}
+
+fn helper_account(account: &PreparedAccount) -> HelperAccount {
+    HelperAccount {
+        account_id: *account.account_id.value(),
+        privacy: match account.privacy {
+            AccountPrivacy::Public => HelperAccountPrivacy::Public,
+            AccountPrivacy::Private => HelperAccountPrivacy::Private,
+        },
+        signer: account.signer,
     }
 }
 
