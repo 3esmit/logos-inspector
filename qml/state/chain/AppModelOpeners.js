@@ -258,15 +258,33 @@ function openBlockchainTransaction(root, transaction, block) {
     with (root) {
         const tx = transaction || {}
         const parentBlock = block || {}
-        const detail = {
+        const hash = String(tx.hash || root.chainPages.transactionHash(tx) || "")
+        const directDetail = {
             type: "blockchain_transaction",
-            hash: String(tx.hash || ""),
+            hash: hash,
             block: String(parentBlock.hash || ""),
             slot: parentBlock.slot,
             index: tx.index,
             ops: Array.isArray(tx.operations) ? tx.operations : [],
             raw: tx.raw || null
         }
+        const directPayloadAvailable = Array.isArray(tx.operations)
+            && tx.raw !== null && tx.raw !== undefined
+        const cachedDetail = !directPayloadAvailable && hash.length > 0
+            ? transactionDetail(hash)
+                || transactionDetailFromBlocks(root, root.metrics.dashboardL1Blocks || [], hash)
+                || transactionDetailFromBlocks(root, root.blocksPageRows || [], hash)
+            : null
+        const detail = cachedDetail ? {
+            type: "blockchain_transaction",
+            hash: cachedDetail.hash,
+            block: String(parentBlock.hash || cachedDetail.block || ""),
+            slot: parentBlock.slot !== undefined && parentBlock.slot !== null
+                ? parentBlock.slot : cachedDetail.slot,
+            index: cachedDetail.index,
+            ops: cachedDetail.ops || [],
+            raw: cachedDetail.raw
+        } : directDetail
         pushNavigationHistory()
         selectView("transactionDetail", false)
         root.chainPages.invalidateOperationCaller("detail.transaction",

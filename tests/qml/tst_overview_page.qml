@@ -738,6 +738,51 @@ TestCase {
         compare(fakeHost.callCount, callsBefore)
     }
 
+    function test_dashboard_transaction_detail_recovers_cached_payload_from_shallow_row() {
+        const transactionHash = ZoneFixtureData.identity("f")
+        const blockHash = ZoneFixtureData.identity("e")
+        const operation = {
+            opcode: 17,
+            payload: {
+                channel_id: ZoneFixtureData.identity("1"),
+                signer: ZoneFixtureData.identity("2")
+            }
+        }
+        const callsBefore = fakeHost.callCount
+        model.dashboardL1Blocks = [{
+            header: {
+                slot: 7000,
+                id: blockHash
+            },
+            transactions: [{
+                mantle_tx: {
+                    hash: transactionHash,
+                    ops: [operation]
+                },
+                ops_proofs: []
+            }]
+        }]
+
+        model.entityNavigation.openBlockchainTransaction({
+            hash: transactionHash,
+            index: 0
+        }, {
+            hash: blockHash,
+            slot: 7000
+        })
+
+        compare(model.shell.currentView, "transactionDetail")
+        verify(model.transactionDetailValue !== null)
+        compare(model.transactionDetailValue.hash, transactionHash)
+        compare(model.transactionDetailValue.block, blockHash)
+        compare(model.transactionDetailValue.slot, 7000)
+        compare(model.transactionDetailValue.ops.length, 1)
+        compare(model.transactionDetailValue.ops[0].opcode, 17)
+        compare(model.transactionDetailValue.raw.mantle_tx.ops[0].opcode, 17)
+        compare(model.transactionDetailError, "")
+        compare(fakeHost.callCount, callsBefore)
+    }
+
     function test_dashboard_live_block_links_open_exact_payload_data() {
         const hash = ZoneFixtureData.identity("a")
         return [
