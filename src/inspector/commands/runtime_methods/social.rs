@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     modules::logos_core::{ModuleCallControl, SharedModuleTransport},
     social::{
-        SocialCommentQuery, SocialPayload,
+        SocialCommentQuery, SocialMessage, SocialPayload,
         accepted_shared_idl_entries_from_messages as decode_accepted_shared_idls_from_messages,
         build_comment_topic as build_social_comment_topic, build_zone_account_idl_topic,
         build_zone_comment_topic, decode_comment_page as decode_social_comment_page,
@@ -143,15 +143,9 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
         },
         value,
     );
-    for message in &mut messages {
-        hydrate_shared_idl_payload(
-            runtime,
-            &storage,
-            &module_transport,
-            local_only,
-            &mut message.payload,
-        )?;
-    }
+    retain_hydrated_shared_idl_messages(&mut messages, |payload| {
+        hydrate_shared_idl_payload(runtime, &storage, &module_transport, local_only, payload)
+    });
     to_value(decode_accepted_shared_idls_from_messages(
         topic,
         messages,
@@ -159,6 +153,13 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
         account_data_hex,
         owner_program_id,
     ))
+}
+
+fn retain_hydrated_shared_idl_messages(
+    messages: &mut Vec<SocialMessage>,
+    mut hydrate: impl FnMut(&mut SocialPayload) -> Result<()>,
+) {
+    messages.retain_mut(|message| hydrate(&mut message.payload).is_ok());
 }
 
 fn hydrate_shared_idl_payload(
@@ -223,6 +224,83 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn failed_shared_idl_hydration_does_not_block_later_valid_entry() -> Result<()> {
+        let topic = "/cryptarchia/account/account-1/idl";
+        let account_id = "account-1";
+        let program_id = "1111111111111111111111111111111111111111111111111111111111111111";
+        let idl = r#"{
+            "name": "test_program",
+            "accounts": [
+                {
+                    "name": "ShortAccount",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "tag", "type": "u8" }
+                        ]
+                    }
+                }
+            ]
+        }"#;
+        let mut messages = vec![
+            shared_idl_message(topic, account_id, program_id, "invalid", "Bad IDL"),
+            shared_idl_message(topic, account_id, program_id, "valid", "Good IDL"),
+        ];
+        let mut hydration_attempts = 0;
+        retain_hydrated_shared_idl_messages(&mut messages, |payload| {
+            hydration_attempts += 1;
+            if hydration_attempts == 1 {
+                bail!("invalid shared IDL CID")
+            }
+            let SocialPayload::LezAccountIdl { idl_json, .. } = payload else {
+                bail!("shared IDL fixture payload is invalid")
+            };
+            *idl_json = idl.to_owned();
+            Ok(())
+        });
+
+        assert_eq!(hydration_attempts, 2);
+        assert_eq!(messages.len(), 1);
+        let accepted = decode_accepted_shared_idls_from_messages(
+            topic,
+            messages,
+            account_id,
+            "01",
+            Some(program_id),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].name, "Good IDL");
+        assert_eq!(accepted[0].account_type, "ShortAccount");
+        Ok(())
+    }
+
+    fn shared_idl_message(
+        topic: &str,
+        account_id: &str,
+        program_id: &str,
+        cid: &str,
+        idl_name: &str,
+    ) -> SocialMessage {
+        SocialMessage {
+            topic: topic.to_owned(),
+            cursor: cid.to_owned(),
+            timestamp: "2026-07-20T00:00:00Z".to_owned(),
+            payload: SocialPayload::LezAccountIdl {
+                version: 1,
+                identity: json!({ "display_name": "Fixture" }),
+                account_id: account_id.to_owned(),
+                program_id: program_id.to_owned(),
+                idl_name: idl_name.to_owned(),
+                idl_json: String::new(),
+                idl_cid: cid.to_owned(),
+                storage: Some(json!({ "cid": cid })),
+                created_at: "2026-07-20T00:00:00Z".to_owned(),
+                scope: None,
+            },
+        }
+    }
 
     #[test]
     fn shared_idl_hydration_has_its_own_explicit_download_bound() -> Result<()> {
