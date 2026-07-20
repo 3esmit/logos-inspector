@@ -47,6 +47,7 @@ function navTreeItems(root) {
                 token: "DIA",
                 layer: "system",
                 children: [
+                    { key: "bedrockDiagnostics", view: "diagnosticsBedrock", label: qsTr("Bedrock"), token: "BDR", layer: "system" },
                     { key: "storageDiagnostics", view: "diagnosticsStorage", label: qsTr("Storage"), token: "DST", layer: "system" },
                     { key: "deliveryDiagnostics", view: "diagnosticsDelivery", label: qsTr("Delivery"), token: "DDL", layer: "system" },
                     { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "system" }
