@@ -1223,6 +1223,27 @@ TestCase {
         compare(sourceOption(deliveryOptions, "network-monitor").label, "Delivery Network Monitor")
     }
 
+    function test_zone_catalog_does_not_fallback_to_node_url_for_logoscore_cli() {
+        installSourceModePolicy(model)
+        model.capabilityRegistryLoaded = false
+        model.localNodesEnabled = true
+        model.networkProfile = "default"
+        model.nodeUrl = "http://127.0.0.1:8080/"
+
+        verify(model.setNetworkConnectorMode("l1", "logoscore_cli"))
+        const unavailable = model.zoneCatalogL1SourceDescriptor()
+        compare(unavailable.kind, "unavailable")
+        verify(String(unavailable.reason).indexOf("Direct RPC") >= 0)
+        verify(String(unavailable.reason).indexOf("LogosCore CLI") >= 0)
+        verify(unavailable.endpoint === undefined)
+
+        verify(model.setNetworkConnectorMode("l1", "rpc"))
+        const direct = model.zoneCatalogL1SourceDescriptor()
+        compare(direct.kind, "direct_http")
+        compare(direct.endpoint, "http://127.0.0.1:8080/")
+        compare(direct.default_topology, "logos_testnet")
+    }
+
     function test_messaging_and_storage_use_module_connectors_in_basecamp() {
         compare(basecampModel.sourceRouting.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
         const deliveryArgs = basecampModel.sourceRouting.deliverySourceReportArgs()
