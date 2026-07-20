@@ -164,6 +164,8 @@ pub struct ZoneCatalogStatusReport {
     pub verification: CatalogVerificationState,
     pub coverage: ZoneCatalogCoverageReport,
     pub ingestion: ZoneCatalogIngestionReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<ZoneCatalogReadinessReport>,
     pub current_error: Option<String>,
 }
 
@@ -198,6 +200,24 @@ pub struct ZoneCatalogIngestionReport {
     pub target_lib_slot: Option<u64>,
     pub ingestion_cursor_slot: Option<u64>,
     pub discovered_zone_count: u64,
+}
+
+/// Live readiness information that is not persisted in the Zone Catalog.
+///
+/// The field is present only while the worker is waiting for Bedrock to reach
+/// a catalog checkpoint. It deliberately describes catalog readiness rather
+/// than inventing a node-wide synchronization percentage or ETA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ZoneCatalogReadinessReport {
+    pub phase: ZoneCatalogReadinessPhase,
+    pub finalized_lib_slot: u64,
+    pub required_checkpoint_slot: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneCatalogReadinessPhase {
+    WaitingForBedrock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

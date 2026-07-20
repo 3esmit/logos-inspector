@@ -291,6 +291,7 @@ TestCase {
                 worker_running: true,
                 discovered_zone_count: 0
             },
+            readiness: null,
             current_error: null
         }
         const values = overrides || {}
@@ -772,6 +773,45 @@ TestCase {
         })))
         compare(zoneState.statusPollInterval, 5000)
         verify(zoneState.summaryInFlight)
+    }
+
+    function test_status_projects_bedrock_readiness_and_clears_after_recovery() {
+        configure("https://l1.example", 1)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "source_behind",
+            coverage: { status: "partial", gap_count: 0 },
+            ingestion: { worker_running: true, discovered_zone_count: 0 },
+            readiness: {
+                phase: "waiting_for_bedrock",
+                finalized_lib_slot: 0,
+                required_checkpoint_slot: 691337
+            },
+            current_error: "Bedrock is still syncing"
+        })))
+
+        compare(zoneState.readiness.phase, "waiting_for_bedrock")
+        compare(zoneState.readiness.finalized_lib_slot, 0)
+        compare(zoneState.readiness.required_checkpoint_slot, 691337)
+        compare(zoneState.statusPollInterval, 1000)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", failed("Bridge is temporarily unavailable."))
+        compare(zoneState.statusError, "Bridge is temporarily unavailable.")
+        compare(zoneState.readiness.phase, "waiting_for_bedrock")
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete", gap_count: 0 },
+            ingestion: { worker_running: false, discovered_zone_count: 0 },
+            readiness: null,
+            current_error: null
+        })))
+
+        compare(zoneState.readiness, null)
+        compare(zoneState.statusPollInterval, 5000)
     }
 
     function test_startup_selects_the_only_configured_sequencer_zone() {

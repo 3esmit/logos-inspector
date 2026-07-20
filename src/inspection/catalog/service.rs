@@ -20,7 +20,7 @@ use super::{
     CatalogBlockCheckpoint, CatalogBlockReference, CatalogError, CatalogIdentityAssurance,
     CatalogIdentityTransition, CatalogIdentityTransitionStage, CatalogL1Source,
     CatalogL1SourceError, CatalogSnapshot, DirectCatalogL1Source, NetworkIdentityAlias,
-    ZoneCatalog,
+    ZoneCatalog, ZoneCatalogReadinessReport,
 };
 use crate::{
     inspection::zones::{CatalogVerificationState, CoveragePrefixStatus, NetworkScope},
@@ -108,6 +108,7 @@ pub struct ZoneCatalogServiceReport {
     pub source_fingerprint: Option<String>,
     pub verification_state: CatalogVerificationState,
     pub catalog: Option<Arc<CatalogSnapshot>>,
+    pub readiness: Option<ZoneCatalogReadinessReport>,
     pub current_error: Option<String>,
     pub worker_running: bool,
 }
@@ -119,6 +120,7 @@ impl Default for ZoneCatalogServiceReport {
             source_fingerprint: None,
             verification_state: CatalogVerificationState::Empty,
             catalog: None,
+            readiness: None,
             current_error: None,
             worker_running: false,
         }
@@ -129,6 +131,7 @@ impl Default for ZoneCatalogServiceReport {
 pub struct ZoneCatalogPublication {
     pub verification_state: CatalogVerificationState,
     pub catalog: Option<Arc<CatalogSnapshot>>,
+    pub readiness: Option<ZoneCatalogReadinessReport>,
     pub current_error: Option<String>,
 }
 
@@ -158,6 +161,7 @@ impl ZoneCatalogRunContext {
             source_fingerprint: Some("test-source".to_owned()),
             verification_state: CatalogVerificationState::Verifying,
             catalog: None,
+            readiness: None,
             current_error: None,
             worker_running: true,
         });
@@ -239,6 +243,7 @@ impl ZoneCatalogRunContext {
             }
             report.verification_state = publication.verification_state;
             report.catalog = publication.catalog;
+            report.readiness = publication.readiness;
             report.current_error = publication.current_error;
             accepted = true;
             true
@@ -254,6 +259,7 @@ impl ZoneCatalogRunContext {
                 return false;
             }
             report.worker_running = false;
+            report.readiness = None;
             if let Some(error) = error {
                 report.current_error = Some(error);
                 if report.verification_state == CatalogVerificationState::Verifying {
@@ -284,6 +290,7 @@ impl CatalogRunPublisher {
             report.source_fingerprint = Some(source.fingerprint().to_owned());
             report.verification_state = CatalogVerificationState::Verifying;
             report.catalog = None;
+            report.readiness = None;
             report.current_error = None;
             report.worker_running = false;
         });

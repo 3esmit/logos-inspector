@@ -15,6 +15,7 @@ QtObject {
     property string verification: "empty"
     property var coverage: ({})
     property var ingestion: ({})
+    property var readiness: null
     property string currentError: ""
     property string configureError: ""
     property string statusError: ""
@@ -365,6 +366,7 @@ QtObject {
         verification = String(report.verification || "empty")
         coverage = report.coverage && typeof report.coverage === "object" ? report.coverage : ({})
         ingestion = report.ingestion && typeof report.ingestion === "object" ? report.ingestion : ({})
+        readiness = report.readiness && typeof report.readiness === "object" ? report.readiness : null
         currentError = String(report.current_error || "")
         catalogStatus = report
         statusAcceptanceRevision += 1
@@ -1214,6 +1216,7 @@ QtObject {
         verification = "empty"
         coverage = ({})
         ingestion = ({})
+        readiness = null
         currentError = ""
         statusError = ""
         statusFailureCount = 0
