@@ -126,6 +126,9 @@ QtObject {
     property string l2TransactionTraceError: ""
     property var l2TransactionTraceErrorDetails: null
     property bool l2TransactionTraceInFlight: false
+    property var l2SubmittedTransactionLocalDecode: null
+    property string l2SubmittedTransactionLocalDecodeWarning: ""
+    property string l2SubmittedTransactionLocalDecodeError: ""
 
     property string l2AccountId: FixtureData.l2AccountId()
     property var l2AccountFinalizedReport: FixtureData.l2RouteReport(
@@ -300,6 +303,9 @@ QtObject {
         l2TransactionDetailReport = null
         l2TransactionTrace = null
         l2TransactionTraceReport = null
+        l2SubmittedTransactionLocalDecode = null
+        l2SubmittedTransactionLocalDecodeWarning = ""
+        l2SubmittedTransactionLocalDecodeError = ""
         l2BlocksExactSourceId = ""
         l2BlockRows = l2Applicable ? FixtureData.l2BlockRows() : []
         l2BlocksLoaded = l2Applicable
@@ -479,6 +485,9 @@ QtObject {
         l2TransactionDetailReport = null
         l2TransactionTrace = null
         l2TransactionTraceReport = null
+        l2SubmittedTransactionLocalDecode = null
+        l2SubmittedTransactionLocalDecodeWarning = ""
+        l2SubmittedTransactionLocalDecodeError = ""
     }
 
     function inspectL2Account(accountId) {

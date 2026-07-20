@@ -111,6 +111,27 @@ TestCase {
             })
         }
 
+        function idlEntryForKey(key) {
+            const expected = String(key || "")
+            for (let index = 0; index < transactionIdlEntries.length; ++index) {
+                const entry = transactionIdlEntries[index]
+                if (String(entry && entry.key || "") === expected) {
+                    return entry
+                }
+            }
+            return null
+        }
+
+        function decodeInstructionAsync(programId, words, idlJson, accounts,
+                callback) {
+            return gateway.request("decodeInstruction", [
+                String(programId || ""),
+                Array.isArray(words) ? words : [],
+                String(idlJson || ""),
+                Array.isArray(accounts) ? accounts : []
+            ], callback)
+        }
+
         function accountDecodeCandidates(accountId, ownerProgramId) {
             return candidates.slice()
         }
@@ -1984,6 +2005,204 @@ TestCase {
         compare(l2BlockState.l2TransactionId, "")
         wait(10)
         compare(gateway.requestCount("zoneL2Transaction"), 1)
+    }
+
+    function test_private_submitted_transaction_decodes_only_frozen_local_receipt() {
+        zoneState.appModel = decodeAppModel
+        const programId = "cd".repeat(32)
+        const idlJson = JSON.stringify({
+            name: "token",
+            instructions: [{ name: "transfer", accounts: [], args: [] }]
+        })
+        decodeAppModel.transactionIdlEntries = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: programId,
+            json: idlJson,
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("c".repeat(64))
+        transaction.kind = "PrivacyPreserving"
+        transaction.program_id_hex = ""
+        transaction.account_ids = []
+        transaction.instruction_data = []
+        const context = l2State.l2RequestContext()
+        const input = {
+            txHash: transaction.hash,
+            mode: "private",
+            target: {
+                network_scope: context.network_scope,
+                channel_id: context.channel_id,
+                source_id: "seq-a",
+                source_config_revision: context.source_config_revision,
+                context_revision: context.context_revision
+            },
+            context: context,
+            idlKey: "token-idl",
+            idlJson: idlJson,
+            programIdHex: programId,
+            instructionWords: [0, 7, 9],
+            accountIds: ["Public/sender", "Private/recipient"]
+        }
+
+        verify(l2BlockState.openSubmittedL2Transaction(transaction.hash,
+            "seq-a", input) !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(detailRequest, ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+
+        const traceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        const decodeRequest = gateway.lastRequest("decodeInstruction")
+        verify(traceRequest !== null)
+        verify(decodeRequest !== null)
+        compare(decodeRequest.args[0], programId)
+        compare(decodeRequest.args[1].join(","), "0,7,9")
+        compare(decodeRequest.args[2], idlJson)
+        compare(decodeRequest.args[3].join(","),
+            "Public/sender,Private/recipient")
+
+        gateway.respond(traceRequest, ok(l2Report(traceRequest,
+            "lez.transaction_trace", {
+                outcome: "found",
+                value: {
+                    transaction: transaction,
+                    trace: {
+                        hash: transaction.hash,
+                        kind: "PrivacyPreserving",
+                        source: "local_derivation",
+                        capabilities: [],
+                        limitations: ["Privacy-preserving payload is opaque."],
+                        steps: [],
+                        inspection: {},
+                        decoded_instruction: null
+                    },
+                    source: l2Source("seq-a", "sequencer", "provisional")
+                }
+            })))
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction, null)
+
+        gateway.respond(decodeRequest, ok({
+            program_id: programId,
+            idl_name: "token",
+            instruction: "transfer",
+            variant_index: 0,
+            accounts: [{ path: "sender", value: "Public/sender" }, {
+                path: "recipient", value: "Private/recipient"
+            }],
+            args: [{ path: "amount", value: "1" }],
+            remaining_words: []
+        }))
+        compare(l2BlockState.l2SubmittedTransactionLocalDecode.instruction,
+            "transfer")
+        compare(l2BlockState.l2SubmittedTransactionLocalDecodeWarning, "")
+        compare(l2BlockState.l2SubmittedTransactionLocalDecodeError, "")
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction, null)
+
+        decodeRegistry.count = 2
+        tryVerify(function () {
+            return gateway.requestCount("decodeInstruction") === 2
+        })
+        const partialDecodeRequest = gateway.lastRequest("decodeInstruction")
+        gateway.respond(partialDecodeRequest, ok({
+            program_id: programId,
+            idl_name: "token",
+            instruction: "transfer",
+            variant_index: 0,
+            accounts: [{ path: "sender", value: "Public/sender" }, {
+                path: "recipient", value: "Private/recipient"
+            }],
+            args: [{ path: "amount", value: "unsupported; raw words 1..2" }],
+            decode_error: "invalid option tag 7",
+            remaining_words: [7, 9]
+        }))
+        compare(l2BlockState.l2SubmittedTransactionLocalDecode.instruction,
+            "transfer")
+        compare(l2BlockState.l2SubmittedTransactionLocalDecodeWarning,
+            "invalid option tag 7")
+        compare(l2BlockState.l2SubmittedTransactionLocalDecodeError, "")
+
+        decodeAppModel.transactionIdlEntries = [{
+            key: "token-idl",
+            name: "Replacement Token Fixture",
+            programIdHex: programId,
+            json: "{\"name\":\"replacement\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 3
+        tryCompare(l2BlockState, "l2SubmittedTransactionLocalDecode", null)
+        wait(0)
+        compare(gateway.requestCount("decodeInstruction"), 2)
+    }
+
+    function test_private_submitted_transaction_rejects_different_remote_hash() {
+        zoneState.appModel = decodeAppModel
+        const programId = "cd".repeat(32)
+        const idlJson = "{\"name\":\"token\"}"
+        decodeAppModel.transactionIdlEntries = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: programId,
+            json: idlJson,
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("d".repeat(64))
+        transaction.kind = "PrivacyPreserving"
+        transaction.program_id_hex = ""
+        transaction.account_ids = []
+        transaction.instruction_data = []
+        const context = l2State.l2RequestContext()
+        const input = {
+            txHash: "e".repeat(64),
+            mode: "private",
+            target: {
+                network_scope: context.network_scope,
+                channel_id: context.channel_id,
+                source_id: "seq-a",
+                source_config_revision: context.source_config_revision,
+                context_revision: context.context_revision
+            },
+            context: context,
+            idlKey: "token-idl",
+            idlJson: idlJson,
+            programIdHex: programId,
+            instructionWords: [0],
+            accountIds: []
+        }
+
+        verify(l2BlockState.openSubmittedL2Transaction(input.txHash,
+            "seq-a", input) !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(detailRequest, ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+
+        compare(gateway.requestCount("decodeInstruction"), 0)
+        compare(l2BlockState.l2SubmittedTransactionLocalDecode, null)
     }
 
     function test_l2_transaction_detail_auto_traces_same_source_and_fences_trace_race() {

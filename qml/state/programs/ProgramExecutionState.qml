@@ -36,6 +36,9 @@ QtObject {
     property var idlInstructionConfirmation: null
     property var idlInstructionReceipt: null
     property var idlInstructionReceiptTarget: null
+    // Session-only evidence for decoding a privacy-preserving submission after
+    // exact-source readback. This is never derived from remote chain payloads.
+    property var idlInstructionReceiptTraceInput: null
 
     property int idlInstructionPlanRequestTicket: 0
     property int idlInstructionPreviewRequestTicket: 0
@@ -135,8 +138,7 @@ QtObject {
         }
 
         clearIdlInstructionPreviewArtifacts()
-        idlInstructionReceipt = null
-        idlInstructionReceiptTarget = null
+        clearIdlInstructionReceiptArtifacts()
         const ticket = idlInstructionSubmitRequestTicket + 1
         idlInstructionSubmitRequestTicket = ticket
         idlInstructionSubmitPending = true
@@ -154,11 +156,11 @@ QtObject {
                 idlInstructionPreviewValue = response.value || null
                 idlInstructionReceipt = frozenValue(response.value || null)
                 idlInstructionReceiptTarget = frozenValue((response.value || {}).target || null)
+                idlInstructionReceiptTraceInput = null
                 idlInstructionError = ""
             } else {
                 idlInstructionPreviewValue = null
-                idlInstructionReceipt = null
-                idlInstructionReceiptTarget = null
+                clearIdlInstructionReceiptArtifacts()
                 idlInstructionError = detail
             }
             appendOperationHistory({
@@ -361,8 +363,7 @@ QtObject {
 
         const confirmation = frozenValue(idlInstructionConfirmation)
         idlInstructionConfirmation = null
-        idlInstructionReceipt = null
-        idlInstructionReceiptTarget = null
+        clearIdlInstructionReceiptArtifacts()
         idlInstructionError = ""
         const ticket = idlInstructionSubmitRequestTicket + 1
         idlInstructionSubmitRequestTicket = ticket
@@ -385,12 +386,14 @@ QtObject {
             const backendTarget = response.ok
                 ? frozenValue((response.value || {}).target || null) : null
             if (response.ok) {
-                idlInstructionReceipt = frozenValue(response.value || null)
+                const receipt = frozenValue(response.value || null)
+                idlInstructionReceipt = receipt
                 idlInstructionReceiptTarget = backendTarget
+                idlInstructionReceiptTraceInput = privateReceiptTraceInput(
+                    confirmation, receipt, backendTarget)
                 idlInstructionError = ""
             } else {
-                idlInstructionReceipt = null
-                idlInstructionReceiptTarget = null
+                clearIdlInstructionReceiptArtifacts()
                 idlInstructionError = detail
             }
             appendOperationHistory({
@@ -475,8 +478,110 @@ QtObject {
     }
 
     function dismissIdlInstructionReceipt() {
+        clearIdlInstructionReceiptArtifacts()
+    }
+
+    function clearIdlInstructionReceiptArtifacts() {
         idlInstructionReceipt = null
         idlInstructionReceiptTarget = null
+        idlInstructionReceiptTraceInput = null
+    }
+
+    function privateReceiptTraceInput(confirmation, receipt, backendTarget) {
+        const confirmed = confirmation || ({})
+        const report = receipt || ({})
+        const entry = confirmed.entry || ({})
+        const request = confirmed.request || ({})
+        const context = confirmed.target && confirmed.target.context
+            ? confirmed.target.context : null
+        const transactionId = String(report.tx_hash || "").trim()
+        const programId = String(report.program_id_hex || "").trim().toLowerCase()
+        const entryProgramId = String(entry.programIdHex || "").trim().toLowerCase()
+        const requestProgramId = String(request.programIdHex || "").trim().toLowerCase()
+        const idlJson = String(request.idlJson || "")
+        const words = normalizedInstructionWords(report.instruction_words)
+        const accountIds = normalizedReceiptAccountIds(report.accounts)
+        if (String(report.status || "") !== "submitted"
+                || String(report.mode || "") !== "private"
+                || transactionId.length === 0 || programId.length === 0
+                || entryProgramId.length === 0 || requestProgramId.length === 0
+                || entryProgramId !== programId || requestProgramId !== programId
+                || String(entry.key || "").length === 0 || idlJson.length === 0
+                || words.length === 0 || accountIds === null
+                || !receiptTargetMatchesContext(backendTarget, context)) {
+            return null
+        }
+        return frozenValue({
+            txHash: transactionId,
+            mode: "private",
+            target: backendTarget,
+            context: context,
+            idlKey: String(entry.key),
+            idlJson: idlJson,
+            programIdHex: programId,
+            instructionWords: words,
+            accountIds: accountIds
+        })
+    }
+
+    function receiptTargetMatchesContext(target, context) {
+        const expected = context || ({})
+        const actual = target || ({})
+        return instructionNetworkScopeKey(actual.network_scope)
+                === instructionNetworkScopeKey(expected.network_scope)
+            && String(actual.channel_id || "") === String(expected.channel_id || "")
+            && String(actual.source_id || "")
+                === String(expected.selected_sequencer_source_id || "")
+            && Number(actual.source_config_revision || 0)
+                === Number(expected.source_config_revision || 0)
+            && Number(actual.context_revision || 0)
+                === Number(expected.context_revision || 0)
+    }
+
+    function instructionNetworkScopeKey(scope) {
+        const value = scope || ({})
+        const kind = String(value.kind || "")
+        if (kind === "genesis_id") {
+            return kind + ":" + String(value.genesis_id || "")
+        }
+        if (kind === "finalized_anchor") {
+            return kind + ":" + String(value.genesis_time || "")
+                + ":" + String(value.block_slot === undefined ? "" : value.block_slot)
+                + ":" + String(value.block_id || "")
+                + ":" + String(value.parent_id || "")
+        }
+        return JSON.stringify(value)
+    }
+
+    function normalizedInstructionWords(value) {
+        if (!Array.isArray(value) || value.length === 0) {
+            return []
+        }
+        const words = []
+        for (let index = 0; index < value.length; ++index) {
+            const word = Number(value[index])
+            if (!Number.isFinite(word) || word < 0 || word > 4294967295
+                    || Math.floor(word) !== word) {
+                return []
+            }
+            words.push(word)
+        }
+        return words
+    }
+
+    function normalizedReceiptAccountIds(value) {
+        if (!Array.isArray(value)) {
+            return null
+        }
+        const accountIds = []
+        for (let index = 0; index < value.length; ++index) {
+            const accountId = String(value[index] && value[index].account_id || "").trim()
+            if (accountId.length === 0) {
+                return null
+            }
+            accountIds.push(accountId)
+        }
+        return accountIds
     }
 
     function clearIdlInstructionPreviewArtifacts() {

@@ -5340,8 +5340,12 @@ TestCase {
             localWalletInstructionSubmit: {
                 ok: true,
                 value: {
-                    mode: "public",
+                    status: "submitted",
+                    mode: "private",
                     instruction: "transfer",
+                    program_id_hex: "33".repeat(32),
+                    instruction_words: [0, 7, 9],
+                    accounts: [],
                     tx_hash: "ab".repeat(32),
                     target: target
                 },
@@ -5376,6 +5380,12 @@ TestCase {
         compare(model.zoneInspection.l2.blocks.l2TransactionId, "ab".repeat(32))
         compare(model.zoneInspection.l2.blocks.l2TransactionRequestedSourceId, "seq-a")
         compare(model.programExecution.idlInstructionReceiptTarget.source_id, "seq-a")
+        compare(model.programExecution.idlInstructionReceiptTraceInput.txHash,
+            "ab".repeat(32))
+        compare(model.programExecution.idlInstructionReceiptTraceInput.idlKey,
+            "token-idl")
+        compare(model.zoneInspection.l2.blocks
+            .l2SubmittedTransactionReceiptTraceInput.txHash, "ab".repeat(32))
 
         const wrongScopeTarget = Object.assign({}, target, {
             network_scope: { kind: "genesis_id", genesis_id: "44".repeat(32) }
