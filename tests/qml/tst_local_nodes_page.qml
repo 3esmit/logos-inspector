@@ -288,6 +288,38 @@ Item {
             verify(!save.enabled)
         }
 
+        function test_node_configuration_common_field_accepts_full_text() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "activeNode", "bedrock")
+            const address = findChild(panel, "nodeConfigCommonField0")
+            verify(!!address, "Common text field exists")
+
+            address.forceActiveFocus()
+            address.selectAll()
+            verify(address.activeFocus, "Common text field has focus")
+            keyClick(Qt.Key_D)
+            compare(address.text, "d")
+            keyClick(Qt.Key_E)
+            compare(address.text, "de")
+            keyClick(Qt.Key_B)
+            compare(address.text, "deb")
+            keyClick(Qt.Key_U)
+            compare(address.text, "debu")
+            keyClick(Qt.Key_G)
+
+            tryVerify(function () {
+                const current = findChild(panel, "nodeConfigCommonField0")
+                return !!current && current.text === "debug"
+            })
+            verify(panel.draftText.indexOf("debug") >= 0)
+        }
+
         function test_node_configuration_retries_same_node_after_load_error() {
             const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
             const configure = findChild(page, "nodeConfigurebedrock")

@@ -175,7 +175,8 @@ Panel {
                 Layout.fillWidth: true
 
                 Repeater {
-                    model: root.commonFields()
+                    model: root.snapshot && Array.isArray(root.snapshot.common_fields)
+                        ? root.snapshot.common_fields : []
 
                     delegate: ColumnLayout {
                         id: fieldEditor
@@ -428,17 +429,6 @@ Panel {
             return
         }
         root.model.saveNodeConfig(root.draftText, root.baselineRevision)
-    }
-
-    function commonFields() {
-        const source = root.snapshot && Array.isArray(root.snapshot.common_fields)
-            ? root.snapshot.common_fields : []
-        const value = root.jsonValue()
-        return source.map(function (field) {
-            const next = Object.assign({}, field)
-            next.value = root.valueAtPath(value, String(field.path || ""))
-            return next
-        })
     }
 
     function jsonValue() {
