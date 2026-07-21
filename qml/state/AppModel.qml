@@ -19,6 +19,7 @@ QtObject {
     readonly property string storageModule: "storage_module"
     readonly property string deliveryModule: "delivery_module"
     readonly property string capabilityModule: "capability_module"
+    property bool attachedRuntimeObservationRefreshQueued: false
     property Domains.SourceRoutingState sourceRouting: Domains.SourceRoutingState {
         id: sourceRoutingState
 
@@ -784,6 +785,10 @@ QtObject {
                 return root.appendOperationHistory(operation, detail)
             }
 
+            function invalidateAttachedRuntimeObservations() {
+                return root.invalidateAttachedRuntimeObservations()
+            }
+
             function activateLocalProfile() {
                 root.localNodesEnabled = true
                 root.localDevnetEnabled = true
@@ -1512,6 +1517,32 @@ QtObject {
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 
     function refreshLocalNodes(showResult) { return localNodes.refresh(showResult) }
+
+    function invalidateAttachedRuntimeObservations() {
+        if (!localNodes.localAttachedRuntime()) {
+            return false
+        }
+        const reason = qsTr("Local LogosCore service state changed.")
+        const kinds = ["blockchain", "storage", "messaging"]
+        for (let index = 0; index < kinds.length; ++index) {
+            metricsState.invalidateConfiguration(kinds[index], reason)
+        }
+        metricsState.invalidateDashboard(reason)
+        scheduleAttachedRuntimeObservationRefresh()
+        return true
+    }
+
+    function scheduleAttachedRuntimeObservationRefresh() {
+        if (attachedRuntimeObservationRefreshQueued) {
+            return false
+        }
+        attachedRuntimeObservationRefreshQueued = true
+        Qt.callLater(function () {
+            root.attachedRuntimeObservationRefreshQueued = false
+            root.metrics.refreshDashboard()
+        })
+        return true
+    }
 
     function refreshLocalDevnets() { return localNodes.refreshDevnets() }
 

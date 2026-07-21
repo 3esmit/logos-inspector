@@ -33,6 +33,7 @@ QtObject {
     property var history: []
     property string openedSection: ""
     property string openedSubSection: ""
+    property int attachedRuntimeInvalidationCount: 0
     property int storageObservationCount: 0
     property int storageRefreshCount: 0
     property string lastStorageRefreshCid: ""
@@ -73,6 +74,7 @@ QtObject {
         history = []
         openedSection = ""
         openedSubSection = ""
+        attachedRuntimeInvalidationCount = 0
         storageObservationCount = 0
         storageRefreshCount = 0
         lastStorageRefreshCid = ""
@@ -204,6 +206,11 @@ QtObject {
             operation: operation,
             detail: String(detail || "")
         }])
+    }
+
+    function invalidateAttachedRuntimeObservations() {
+        attachedRuntimeInvalidationCount += 1
+        return true
     }
 
     function openSettings(section, subSection) {

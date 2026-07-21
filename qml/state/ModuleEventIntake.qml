@@ -55,19 +55,31 @@ QtObject {
             args,
             root.forwardsRuntimeOperationEvents()
         )
+        if (root.daemonRuntimeEvent(moduleName, eventName)
+                && root.model
+                && typeof root.model.invalidateAttachedRuntimeObservations === "function") {
+            root.model.invalidateAttachedRuntimeObservations()
+        }
         if (root.refreshesLocalNodeStatus(moduleName, eventName)) {
             root.queueLocalNodeRefresh()
         }
         return projected
     }
 
+    function daemonRuntimeEvent(moduleName, eventName) {
+        const moduleText = String(moduleName || "")
+        const eventText = String(eventName || "")
+        return moduleText === "logoscore_runtime"
+            && (eventText === "daemonStarted"
+                || eventText === "daemonStopped"
+                || eventText === "daemonUnavailable")
+    }
+
     function refreshesLocalNodeStatus(moduleName, eventName) {
         const moduleText = String(moduleName || "")
         const eventText = String(eventName || "")
-        if (moduleText === "logoscore_runtime") {
-            return eventText === "daemonStarted"
-                || eventText === "daemonStopped"
-                || eventText === "daemonUnavailable"
+        if (root.daemonRuntimeEvent(moduleText, eventText)) {
+            return true
         }
         if (moduleText === String(model && model.blockchainModule ? model.blockchainModule : "")) {
             return eventText === "moduleReady"

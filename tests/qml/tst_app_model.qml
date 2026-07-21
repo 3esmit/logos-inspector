@@ -284,6 +284,8 @@ TestCase {
         model.localNodesOperations = []
         model.localNodesRevision = 0
         model.localDevnets = []
+        model.attachedRuntimeObservationRefreshQueued = false
+        moduleEventIntake.localNodeRefreshQueued = false
         basecampModel.walletConnectorConfig = ({})
     }
 
@@ -300,6 +302,69 @@ TestCase {
                 accounts_ready: true,
                 instruction_submit_ready: true,
                 backup_encryption_ready: true
+            }
+        }
+    }
+
+    function attachedRuntimeLocalNodesReport(runtimeState) {
+        const nodes = ["bedrock", "indexer", "storage", "messaging"].map(function (kind) {
+            return {
+                key: kind,
+                label: kind,
+                ownership: "external",
+                run_state: "not_initialized"
+            }
+        })
+        return {
+            profile: "default",
+            mode: "public_testnet",
+            nodes: nodes,
+            operations: [],
+            summary: {
+                total: nodes.length,
+                running: 0,
+                needs_configuration: nodes.length
+            },
+            runtime: {
+                ownership: "local_attached",
+                run_state: runtimeState,
+                service_unit: "logos-node.service"
+            }
+        }
+    }
+
+    function attachedRuntimeRefreshResponses(report) {
+        return {
+            localNodesStatus: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        ok: true,
+                        value: {
+                            cryptarchia_info: { slot: 42, lib_slot: 40 }
+                        }
+                    }
+                },
+                blockchainLiveBlocks: {
+                    blocks: [{ header: { slot: 42, id: "l1-tip" }, transactions: [] }]
+                }
+            }),
+            storageSourceReport: {
+                ok: true,
+                value: { health: { ready: true, detail: "Storage ready" } },
+                text: "OK",
+                error: ""
+            },
+            deliverySourceReport: {
+                ok: true,
+                value: { health: { ready: true, detail: "Delivery ready" } },
+                text: "OK",
+                error: ""
             }
         }
     }
@@ -1151,6 +1216,121 @@ TestCase {
         compare(observations.indexer.head, 22352)
         compare(observations.indexer.upstream_head, 22418)
         compare(model.localNodes.observedRunState("indexer"), "online")
+    }
+
+    function test_attached_runtime_invalidation_clears_stale_sources_and_reprobes() {
+        const attachedReport = attachedRuntimeLocalNodesReport("running")
+        model.localNodesReport = attachedReport
+        model.localNodesRevision += 1
+        model.metrics.networkConnectionStatus = ({
+            blockchain: { known: true, ok: true, detail: "Bedrock ready" },
+            storage: { known: true, ok: true, detail: "Storage ready" },
+            messaging: { known: true, ok: true, detail: "Delivery ready" }
+        })
+        model.metrics.networkConnectionStatusRevision += 1
+        model.metrics.storageSourceReport = {
+            health: { ready: true, detail: "Storage ready" }
+        }
+        model.metrics.messagingSourceReport = {
+            health: { ready: true, detail: "Delivery ready" }
+        }
+        model.dashboardOverview = {
+            indexer: {
+                health: { ok: true, value: "reachable" },
+                head: { ok: true, value: 42 }
+            },
+            sequencer: { head: { ok: true, value: 42 } }
+        }
+        model.dashboardNode = { cryptarchia_info: { ok: true, value: {} } }
+        model.metrics.dashboardMetricHistory = {
+            "bedrock.peer_count": [{ timestamp: 1, value: 1 }],
+            "storage.peer_count": [{ timestamp: 1, value: 1 }],
+            "messaging.peer_count": [{ timestamp: 1, value: 1 }]
+        }
+        const lateStorageLease = model.metrics.beginObservation(
+            "storage", "scheduler", "pre-transition", "pre-transition",
+            false, "", false, false, false, null)
+        const dashboardSerial = model.metrics.dashboardRefreshSerial
+        const blockchainGeneration = model.metrics.familyConfigurationGeneration("blockchain")
+        const storageGeneration = model.metrics.familyConfigurationGeneration("storage")
+        const messagingGeneration = model.metrics.familyConfigurationGeneration("messaging")
+        fakeHost.responses = attachedRuntimeRefreshResponses(attachedReport)
+
+        compare(model.localNodes.summaryText(), "4/4 online")
+        verify(model.invalidateAttachedRuntimeObservations())
+
+        compare(model.localNodesReport.runtime.ownership, "local_attached")
+        compare(model.metrics.familyConfigurationGeneration("blockchain"),
+            blockchainGeneration + 1)
+        compare(model.metrics.familyConfigurationGeneration("storage"),
+            storageGeneration + 1)
+        compare(model.metrics.familyConfigurationGeneration("messaging"),
+            messagingGeneration + 1)
+        compare(model.metrics.networkConnectionStatus.blockchain, undefined)
+        compare(model.metrics.networkConnectionStatus.storage, undefined)
+        compare(model.metrics.networkConnectionStatus.messaging, undefined)
+        compare(model.metrics.sourceReport("storage"), null)
+        compare(model.metrics.sourceReport("messaging"), null)
+        compare(model.dashboardOverview, null)
+        compare(model.dashboardNode, null)
+        compare(model.metrics.dashboardMetricHistory["bedrock.peer_count"], undefined)
+        compare(model.metrics.dashboardMetricHistory["storage.peer_count"], undefined)
+        compare(model.metrics.dashboardMetricHistory["messaging.peer_count"], undefined)
+        compare(model.localNodes.summaryText(), "0/4 online")
+        verify(!model.metrics.completeObservation(lateStorageLease, {
+            ok: true,
+            value: { health: { ready: true } },
+            text: "OK",
+            error: ""
+        }))
+        compare(model.metrics.sourceReport("storage"), null)
+        compare(model.metrics.dashboardRefreshSerial, dashboardSerial + 1)
+
+        tryVerify(function () {
+            return model.metrics.dashboardRefreshSerial >= dashboardSerial + 2
+        })
+        tryCompare(model.metrics, "dashboardRefreshing", false)
+        verify(model.metrics.networkConnectionState("blockchain").known)
+        verify(model.metrics.networkConnectionState("storage").known)
+        verify(model.metrics.networkConnectionState("messaging").known)
+    }
+
+    function test_attached_daemon_events_invalidate_stale_source_observations() {
+        const attachedReport = attachedRuntimeLocalNodesReport("running")
+        model.localNodesReport = attachedReport
+        model.localNodesRevision += 1
+        model.metrics.networkConnectionStatus = ({
+            storage: { known: true, ok: true, detail: "Storage ready" }
+        })
+        model.metrics.networkConnectionStatusRevision += 1
+        model.metrics.storageSourceReport = {
+            health: { ready: true, detail: "Storage ready" }
+        }
+        const generation = model.metrics.familyConfigurationGeneration("storage")
+        const dashboardSerial = model.metrics.dashboardRefreshSerial
+        fakeHost.responses = attachedRuntimeRefreshResponses(attachedReport)
+
+        verify(moduleEventIntake.daemonRuntimeEvent("logoscore_runtime", "daemonStarted"))
+        verify(moduleEventIntake.daemonRuntimeEvent("logoscore_runtime", "daemonStopped"))
+        verify(moduleEventIntake.daemonRuntimeEvent("logoscore_runtime", "daemonUnavailable"))
+        verify(!moduleEventIntake.daemonRuntimeEvent("storage_module", "daemonStopped"))
+        moduleEventIntake.ingest("logoscore_runtime", "daemonStopped", [])
+
+        compare(model.metrics.familyConfigurationGeneration("storage"), generation + 1)
+        compare(model.metrics.sourceReport("storage"), null)
+        tryVerify(function () {
+            return model.metrics.dashboardRefreshSerial >= dashboardSerial + 2
+        })
+        tryCompare(model.metrics, "dashboardRefreshing", false)
+
+        model.localNodesReport = {
+            runtime: { ownership: "external", run_state: "not_configured" },
+            nodes: []
+        }
+        model.localNodesRevision += 1
+        const externalGeneration = model.metrics.familyConfigurationGeneration("storage")
+        moduleEventIntake.ingest("logoscore_runtime", "daemonUnavailable", [])
+        compare(model.metrics.familyConfigurationGeneration("storage"), externalGeneration)
     }
 
     function test_messaging_and_storage_use_standalone_connectors_without_basecamp() {
