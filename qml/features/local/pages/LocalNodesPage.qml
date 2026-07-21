@@ -23,6 +23,7 @@ ColumnLayout {
     property var selectedIndexerPackage: root.model.defaultPackageSelection()
     property bool confirmationAccepted: false
     property int confirmationGeneration: 0
+    property var pageScroller: null
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -1064,7 +1065,21 @@ ColumnLayout {
     }
 
     function openNodeConfiguration(node) {
-        nodeConfigurationPanel.selectNode(node)
+        if (nodeConfigurationPanel.selectNode(node)) {
+            root.revealNodeConfiguration()
+        }
+    }
+
+    function revealNodeConfiguration() {
+        Qt.callLater(function () {
+            const scroller = root.pageScroller
+            if (!scroller || !scroller.contentItem || !nodeConfigurationPanel.visible) {
+                return
+            }
+            const point = nodeConfigurationPanel.mapToItem(scroller.contentItem, 0, 0)
+            const maximum = Math.max(0, scroller.contentHeight - scroller.height)
+            scroller.contentY = Math.max(0, Math.min(point.y - root.theme.gap, maximum))
+        })
     }
 
     function openNetworkConfirm(action) {
