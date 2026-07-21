@@ -365,6 +365,7 @@ pub(crate) fn channel_config(channel_id: &str, bedrock_endpoint: &str) -> Value 
             "addr": bedrock_endpoint.trim_end_matches('/'),
         },
         "channel_id": channel_id,
+        "allow_chain_reset": false,
     })
 }
 
@@ -411,6 +412,7 @@ mod tests {
                 "consensus_info_polling_interval": "1s",
                 "bedrock_config": { "addr": "http://127.0.0.1:18080" },
                 "channel_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "allow_chain_reset": false,
             })
         );
     }

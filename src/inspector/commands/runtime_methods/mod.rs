@@ -233,6 +233,18 @@ mod tests {
             lookup("localNodeConfigSave")
                 .is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
         );
+        assert!(
+            lookup("channelIndexerConfig")
+                .is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
+        );
+        assert!(
+            lookup("channelIndexerConfigValidate")
+                .is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
+        );
+        assert!(
+            lookup("channelIndexerConfigSave")
+                .is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
+        );
         assert!(lookup("rawRpc").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(lookup("modules").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(lookup("storageExists").is_some_and(|entry| !entry.allows_host_synchronous_call()));

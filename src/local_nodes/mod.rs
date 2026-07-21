@@ -72,7 +72,10 @@ impl LocalNodePackageCommit {
     }
 }
 
-pub(crate) use channel_indexer::ChannelIndexerActionRequest;
+pub(crate) use channel_indexer::{
+    ChannelIndexerActionRequest, ChannelIndexerConfigRequest, ChannelIndexerConfigSnapshot,
+    ChannelIndexerConfigValidation,
+};
 pub(crate) use config::{LocalNodeConfigSnapshot, LocalNodeConfigValidation};
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
@@ -128,6 +131,39 @@ pub(crate) fn channel_indexer_status(
         profile,
         network_scope,
         channel_id,
+    )
+}
+
+pub(crate) fn channel_indexer_config(
+    profile: &str,
+    request: ChannelIndexerConfigRequest,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    action_engine::LocalNodeActionEngine::system()?
+        .channel_indexer_config_snapshot(profile, &request)
+}
+
+pub(crate) fn validate_channel_indexer_config(
+    profile: &str,
+    request: ChannelIndexerConfigRequest,
+    text: &str,
+) -> Result<ChannelIndexerConfigValidation> {
+    action_engine::LocalNodeActionEngine::system()?
+        .channel_indexer_config_validate(profile, &request, text)
+}
+
+pub(crate) fn save_channel_indexer_config(
+    profile: &str,
+    request: ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+    confirmation: Option<&str>,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    action_engine::LocalNodeActionEngine::system()?.save_channel_indexer_config(
+        profile,
+        &request,
+        text,
+        expected_revision,
+        confirmation,
     )
 }
 
