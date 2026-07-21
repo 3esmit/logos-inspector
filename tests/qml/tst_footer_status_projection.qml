@@ -341,6 +341,7 @@ TestCase {
 
     function test_configured_source_report_owns_cid_probe_and_last_error() {
         const sourceReport = {
+            health: { ready: true, reachable: true, summary: "Storage ready" },
             probes: [{ method: "exists", ok: true, value: true }]
         }
         model.moduleReports = ({
@@ -376,6 +377,50 @@ TestCase {
         })
 
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "capacity unavailable")
+    }
+
+    function test_ready_source_keeps_optional_probe_failure_out_of_footer_error() {
+        const sourceReport = {
+            health: { ready: true, reachable: true, summary: "Storage ready" },
+            probes: [{
+                probe_key: "backupDownloadReadiness",
+                ok: false,
+                error: "storage backup download protocol is unavailable"
+            }]
+        }
+        model.configuredSourceReports = ({ storage: sourceReport })
+        model.configuredSourceObservations = ({
+            storage: {
+                sourceReport: sourceReport,
+                latestAttempt: { transportOk: true, error: "" },
+                status: { known: true, ok: true, detail: "Storage ready" }
+            }
+        })
+
+        compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "n/a")
+        compare(FooterStatusProjection.footerFieldTone(footerRoot, "storage.last_error"), "neutral")
+    }
+
+    function test_not_ready_source_still_reports_failed_probe_in_footer() {
+        const sourceReport = {
+            health: { ready: false, reachable: true, detail: "required fact unavailable" },
+            probes: [{
+                probe_key: "manifests",
+                ok: false,
+                error: "storage manifests unavailable"
+            }]
+        }
+        model.configuredSourceReports = ({ storage: sourceReport })
+        model.configuredSourceObservations = ({
+            storage: {
+                sourceReport: sourceReport,
+                latestAttempt: { transportOk: true, error: "" },
+                status: { known: true, ok: false, detail: "unavailable" }
+            }
+        })
+
+        compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "storage manifests unavailable")
+        compare(FooterStatusProjection.footerFieldTone(footerRoot, "storage.last_error"), "error")
     }
 
     function channelSelections(channelIds) {

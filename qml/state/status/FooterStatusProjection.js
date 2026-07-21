@@ -550,12 +550,17 @@ function configuredSourceError(root, kind) {
         return String(attempt.error)
     }
     const report = observation.sourceReport || root.model.metrics.sourceReport(kind)
+    const health = report && report.health && typeof report.health === "object"
+        ? report.health : null
+    // A ready source may retain failed optional capability probes. Keep those
+    // visible in diagnostics without presenting them as a source outage.
+    if (health && health.ready === true) {
+        return ""
+    }
     const reportError = root.model.metrics.moduleReportError(report)
     if (String(reportError || "").length > 0) {
         return String(reportError)
     }
-    const health = report && report.health && typeof report.health === "object"
-        ? report.health : null
     if (health && health.ready === false) {
         const healthError = String(health.detail || health.summary || "")
         if (healthError.length > 0) {
