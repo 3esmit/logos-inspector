@@ -23,6 +23,7 @@ const ATTACHED_RUNTIME_ID: &str = "local-attached";
 const CHANNEL_INDEXER_RUNTIME_ID_PREFIX: &str = "inspector-managed-indexer-";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
+const ATTACHED_SERVICE_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -256,8 +257,12 @@ impl LogoscoreRuntimeProfile {
     }
 
     pub(super) fn wait_until_ready(&self) -> Result<()> {
+        self.wait_until_ready_with_timeout(self.readiness_timeout())
+    }
+
+    fn wait_until_ready_with_timeout(&self, timeout: Duration) -> Result<()> {
         let cli = self.cli_runtime()?;
-        let deadline = Instant::now() + LIFECYCLE_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < deadline {
             match cli.status_with_timeout(PROBE_TIMEOUT) {
@@ -273,8 +278,16 @@ impl LogoscoreRuntimeProfile {
     }
 
     pub(super) fn wait_until_ready_controlled(&self, control: &CommandControl) -> Result<()> {
+        self.wait_until_ready_controlled_with_timeout(control, self.readiness_timeout())
+    }
+
+    fn wait_until_ready_controlled_with_timeout(
+        &self,
+        control: &CommandControl,
+        timeout: Duration,
+    ) -> Result<()> {
         let cli = self.cli_runtime()?;
-        let lifecycle_deadline = Instant::now() + LIFECYCLE_TIMEOUT;
+        let lifecycle_deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < lifecycle_deadline {
             control.check_active()?;
@@ -296,6 +309,14 @@ impl LogoscoreRuntimeProfile {
             .map(|error| error.to_string())
             .unwrap_or_else(|| "no probe response".to_owned());
         bail!("local logoscore runtime did not become ready: {detail}")
+    }
+
+    fn readiness_timeout(&self) -> Duration {
+        if self.is_attached() {
+            ATTACHED_SERVICE_READINESS_TIMEOUT
+        } else {
+            LIFECYCLE_TIMEOUT
+        }
     }
 
     pub(super) fn wait_until_stopped(&self) -> bool {
@@ -1023,6 +1044,58 @@ printf '%s\n' '{"daemon":{"status":"running"}}'
         if calls != 2 {
             bail!("controlled readiness made {calls} status probes instead of retrying once");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn attached_runtime_readiness_budget_exceeds_managed_lifecycle_budget() {
+        let attached = attached_profile(None, None);
+        assert_eq!(
+            attached.readiness_timeout(),
+            ATTACHED_SERVICE_READINESS_TIMEOUT
+        );
+        assert!(attached.readiness_timeout() > LIFECYCLE_TIMEOUT);
+
+        let mut managed = attached;
+        managed.ownership = LogoscoreRuntimeOwnership::InspectorManaged;
+        assert_eq!(managed.readiness_timeout(), LIFECYCLE_TIMEOUT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_wait_accepts_delayed_cli_status_with_supplied_timeout() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let binary = directory.path().join("logoscore");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+marker="$0.calls"
+count=0
+if [ -f "$marker" ]; then
+    count="$(wc -l < "$marker")"
+fi
+printf '%s\n' status >> "$marker"
+if [ "$count" -lt 2 ]; then
+    printf '%s\n' '{"daemon":{"status":"not_configured"}}'
+    exit 1
+fi
+printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
+"#,
+        )?;
+        let mut permissions = fs::metadata(&binary)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions)?;
+
+        let mut profile = attached_profile(None, None);
+        profile.binary_path = binary.display().to_string();
+        profile
+            .wait_until_ready_with_timeout(Duration::from_millis(50))
+            .expect_err("short readiness budget unexpectedly accepted delayed CLI status");
+
+        fs::remove_file(binary.with_extension("calls"))?;
+        profile.wait_until_ready_with_timeout(Duration::from_millis(500))?;
         Ok(())
     }
 
