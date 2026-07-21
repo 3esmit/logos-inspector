@@ -643,7 +643,11 @@ mod tests {
             } else if method == "get_blocks" && args == vec![json!(100_u64), json!(130_u64)] {
                 Ok(json!([]))
             } else if method == "get_cryptarchia_info" && args.is_empty() {
-                Ok(json!({ "tip": test_hash('a'), "slot": 130 }))
+                Ok(json!({
+                    "genesis_id": test_hash('0'),
+                    "tip": test_hash('a'),
+                    "slot": 130,
+                }))
             } else if method == "get_block" && args == vec![json!(test_hash('a'))] {
                 Ok(test_block(130, test_hash('b'), 2))
             } else if method == "get_block" && args == vec![json!(test_hash('b'))] {
@@ -806,6 +810,14 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value.pointer("/cryptarchia_info/tip")),
             Some(&json!(test_hash('a')))
+        );
+        assert_eq!(
+            report
+                .cryptarchia_info
+                .value
+                .as_ref()
+                .and_then(|value| value.pointer("/cryptarchia_info/genesis_id")),
+            Some(&json!(test_hash('0')))
         );
         assert_eq!(harness.call_methods(), vec!["get_cryptarchia_info"]);
         Ok(())

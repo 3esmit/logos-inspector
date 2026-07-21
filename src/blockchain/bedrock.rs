@@ -780,6 +780,9 @@ pub(crate) fn normalize_cryptarchia_info(raw: Value) -> Value {
     if let Some(height) = first_u64(source, &["height", "slot"]) {
         insert_value(&mut info, "height", json!(height));
     }
+    if let Some(genesis_id) = first_present(source, &["genesis_id"]) {
+        insert_value(&mut info, "genesis_id", genesis_id.clone());
+    }
 
     if let Some(mode) = raw
         .get("mode")
@@ -1229,6 +1232,7 @@ data: {"header":{"id":"live-3","slot":43},"transactions":[]}"#;
     fn normalize_cryptarchia_info_accepts_nested_mode_object() {
         let raw = json!({
             "cryptarchia_info": {
+                "genesis_id": "genesis-hash",
                 "lib": "lib-hash",
                 "lib_slot": "20",
                 "tip": "tip-hash",
@@ -1260,6 +1264,10 @@ data: {"header":{"id":"live-3","slot":43},"transactions":[]}"#;
             Some(&json!(30))
         );
         assert_eq!(
+            normalized.pointer("/cryptarchia_info/genesis_id"),
+            Some(&json!("genesis-hash"))
+        );
+        assert_eq!(
             normalized.pointer("/cryptarchia_info/mode"),
             Some(&json!("Online"))
         );
@@ -1270,6 +1278,7 @@ data: {"header":{"id":"live-3","slot":43},"transactions":[]}"#;
     #[test]
     fn normalize_cryptarchia_info_accepts_flat_string_mode() {
         let raw = json!({
+            "genesis_id": "genesis-hash",
             "lib_hash": "lib-hash",
             "lib_slot": 8,
             "tip_hash": "tip-hash",
@@ -1294,6 +1303,10 @@ data: {"header":{"id":"live-3","slot":43},"transactions":[]}"#;
         assert_eq!(
             normalized.pointer("/cryptarchia_info/height"),
             Some(&json!(13))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/genesis_id"),
+            Some(&json!("genesis-hash"))
         );
         assert_eq!(
             normalized.pointer("/cryptarchia_info/mode"),
