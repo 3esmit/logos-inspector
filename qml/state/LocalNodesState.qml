@@ -163,6 +163,7 @@ QtObject {
             gateway.setResult(qsTr("Local nodes"), qsTr("Another inspection is already running."), true, null);
             return null;
         }
+        const attachedRuntimeTransition = isAttachedRuntimeTransition(action);
         const request = {
             action: String(action || "")
         };
@@ -203,11 +204,19 @@ QtObject {
         gateway.setBusy(true, operationLabel);
         return gateway.request("localNodesAction", [networkProfile, request, ConfirmationPolicy.token("local-node-action")], operationLabel, true, function (response) {
             if (response.ok) {
-                report = response.value || null;
-                operations = response.value && Array.isArray(response.value.operations) ? response.value.operations : [];
+                const nextReport = response.value || null;
+                const nextOperations = response.value && Array.isArray(response.value.operations)
+                    ? response.value.operations : [];
+                const operation = latestActionOperation(nextOperations);
+                if (attachedRuntimeTransition
+                        && terminalAttachedRuntimeTransition(action, nextReport)
+                        && typeof gateway.invalidateAttachedRuntimeObservations === "function") {
+                    gateway.invalidateAttachedRuntimeObservations();
+                }
+                report = nextReport;
+                operations = nextOperations;
                 error = "";
                 revision += 1;
-                const operation = latestActionOperation(operations);
                 const detail = actionDetail(operations, request);
                 const operationStatus = String(operation.status || "completed");
                 const historyStatus = actionHistoryStatus(operationStatus);
@@ -236,6 +245,24 @@ QtObject {
             }
             gateway.setBusy(false, "");
         });
+    }
+
+    function isAttachedRuntimeTransition(action) {
+        const actionKey = String(action || "");
+        return localAttachedRuntime()
+            && (actionKey === "start_runtime" || actionKey === "stop_runtime");
+    }
+
+    function terminalAttachedRuntimeTransition(action, reportValue) {
+        const actionKey = String(action || "");
+        const runtime = reportValue && reportValue.runtime
+            ? reportValue.runtime : null;
+        if (String(runtime && runtime.ownership || "") !== "local_attached") {
+            return false;
+        }
+        const runState = String(runtime && runtime.run_state || "").toLowerCase();
+        return (actionKey === "start_runtime" && runState === "running")
+            || (actionKey === "stop_runtime" && runState === "stopped");
     }
 
     function appendOperation(label, status, detail) {

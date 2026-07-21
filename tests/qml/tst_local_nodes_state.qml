@@ -188,6 +188,16 @@ TestCase {
         return report
     }
 
+    function attachedRuntimeActionReport(runtimeState, action, status) {
+        const report = attachedRuntimeReport(runtimeState)
+        report.operations = [{
+            action: action,
+            status: status,
+            detail: "service action"
+        }]
+        return report
+    }
+
     function test_refresh_updates_report_and_operations() {
         gateway.responses = ({
             localNodesStatus: {
@@ -1022,6 +1032,91 @@ TestCase {
         verify(gateway.calls[0].args[1].runtime_binary_path === undefined)
         verify(gateway.calls[0].args[1].allow_identity_rotation === undefined)
         compare(gateway.history[0].operation.label, "Stop local service")
+    }
+
+    function test_attached_terminal_runtime_actions_invalidate_source_observations() {
+        const transitions = [{
+            action: "stop_runtime",
+            before: "running",
+            after: "stopped",
+            status: "stopped"
+        }, {
+            action: "start_runtime",
+            before: "stopped",
+            after: "running",
+            status: "started"
+        }]
+
+        for (let index = 0; index < transitions.length; ++index) {
+            const transition = transitions[index]
+            state.report = attachedRuntimeReport(transition.before)
+            state.revision += 1
+            gateway.responses = ({
+                localNodesAction: {
+                    ok: true,
+                    value: attachedRuntimeActionReport(
+                        transition.after,
+                        transition.action,
+                        transition.status),
+                    text: "OK",
+                    error: ""
+                },
+                localDevnetList: {
+                    ok: true,
+                    value: { devnets: [] },
+                    text: "OK",
+                    error: ""
+                }
+            })
+
+            state.runAction(transition.action, "", "", "", "Service action")
+            compare(state.runtimeState(), transition.after)
+        }
+
+        compare(gateway.attachedRuntimeInvalidationCount, transitions.length)
+    }
+
+    function test_attached_runtime_state_invalidates_even_when_operation_reports_failure() {
+        state.report = attachedRuntimeReport("running")
+        state.revision += 1
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: attachedRuntimeActionReport(
+                    "stopped", "stop_runtime", "failed"),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("stop_runtime", "", "", "", "Stop local service")
+        compare(gateway.attachedRuntimeInvalidationCount, 1)
+
+        state.report = sampleReport()
+        state.revision += 1
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: sampleReport(),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("stop_runtime", "", "", "", "Stop Local Runtime")
+        compare(gateway.attachedRuntimeInvalidationCount, 1)
     }
 
     function test_package_catalog_loads_exact_releases_for_modules_directory() {
