@@ -473,6 +473,67 @@ TestCase {
         }
     }
 
+    function channelIndexerConfigSnapshot(revision, rawText) {
+        const text = rawText || JSON.stringify({
+            channel_id: "zone-a",
+            bedrock_config: { addr: "https://l1.example" },
+            consensus_info_polling_interval: "1s",
+            allow_chain_reset: false
+        }, null, 2)
+        return {
+            profile: "default",
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            source_config_revision: 7,
+            selected_sequencer_source_id: "seq-a",
+            node_label: "Channel Indexer",
+            config_path: "/tmp/channel-indexers/zone-a/indexer-config.json",
+            config_role: "Zone-owned Indexer",
+            format: "json",
+            raw_text: text,
+            revision: String(revision || "revision-1"),
+            editable: true,
+            validation_scope: "JSON syntax, Zone identity, Bedrock source, and supported Indexer fields",
+            common_fields: [{
+                path: "/channel_id",
+                label: "Zone channel ID",
+                section: "Protocol",
+                kind: "string",
+                value: "zone-a",
+                required: true,
+                editable: false
+            }, {
+                path: "/bedrock_config/addr",
+                label: "Bedrock API URL",
+                section: "API",
+                kind: "string",
+                value: "https://l1.example",
+                required: true,
+                editable: false
+            }, {
+                path: "/consensus_info_polling_interval",
+                label: "Consensus polling interval",
+                section: "Protocol",
+                kind: "string",
+                value: "1s",
+                required: true,
+                editable: true
+            }, {
+                path: "/allow_chain_reset",
+                label: "Allow automatic chain reset",
+                section: "Recovery",
+                kind: "boolean",
+                value: false,
+                required: false,
+                editable: true
+            }],
+            protected_fields: [
+                "Zone channel ID (derived from the selected Zone)",
+                "Bedrock API URL (derived from the active Bedrock source)"
+            ]
+        }
+    }
+
     function loadConfiguredL2Zone() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a", 7)
@@ -1371,6 +1432,103 @@ TestCase {
         verify(!sourceEditorState.sourceMutationInFlight)
         compare(sourceEditorState.sourceMutationError, "")
         compare(zoneState.activeZoneContext.source_config_revision, 2)
+    }
+
+    function test_managed_indexer_configuration_load_validate_save_is_context_bound() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        const initialText = channelIndexerConfigSnapshot("revision-1").raw_text
+
+        verify(sourceEditorState.loadManagedIndexerConfig() !== null)
+        let request = gateway.lastRequest("channelIndexerConfig")
+        verify(request !== null)
+        compare(request.args, ["default", {
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            bedrock_endpoint: "https://l1.example",
+            source_config_revision: 7,
+            selected_sequencer_source_id: "seq-a"
+        }])
+        gateway.respond(request, ok(channelIndexerConfigSnapshot("revision-1", initialText)))
+        compare(sourceEditorState.managedIndexerConfigSnapshot.revision, "revision-1")
+        compare(sourceEditorState.managedIndexerConfigError, "")
+
+        verify(sourceEditorState.validateManagedIndexerConfig(initialText) !== null)
+        request = gateway.lastRequest("channelIndexerConfigValidate")
+        verify(request !== null)
+        compare(request.args, ["default", {
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            bedrock_endpoint: "https://l1.example",
+            source_config_revision: 7,
+            selected_sequencer_source_id: "seq-a"
+        }, initialText])
+        gateway.respond(request, ok({
+            valid: true,
+            error: "",
+            common_fields: channelIndexerConfigSnapshot("revision-1", initialText).common_fields
+        }))
+        verify(sourceEditorState.managedIndexerConfigValidation.valid)
+        compare(sourceEditorState.managedIndexerConfigValidationText, initialText)
+
+        const updatedText = initialText.replace("1s", "2s")
+        verify(sourceEditorState.saveManagedIndexerConfig(updatedText, "revision-1") !== null)
+        request = gateway.lastRequest("channelIndexerConfigSave")
+        verify(request !== null)
+        compare(request.args, ["default", {
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            bedrock_endpoint: "https://l1.example",
+            source_config_revision: 7,
+            selected_sequencer_source_id: "seq-a"
+        }, updatedText, "revision-1", "confirm-local-node-action"])
+        gateway.respond(request, ok(channelIndexerConfigSnapshot("revision-2", updatedText)))
+        compare(sourceEditorState.managedIndexerConfigSnapshot.revision, "revision-2")
+        compare(sourceEditorState.managedIndexerConfigSnapshot.raw_text, updatedText)
+        compare(sourceEditorState.managedIndexerConfigError, "")
+        compare(sourceEditorState.managedIndexerConfigValidation, null)
+    }
+
+    function test_managed_indexer_configuration_drops_stale_context_reply() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+
+        verify(sourceEditorState.loadManagedIndexerConfig() !== null)
+        const request = gateway.lastRequest("channelIndexerConfig")
+        verify(request !== null)
+        verify(zoneState.updateActiveContextFromFields({
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            zone_kind: "sequencer_zone",
+            selected_sequencer_source_id: "seq-b",
+            indexer_source_id: "idx-a",
+            source_config_revision: 8
+        }))
+        compare(sourceEditorState.managedIndexerConfigLoading, false)
+        gateway.respond(request, ok(channelIndexerConfigSnapshot("revision-1")))
+        compare(sourceEditorState.managedIndexerConfigSnapshot, null)
+        compare(sourceEditorState.managedIndexerConfigLoading, false)
+    }
+
+    function test_managed_indexer_lifecycle_rejects_unsaved_configuration_draft() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+        sourceEditorState.setManagedIndexerConfigDraftDirty(true)
+
+        compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
+        compare(sourceEditorState.managedIndexerError,
+            "Save or undo Channel Indexer configuration changes before controlling Indexer.")
+        compare(gateway.requestCount("channelIndexerAction"), 0)
     }
 
     function test_managed_indexer_uses_selected_channel_and_bedrock_endpoint() {

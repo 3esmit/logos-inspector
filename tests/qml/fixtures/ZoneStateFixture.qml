@@ -49,6 +49,14 @@ QtObject {
     property string managedIndexerError: ""
     property string managedIndexerResult: ""
     property int managedIndexerRefreshCount: 0
+    property var managedIndexerConfigSnapshot: null
+    property bool managedIndexerConfigLoading: false
+    property bool managedIndexerConfigSaving: false
+    property bool managedIndexerConfigValidationLoading: false
+    property var managedIndexerConfigValidation: null
+    property string managedIndexerConfigValidationText: ""
+    property string managedIndexerConfigError: ""
+    property bool managedIndexerConfigDraftDirty: false
     property var managedIndexerRuntime: ({
         ownership: "inspector_managed",
         run_state: "running",
@@ -385,6 +393,168 @@ QtObject {
         }
         managedIndexerError = "Unsupported action"
         return false
+    }
+
+    function setManagedIndexerConfigDraftDirty(dirty) {
+        managedIndexerConfigDraftDirty = dirty === true
+    }
+
+    function clearManagedIndexerConfig() {
+        managedIndexerConfigSnapshot = null
+        managedIndexerConfigValidation = null
+        managedIndexerConfigValidationText = ""
+        managedIndexerConfigError = ""
+        managedIndexerConfigLoading = false
+        managedIndexerConfigSaving = false
+        managedIndexerConfigValidationLoading = false
+        managedIndexerConfigDraftDirty = false
+    }
+
+    function channelIndexerConfigText() {
+        return JSON.stringify({
+            channel_id: activeZoneId,
+            bedrock_config: { addr: bedrockEndpoint() },
+            consensus_info_polling_interval: "1s",
+            allow_chain_reset: false
+        }, null, 2)
+    }
+
+    function channelIndexerConfigFields(text) {
+        let value = null
+        try {
+            value = JSON.parse(String(text || ""))
+        } catch (error) {
+            return []
+        }
+        return [{
+            path: "/channel_id",
+            label: "Zone channel ID",
+            section: "Protocol",
+            kind: "string",
+            value: String(value.channel_id || ""),
+            required: true,
+            editable: false
+        }, {
+            path: "/bedrock_config/addr",
+            label: "Bedrock API URL",
+            section: "API",
+            kind: "string",
+            value: String(value.bedrock_config && value.bedrock_config.addr || ""),
+            required: true,
+            editable: false
+        }, {
+            path: "/consensus_info_polling_interval",
+            label: "Consensus polling interval",
+            section: "Protocol",
+            kind: "string",
+            value: String(value.consensus_info_polling_interval || ""),
+            required: true,
+            editable: true
+        }, {
+            path: "/allow_chain_reset",
+            label: "Allow automatic chain reset",
+            section: "Recovery",
+            kind: "boolean",
+            value: value.allow_chain_reset === true,
+            required: false,
+            editable: true
+        }]
+    }
+
+    function channelIndexerConfigSnapshotFor(revision, text) {
+        const rawText = String(text || channelIndexerConfigText())
+        return {
+            profile: "default",
+            network_scope: networkScope,
+            channel_id: activeZoneId,
+            source_config_revision: Number(activeZoneContext
+                && activeZoneContext.source_config_revision || 0),
+            selected_sequencer_source_id: String(activeZoneContext
+                && activeZoneContext.selected_sequencer_source_id || ""),
+            node_label: "Channel Indexer",
+            config_path: "/tmp/channel-indexers/" + activeZoneId + "/indexer-config.json",
+            config_role: "Zone-owned Indexer",
+            format: "json",
+            raw_text: rawText,
+            revision: String(revision || "fixture-revision-1"),
+            editable: true,
+            blocked_reason: null,
+            validation_scope: "JSON syntax, Zone identity, Bedrock source, and supported Indexer fields",
+            common_fields: channelIndexerConfigFields(rawText),
+            protected_fields: [
+                "Zone channel ID (derived from the selected Zone)",
+                "Bedrock API URL (derived from the active Bedrock source)"
+            ]
+        }
+    }
+
+    function loadManagedIndexerConfig() {
+        managedIndexerConfigLoading = true
+        managedIndexerConfigError = ""
+        managedIndexerConfigSnapshot = channelIndexerConfigSnapshotFor(
+            managedIndexerConfigSnapshot
+                ? managedIndexerConfigSnapshot.revision : "fixture-revision-1",
+            managedIndexerConfigSnapshot ? managedIndexerConfigSnapshot.raw_text : "")
+        managedIndexerConfigLoading = false
+        validateManagedIndexerConfig(managedIndexerConfigSnapshot.raw_text)
+        return true
+    }
+
+    function validateManagedIndexerConfig(text) {
+        const rawText = String(text || "")
+        managedIndexerConfigValidationLoading = true
+        let valid = false
+        let errorMessage = ""
+        let fields = []
+        try {
+            const value = JSON.parse(rawText)
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+                errorMessage = "Configuration must be a JSON object."
+            } else if (String(value.channel_id || "") !== activeZoneId) {
+                errorMessage = "Zone channel ID is derived from the active Zone."
+            } else if (String(value.bedrock_config && value.bedrock_config.addr || "")
+                    !== bedrockEndpoint()) {
+                errorMessage = "Bedrock API URL is derived from the active Bedrock source."
+            } else if (String(value.consensus_info_polling_interval || "").length === 0) {
+                errorMessage = "Consensus polling interval is required."
+            } else {
+                valid = true
+                fields = channelIndexerConfigFields(rawText)
+            }
+        } catch (error) {
+            errorMessage = String(error && error.message || error)
+        }
+        managedIndexerConfigValidation = {
+            valid: valid,
+            error: errorMessage,
+            common_fields: fields
+        }
+        managedIndexerConfigValidationText = rawText
+        managedIndexerConfigValidationLoading = false
+        return managedIndexerConfigValidation
+    }
+
+    function saveManagedIndexerConfig(text, revision) {
+        const rawText = String(text || "")
+        if (!managedIndexerConfigSnapshot
+                || String(revision || "") !== String(managedIndexerConfigSnapshot.revision || "")) {
+            managedIndexerConfigError = "Configuration changed; reload it before saving."
+            return false
+        }
+        const validation = validateManagedIndexerConfig(rawText)
+        if (!validation.valid) {
+            managedIndexerConfigError = validation.error
+            return false
+        }
+        managedIndexerConfigSaving = true
+        managedIndexerConfigSnapshot = channelIndexerConfigSnapshotFor(
+            "fixture-revision-" + (Number(String(revision).split("-").pop()) + 1 || 2),
+            rawText)
+        managedIndexerConfigValidation = null
+        managedIndexerConfigValidationText = ""
+        managedIndexerConfigError = ""
+        managedIndexerConfigSaving = false
+        return true
     }
 
     function refreshL2Blocks() {
