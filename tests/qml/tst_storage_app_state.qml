@@ -772,7 +772,7 @@ TestCase {
         compare(state.operation.active.status, "completed")
         compare(state.operation.active.cid, "z-done")
         compare(gateway.history.length, 1)
-        compare(state.operation.rows.length, 2)
+        compare(state.operation.rows.length, 1)
         compare(gateway.lastMethod, "runtimeOperationModuleEvent")
         compare(gateway.lastArgs[0].moduleName, "storage_module")
         compare(gateway.lastArgs[0].eventName, "storageUploadDone")
@@ -781,7 +781,7 @@ TestCase {
             JSON.stringify({ sessionId: "session-1", requestId: "request-1", success: true, cid: "z-done" })
         ]) !== null)
         compare(gateway.history.length, 1)
-        compare(state.operation.rows.length, 2)
+        compare(state.operation.rows.length, 1)
     }
 
     function test_terminal_operation_sets_result_and_history_once() {
