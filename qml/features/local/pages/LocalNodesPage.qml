@@ -1072,13 +1072,15 @@ ColumnLayout {
 
     function revealNodeConfiguration() {
         Qt.callLater(function () {
-            const scroller = root.pageScroller
-            if (!scroller || !scroller.contentItem || !nodeConfigurationPanel.visible) {
-                return
-            }
-            const point = nodeConfigurationPanel.mapToItem(scroller.contentItem, 0, 0)
-            const maximum = Math.max(0, scroller.contentHeight - scroller.height)
-            scroller.contentY = Math.max(0, Math.min(point.y - root.theme.gap, maximum))
+            Qt.callLater(function () {
+                const scroller = root.pageScroller
+                if (!scroller || !scroller.contentItem || !nodeConfigurationPanel.visible) {
+                    return
+                }
+                const point = nodeConfigurationPanel.mapToItem(scroller.contentItem, 0, 0)
+                const maximum = Math.max(0, scroller.contentHeight - scroller.height)
+                scroller.contentY = Math.max(0, Math.min(point.y - root.theme.gap, maximum))
+            })
         })
     }
 
