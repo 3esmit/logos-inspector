@@ -571,11 +571,16 @@ fn parse_chain_status(value: &Value) -> CatalogL1SourceResult<CatalogL1ChainStat
         },
     };
     validate_snapshot(&snapshot)?;
-    let genesis_id = source
+    let reported_genesis_id = source
         .get("genesis_id")
         .or_else(|| value.get("genesis_id"))
         .map(|field| required_hex_id(field, "genesis id"))
         .transpose()?;
+    let genesis_id = reported_genesis_id.or_else(|| {
+        // Legacy direct RPC omits `genesis_id`. Its LIB is the genesis block
+        // only while the reported LIB remains at the protocol's slot zero.
+        (snapshot.lib.slot == 0).then(|| snapshot.lib.block_id.clone())
+    });
     Ok(CatalogL1ChainStatus {
         snapshot,
         genesis_id,
@@ -1030,6 +1035,60 @@ mod tests {
             || time.current_epoch != 2
         {
             bail!("unexpected parsed time status: {time:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chain_status_uses_slot_zero_lib_as_legacy_genesis_identity() -> Result<()> {
+        let expected_genesis = id('a');
+        let chain = parse_chain_status(&json!({
+            "cryptarchia_info": {
+                "lib": expected_genesis,
+                "lib_slot": 0,
+                "tip": id('f'),
+                "slot": 30
+            }
+        }))?;
+
+        if chain.genesis_id.as_deref() != Some(expected_genesis.as_str()) {
+            bail!("slot-zero LIB was not promoted to genesis identity: {chain:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chain_status_does_not_infer_genesis_from_nonzero_lib() -> Result<()> {
+        let chain = parse_chain_status(&json!({
+            "cryptarchia_info": {
+                "lib": id('a'),
+                "lib_slot": 1,
+                "tip": id('f'),
+                "slot": 30
+            }
+        }))?;
+
+        if chain.genesis_id.is_some() {
+            bail!("nonzero LIB must not be inferred as genesis identity: {chain:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chain_status_prefers_explicit_genesis_over_slot_zero_lib() -> Result<()> {
+        let explicit_genesis = id('b');
+        let chain = parse_chain_status(&json!({
+            "cryptarchia_info": {
+                "genesis_id": explicit_genesis,
+                "lib": id('a'),
+                "lib_slot": 0,
+                "tip": id('f'),
+                "slot": 30
+            }
+        }))?;
+
+        if chain.genesis_id.as_deref() != Some(explicit_genesis.as_str()) {
+            bail!("explicit genesis identity was not preserved: {chain:?}");
         }
         Ok(())
     }
