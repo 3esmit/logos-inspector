@@ -25,6 +25,8 @@ ColumnLayout {
     property int confirmationGeneration: 0
     property var pageScroller: null
     property string pendingConfigurationReveal: ""
+    property bool configurationResponseReady: false
+    property bool configurationLayoutReady: false
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -46,34 +48,30 @@ ColumnLayout {
         }
 
         function onNodeConfigSnapshotChanged() {
-            root.revealNodeConfiguration()
+            root.markConfigurationResponseReady()
+        }
+
+        function onNodeConfigErrorChanged() {
+            root.markConfigurationResponseReady()
         }
 
         function onNodeConfigLoadingChanged() {
-            if (!root.model.nodeConfigLoading) {
-                root.revealNodeConfiguration()
+            if (root.model.nodeConfigLoading) {
+                root.configurationResponseReady = false
+                root.configurationLayoutReady = false
             }
         }
 
         function onNetworkProfileChanged() {
-            root.pendingConfigurationReveal = ""
+            root.clearConfigurationReveal()
         }
     }
 
-    Timer {
-        id: configurationRevealTimer
+    Connections {
+        target: root.pageScroller
 
-        interval: 75
-        repeat: false
-        onTriggered: {
-            const scroller = root.pageScroller
-            if (!root.pendingConfigurationReveal.length || !scroller
-                    || !nodeConfigurationPanel.visible
-                    || root.model.nodeConfigLoading) {
-                return
-            }
-            scroller.positionViewAtChild(nodeConfigurationPanel, Flickable.AlignTop)
-            root.pendingConfigurationReveal = ""
+        function onContentHeightChanged() {
+            root.revealNodeConfiguration()
         }
     }
 
@@ -672,6 +670,8 @@ ColumnLayout {
         theme: root.theme
         model: root.model
         Layout.fillWidth: true
+        onHeightChanged: root.noteConfigurationLayout()
+        onImplicitHeightChanged: root.noteConfigurationLayout()
     }
 
     Panel {
@@ -1097,17 +1097,63 @@ ColumnLayout {
     }
 
     function openNodeConfiguration(node) {
-        if (nodeConfigurationPanel.selectNode(node)) {
-            root.pendingConfigurationReveal = String(node || "")
-            root.revealNodeConfiguration()
+        const requestedNode = String(node || "").trim()
+        if (!requestedNode.length) {
+            return
+        }
+        root.pendingConfigurationReveal = requestedNode
+        root.configurationResponseReady = false
+        root.configurationLayoutReady = false
+        if (!nodeConfigurationPanel.selectNode(requestedNode)) {
+            root.clearConfigurationReveal()
         }
     }
 
     function revealNodeConfiguration() {
+        if (!root.pendingConfigurationReveal.length
+                || !root.configurationResponseReady
+                || !root.configurationLayoutReady
+                || root.model.nodeConfigLoading
+                || String(nodeConfigurationPanel.activeNode || "")
+                    !== root.pendingConfigurationReveal) {
+            return
+        }
+        const scroller = root.pageScroller
+        if (!scroller || !nodeConfigurationPanel.visible) {
+            return
+        }
+        scroller.positionViewAtChild(nodeConfigurationPanel, Flickable.AlignTop)
+        root.clearConfigurationReveal()
+    }
+
+    function markConfigurationResponseReady() {
         if (!root.pendingConfigurationReveal.length || root.model.nodeConfigLoading) {
             return
         }
-        configurationRevealTimer.restart()
+        if (root.model.nodeConfigSnapshot === null
+                && !String(root.model.nodeConfigError || "").length) {
+            return
+        }
+        root.configurationResponseReady = true
+    }
+
+    function noteConfigurationLayout() {
+        if (!root.pendingConfigurationReveal.length
+                || !root.configurationResponseReady
+                || root.model.nodeConfigLoading
+                || !nodeConfigurationPanel.visible) {
+            return
+        }
+        root.configurationLayoutReady = true
+        Qt.callLater(function () {
+            root.revealNodeConfiguration()
+        })
+    }
+
+    function clearConfigurationReveal() {
+        root.pendingConfigurationReveal = ""
+        root.configurationResponseReady = false
+        root.configurationLayoutReady = false
     }
 
     function openNetworkConfirm(action) {
