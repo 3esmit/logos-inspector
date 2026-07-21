@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -46,6 +47,14 @@ const STATE_FILE: &str = "channel_indexers.json";
 const STATE_VERSION: u32 = 1;
 const OPERATION_HISTORY_LIMIT: usize = 100;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CONFIG_BYTES_USIZE: usize = 1024 * 1024;
+const CONFIG_ROLE: &str = "Zone-owned Indexer";
+const CONFIG_VALIDATION_SCOPE: &str =
+    "JSON syntax, Zone identity, Bedrock source, and supported Indexer fields";
+const CONFIG_ACTIVE_RUNTIME_REASON: &str =
+    "Stop this Channel Indexer before editing its configuration.";
+const CONFIG_CREDENTIALS_REASON: &str = "Bedrock credentials are not editable in Inspector. Remove them before opening this configuration.";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,11 +70,67 @@ pub(crate) struct ChannelIndexerActionRequest {
     pub(crate) selected_sequencer_source_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChannelIndexerConfigRequest {
+    pub(crate) network_scope: NetworkScope,
+    pub(crate) channel_id: String,
+    pub(crate) bedrock_endpoint: String,
+    pub(crate) source_config_revision: u64,
+    pub(crate) selected_sequencer_source_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ChannelIndexerConfigSnapshot {
+    pub(crate) profile: String,
+    pub(crate) network_scope: NetworkScope,
+    pub(crate) channel_id: String,
+    pub(crate) source_config_revision: u64,
+    pub(crate) selected_sequencer_source_id: String,
+    pub(crate) node_label: String,
+    pub(crate) config_path: String,
+    pub(crate) config_role: String,
+    pub(crate) format: String,
+    pub(crate) raw_text: String,
+    pub(crate) revision: String,
+    pub(crate) editable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_reason: Option<String>,
+    pub(crate) validation_scope: String,
+    pub(crate) common_fields: Vec<ChannelIndexerConfigField>,
+    pub(crate) protected_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ChannelIndexerConfigField {
+    pub(crate) path: String,
+    pub(crate) label: String,
+    pub(crate) section: String,
+    pub(crate) kind: String,
+    pub(crate) value: Value,
+    pub(crate) required: bool,
+    pub(crate) editable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ChannelIndexerConfigValidation {
+    pub(crate) valid: bool,
+    pub(crate) error: String,
+    pub(crate) common_fields: Vec<ChannelIndexerConfigField>,
+}
+
 #[derive(Debug, Clone)]
 struct SourceBinding {
     config_revision: u64,
     source_id: String,
     target_fingerprint: String,
+}
+
+#[derive(Debug, Clone)]
+struct ChannelIndexerConfigContext {
+    channel_id: String,
+    bedrock_endpoint: String,
+    binding: SourceBinding,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +226,129 @@ impl ChannelIndexerStore {
     fn state_path(&self) -> PathBuf {
         self.config_root.join(STATE_FILE)
     }
+}
+
+pub(super) fn config_snapshot(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let context = config_context(request)?;
+    let path =
+        channel_indexer_config_path(config_root, &request.network_scope, &context.channel_id)?;
+    let state = ChannelIndexerStore::for_config_dir(config_root).load()?;
+    let bytes = match read_optional_indexer_config(config_root, &path)? {
+        Some(bytes) => bytes,
+        None => default_indexer_config_bytes(&context)?,
+    };
+    snapshot_from_config_bytes(profile, request, &context, path, &state, &bytes)
+}
+
+pub(super) fn config_validate(
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+) -> Result<ChannelIndexerConfigValidation> {
+    let result: Result<Vec<ChannelIndexerConfigField>> = (|| {
+        let context = config_context(request)?;
+        let value = parse_indexer_config_text(text)?;
+        validate_indexer_config_value(&value, &context)?;
+        Ok(project_config_fields(&value))
+    })();
+    match result {
+        Ok(common_fields) => Ok(ChannelIndexerConfigValidation {
+            valid: true,
+            error: String::new(),
+            common_fields,
+        }),
+        Err(error) => Ok(ChannelIndexerConfigValidation {
+            valid: false,
+            error: error.to_string(),
+            common_fields: Vec::new(),
+        }),
+    }
+}
+
+pub(super) fn save_config(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let context = config_context(request)?;
+    let store = ChannelIndexerStore::for_config_dir(config_root);
+    let state = store.load()?;
+    if config_is_active(&state, &request.network_scope, &context.channel_id) {
+        bail!(CONFIG_ACTIVE_RUNTIME_REASON);
+    }
+    let path =
+        channel_indexer_config_path(config_root, &request.network_scope, &context.channel_id)?;
+    let current = match read_optional_indexer_config(config_root, &path)? {
+        Some(bytes) => bytes,
+        None => default_indexer_config_bytes(&context)?,
+    };
+    if revision_for(&current) != expected_revision {
+        bail!("configuration changed on disk; reload it before saving");
+    }
+    let value = parse_indexer_config_text(text)?;
+    validate_indexer_config_value(&value, &context)?;
+    let bytes = serde_json::to_vec_pretty(&value)
+        .context("failed to serialize Channel Indexer configuration")?;
+    write_indexer_config_bytes(config_root, &path, &bytes)?;
+    config_snapshot(config_root, profile, request)
+}
+
+fn snapshot_from_config_bytes(
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    context: &ChannelIndexerConfigContext,
+    path: PathBuf,
+    state: &ChannelIndexerState,
+    bytes: &[u8],
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let raw_text = std::str::from_utf8(bytes)
+        .context("Channel Indexer configuration is not valid UTF-8")?
+        .to_owned();
+    let parsed = serde_json::from_slice::<Value>(bytes).ok();
+    let contains_credentials = parsed
+        .as_ref()
+        .is_some_and(indexer_config_contains_bedrock_credentials);
+    let blocked_reason = if contains_credentials {
+        Some(CONFIG_CREDENTIALS_REASON.to_owned())
+    } else if config_is_active(state, &request.network_scope, &context.channel_id) {
+        Some(CONFIG_ACTIVE_RUNTIME_REASON.to_owned())
+    } else {
+        None
+    };
+    let common_fields = parsed
+        .as_ref()
+        .filter(|value| validate_indexer_config_value(value, context).is_ok())
+        .map_or_else(Vec::new, project_config_fields);
+    Ok(ChannelIndexerConfigSnapshot {
+        profile: normalized_profile(profile).to_owned(),
+        network_scope: request.network_scope.clone(),
+        channel_id: context.channel_id.clone(),
+        source_config_revision: context.binding.config_revision,
+        selected_sequencer_source_id: context.binding.source_id.clone(),
+        node_label: "Channel Indexer".to_owned(),
+        config_path: path.display().to_string(),
+        config_role: CONFIG_ROLE.to_owned(),
+        format: "json".to_owned(),
+        raw_text: if contains_credentials {
+            String::new()
+        } else {
+            raw_text
+        },
+        revision: revision_for(bytes),
+        editable: blocked_reason.is_none(),
+        blocked_reason,
+        validation_scope: CONFIG_VALIDATION_SCOPE.to_owned(),
+        common_fields,
+        protected_fields: vec![
+            "Zone channel ID (derived from the selected Zone)".to_owned(),
+            "Bedrock API URL (derived from the active Bedrock source)".to_owned(),
+        ],
+    })
 }
 
 pub(super) fn status(
@@ -402,7 +590,7 @@ fn start(
                 .context("new Channel Indexer record is missing")?
         }
     };
-    write_indexer_config(record)?;
+    ensure_valid_indexer_config(context.config_root, record)?;
 
     let result = start_runtime_and_indexer(record, context.control);
     if let Err(error) = result {
@@ -946,23 +1134,35 @@ fn update_record_binding(
     record.last_error = None;
 }
 
-fn write_indexer_config(record: &ChannelIndexerRecord) -> Result<()> {
-    let value = crate::source_routing::execution_zone_layer::managed_indexer_channel_config(
-        &record.channel_id,
-        &record.bedrock_endpoint,
-    );
-    let path = record.config_path();
-    if let Some(parent) = Path::new(&path).parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create Channel Indexer config directory {}",
-                parent.display()
-            )
-        })?;
+fn ensure_valid_indexer_config(config_root: &Path, record: &ChannelIndexerRecord) -> Result<()> {
+    let expected_path =
+        channel_indexer_config_path(config_root, &record.network_scope, &record.channel_id)?;
+    let path = PathBuf::from(record.config_path());
+    if path != expected_path {
+        bail!("Channel Indexer configuration path does not match its Channel scope");
     }
-    let text = serde_json::to_string_pretty(&value)
-        .context("failed to serialize Channel Indexer config")?;
-    fs::write(&path, text).with_context(|| format!("failed to write Channel Indexer config {path}"))
+    let context = ChannelIndexerConfigContext {
+        channel_id: record.channel_id.clone(),
+        bedrock_endpoint: record.bedrock_endpoint.clone(),
+        binding: SourceBinding {
+            config_revision: record.source_config_revision,
+            source_id: record.selected_sequencer_source_id.clone(),
+            target_fingerprint: record.selected_sequencer_target_fingerprint.clone(),
+        },
+    };
+    let Some(bytes) = read_optional_indexer_config(config_root, &path)? else {
+        return write_indexer_config_bytes(
+            config_root,
+            &path,
+            &default_indexer_config_bytes(&context)?,
+        );
+    };
+    let text =
+        std::str::from_utf8(&bytes).context("Channel Indexer configuration is not valid UTF-8")?;
+    let value = parse_indexer_config_text(text)?;
+    validate_indexer_config_value(&value, &context).context(
+        "Channel Indexer configuration is invalid; open Zone Sources and repair it before starting",
+    )
 }
 
 impl ChannelIndexerRecord {
@@ -1004,6 +1204,334 @@ fn normalized_channel_id(channel_id: &str) -> Result<String> {
     let channel_id = channel_id.trim();
     validate_channel_id(channel_id)?;
     Ok(channel_id.to_ascii_lowercase())
+}
+
+fn config_context(request: &ChannelIndexerConfigRequest) -> Result<ChannelIndexerConfigContext> {
+    let configs = load_channel_source_configs()?;
+    config_context_from_configs(request, &configs)
+}
+
+fn config_context_from_configs(
+    request: &ChannelIndexerConfigRequest,
+    configs: &[ChannelSourceConfig],
+) -> Result<ChannelIndexerConfigContext> {
+    let channel_id = normalized_channel_id(&request.channel_id)?;
+    let bedrock_endpoint = normalized_bedrock_endpoint(&request.bedrock_endpoint)?;
+    if request.source_config_revision == 0 {
+        bail!("Channel source configuration revision is required");
+    }
+    let selected_sequencer_source_id = request.selected_sequencer_source_id.trim().to_owned();
+    if selected_sequencer_source_id.is_empty() {
+        bail!("selected Sequencer source is required");
+    }
+    let config = configs
+        .iter()
+        .find(|config| {
+            config.network_scope == request.network_scope && config.channel_id == channel_id
+        })
+        .context(
+            "configure a selected Sequencer source for this Channel before configuring Indexer",
+        )?;
+    if config.config_revision != request.source_config_revision {
+        bail!(
+            "Channel source configuration changed; refresh Zone Sources before configuring Indexer"
+        );
+    }
+    let indexer_source = config
+        .indexer_source
+        .as_ref()
+        .context("configure the Channel-owned Indexer source before editing its configuration")?;
+    if !matches!(
+        &indexer_source.target,
+        ChannelSourceTarget::Module { module_id } if module_id == indexer::MODULE_ID
+    ) {
+        bail!("the configured Indexer source is not the Channel-owned Indexer module");
+    }
+    let binding = source_binding_from_configs(&configs, &request.network_scope, &channel_id)?;
+    if binding.source_id != selected_sequencer_source_id {
+        bail!("selected Sequencer source changed; refresh Zone Sources before configuring Indexer");
+    }
+    Ok(ChannelIndexerConfigContext {
+        channel_id,
+        bedrock_endpoint,
+        binding,
+    })
+}
+
+fn channel_indexer_config_path(
+    config_root: &Path,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<PathBuf> {
+    let scope_key = network_scope_key(network_scope)?;
+    let channel_id = normalized_channel_id(channel_id)?;
+    let root = config_root.join("channel-indexers");
+    let path = root
+        .join(scope_key)
+        .join(channel_id)
+        .join("indexer-config.json");
+    if !path.starts_with(&root) {
+        bail!("Channel Indexer configuration path escapes its managed root");
+    }
+    Ok(path)
+}
+
+fn read_optional_indexer_config(config_root: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect Channel Indexer configuration {}",
+                    path.display()
+                )
+            });
+        }
+    };
+    validate_indexer_config_location(config_root, path, false)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("Channel Indexer configuration must be a regular file");
+    }
+    if metadata.len() > MAX_CONFIG_BYTES {
+        bail!("Channel Indexer configuration exceeds the 1 MiB editor limit");
+    }
+    fs::read(path)
+        .with_context(|| {
+            format!(
+                "failed to read Channel Indexer configuration {}",
+                path.display()
+            )
+        })
+        .map(Some)
+}
+
+fn write_indexer_config_bytes(config_root: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    if bytes.len() > MAX_CONFIG_BYTES_USIZE {
+        bail!("Channel Indexer configuration exceeds the 1 MiB editor limit");
+    }
+    validate_indexer_config_location(config_root, path, true)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            bail!("Channel Indexer configuration must be a regular file")
+        }
+        Ok(_) | Err(_) => {}
+    }
+    let parent = path
+        .parent()
+        .context("Channel Indexer configuration has no parent directory")?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".indexer-config-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .context("failed to stage Channel Indexer configuration")?;
+    staged
+        .write_all(bytes)
+        .context("failed to write staged Channel Indexer configuration")?;
+    staged
+        .as_file_mut()
+        .flush()
+        .context("failed to flush staged Channel Indexer configuration")?;
+    staged
+        .as_file()
+        .sync_all()
+        .context("failed to sync staged Channel Indexer configuration")?;
+    staged
+        .persist(path)
+        .map_err(|error| error.error)
+        .context("failed to atomically replace Channel Indexer configuration")?;
+    sync_config_directory(parent)
+}
+
+fn validate_indexer_config_location(
+    config_root: &Path,
+    path: &Path,
+    create_parent: bool,
+) -> Result<()> {
+    let root = config_root.join("channel-indexers");
+    if !path.starts_with(&root) {
+        bail!("Channel Indexer configuration is outside its managed root");
+    }
+    let parent = path
+        .parent()
+        .context("Channel Indexer configuration has no parent directory")?;
+    if create_parent {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create Channel Indexer configuration directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    if !parent.is_dir() {
+        bail!("Channel Indexer configuration directory is unavailable");
+    }
+    let canonical_root = fs::canonicalize(&root).with_context(|| {
+        format!(
+            "failed to resolve Channel Indexer configuration root {}",
+            root.display()
+        )
+    })?;
+    let canonical_parent = fs::canonicalize(parent).with_context(|| {
+        format!(
+            "failed to resolve Channel Indexer configuration directory {}",
+            parent.display()
+        )
+    })?;
+    if canonical_parent != canonical_root && !canonical_parent.starts_with(&canonical_root) {
+        bail!("Channel Indexer configuration directory escapes its managed root");
+    }
+    Ok(())
+}
+
+fn default_indexer_config_bytes(context: &ChannelIndexerConfigContext) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(
+        &crate::source_routing::execution_zone_layer::managed_indexer_channel_config(
+            &context.channel_id,
+            &context.bedrock_endpoint,
+        ),
+    )
+    .context("failed to serialize default Channel Indexer configuration")
+}
+
+fn parse_indexer_config_text(text: &str) -> Result<Value> {
+    if text.len() > MAX_CONFIG_BYTES_USIZE {
+        bail!("Channel Indexer configuration exceeds the 1 MiB editor limit");
+    }
+    serde_json::from_str(text).context("Channel Indexer configuration is not valid JSON")
+}
+
+fn validate_indexer_config_value(
+    value: &Value,
+    context: &ChannelIndexerConfigContext,
+) -> Result<()> {
+    let object = value
+        .as_object()
+        .context("Channel Indexer configuration must be a JSON object")?;
+    let channel_id = required_config_string(object.get("channel_id"), "Zone channel ID")?;
+    if channel_id != context.channel_id {
+        bail!("Zone channel ID is derived from the active Zone and cannot be changed");
+    }
+    let bedrock = object
+        .get("bedrock_config")
+        .and_then(Value::as_object)
+        .context("Bedrock configuration must be a JSON object")?;
+    if bedrock.contains_key("auth") {
+        bail!(CONFIG_CREDENTIALS_REASON);
+    }
+    let endpoint = normalized_bedrock_endpoint(required_config_string(
+        bedrock.get("addr"),
+        "Bedrock API URL",
+    )?)?;
+    if endpoint != context.bedrock_endpoint {
+        bail!("Bedrock API URL is derived from the active Bedrock source and cannot be changed");
+    }
+    let interval = required_config_string(
+        object.get("consensus_info_polling_interval"),
+        "Consensus polling interval",
+    )?;
+    let interval = humantime::parse_duration(interval)
+        .context("Consensus polling interval must be a positive human-readable duration")?;
+    if interval.is_zero() {
+        bail!("Consensus polling interval must be greater than zero");
+    }
+    if let Some(allow_chain_reset) = object.get("allow_chain_reset")
+        && !allow_chain_reset.is_boolean()
+    {
+        bail!("Allow automatic chain reset must be true or false");
+    }
+    Ok(())
+}
+
+fn required_config_string<'a>(value: Option<&'a Value>, label: &str) -> Result<&'a str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{label} is required"))
+}
+
+fn indexer_config_contains_bedrock_credentials(value: &Value) -> bool {
+    value
+        .get("bedrock_config")
+        .and_then(Value::as_object)
+        .is_some_and(|config| config.contains_key("auth"))
+}
+
+fn project_config_fields(value: &Value) -> Vec<ChannelIndexerConfigField> {
+    let mut fields = Vec::new();
+    for (path, label, section, kind, required, editable) in [
+        (
+            "/channel_id",
+            "Zone channel ID",
+            "Protocol",
+            "string",
+            true,
+            false,
+        ),
+        (
+            "/bedrock_config/addr",
+            "Bedrock API URL",
+            "API",
+            "string",
+            true,
+            false,
+        ),
+        (
+            "/consensus_info_polling_interval",
+            "Consensus polling interval",
+            "Protocol",
+            "string",
+            true,
+            true,
+        ),
+        (
+            "/allow_chain_reset",
+            "Allow automatic chain reset",
+            "Recovery",
+            "boolean",
+            false,
+            true,
+        ),
+    ] {
+        if let Some(field_value) = value.pointer(path) {
+            fields.push(ChannelIndexerConfigField {
+                path: path.to_owned(),
+                label: label.to_owned(),
+                section: section.to_owned(),
+                kind: kind.to_owned(),
+                value: field_value.clone(),
+                required,
+                editable,
+            });
+        }
+    }
+    fields
+}
+
+fn config_is_active(
+    state: &ChannelIndexerState,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> bool {
+    find_record(state, network_scope, channel_id).is_some_and(|record| record.runtime.is_running())
+}
+
+#[cfg(unix)]
+fn sync_config_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)
+        .context("failed to open Channel Indexer configuration directory")?
+        .sync_all()
+        .context("failed to sync Channel Indexer configuration directory")
+}
+
+#[cfg(not(unix))]
+fn sync_config_directory(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn revision_for(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn network_scope_key(network_scope: &NetworkScope) -> Result<String> {
@@ -1140,6 +1668,7 @@ fn is_control_interruption(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use anyhow::{Context as _, Result};
+    use serde_json::json;
 
     use super::*;
     use crate::source_routing::channel_sources::{
@@ -1219,6 +1748,111 @@ mod tests {
             last_error: None,
             operations: Vec::new(),
         })
+    }
+
+    fn config_request(channel_id: &str) -> ChannelIndexerConfigRequest {
+        ChannelIndexerConfigRequest {
+            network_scope: network_scope(),
+            channel_id: channel_id.to_owned(),
+            bedrock_endpoint: "http://127.0.0.1:8080/".to_owned(),
+            source_config_revision: 7,
+            selected_sequencer_source_id: "src_selected".to_owned(),
+        }
+    }
+
+    #[test]
+    fn zone_owned_configuration_locks_identity_and_projects_common_fields() -> Result<()> {
+        let channel_id = "01".repeat(32);
+        let config = module_source_config(&channel_id);
+        let request = config_request(&channel_id);
+        let context = config_context_from_configs(&request, &[config])?;
+        let bytes = default_indexer_config_bytes(&context)?;
+        let value: Value = serde_json::from_slice(&bytes)?;
+
+        validate_indexer_config_value(&value, &context)?;
+        let fields = project_config_fields(&value);
+        anyhow::ensure!(fields.len() == 4);
+        anyhow::ensure!(fields[0].editable == false);
+        anyhow::ensure!(fields[1].editable == false);
+        anyhow::ensure!(fields[2].editable);
+        anyhow::ensure!(fields[3].editable);
+
+        let mut changed_channel = value.clone();
+        changed_channel
+            .as_object_mut()
+            .context("default config must be an object")?
+            .insert("channel_id".to_owned(), json!("88".repeat(32)));
+        let channel_error = validate_indexer_config_value(&changed_channel, &context)
+            .expect_err("different Zone channel must be rejected");
+        anyhow::ensure!(
+            channel_error
+                .to_string()
+                .contains("derived from the active Zone")
+        );
+
+        let mut changed_endpoint = value.clone();
+        changed_endpoint
+            .pointer_mut("/bedrock_config/addr")
+            .context("default config must include Bedrock URL")?
+            .clone_from(&json!("https://other.example"));
+        let endpoint_error = validate_indexer_config_value(&changed_endpoint, &context)
+            .expect_err("different Bedrock endpoint must be rejected");
+        anyhow::ensure!(
+            endpoint_error
+                .to_string()
+                .contains("derived from the active Bedrock")
+        );
+
+        let mut invalid_interval = value.clone();
+        invalid_interval
+            .as_object_mut()
+            .context("default config must be an object")?
+            .insert(
+                "consensus_info_polling_interval".to_owned(),
+                json!("not-a-duration"),
+            );
+        anyhow::ensure!(validate_indexer_config_value(&invalid_interval, &context).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn start_preserves_valid_saved_channel_indexer_configuration() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let record = running_record(directory.path(), &source)?;
+        let path = PathBuf::from(record.config_path());
+
+        ensure_valid_indexer_config(directory.path(), &record)?;
+        let default_bytes = fs::read(&path)?;
+        let default_value: Value = serde_json::from_slice(&default_bytes)?;
+        anyhow::ensure!(default_value.get("allow_chain_reset") == Some(&Value::Bool(false)));
+
+        let mut saved_value = default_value;
+        saved_value
+            .as_object_mut()
+            .context("default config must be an object")?
+            .insert("consensus_info_polling_interval".to_owned(), json!("2s"));
+        saved_value
+            .as_object_mut()
+            .context("default config must remain an object")?
+            .insert("cross_zone".to_owned(), Value::Null);
+        let saved_bytes = serde_json::to_vec(&saved_value)?;
+        write_indexer_config_bytes(directory.path(), &path, &saved_bytes)?;
+
+        ensure_valid_indexer_config(directory.path(), &record)?;
+        anyhow::ensure!(fs::read(&path)? == saved_bytes);
+
+        let mut invalid_value = saved_value;
+        invalid_value
+            .as_object_mut()
+            .context("saved config must be an object")?
+            .insert("channel_id".to_owned(), json!("88".repeat(32)));
+        let invalid_bytes = serde_json::to_vec(&invalid_value)?;
+        write_indexer_config_bytes(directory.path(), &path, &invalid_bytes)?;
+        anyhow::ensure!(ensure_valid_indexer_config(directory.path(), &record).is_err());
+        anyhow::ensure!(fs::read(&path)? == invalid_bytes);
+        Ok(())
     }
 
     #[test]

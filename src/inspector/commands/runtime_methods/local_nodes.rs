@@ -7,9 +7,13 @@ use crate::{
     local_devnet_list as local_devnet_list_report,
     local_nodes::local_node_package_catalog as local_node_package_catalog_report,
     local_nodes::{
-        NodeKind, channel_indexer_status as channel_indexer_status_report,
+        ChannelIndexerConfigRequest, NodeKind,
+        channel_indexer_config as channel_indexer_config_report,
+        channel_indexer_status as channel_indexer_status_report,
         local_node_config as local_node_config_report,
+        save_channel_indexer_config as save_channel_indexer_config_report,
         save_local_node_config as save_local_node_config_report,
+        validate_channel_indexer_config as validate_channel_indexer_config_report,
         validate_local_node_config as validate_local_node_config_report,
     },
     local_nodes_status as local_nodes_status_report,
@@ -24,6 +28,12 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("localNodeConfig", local_node_config),
     RuntimeMethodEntry::sync("localNodeConfigValidate", local_node_config_validate),
     RuntimeMethodEntry::sync("localNodeConfigSave", local_node_config_save),
+    RuntimeMethodEntry::sync("channelIndexerConfig", channel_indexer_config),
+    RuntimeMethodEntry::sync(
+        "channelIndexerConfigValidate",
+        channel_indexer_config_validate,
+    ),
+    RuntimeMethodEntry::sync("channelIndexerConfigSave", channel_indexer_config_save),
     RuntimeMethodEntry::sync("channelIndexerStatus", channel_indexer_status),
     RuntimeMethodEntry::sync("localDevnetList", local_devnet_list),
     RuntimeMethodEntry::with_runtime("localNodePackageCatalog", local_node_package_catalog),
@@ -64,6 +74,34 @@ pub(super) fn local_node_config_save(args: Value) -> Result<Value> {
     )?)
 }
 
+pub(super) fn channel_indexer_config(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    to_value(channel_indexer_config_report(
+        args.optional_string(0).unwrap_or("default"),
+        channel_indexer_config_request(&args, 1)?,
+    )?)
+}
+
+pub(super) fn channel_indexer_config_validate(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    to_value(validate_channel_indexer_config_report(
+        args.optional_string(0).unwrap_or("default"),
+        channel_indexer_config_request(&args, 1)?,
+        args.string(2, "Channel Indexer configuration text")?,
+    )?)
+}
+
+pub(super) fn channel_indexer_config_save(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    to_value(save_channel_indexer_config_report(
+        args.optional_string(0).unwrap_or("default"),
+        channel_indexer_config_request(&args, 1)?,
+        args.string(2, "Channel Indexer configuration text")?,
+        args.string(3, "Channel Indexer configuration revision")?,
+        args.optional_string(4),
+    )?)
+}
+
 fn node_kind(args: &Args, index: usize) -> Result<NodeKind> {
     serde_json::from_value(
         args.value(index)
@@ -71,6 +109,18 @@ fn node_kind(args: &Args, index: usize) -> Result<NodeKind> {
             .context("local node kind is required")?,
     )
     .context("local node kind is invalid")
+}
+
+fn channel_indexer_config_request(
+    args: &Args,
+    index: usize,
+) -> Result<ChannelIndexerConfigRequest> {
+    serde_json::from_value(
+        args.value(index)
+            .cloned()
+            .context("Channel Indexer configuration request is required")?,
+    )
+    .context("Channel Indexer configuration request is invalid")
 }
 
 pub(super) fn channel_indexer_status(args: Value) -> Result<Value> {

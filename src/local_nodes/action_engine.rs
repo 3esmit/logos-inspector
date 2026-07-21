@@ -24,7 +24,10 @@ use super::presentation;
 use super::process::{find_command, process_group_has_live_members};
 use super::runtime::{self, LogoscoreRuntimeProfile, LogoscoreRuntimeStore};
 use super::workflow::{LocalNodeWorkflow, normalized_profile};
-use super::{ChannelIndexerActionRequest, LocalNodePackageCommit};
+use super::{
+    ChannelIndexerActionRequest, ChannelIndexerConfigRequest, ChannelIndexerConfigSnapshot,
+    ChannelIndexerConfigValidation, LocalNodePackageCommit,
+};
 
 const STATE_FILE: &str = "local_nodes.json";
 
@@ -71,6 +74,46 @@ impl LocalNodeActionEngine {
             self.projector,
             network_scope,
             channel_id,
+        )
+    }
+
+    pub(super) fn channel_indexer_config_snapshot(
+        &self,
+        profile: &str,
+        request: &ChannelIndexerConfigRequest,
+    ) -> Result<ChannelIndexerConfigSnapshot> {
+        let _state_lock = acquire_state_lock()?;
+        super::channel_indexer::config_snapshot(self.runtime_store.config_root(), profile, request)
+    }
+
+    pub(super) fn channel_indexer_config_validate(
+        &self,
+        profile: &str,
+        request: &ChannelIndexerConfigRequest,
+        text: &str,
+    ) -> Result<ChannelIndexerConfigValidation> {
+        let _state_lock = acquire_state_lock()?;
+        let _ = normalized_profile(profile);
+        super::channel_indexer::config_validate(request, text)
+    }
+
+    pub(super) fn save_channel_indexer_config(
+        &self,
+        profile: &str,
+        request: &ChannelIndexerConfigRequest,
+        text: &str,
+        expected_revision: &str,
+        confirmation: Option<&str>,
+    ) -> Result<ChannelIndexerConfigSnapshot> {
+        ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+
+        let _state_lock = acquire_state_lock()?;
+        super::channel_indexer::save_config(
+            self.runtime_store.config_root(),
+            profile,
+            request,
+            text,
+            expected_revision,
         )
     }
 
