@@ -320,6 +320,35 @@ Item {
             verify(panel.draftText.indexOf("debug") >= 0)
         }
 
+        function test_node_configuration_raw_field_accepts_full_text() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "activeNode", "bedrock")
+            panel.requestTab("raw")
+            compare(panel.currentTab, "raw")
+            const raw = findChild(panel, "nodeConfigRawInput")
+            verify(!!raw, "Raw configuration input exists")
+
+            raw.forceActiveFocus()
+            raw.cursorPosition = raw.text.length
+            verify(raw.activeFocus, "Raw configuration input has focus")
+            keyClick(Qt.Key_D)
+            keyClick(Qt.Key_E)
+            keyClick(Qt.Key_B)
+            keyClick(Qt.Key_U)
+            keyClick(Qt.Key_G)
+
+            tryVerify(function () {
+                return raw.text.endsWith("debug")
+            })
+            verify(panel.draftText.endsWith("debug"))
+        }
+
         function test_node_configuration_retries_same_node_after_load_error() {
             const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
             const configure = findChild(page, "nodeConfigurebedrock")
