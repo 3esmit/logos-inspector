@@ -1046,6 +1046,58 @@ TestCase {
         }
     }
 
+    function test_managed_indexer_confirmation_pauses_status_polling() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const stop = findChild(control, "stopManagedIndexerButton")
+        const timer = findChild(control, "managedIndexerStatusRefreshTimer")
+        const popup = findChild(control, "managedIndexerActionConfirmation")
+        verify(stop !== null && timer !== null && popup !== null)
+        const initialNode = zoneState.managedIndexerNode
+        const initialRefreshInFlight = zoneState.managedIndexerRefreshInFlight
+        const initialControlInFlight = zoneState.managedIndexerControlInFlight
+        try {
+            zoneState.managedIndexerRefreshInFlight = false
+            zoneState.managedIndexerControlInFlight = false
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "running",
+                indexer_state: "running",
+                managed_channel_id: zoneState.activeZoneId,
+                available_actions: ["stop"]
+            }
+            tryVerify(function () {
+                return stop.enabled && timer.running
+            })
+
+            stop.clicked()
+            tryVerify(function () {
+                return popup.visible && control.actionConfirmationOpen
+            })
+            compare(popup.title, "Stop Channel Indexer")
+            verify(!timer.running)
+            const confirm = findChild(popup.contentItem, "confirmButton")
+            verify(confirm !== null && confirm.enabled)
+
+            popup.close()
+            tryVerify(function () {
+                return !popup.visible && !control.actionConfirmationOpen && timer.running
+            })
+        } finally {
+            popup.close()
+            zoneState.managedIndexerNode = initialNode
+            zoneState.managedIndexerRefreshInFlight = initialRefreshInFlight
+            zoneState.managedIndexerControlInFlight = initialControlInFlight
+        }
+    }
+
     function test_managed_indexer_other_channel_does_not_block_this_channel_start() {
         const detail = findChild(page, "zoneDetail")
         verify(detail !== null)
