@@ -10,6 +10,7 @@ mod action_workspace;
 mod adapters;
 mod channel_indexer;
 mod commands;
+mod config;
 mod lifecycle;
 mod messaging_identity;
 mod model;
@@ -72,6 +73,7 @@ impl LocalNodePackageCommit {
 }
 
 pub(crate) use channel_indexer::ChannelIndexerActionRequest;
+pub(crate) use config::{LocalNodeConfigSnapshot, LocalNodeConfigValidation};
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
     LocalNodeDeployment, LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport,
@@ -87,6 +89,34 @@ pub use runtime::LogoscoreRuntimeStatus;
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
     action_engine::LocalNodeActionEngine::system()?.status(profile)
+}
+
+pub(crate) fn local_node_config(profile: &str, node: NodeKind) -> Result<LocalNodeConfigSnapshot> {
+    action_engine::LocalNodeActionEngine::system()?.config_snapshot(profile, node)
+}
+
+pub(crate) fn validate_local_node_config(
+    profile: &str,
+    node: NodeKind,
+    text: &str,
+) -> Result<LocalNodeConfigValidation> {
+    action_engine::LocalNodeActionEngine::system()?.config_validate(profile, node, text)
+}
+
+pub(crate) fn save_local_node_config(
+    profile: &str,
+    node: NodeKind,
+    text: &str,
+    expected_revision: &str,
+    confirmation: Option<&str>,
+) -> Result<LocalNodeConfigSnapshot> {
+    action_engine::LocalNodeActionEngine::system()?.save_config(
+        profile,
+        node,
+        text,
+        expected_revision,
+        confirmation,
+    )
 }
 
 pub(crate) fn channel_indexer_status(

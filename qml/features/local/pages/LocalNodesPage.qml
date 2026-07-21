@@ -8,6 +8,7 @@ import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
+import "../controls"
 
 ColumnLayout {
     id: root
@@ -576,6 +577,16 @@ ColumnLayout {
                     }
 
                     ActionButton {
+                        objectName: "nodeConfigure" + actionRow.modelData.key
+                        theme: root.theme
+                        text: qsTr("Configure")
+                        enabled: root.model.configurationActionEnabled(actionRow.modelData.key)
+                        accessibleName: qsTr("Configure %1").arg(actionRow.modelData.label)
+                        Layout.preferredWidth: 108
+                        onClicked: root.openNodeConfiguration(actionRow.modelData.key)
+                    }
+
+                    ActionButton {
                         theme: root.theme
                         visible: actionRow.modelData.key !== "indexer"
                             && root.model.actionAvailable(actionRow.modelData.key, "start")
@@ -620,6 +631,14 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    NodeConfigurationPanel {
+        id: nodeConfigurationPanel
+
+        theme: root.theme
+        model: root.model
+        Layout.fillWidth: true
     }
 
     Panel {
@@ -1042,6 +1061,10 @@ ColumnLayout {
     function openNodeConfirm(action, node) {
         root.model.beginNodeAction(action, node);
         root.showConfirmation();
+    }
+
+    function openNodeConfiguration(node) {
+        nodeConfigurationPanel.selectNode(node)
     }
 
     function openNetworkConfirm(action) {

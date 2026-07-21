@@ -23,6 +23,16 @@ QtObject {
     property string packageCatalogError: ""
     property bool packageCatalogLoading: false
     property int packageCatalogGeneration: 0
+    property var nodeConfigSnapshot: null
+    property string nodeConfigError: ""
+    property string nodeConfigNode: ""
+    property bool nodeConfigLoading: false
+    property bool nodeConfigSaving: false
+    property int nodeConfigGeneration: 0
+    property int nodeConfigValidationGeneration: 0
+    property bool nodeConfigValidationLoading: false
+    property string nodeConfigValidationText: ""
+    property var nodeConfigValidation: null
     property var observedNodes: ({})
     readonly property string defaultRuntimeModulesDir: "/opt/logos-node/modules"
     property string pendingAction: ""
@@ -52,6 +62,7 @@ QtObject {
         error = ""
         operations = []
         clearActionDraft()
+        clearNodeConfig()
         revision += 1
     }
 
@@ -119,6 +130,164 @@ QtObject {
                 devnets = response.value && Array.isArray(response.value.devnets) ? response.value.devnets : [];
             }
         });
+    }
+
+    function clearNodeConfig() {
+        nodeConfigGeneration += 1
+        nodeConfigValidationGeneration += 1
+        nodeConfigSnapshot = null
+        nodeConfigError = ""
+        nodeConfigNode = ""
+        nodeConfigLoading = false
+        nodeConfigSaving = false
+        nodeConfigValidationLoading = false
+        nodeConfigValidationText = ""
+        nodeConfigValidation = null
+    }
+
+    function loadNodeConfig(node) {
+        const nodeKey = String(node || "").trim()
+        if (!nodeKey.length) {
+            clearNodeConfig()
+            return null
+        }
+        if (busy || nodeConfigSaving) {
+            gateway.setResult(qsTr("Node configuration"), qsTr("Wait for the current operation to finish."), true, null)
+            return null
+        }
+        const generation = nodeConfigGeneration + 1
+        const requestedProfile = networkProfile
+        nodeConfigGeneration = generation
+        nodeConfigValidationGeneration += 1
+        nodeConfigNode = nodeKey
+        nodeConfigLoading = true
+        nodeConfigSnapshot = null
+        nodeConfigError = ""
+        nodeConfigValidationLoading = false
+        nodeConfigValidationText = ""
+        nodeConfigValidation = null
+        return gateway.request("localNodeConfig", [requestedProfile, nodeKey], qsTr("Node configuration"), false, function (response) {
+            if (generation !== nodeConfigGeneration
+                    || requestedProfile !== networkProfile
+                    || nodeKey !== nodeConfigNode) {
+                return
+            }
+            nodeConfigLoading = false
+            if (response.ok) {
+                nodeConfigSnapshot = response.value || null
+                nodeConfigError = ""
+                revision += 1
+                return
+            }
+            nodeConfigSnapshot = null
+            nodeConfigError = response.error || qsTr("Node configuration could not be loaded.")
+            revision += 1
+        })
+    }
+
+    function validateNodeConfig(text) {
+        const snapshot = nodeConfigSnapshot || null
+        const nodeKey = String(snapshot && snapshot.node || nodeConfigNode || "").trim()
+        if (!snapshot || !nodeKey.length) {
+            return null
+        }
+        const generation = nodeConfigValidationGeneration + 1
+        const configGeneration = nodeConfigGeneration
+        const requestedProfile = networkProfile
+        const configText = String(text || "")
+        nodeConfigValidationGeneration = generation
+        nodeConfigValidationLoading = true
+        nodeConfigValidationText = configText
+        nodeConfigValidation = null
+        return gateway.request("localNodeConfigValidate", [requestedProfile, nodeKey, configText], qsTr("Node configuration validation"), false, function (response) {
+            if (generation !== nodeConfigValidationGeneration
+                    || configGeneration !== nodeConfigGeneration
+                    || requestedProfile !== networkProfile
+                    || nodeKey !== nodeConfigNode
+                    || configText !== nodeConfigValidationText) {
+                return
+            }
+            nodeConfigValidationLoading = false
+            if (response.ok) {
+                nodeConfigValidation = response.value || {
+                    valid: false,
+                    error: qsTr("Node configuration validation returned no result.")
+                }
+                return
+            }
+            nodeConfigValidation = {
+                valid: false,
+                error: response.error || qsTr("Node configuration is invalid.")
+            }
+        })
+    }
+
+    function saveNodeConfig(text, revisionToken) {
+        const snapshot = nodeConfigSnapshot || null
+        const nodeKey = String(snapshot && snapshot.node || nodeConfigNode || "").trim()
+        if (!snapshot || !nodeKey.length || nodeConfigSaving || busy) {
+            return null
+        }
+        const expectedRevision = String(revisionToken || snapshot.revision || "").trim()
+        if (!expectedRevision.length) {
+            nodeConfigError = qsTr("Configuration revision is missing. Reload before saving.")
+            return null
+        }
+        const generation = nodeConfigGeneration
+        const requestedProfile = networkProfile
+        nodeConfigSaving = true
+        nodeConfigError = ""
+        gateway.setBusy(true, qsTr("Save %1 configuration").arg(String(snapshot.node_label || nodeKey)))
+        return gateway.request("localNodeConfigSave", [
+            requestedProfile,
+            nodeKey,
+            String(text || ""),
+            expectedRevision,
+            ConfirmationPolicy.token("local-node-action")
+        ], qsTr("Save node configuration"), true, function (response) {
+            if (generation !== nodeConfigGeneration
+                    || requestedProfile !== networkProfile
+                    || nodeKey !== nodeConfigNode) {
+                gateway.setBusy(false, "")
+                return
+            }
+            nodeConfigSaving = false
+            if (response.ok) {
+                nodeConfigSnapshot = response.value || null
+                nodeConfigValidation = nodeConfigSnapshot ? {
+                    valid: true,
+                    error: "",
+                    common_fields: nodeConfigSnapshot.common_fields || []
+                } : null
+                nodeConfigError = ""
+                revision += 1
+                const label = qsTr("Save %1 configuration")
+                    .arg(String(snapshot.node_label || nodeKey))
+                gateway.appendOperationHistory({
+                    domain: "localNodes",
+                    method: "localNodeConfigSave",
+                    status: "completed",
+                    label: label,
+                    result: {
+                        status: "saved",
+                        revision: String(nodeConfigSnapshot && nodeConfigSnapshot.revision || "")
+                    },
+                    error: ""
+                }, qsTr("Configuration saved."))
+                refresh(false)
+            } else {
+                nodeConfigError = response.error || qsTr("Node configuration could not be saved.")
+                gateway.appendOperationHistory({
+                    domain: "localNodes",
+                    method: "localNodeConfigSave",
+                    status: "failed",
+                    label: qsTr("Save node configuration"),
+                    result: null,
+                    error: nodeConfigError
+                }, nodeConfigError)
+            }
+            gateway.setBusy(false, "")
+        })
     }
 
     function refreshPackageCatalog(modulesDir) {
@@ -584,6 +753,15 @@ QtObject {
         const node = nodeByKind(kind);
         const actions = node && Array.isArray(node.available_actions) ? node.available_actions : [];
         return actions.indexOf(String(action || "")) >= 0;
+    }
+
+    function configurationAvailable(kind) {
+        const node = nodeByKind(kind)
+        return node !== null && String(node.config_path || "").trim().length > 0
+    }
+
+    function configurationActionEnabled(kind) {
+        return configurationAvailable(kind) && !busy && !nodeConfigSaving
     }
 
     function actionEnabled(kind, action) {
