@@ -589,6 +589,10 @@ function footerFieldShowsDot(key) {
 }
 
 function footerFieldHidden(root, key) {
+    if ((key === "storage.last_error" || key === "messaging.last_error")
+            && footerFieldValue(root, key) === qsTr("n/a")) {
+        return true
+    }
     if (key === "overall.main_risk") {
         return overallTone(root) === "success" && mainRisk(root) === qsTr("none")
     }
