@@ -237,7 +237,10 @@ TestCase {
 
         session.poll(false)
         compare(gateway.history.length, 1)
-        verify(session.view.rows.length >= 4)
+        compare(session.view.rows.length, 3)
+        compare(session.view.rows[0].label, "Cancel operation")
+        compare(session.view.rows[1].label, "Duplicate")
+        compare(session.view.rows[2].label, "Run operation")
     }
 
     function test_storage_adapter_satisfies_operation_session_seam() {
@@ -281,6 +284,46 @@ TestCase {
             "Subscribe"
         )
 
+        compare(deliverySession.operationLog.length, 1)
+        compare(deliverySession.operationLog[0].label, "Subscribe")
+        compare(deliverySession.operationLog[0].status, "ok")
+        compare(gateway.history.length, 1)
+    }
+
+    function test_terminal_update_replaces_start_operation_row() {
+        const operationId = "delivery-subscribe-async-1"
+        gateway.responses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: operationId,
+                    domain: "delivery",
+                    method: "deliverySubscribe",
+                    status: "running",
+                    label: "Subscribe"
+                }
+            },
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: operationId,
+                    domain: "delivery",
+                    method: "deliverySubscribe",
+                    status: "completed",
+                    label: "Subscribe",
+                    result: { subscribed: true }
+                }
+            }
+        })
+
+        deliverySession.start(
+            "deliverySubscribe",
+            ["/logos-inspector/1/chat/proto"],
+            "Subscribe"
+        )
+
+        compare(deliverySession.operationLog.length, 1)
+        deliverySession.poll(false)
         compare(deliverySession.operationLog.length, 1)
         compare(deliverySession.operationLog[0].label, "Subscribe")
         compare(deliverySession.operationLog[0].status, "ok")

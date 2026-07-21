@@ -116,7 +116,11 @@ QtObject {
                 startFailed(response)
             }
             if (!terminalAccepted) {
-                appendResult(operationLabel, response)
+                appendResult(
+                    operationLabel,
+                    response,
+                    String(projectedOperation && projectedOperation.operationId || "")
+                )
             }
             if (onResponse) {
                 onResponse(response, projectedOperation)
@@ -390,17 +394,31 @@ QtObject {
         return true
     }
 
-    function appendResult(label, response) {
+    function appendResult(label, response, operationId) {
         const rows = Array.isArray(operationLog) ? operationLog.slice(0) : []
         const explicitStatus = String(response && response.status || "").trim()
-        rows.unshift({
+        const row = {
             time: timeText(),
             label: String(label || ""),
             status: explicitStatus.length > 0
                 ? explicitStatus
                 : (response && response.ok ? qsTr("ok") : qsTr("error")),
-            detail: response && response.ok ? summary(response.value) : String(response && response.error || "")
-        })
+            detail: response && response.ok ? summary(response.value) : String(response && response.error || ""),
+            operationId: String(operationId || "")
+        }
+        let replaced = false
+        if (row.operationId.length > 0) {
+            for (let index = 0; index < rows.length; ++index) {
+                if (String(rows[index] && rows[index].operationId || "") === row.operationId) {
+                    rows[index] = row
+                    replaced = true
+                    break
+                }
+            }
+        }
+        if (!replaced) {
+            rows.unshift(row)
+        }
         operationLog = rows.slice(0, 20)
         operationLogRevision += 1
     }
@@ -418,7 +436,7 @@ QtObject {
             status: canceled ? qsTr("canceled") : "",
             value: operation.result || operation,
             error: String(operation.error || "")
-        })
+        }, operationId)
         if (gateway && typeof gateway.appendOperationHistory === "function") {
             gateway.appendOperationHistory(operation, terminalDetail(operation, detail))
         }
