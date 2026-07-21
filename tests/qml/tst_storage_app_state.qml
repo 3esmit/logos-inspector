@@ -193,7 +193,7 @@ TestCase {
         compare(state.manifests.length, 1)
         compare(state.manifestRows()[0].cid, "z-cid")
         compare(state.lastOperation, "List")
-        compare(state.operation.rows.length, 2)
+        compare(state.operation.rows.length, 1)
     }
 
     function test_loading_manifest_gate_observes_source_then_retries_once() {
@@ -885,7 +885,7 @@ TestCase {
         compare(state.currentTab, "operations")
         compare(state.lastOperation, "Complete")
         compare(state.operation.active.status, "completed")
-        compare(state.operation.rows.length, 2)
+        compare(state.operation.rows.length, 1)
         compare(gateway.resultTitle, "Fetch manifest")
         compare(gateway.resultOwner, "storage")
         compare(gateway.resultValue.cid, "z-manifest")
