@@ -361,6 +361,7 @@ TestCase {
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.cid_fetch_test"), "true")
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "configured endpoint unavailable")
         compare(FooterStatusProjection.footerFieldTone(footerRoot, "storage.last_error"), "error")
+        verify(!FooterStatusProjection.footerFieldItem(footerRoot, "storage.last_error").hidden)
     }
 
     function test_configured_source_health_detail_is_reported() {
@@ -399,6 +400,7 @@ TestCase {
 
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "n/a")
         compare(FooterStatusProjection.footerFieldTone(footerRoot, "storage.last_error"), "neutral")
+        verify(FooterStatusProjection.footerFieldItem(footerRoot, "storage.last_error").hidden)
     }
 
     function test_not_ready_source_still_reports_failed_probe_in_footer() {
