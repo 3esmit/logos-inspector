@@ -2,7 +2,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant as StdInstant},
 };
 
 use tokio::time::sleep;
@@ -11,18 +11,19 @@ use super::{
     CatalogCandidateActivation, CatalogEngineContext, CatalogL1RangePage, CatalogL1RangeRequest,
     CatalogL1Source, CatalogMetadata, CatalogPageReduction, CatalogRepairConfirmation,
     CatalogSnapshot, ChannelSourceCatalogIdentityRebinder, DirectCatalogL1Source,
-    MAX_CATALOG_L1_RANGE_BLOCKS, ZoneCatalog, ZoneCatalogPublication, ZoneCatalogReadinessPhase,
-    ZoneCatalogReadinessReport, ZoneCatalogRunContext, ZoneCatalogRunMode, ZoneCatalogServiceError,
-    ZoneCatalogServiceResult, ZoneCatalogSourceDescriptor, ZoneCatalogWorker,
-    ZoneCatalogWorkerFuture, apply_catalog_identity_promotion, catalog_gap_repair_request,
-    catalog_prefix_repair_request, confirm_catalog_repair_gap, prepare_catalog_catch_up,
-    prepare_resumed_catalog_catch_up, reduce_catalog_gap_repair, reduce_catalog_page,
-    reduce_catalog_prefix_repair, reduce_catalog_repair, repair_catalog_ancestry,
-    verify_catalog_candidate,
+    LogoscoreCatalogL1Source, MAX_CATALOG_L1_RANGE_BLOCKS, ZoneCatalog, ZoneCatalogPublication,
+    ZoneCatalogReadinessPhase, ZoneCatalogReadinessReport, ZoneCatalogRunContext,
+    ZoneCatalogRunMode, ZoneCatalogServiceError, ZoneCatalogServiceResult,
+    ZoneCatalogSourceDescriptor, ZoneCatalogSourceKind, ZoneCatalogWorker, ZoneCatalogWorkerFuture,
+    apply_catalog_identity_promotion, catalog_gap_repair_request, catalog_prefix_repair_request,
+    confirm_catalog_repair_gap, prepare_catalog_catch_up, prepare_resumed_catalog_catch_up,
+    reduce_catalog_gap_repair, reduce_catalog_page, reduce_catalog_prefix_repair,
+    reduce_catalog_repair, repair_catalog_ancestry, verify_catalog_candidate,
 };
 use crate::{
     inspection::{CatalogVerificationState, NetworkScope},
-    support::{config_path::config_dir, time::now_millis},
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport, pin_module_transport},
+    support::{command_runner::CommandControl, config_path::config_dir, time::now_millis},
 };
 
 const CATALOG_DIRECTORY: &str = "zone-catalogs";
@@ -31,6 +32,17 @@ const CATALOG_RANGE_BLOCK_LIMIT: usize = MAX_CATALOG_L1_RANGE_BLOCKS;
 const CATALOG_CATCH_UP_PAGE_INTERVAL: Duration = Duration::from_millis(500);
 const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CATALOG_REPAIR_INTERVAL_SECONDS: u64 = 30;
+const CATALOG_CLI_CONTRACT_TIMEOUT: Duration = Duration::from_secs(30);
+const BLOCKCHAIN_MODULE: &str = "blockchain_module";
+const CATALOG_CLI_METHODS: [(&str, &str); 4] = [
+    ("get_cryptarchia_info", "get_cryptarchia_info()"),
+    ("get_time_info", "get_time_info()"),
+    (
+        "get_finalized_blocks_range",
+        "get_finalized_blocks_range(int,int,int)",
+    ),
+    ("get_block", "get_block(QString)"),
+];
 
 trait CatalogPagePacer {
     fn wait<'a>(
@@ -52,9 +64,10 @@ impl CatalogPagePacer for IntervalCatalogPagePacer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DirectZoneCatalogWorker {
     catalog_directory: PathBuf,
+    module_transport: Option<SharedModuleTransport>,
 }
 
 impl DirectZoneCatalogWorker {
@@ -67,9 +80,37 @@ impl DirectZoneCatalogWorker {
         Ok(Self::new(config.join(CATALOG_DIRECTORY)))
     }
 
+    pub fn for_config_dir_with_module_transport(
+        module_transport: SharedModuleTransport,
+    ) -> ZoneCatalogServiceResult<Self> {
+        let config = config_dir().map_err(|error| {
+            ZoneCatalogServiceError::Worker(format!(
+                "failed to locate Zone Catalog directory: {error}"
+            ))
+        })?;
+        Ok(Self::with_module_transport(
+            config.join(CATALOG_DIRECTORY),
+            module_transport,
+        ))
+    }
+
     #[must_use]
     pub fn new(catalog_directory: PathBuf) -> Self {
-        Self { catalog_directory }
+        Self {
+            catalog_directory,
+            module_transport: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_module_transport(
+        catalog_directory: PathBuf,
+        module_transport: SharedModuleTransport,
+    ) -> Self {
+        Self {
+            catalog_directory,
+            module_transport: Some(module_transport),
+        }
     }
 }
 
@@ -79,7 +120,14 @@ impl ZoneCatalogWorker for DirectZoneCatalogWorker {
         descriptor: ZoneCatalogSourceDescriptor,
         context: ZoneCatalogRunContext,
     ) -> ZoneCatalogWorkerFuture {
-        Box::pin(async move { self.run_direct(descriptor, context).await })
+        Box::pin(async move {
+            match descriptor.kind() {
+                ZoneCatalogSourceKind::DirectHttp => self.run_direct(descriptor, context).await,
+                ZoneCatalogSourceKind::LogoscoreCli => {
+                    self.run_logoscore_cli(descriptor, context).await
+                }
+            }
+        })
     }
 }
 
@@ -89,8 +137,89 @@ impl DirectZoneCatalogWorker {
         descriptor: ZoneCatalogSourceDescriptor,
         context: ZoneCatalogRunContext,
     ) -> ZoneCatalogServiceResult<()> {
-        let source =
-            Arc::new(DirectCatalogL1Source::new(descriptor.endpoint()).map_err(map_source_error)?);
+        let endpoint = descriptor.direct_endpoint().ok_or_else(|| {
+            ZoneCatalogServiceError::InvalidSource(
+                "direct HTTP Catalog source is missing its endpoint".to_owned(),
+            )
+        })?;
+        let source = Arc::new(DirectCatalogL1Source::new(endpoint).map_err(map_source_error)?);
+        self.run_source(descriptor, source, context).await
+    }
+
+    async fn run_logoscore_cli(
+        &self,
+        descriptor: ZoneCatalogSourceDescriptor,
+        context: ZoneCatalogRunContext,
+    ) -> ZoneCatalogServiceResult<()> {
+        let transport = self.module_transport.clone().ok_or_else(|| {
+            ZoneCatalogServiceError::Worker(
+                "LogosCore CLI Catalog source is unavailable because no module transport was configured"
+                    .to_owned(),
+            )
+        })?;
+        let transport = pin_module_transport(transport).map_err(|error| {
+            ZoneCatalogServiceError::Worker(format!(
+                "failed to pin LogosCore CLI Catalog transport: {error:#}"
+            ))
+        })?;
+        if transport.kind() != ModuleTransportKind::LogoscoreCli {
+            return Err(ZoneCatalogServiceError::Worker(
+                "LogosCore CLI Catalog source requires the LogosCore CLI transport".to_owned(),
+            ));
+        }
+        let cli = transport
+            .logoscore_cli_transport()
+            .cloned()
+            .ok_or_else(|| {
+                ZoneCatalogServiceError::Worker(
+                    "LogosCore CLI Catalog transport is not available for contract validation"
+                        .to_owned(),
+                )
+            })?;
+        let runtime = cli.runtime().map_err(|error| {
+            ZoneCatalogServiceError::Worker(format!(
+                "failed to resolve LogosCore CLI Catalog runtime: {error:#}"
+            ))
+        })?;
+        context.ensure_current()?;
+        let cancellation = context.cancellation().clone();
+        let contract = tokio::task::spawn_blocking(move || {
+            runtime.require_module_contract_controlled(
+                BLOCKCHAIN_MODULE,
+                &CATALOG_CLI_METHODS,
+                &[],
+                CommandControl::new(
+                    cancellation,
+                    StdInstant::now() + CATALOG_CLI_CONTRACT_TIMEOUT,
+                ),
+            )
+        })
+        .await
+        .map_err(|error| {
+            ZoneCatalogServiceError::Worker(format!(
+                "LogosCore CLI Catalog contract check worker failed: {error}"
+            ))
+        })?;
+        contract.map_err(|error| {
+            ZoneCatalogServiceError::Worker(format!(
+                "LogosCore CLI Catalog requires compatible blockchain module methods: {error:#}"
+            ))
+        })?;
+        context.ensure_current()?;
+        let source = Arc::new(
+            LogoscoreCatalogL1Source::new(transport)
+                .map_err(map_source_error)?
+                .with_cancellation(context.cancellation().clone()),
+        );
+        self.run_source(descriptor, source, context).await
+    }
+
+    async fn run_source(
+        &self,
+        descriptor: ZoneCatalogSourceDescriptor,
+        source: Arc<dyn CatalogL1Source>,
+        context: ZoneCatalogRunContext,
+    ) -> ZoneCatalogServiceResult<()> {
         let catalog_directory =
             source_catalog_directory(&self.catalog_directory, descriptor.fingerprint())?;
         tokio::fs::create_dir_all(&catalog_directory)
@@ -688,7 +817,7 @@ fn map_engine_error(_error: super::CatalogEngineError) -> ZoneCatalogServiceErro
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use anyhow::{Result, bail, ensure};
+    use anyhow::{Context as _, Result, bail, ensure};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -896,6 +1025,27 @@ mod tests {
         {
             bail!("catalog source namespace or error leaked endpoint: {combined}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_catalog_worker_fails_closed_without_a_module_transport() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let worker = Arc::new(DirectZoneCatalogWorker::new(directory.path().to_path_buf()));
+        let error = worker
+            .run(
+                ZoneCatalogSourceDescriptor::logoscore_cli(),
+                ZoneCatalogRunContext::test_context(1),
+            )
+            .await
+            .err()
+            .context("CLI Catalog worker without transport should fail")?;
+        ensure!(
+            error
+                .to_string()
+                .contains("no module transport was configured"),
+            "CLI Catalog worker attempted an endpoint fallback: {error}"
+        );
         Ok(())
     }
 

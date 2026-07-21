@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant as StdInstant},
 };
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, CommandStopReason, CommandTerminated,
-    CommandTerminationScope, StreamingCommandPermit, acquire_streaming_command_permit, output_text,
-    run_command, run_command_controlled,
+    CommandTerminationScope, DEFAULT_COMMAND_CAPTURE_LIMIT, StreamingCommandPermit,
+    acquire_streaming_command_permit, output_text, run_command, run_command_controlled,
 };
 use crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES;
 use crate::support::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
@@ -34,6 +34,7 @@ use crate::support::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
 const LOGOSCORE_JSON_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const LOGOSCORE_MAX_JSON_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 const LOGOSCORE_CLIENT_CONFIG_LIMIT: usize = 64 * 1024;
 const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
@@ -314,6 +315,7 @@ pub struct ModuleCallControl {
     deadline: Instant,
     stop_reason: Arc<AtomicU8>,
     blocking_work: BlockingWorkTracker,
+    json_output_limit: usize,
 }
 
 impl ModuleCallControl {
@@ -327,6 +329,7 @@ impl ModuleCallControl {
             deadline,
             stop_reason,
             blocking_work: BlockingWorkTracker::new(),
+            json_output_limit: LOGOSCORE_JSON_OUTPUT_LIMIT,
         }
     }
 
@@ -334,6 +337,15 @@ impl ModuleCallControl {
     pub(crate) fn with_blocking_work_tracker(mut self, tracker: BlockingWorkTracker) -> Self {
         self.blocking_work = tracker;
         self
+    }
+
+    pub(crate) fn with_json_output_limit(mut self, json_output_limit: usize) -> Result<Self> {
+        ensure!(
+            json_output_limit > 0 && json_output_limit <= LOGOSCORE_MAX_JSON_OUTPUT_LIMIT,
+            "LogosCore CLI JSON output limit must be between 1 and {LOGOSCORE_MAX_JSON_OUTPUT_LIMIT} bytes"
+        );
+        self.json_output_limit = json_output_limit;
+        Ok(self)
     }
 
     pub(crate) fn blocking_worker_guard(&self) -> Result<BlockingWorkGuard> {
@@ -354,6 +366,11 @@ impl ModuleCallControl {
     #[must_use]
     pub const fn deadline(&self) -> Instant {
         self.deadline
+    }
+
+    #[must_use]
+    pub(crate) const fn json_output_limit(&self) -> usize {
+        self.json_output_limit
     }
 
     #[must_use]
@@ -590,6 +607,31 @@ pub async fn dispatch_module_call(
     Ok(reply)
 }
 
+pub(crate) async fn dispatch_module_call_controlled(
+    transport: &dyn ModuleTransport,
+    call: ModuleCall,
+    control: ModuleCallControl,
+) -> Result<ModuleCallReply> {
+    let expected = call.transport();
+    let actual = transport.kind();
+    if expected != actual {
+        bail!(
+            "resolved module transport `{}` is unavailable; active transport is `{}`",
+            expected.as_str(),
+            actual.as_str()
+        );
+    }
+    let reply = transport.call_controlled(call, control).await?;
+    if reply.transport() != actual {
+        bail!(
+            "module transport `{}` returned reply identity `{}`",
+            actual.as_str(),
+            reply.transport().as_str()
+        );
+    }
+    Ok(reply)
+}
+
 type LogoscoreRuntimeResolver =
     Arc<dyn Fn() -> Result<Option<LogoscoreCliRuntime>> + Send + Sync + 'static>;
 
@@ -747,6 +789,7 @@ impl ModuleTransport for LogoscoreCliTransport {
             let args = call.args().to_vec();
             let module_label = module.clone();
             let method_label = method.clone();
+            let json_output_limit = control.json_output_limit();
             let command_control = CommandControl::new(
                 control.cancellation().clone(),
                 control.deadline().into_std(),
@@ -755,7 +798,13 @@ impl ModuleTransport for LogoscoreCliTransport {
             let worker_guard = control.blocking_worker_guard()?;
             let output = tokio::task::spawn_blocking(move || {
                 let _worker_guard = worker_guard;
-                runtime.call_typed_controlled(&module, &method, &args, command_control)
+                runtime.call_typed_controlled_with_output_limit(
+                    &module,
+                    &method,
+                    &args,
+                    command_control,
+                    json_output_limit,
+                )
             })
             .await
             .context("LogosCore CLI module-call worker failed")?;
@@ -1557,15 +1606,22 @@ impl LogoscoreCliRuntime {
         self.call_with_arguments_controlled(module, command_args, control)
     }
 
-    pub(crate) fn call_typed_controlled(
+    pub(crate) fn call_typed_controlled_with_output_limit(
         &self,
         module: &str,
         method: &str,
         args: &[Value],
         control: CommandControl,
+        json_output_limit: usize,
     ) -> Result<LogosCoreOutput> {
+        validate_json_output_limit(json_output_limit)?;
         let command_args = typed_call_arguments(module, method, args)?;
-        self.call_with_arguments_controlled(module, command_args, control)
+        self.call_with_arguments_controlled_with_output_limit(
+            module,
+            command_args,
+            control,
+            json_output_limit,
+        )
     }
 
     fn call_with_arguments_controlled(
@@ -1574,13 +1630,33 @@ impl LogoscoreCliRuntime {
         command_args: Vec<String>,
         control: CommandControl,
     ) -> Result<LogosCoreOutput> {
+        self.call_with_arguments_controlled_with_output_limit(
+            module,
+            command_args,
+            control,
+            LOGOSCORE_JSON_OUTPUT_LIMIT,
+        )
+    }
+
+    fn call_with_arguments_controlled_with_output_limit(
+        &self,
+        module: &str,
+        command_args: Vec<String>,
+        control: CommandControl,
+        json_output_limit: usize,
+    ) -> Result<LogosCoreOutput> {
         let gate_control = control.clone();
         let mut output = self.with_controlled_command_gate(&gate_control, |runner| {
             let modules =
                 run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
                     .context("failed to list logoscore modules")?;
             require_listed_module_loaded(module, &modules.value)?;
-            run_json_with_controlled(runner, command_args, control)
+            run_json_with_controlled_with_output_limit(
+                runner,
+                command_args,
+                control,
+                json_output_limit,
+            )
         })?;
         normalize_call_value(&mut output.value);
         Ok(output)
@@ -2198,6 +2274,7 @@ fn read_runner_client_config(runner: &LogosCoreRunner, config_path: &Path) -> Re
                 poll_interval: LOGOSCORE_POLL_INTERVAL,
                 redactions: &[],
                 output_limit: 0,
+                capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
             },
         )
         .with_context(|| {
@@ -2399,6 +2476,7 @@ where
             poll_interval: LOGOSCORE_POLL_INTERVAL,
             redactions: &[],
             output_limit: LOGOSCORE_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
     )?;
     let stderr = output_text(&output.stderr, &[], LOGOSCORE_OUTPUT_LIMIT);
@@ -2439,6 +2517,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    run_json_with_controlled_with_output_limit(runner, args, control, LOGOSCORE_JSON_OUTPUT_LIMIT)
+}
+
+fn run_json_with_controlled_with_output_limit<I, S>(
+    runner: &LogosCoreRunner,
+    args: I,
+    control: CommandControl,
+    json_output_limit: usize,
+) -> Result<LogosCoreOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    validate_json_output_limit(json_output_limit)?;
     let command = command_for_runner(runner, args);
     let output = run_command_controlled(
         command,
@@ -2449,18 +2541,20 @@ where
             poll_interval: LOGOSCORE_POLL_INTERVAL,
             redactions: &[],
             output_limit: LOGOSCORE_OUTPUT_LIMIT,
+            capture_limit: json_output_limit,
         },
         control,
     )?;
-    logos_core_output(runner, output)
+    logos_core_output_with_limit(runner, output, json_output_limit)
 }
 
-fn logos_core_output(
+fn logos_core_output_with_limit(
     runner: &LogosCoreRunner,
     output: std::process::Output,
+    json_output_limit: usize,
 ) -> Result<LogosCoreOutput> {
     let stderr = output_text(&output.stderr, &[], LOGOSCORE_OUTPUT_LIMIT);
-    let value = parse_json_stdout(&runner.label, &output.stdout)?;
+    let value = parse_json_stdout_with_limit(&runner.label, &output.stdout, json_output_limit)?;
     let stderr = (!stderr.is_empty()).then_some(stderr);
     Ok(LogosCoreOutput {
         runner: runner.label.clone(),
@@ -2470,11 +2564,17 @@ fn logos_core_output(
 }
 
 fn parse_json_stdout(label: &str, stdout: &[u8]) -> Result<Value> {
-    if stdout.len() > LOGOSCORE_JSON_OUTPUT_LIMIT {
-        bail!(
-            "{label} JSON output exceeded {} bytes",
-            LOGOSCORE_JSON_OUTPUT_LIMIT
-        );
+    parse_json_stdout_with_limit(label, stdout, LOGOSCORE_JSON_OUTPUT_LIMIT)
+}
+
+fn parse_json_stdout_with_limit(
+    label: &str,
+    stdout: &[u8],
+    json_output_limit: usize,
+) -> Result<Value> {
+    validate_json_output_limit(json_output_limit)?;
+    if stdout.len() > json_output_limit {
+        bail!("{label} JSON output exceeded {} bytes", json_output_limit);
     }
     let text = std::str::from_utf8(stdout).with_context(|| {
         format!(
@@ -2488,6 +2588,14 @@ fn parse_json_stdout(label: &str, stdout: &[u8]) -> Result<Value> {
             text.chars().take(400).collect::<String>()
         )
     })
+}
+
+fn validate_json_output_limit(json_output_limit: usize) -> Result<()> {
+    ensure!(
+        json_output_limit > 0 && json_output_limit <= LOGOSCORE_MAX_JSON_OUTPUT_LIMIT,
+        "LogosCore CLI JSON output limit must be between 1 and {LOGOSCORE_MAX_JSON_OUTPUT_LIMIT} bytes"
+    );
+    Ok(())
 }
 
 fn command_timeout() -> Duration {
@@ -4942,6 +5050,38 @@ esac
     }
 
     #[tokio::test]
+    async fn controlled_dispatch_preserves_json_arguments_and_transport_identity() -> Result<()> {
+        let transport = RecordingTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+        );
+        let args = vec![json!({ "range": [10, 20, 2] })];
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "blockchain_module",
+            "get_finalized_blocks_range",
+            args.clone(),
+        )?;
+        let control = ModuleCallControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        )
+        .with_json_output_limit(LOGOSCORE_MAX_JSON_OUTPUT_LIMIT)?;
+
+        let reply = dispatch_module_call_controlled(&transport, call, control).await?;
+        anyhow::ensure!(reply.transport() == ModuleTransportKind::LogoscoreCli);
+        let recorded = transport
+            .last_call
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recording transport lock failed: {error}"))?
+            .clone()
+            .context("controlled dispatch did not invoke the transport")?;
+        anyhow::ensure!(recorded.args() == args);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn dispatch_rejects_transport_mismatch_before_invocation() -> Result<()> {
         let transport = RecordingTransport::new(
             ModuleTransportKind::LogoscoreCli,
@@ -4985,6 +5125,44 @@ esac
                 .contains("returned reply identity `module`")
         );
         anyhow::ensure!(transport.calls.load(Ordering::Relaxed) == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_module_calls_validate_and_expose_their_json_output_limit() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let control = ModuleCallControl::new(
+            cancellation,
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        );
+        anyhow::ensure!(
+            control.json_output_limit() == LOGOSCORE_JSON_OUTPUT_LIMIT,
+            "controlled module call default output limit changed"
+        );
+        let expanded = control.with_json_output_limit(LOGOSCORE_MAX_JSON_OUTPUT_LIMIT)?;
+        anyhow::ensure!(
+            expanded.json_output_limit() == LOGOSCORE_MAX_JSON_OUTPUT_LIMIT,
+            "controlled module call did not retain the Catalog range output limit"
+        );
+        anyhow::ensure!(
+            ModuleCallControl::new(
+                CancellationToken::new(),
+                Instant::now() + Duration::from_secs(5),
+                Arc::new(AtomicU8::new(1)),
+            )
+            .with_json_output_limit(0)
+            .is_err(),
+            "zero JSON output limit was accepted"
+        );
+        anyhow::ensure!(
+            parse_json_stdout_with_limit("test", b"{}", 2)? == json!({}),
+            "custom JSON output limit rejected an in-bounds response"
+        );
+        anyhow::ensure!(
+            parse_json_stdout_with_limit("test", b"{}", 1).is_err(),
+            "custom JSON output limit accepted an oversized response"
+        );
         Ok(())
     }
 

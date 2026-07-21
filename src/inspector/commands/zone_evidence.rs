@@ -16,18 +16,20 @@ use crate::{
         CatalogVerificationState, NetworkScope,
         catalog::{
             CatalogEvidencePayload, CatalogEvidencePayloadFormat, CatalogL1Block, CatalogL1Source,
-            CatalogSnapshot, DirectCatalogL1Source, ZONE_CATALOG_REPORT_SCHEMA_VERSION,
-            ZoneCatalogService, ZoneCatalogServiceReport, ZoneCatalogSourceDescriptor,
-            ZoneEvidenceDetailReport, ZoneEvidenceDetailRequest, ZoneEvidenceFilter,
-            ZoneEvidenceFinality, ZoneEvidenceKind, ZoneEvidenceOperation, ZoneEvidencePageReport,
-            ZoneEvidencePageRequest, ZoneEvidencePayloadChunkReport,
-            ZoneEvidencePayloadChunkRequest, ZoneEvidencePayloadEncoding,
-            ZoneEvidencePayloadReleaseReport, ZoneEvidencePayloadReleaseRequest,
-            ZoneEvidencePayloadReport, ZoneEvidencePayloadWarning, ZoneEvidencePayloadWarningCode,
-            ZoneEvidenceReference, ZoneEvidenceRow, ZoneEvidenceSegmentProvenance,
-            ZoneEvidenceSourceKind, ZoneEvidenceSourceProvenance, extract_catalog_evidence_payload,
+            CatalogSnapshot, DirectCatalogL1Source, LogoscoreCatalogL1Source,
+            ZONE_CATALOG_REPORT_SCHEMA_VERSION, ZoneCatalogService, ZoneCatalogServiceReport,
+            ZoneCatalogSourceDescriptor, ZoneCatalogSourceKind, ZoneEvidenceDetailReport,
+            ZoneEvidenceDetailRequest, ZoneEvidenceFilter, ZoneEvidenceFinality, ZoneEvidenceKind,
+            ZoneEvidenceOperation, ZoneEvidencePageReport, ZoneEvidencePageRequest,
+            ZoneEvidencePayloadChunkReport, ZoneEvidencePayloadChunkRequest,
+            ZoneEvidencePayloadEncoding, ZoneEvidencePayloadReleaseReport,
+            ZoneEvidencePayloadReleaseRequest, ZoneEvidencePayloadReport,
+            ZoneEvidencePayloadWarning, ZoneEvidencePayloadWarningCode, ZoneEvidenceReference,
+            ZoneEvidenceRow, ZoneEvidenceSegmentProvenance, ZoneEvidenceSourceKind,
+            ZoneEvidenceSourceProvenance, extract_catalog_evidence_payload,
         },
     },
+    modules::logos_core::{SharedModuleTransport, pin_module_transport},
     source_routing::channel_sources::{
         FinalizedL1EvidenceBasis, SequencerAttestationBasis, SequencerLegacyAnchor,
         SequencerLegacyAnchorState,
@@ -59,9 +61,11 @@ pub(super) trait EvidenceBlockReader: Send + Sync {
     ) -> EvidenceBlockFuture<'a>;
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct DirectEvidenceBlockReader;
 
+#[cfg(test)]
 impl EvidenceBlockReader for DirectEvidenceBlockReader {
     fn block<'a>(
         &'a self,
@@ -69,8 +73,49 @@ impl EvidenceBlockReader for DirectEvidenceBlockReader {
         block_id: String,
     ) -> EvidenceBlockFuture<'a> {
         Box::pin(async move {
-            let source = DirectCatalogL1Source::for_evidence(source.endpoint())?;
+            let endpoint = source
+                .direct_endpoint()
+                .context("direct HTTP evidence source is missing its endpoint")?;
+            let source = DirectCatalogL1Source::for_evidence(endpoint)?;
             source.block(block_id).await.map_err(anyhow::Error::from)
+        })
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct RoutedEvidenceBlockReader {
+    module_transport: SharedModuleTransport,
+}
+
+impl RoutedEvidenceBlockReader {
+    #[must_use]
+    pub(super) fn new(module_transport: SharedModuleTransport) -> Self {
+        Self { module_transport }
+    }
+}
+
+impl EvidenceBlockReader for RoutedEvidenceBlockReader {
+    fn block<'a>(
+        &'a self,
+        source: ZoneCatalogSourceDescriptor,
+        block_id: String,
+    ) -> EvidenceBlockFuture<'a> {
+        let module_transport = self.module_transport.clone();
+        Box::pin(async move {
+            match source.kind() {
+                ZoneCatalogSourceKind::DirectHttp => {
+                    let endpoint = source
+                        .direct_endpoint()
+                        .context("direct HTTP evidence source is missing its endpoint")?;
+                    let source = DirectCatalogL1Source::for_evidence(endpoint)?;
+                    source.block(block_id).await.map_err(anyhow::Error::from)
+                }
+                ZoneCatalogSourceKind::LogoscoreCli => {
+                    let module_transport = pin_module_transport(module_transport)?;
+                    let source = LogoscoreCatalogL1Source::for_evidence(module_transport)?;
+                    source.block(block_id).await.map_err(anyhow::Error::from)
+                }
+            }
         })
     }
 }
@@ -155,7 +200,14 @@ impl ZoneEvidenceCommandInterface {
                 )?);
             }
             require_zone(catalog, &request.channel_id)?;
-            let source = source_provenance(report)?;
+            let descriptor = state
+                .source
+                .as_ref()
+                .filter(|source| source.source_revision == report.source_revision)
+                .context("Zone evidence source is not configured")?
+                .descriptor
+                .clone();
+            let source = source_provenance(report, &descriptor)?;
             EvidenceCursorPage {
                 snapshot: EvidencePageSnapshot {
                     source_revision: request.source_revision,
@@ -440,7 +492,6 @@ impl ZoneEvidenceCommandInterface {
                 "Zone evidence reference does not match current catalog membership",
             )?);
         }
-        let row = evidence_row(catalog, reference, source_provenance(report)?)?;
         let source = state
             .source
             .as_ref()
@@ -448,6 +499,7 @@ impl ZoneEvidenceCommandInterface {
             .context("Zone evidence source is not configured")?
             .descriptor
             .clone();
+        let row = evidence_row(catalog, reference, source_provenance(report, &source)?)?;
         Ok(EvidenceDetailPlan {
             source,
             source_revision: request.source_revision,
@@ -828,13 +880,23 @@ fn evidence_matches_filter(reference: &ZoneEvidenceReference, filter: ZoneEviden
     }
 }
 
-fn source_provenance(report: &ZoneCatalogServiceReport) -> Result<ZoneEvidenceSourceProvenance> {
+fn source_provenance(
+    report: &ZoneCatalogServiceReport,
+    descriptor: &ZoneCatalogSourceDescriptor,
+) -> Result<ZoneEvidenceSourceProvenance> {
+    let fingerprint = report
+        .source_fingerprint
+        .clone()
+        .context("Zone evidence source fingerprint is unavailable")?;
+    if fingerprint != descriptor.fingerprint() {
+        bail!("Zone evidence source does not match the active Zone Catalog source");
+    }
     Ok(ZoneEvidenceSourceProvenance {
-        kind: ZoneEvidenceSourceKind::DirectHttp,
-        fingerprint: report
-            .source_fingerprint
-            .clone()
-            .context("Zone evidence source fingerprint is unavailable")?,
+        kind: match descriptor.kind() {
+            ZoneCatalogSourceKind::DirectHttp => ZoneEvidenceSourceKind::DirectHttp,
+            ZoneCatalogSourceKind::LogoscoreCli => ZoneEvidenceSourceKind::LogoscoreCli,
+        },
+        fingerprint,
     })
 }
 
@@ -1028,6 +1090,8 @@ fn evidence_unavailable_error() -> Result<anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use anyhow::{Result, ensure};
 
     use super::*;
@@ -1039,6 +1103,51 @@ mod tests {
             ZoneClassificationCounters,
         },
     };
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport, ModuleTransportKind,
+    };
+
+    #[derive(Default)]
+    struct CliEvidenceTransport {
+        calls: Mutex<Vec<(String, String, Vec<Value>)>>,
+    }
+
+    impl ModuleTransport for CliEvidenceTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let result = (|| -> Result<ModuleCallReply> {
+                let block_id = call
+                    .args()
+                    .first()
+                    .and_then(Value::as_str)
+                    .context("CLI evidence call omitted the requested block id")?
+                    .to_owned();
+                self.calls
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("CLI evidence call lock is poisoned"))?
+                    .push((
+                        call.module().to_owned(),
+                        call.method().to_owned(),
+                        call.args().to_vec(),
+                    ));
+                Ok(ModuleCallReply::new(
+                    ModuleTransportKind::LogoscoreCli,
+                    json!({
+                        "header": {
+                            "id": block_id,
+                            "parent_block": identity('0'),
+                            "slot": 10
+                        },
+                        "transactions": []
+                    }),
+                ))
+            })();
+            Box::pin(async move { result })
+        }
+    }
 
     #[test]
     fn evidence_rows_filter_and_order_without_payloads() -> Result<()> {
@@ -1113,14 +1222,68 @@ mod tests {
     }
 
     #[test]
+    fn cli_evidence_provenance_matches_the_active_catalog_source() -> Result<()> {
+        let descriptor = ZoneCatalogSourceDescriptor::logoscore_cli();
+        let report = ZoneCatalogServiceReport {
+            source_revision: 4,
+            source_fingerprint: Some(descriptor.fingerprint().to_owned()),
+            verification_state: CatalogVerificationState::Verified,
+            catalog: None,
+            readiness: None,
+            current_error: None,
+            worker_running: false,
+        };
+        let provenance = source_provenance(&report, &descriptor)?;
+        ensure!(
+            provenance.kind == ZoneEvidenceSourceKind::LogoscoreCli
+                && provenance.fingerprint == descriptor.fingerprint(),
+            "CLI evidence provenance did not retain the endpoint-free active source"
+        );
+
+        let mut mismatched = report;
+        mismatched.source_fingerprint = Some("sha256:other".to_owned());
+        ensure!(
+            source_provenance(&mismatched, &descriptor).is_err(),
+            "evidence provenance accepted a source fingerprint mismatch"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn routed_evidence_reader_uses_the_cli_module_without_an_endpoint() -> Result<()> {
+        let transport = Arc::new(CliEvidenceTransport::default());
+        let reader = RoutedEvidenceBlockReader::new(transport.clone());
+        let block = Runtime::new()?
+            .block_on(reader.block(ZoneCatalogSourceDescriptor::logoscore_cli(), identity('a')))?
+            .context("CLI evidence reader returned no block")?;
+        ensure!(
+            block.checkpoint.block_id == identity('a'),
+            "CLI evidence reader did not validate the returned block identity"
+        );
+        let calls = transport
+            .calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CLI evidence call lock is poisoned"))?;
+        ensure!(
+            calls.as_slice()
+                == [(
+                    "blockchain_module".to_owned(),
+                    "get_block".to_owned(),
+                    vec![json!(identity('a'))]
+                )],
+            "CLI evidence reader bypassed the typed module call: {calls:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn evidence_cursor_keeps_immutable_catalog_snapshot() -> Result<()> {
         let interface = ZoneEvidenceCommandInterface::new(Arc::new(NoopReader));
-        interface.configure_source(
-            4,
-            ZoneCatalogSourceDescriptor::direct_http("https://l1.example")?,
-        )?;
+        let descriptor = ZoneCatalogSourceDescriptor::direct_http("https://l1.example")?;
+        interface.configure_source(4, descriptor.clone())?;
         let catalog = evidence_catalog();
-        let report = verified_report(catalog.clone());
+        let mut report = verified_report(catalog.clone());
+        report.source_fingerprint = Some(descriptor.fingerprint().to_owned());
         let request = ZoneEvidencePageRequest {
             source_revision: 4,
             network_scope: scope('1'),
@@ -1140,7 +1303,9 @@ mod tests {
         newer_catalog.evidence.clear();
         let mut cursor_request = request;
         cursor_request.cursor = Some(cursor);
-        let second = interface.page(&verified_report(newer_catalog), cursor_request)?;
+        let mut newer_report = verified_report(newer_catalog);
+        newer_report.source_fingerprint = Some(descriptor.fingerprint().to_owned());
+        let second = interface.page(&newer_report, cursor_request)?;
         ensure!(
             second.catalog_revision == 9
                 && second.rows.len() == 1

@@ -9,7 +9,8 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::support::command_runner::{
-    CommandControl, CommandRunPolicy, run_command, run_command_controlled,
+    CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, run_command,
+    run_command_controlled,
 };
 
 use super::{action_engine::LocalNodeActionEngine, process::find_command};
@@ -285,6 +286,7 @@ fn run_package_command(mut command: Command, label: &str, timeout: Duration) -> 
             poll_interval: PACKAGE_COMMAND_POLL_INTERVAL,
             redactions: &[],
             output_limit: PACKAGE_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
     )
 }
@@ -303,6 +305,7 @@ fn run_package_command_controlled(
             poll_interval: PACKAGE_COMMAND_POLL_INTERVAL,
             redactions: &[],
             output_limit: PACKAGE_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
         control,
     )
