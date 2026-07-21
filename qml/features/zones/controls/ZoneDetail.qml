@@ -239,8 +239,8 @@ ColumnLayout {
         id: tabGuardPopup
 
         theme: root.theme
-        title: qsTr("Discard source draft")
-        message: qsTr("Discard unsaved Channel source changes?")
+        title: qsTr("Discard Channel changes")
+        message: qsTr("Discard unsaved Channel changes?")
         confirmText: qsTr("Discard")
         onAccepted: {
             root.discardSourceDraft()

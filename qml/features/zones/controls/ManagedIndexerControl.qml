@@ -11,9 +11,11 @@ ColumnLayout {
 
     required property Theme theme
     required property var zoneState
+    property bool interactionBlocked: false
 
     property string pendingAction: ""
     property string pendingChannelId: ""
+    property bool configurationOpen: false
     readonly property var node: root.zoneState.managedIndexerNode || ({})
     readonly property var runtime: root.zoneState.managedIndexerRuntime || ({})
     readonly property var availableActions: Array.isArray(root.node.available_actions)
@@ -23,20 +25,32 @@ ColumnLayout {
     readonly property string installedState: String(root.node.install_state || "needs_configuration")
     readonly property string managedChannelId: String(root.node.managed_channel_id || "")
     readonly property string selectedChannelId: String(root.zoneState.activeZoneId || "")
+    readonly property var configurationPanel: configurationLoader.item || null
+    readonly property bool hasDirtyDraft: root.configurationPanel !== null
+        && root.configurationPanel.dirty === true
+    readonly property bool configurationBusy: root.zoneState.managedIndexerConfigLoading === true
+        || root.zoneState.managedIndexerConfigSaving === true
     readonly property bool actionInFlight: root.zoneState.managedIndexerControlInFlight === true
         || root.zoneState.managedIndexerRefreshInFlight === true
+        || root.configurationBusy
     readonly property bool runtimeRunning: String(root.runtime.run_state || "") === "running"
     readonly property bool installed: root.installedState === "installed"
     readonly property bool canStart: !root.actionInFlight
+        && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
         && root.zoneState.verification === "verified"
         && root.availableActions.indexOf("start") >= 0
         && root.installed
         && (root.runState === "stopped" || root.runState === "not_initialized")
     readonly property bool canStop: !root.actionInFlight
+        && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
         && root.availableActions.indexOf("stop") >= 0 && root.runtimeRunning
         && root.managedChannelId.length > 0
+    readonly property bool canConfigure: !root.actionInFlight
+        && !root.interactionBlocked
+        && root.zoneState.managedIndexerStatusStale !== true
+        && (root.runState === "stopped" || root.runState === "not_initialized")
 
     objectName: "managedIndexerControl"
     spacing: root.theme.gapSmall
@@ -47,7 +61,8 @@ ColumnLayout {
     Timer {
         interval: 2500
         repeat: true
-        running: root.visible && !root.actionInFlight
+        running: root.visible && !root.actionInFlight && !root.configurationOpen
+            && !root.hasDirtyDraft
         onTriggered: root.zoneState.refreshManagedIndexer()
     }
 
@@ -190,7 +205,7 @@ ColumnLayout {
             objectName: "refreshManagedIndexerButton"
             theme: root.theme
             text: qsTr("Refresh")
-            enabled: !root.actionInFlight
+            enabled: !root.actionInFlight && !root.configurationOpen
             onClicked: root.zoneState.refreshManagedIndexer()
         }
 
@@ -199,10 +214,26 @@ ColumnLayout {
         }
 
         ActionButton {
+            objectName: "configureManagedIndexerButton"
+            theme: root.theme
+            text: root.configurationOpen ? qsTr("Close configuration") : qsTr("Configure")
+            enabled: root.configurationOpen
+                ? !root.configurationBusy && !root.hasDirtyDraft
+                : root.canConfigure
+            onClicked: {
+                if (root.configurationOpen) {
+                    root.closeConfiguration()
+                } else {
+                    root.configurationOpen = true
+                }
+            }
+        }
+
+        ActionButton {
             objectName: "stopManagedIndexerButton"
             theme: root.theme
             text: qsTr("Stop")
-            enabled: root.canStop
+            enabled: root.canStop && !root.configurationOpen && !root.hasDirtyDraft
             onClicked: root.confirmAction("stop", root.managedChannelId)
         }
 
@@ -211,8 +242,23 @@ ColumnLayout {
             theme: root.theme
             text: qsTr("Start for this Channel")
             primary: true
-            enabled: root.canStart
+            enabled: root.canStart && !root.configurationOpen && !root.hasDirtyDraft
             onClicked: root.confirmAction("start", root.selectedChannelId)
+        }
+    }
+
+    Loader {
+        id: configurationLoader
+
+        property var configurationTheme: root.theme
+        property var configurationZoneState: root.zoneState
+
+        active: root.configurationOpen
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: ChannelIndexerConfigurationPanel {
+            theme: configurationLoader.configurationTheme
+            zoneState: configurationLoader.configurationZoneState
         }
     }
 
@@ -242,6 +288,22 @@ ColumnLayout {
         pendingAction = String(action || "")
         pendingChannelId = String(channelId || "")
         actionPopup.open()
+    }
+
+    function closeConfiguration() {
+        if (root.hasDirtyDraft) {
+            root.zoneState.managedIndexerConfigError = qsTr("Save or undo Channel Indexer configuration changes before closing it.")
+            return false
+        }
+        root.configurationOpen = false
+        return true
+    }
+
+    function discardDraft() {
+        if (root.configurationPanel && typeof root.configurationPanel.undoDraft === "function") {
+            root.configurationPanel.undoDraft()
+        }
+        root.configurationOpen = false
     }
 
     function statusLabel(value) {

@@ -237,6 +237,7 @@ TestCase {
         zoneState.managedIndexerStatusStale = false
         zoneState.managedIndexerError = ""
         zoneState.managedIndexerResult = ""
+        zoneState.clearManagedIndexerConfig()
         zoneState.closeL2Transaction()
         zoneState.l2TransactionRequestedSourceId = ""
         zoneState.appModel = appModel
@@ -885,6 +886,116 @@ TestCase {
         verify(hasVisibleText(control, "1.0.0"))
 
         compare(control.selectedChannelId, zoneState.activeZoneId)
+    }
+
+    function test_stopped_channel_indexer_configuration_guards_lifecycle_and_navigation() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const configure = findChild(control, "configureManagedIndexerButton")
+        const start = findChild(control, "startManagedIndexerButton")
+        const initialNode = zoneState.managedIndexerNode
+        verify(configure !== null && configure.enabled)
+        verify(start !== null && start.enabled)
+
+        try {
+            configure.clicked()
+            tryVerify(function () {
+                return findChild(control, "channelIndexerConfigurationPanel") !== null
+            })
+            const panel = findChild(control, "channelIndexerConfigurationPanel")
+            tryVerify(function () {
+                return panel.snapshot !== null
+            })
+            const sources = findChild(detail, "channelSourcesSection")
+            verify(sources !== null && sources.sourceInteractionsBlocked)
+            const channelField = findChild(panel, "channelIndexerConfigCommonField0")
+            const bedrockField = findChild(panel, "channelIndexerConfigCommonField1")
+            const pollingField = findChild(panel, "channelIndexerConfigCommonField2")
+            verify(channelField !== null && channelField.readOnly)
+            verify(bedrockField !== null && bedrockField.readOnly)
+            verify(pollingField !== null && !pollingField.readOnly)
+
+            panel.setDraftText(panel.draftText.replace("1s", "2s"))
+            panel.requestTab("raw")
+            compare(panel.currentTab, "common")
+            verify(panel.tabGuardMessage.length > 0)
+            tryVerify(function () {
+                return panel.dirty && control.hasDirtyDraft
+                    && !start.enabled && detail.hasDirtyDraft && page.hasDirtyDraft
+            })
+            verify(!page.requestZoneActivation(FixtureData.identity("8")))
+            const guard = findChild(page, "zoneNavigationGuard")
+            verify(guard !== null && guard.visible)
+            compare(guard.title, "Discard Channel changes")
+            guard.close()
+
+            detail.discardSourceDraft()
+            tryVerify(function () {
+                return !detail.hasDirtyDraft && start.enabled
+                    && findChild(control, "channelIndexerConfigurationPanel") === null
+            })
+
+            zoneState.managedIndexerNode = {
+                key: "indexer",
+                install_state: "installed",
+                run_state: "running",
+                indexer_state: "running",
+                package_version: "1.0.0",
+                managed_channel_id: zoneState.activeZoneId,
+                available_actions: ["stop"]
+            }
+            tryVerify(function () {
+                return !configure.enabled
+            })
+        } finally {
+            zoneState.managedIndexerNode = initialNode
+            zoneState.clearManagedIndexerConfig()
+        }
+    }
+
+    function test_channel_indexer_raw_configuration_rejects_invalid_json() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+        const control = findChild(detail, "managedIndexerControl")
+        const configure = findChild(control, "configureManagedIndexerButton")
+        verify(configure !== null && configure.enabled)
+
+        try {
+            configure.clicked()
+            tryVerify(function () {
+                return findChild(control, "channelIndexerConfigurationPanel") !== null
+            })
+            const panel = findChild(control, "channelIndexerConfigurationPanel")
+            tryVerify(function () {
+                return panel.snapshot !== null
+            })
+            panel.requestTab("raw")
+            compare(panel.currentTab, "raw")
+            const save = findChild(panel, "channelIndexerConfigSaveButton")
+            const raw = findChild(panel, "jsonConfigurationRawInput")
+            verify(raw !== null)
+            panel.setDraftText("{")
+            tryVerify(function () {
+                return panel.localSyntaxError.length > 0 && !save.enabled
+            })
+            panel.undoDraft()
+            tryVerify(function () {
+                return !panel.dirty && panel.localSyntaxError.length === 0
+            })
+        } finally {
+            detail.discardSourceDraft()
+            zoneState.clearManagedIndexerConfig()
+        }
     }
 
     function test_managed_indexer_actions_require_reported_availability() {

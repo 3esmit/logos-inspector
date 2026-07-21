@@ -23,8 +23,12 @@ ColumnLayout {
         ? root.detail.channel_source_config : ({})
     readonly property var observations: root.detail && Array.isArray(root.detail.source_observations)
         ? root.detail.source_observations : []
-    readonly property bool hasDirtyDraft: editorLoader.editor !== null
+    readonly property bool sourceEditorDirty: editorLoader.editor !== null
         && editorLoader.editor.dirty
+    readonly property bool hasDirtyDraft: root.sourceEditorDirty
+        || managedIndexerControl.hasDirtyDraft
+    readonly property bool sourceInteractionsBlocked: root.sourceEditorDirty
+        || managedIndexerControl.configurationOpen
     readonly property string mutationWarningCode: String(
         root.zoneState.sourceMutationWarning
         && root.zoneState.sourceMutationWarning.code || "")
@@ -84,7 +88,7 @@ ColumnLayout {
             id: addSequencerButton
 
             objectName: "addSequencerSourceButton"
-            enabled: !root.hasDirtyDraft && !root.zoneState.sourceMutationInFlight
+            enabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
                 && root.zoneState.verification === "verified"
             text: "+"
             hoverEnabled: true
@@ -143,7 +147,7 @@ ColumnLayout {
             role: "sequencer"
             selected: String(root.config.selected_sequencer_source_id || "")
                 === String(modelData.source_id || "")
-            actionsEnabled: !root.hasDirtyDraft && !root.zoneState.sourceMutationInFlight
+            actionsEnabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
                 && root.zoneState.verification === "verified"
             Layout.fillWidth: true
             onSelectRequested: root.selectSequencer(modelData)
@@ -188,7 +192,7 @@ ColumnLayout {
 
             objectName: "configureIndexerSourceButton"
             visible: !root.config.indexer_source
-            enabled: !root.hasDirtyDraft && !root.zoneState.sourceMutationInFlight
+            enabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
                 && root.zoneState.verification === "verified"
             text: "+"
             hoverEnabled: true
@@ -242,7 +246,7 @@ ColumnLayout {
             root.config.indexer_source && root.config.indexer_source.source_id
         )
         role: "indexer"
-        actionsEnabled: !root.hasDirtyDraft && !root.zoneState.sourceMutationInFlight
+        actionsEnabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
             && root.zoneState.verification === "verified"
         Layout.fillWidth: true
         onEditRequested: root.beginEditor("indexer", root.config.indexer_source)
@@ -250,9 +254,12 @@ ColumnLayout {
     }
 
     ManagedIndexerControl {
+        id: managedIndexerControl
+
         visible: root.indexerTargetKind() === "module"
         theme: root.theme
         zoneState: root.zoneState
+        interactionBlocked: root.sourceEditorDirty
         Layout.fillWidth: true
     }
 
@@ -308,10 +315,14 @@ ColumnLayout {
     }
 
     function beginEditor(role, source) {
+        if (root.sourceInteractionsBlocked) {
+            return false
+        }
         draftRole = String(role || "sequencer")
         draftSource = source || null
         editorOpen = true
         Qt.callLater(root.initializeEditor)
+        return true
     }
 
     function indexerTargetKind() {
@@ -331,6 +342,7 @@ ColumnLayout {
     function discardDraft() {
         editorOpen = false
         draftSource = null
+        managedIndexerControl.discardDraft()
     }
 
     function reloadDraft() {
@@ -361,7 +373,7 @@ ColumnLayout {
     }
 
     function selectSequencer(source) {
-        if (!source || root.hasDirtyDraft) {
+        if (!source || root.sourceInteractionsBlocked) {
             return false
         }
         const selectedId = String(config.selected_sequencer_source_id || "")
@@ -377,7 +389,7 @@ ColumnLayout {
     }
 
     function retryAttestation(source) {
-        if (!source || root.hasDirtyDraft) {
+        if (!source || root.sourceInteractionsBlocked) {
             return false
         }
         zoneState.applyChannelSourceConfig({
@@ -391,7 +403,7 @@ ColumnLayout {
     }
 
     function confirmRemove(role, source) {
-        if (!source || root.hasDirtyDraft) {
+        if (!source || root.sourceInteractionsBlocked) {
             return false
         }
         pendingRemoveRole = role

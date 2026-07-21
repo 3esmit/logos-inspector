@@ -286,7 +286,7 @@ ColumnLayout {
 
             Text {
                 visible: root.hasDirtyDraft && root.zoneState.zoneDetail === null
-                text: qsTr("Network or Zone context changed. Source draft retained; saving is disabled.")
+                text: qsTr("Network or Zone context changed. Channel draft retained; saving is disabled.")
                 color: root.theme.warning
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
@@ -360,8 +360,8 @@ ColumnLayout {
 
         objectName: "zoneNavigationGuard"
         theme: root.theme
-        title: qsTr("Discard source draft")
-        message: qsTr("Discard unsaved Channel source changes before changing Zone?")
+        title: qsTr("Discard Channel changes")
+        message: qsTr("Discard unsaved Channel changes before changing Zone?")
         confirmText: qsTr("Discard")
         onAccepted: {
             root.discardSourceDraft()
