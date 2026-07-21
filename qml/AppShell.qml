@@ -29,6 +29,7 @@ Item {
     property var pendingNavigationRequest: null
     readonly property ZonePages.ZonesPage loadedZonesPage:
         pageLoader.item as ZonePages.ZonesPage
+    readonly property Item loadedPage: pageLoader.item as Item
 
     Theme {
         id: theme
@@ -162,11 +163,13 @@ Item {
 
                 ScrollView {
                     id: pageScroll
+                    objectName: "pageScroll"
                     leftPadding: root.compact ? theme.gap : theme.pageMargin
                     rightPadding: root.compact ? theme.gap : theme.pageMargin
                     topPadding: theme.gapLarge
                     bottomPadding: theme.gapLarge
                     contentWidth: availableWidth
+                    contentHeight: root.loadedPage ? root.loadedPage.implicitHeight : 0
                     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                     Layout.fillWidth: true
                     Layout.fillHeight: true

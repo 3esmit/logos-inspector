@@ -235,8 +235,10 @@ TestCase {
         testWindow.width = 1560
         const model = findChild(shell, "appModel")
         const loader = findChild(shell, "pageLoader")
+        const pageScroll = findChild(shell, "pageScroll")
         verify(model !== null)
         verify(loader !== null)
+        verify(pageScroll !== null)
         model.shell.selectView("overview")
         tryVerify(function () {
             return loader.item !== null
@@ -245,13 +247,19 @@ TestCase {
                 && findChild(loader.item, "dashboardZonesPanel") !== null
         })
 
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.summaryStale = false
+        model.zoneInspection.zoneSummaries = []
+        tryVerify(function () {
+            return Math.abs(pageScroll.contentHeight - loader.item.implicitHeight) <= 1
+        })
+        const compactContentHeight = pageScroll.contentHeight
+
         const fixtureZones = ZoneFixtureData.zones()
         const manyZones = []
         for (let index = 0; index < 20; ++index) {
             manyZones.push(fixtureZones[index % fixtureZones.length])
         }
-        model.zoneInspection.verification = "verified"
-        model.zoneInspection.summaryStale = false
         model.zoneInspection.zoneSummaries = manyZones
 
         const grid = findChild(loader.item, "dashboardActivityGrid")
@@ -274,6 +282,10 @@ TestCase {
         verify(blocks.x + blocks.width + grid.columnSpacing <= zones.x + 1)
         verify(transactions.x + transactions.width
                + grid.columnSpacing <= zones.x + 1)
+        tryVerify(function () {
+            return pageScroll.contentHeight > compactContentHeight
+                && Math.abs(pageScroll.contentHeight - loader.item.implicitHeight) <= 1
+        })
     }
 
     function test_dirty_zone_source_draft_guards_dashboard_navigation() {
