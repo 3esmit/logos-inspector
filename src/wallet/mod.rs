@@ -451,11 +451,12 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
     validate_wallet_send_recipient(to, to_keys, to_npk, to_vpk)?;
 
     let wallet = resolve_local_wallet_send_profile(profile)?;
+    let from = resolve_owned_public_wallet_sender(runner, &wallet, from)?;
     let mut args = vec![
         "auth-transfer".to_owned(),
         "send".to_owned(),
         "--from".to_owned(),
-        from.to_owned(),
+        from.clone(),
         "--amount".to_owned(),
         amount.clone(),
     ];
@@ -512,13 +513,53 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
         exit_status: output.exit_status,
         privacy: None,
         account_id: None,
-        from: Some(from.to_owned()),
+        from: Some(from),
         to: report_to,
         amount: Some(amount),
         tx_hash,
         stdout,
         stderr,
     })
+}
+
+fn resolve_owned_public_wallet_sender<R: LocalWalletRunner>(
+    runner: &R,
+    wallet: &profile::ResolvedLocalWalletProfile,
+    requested_from: &str,
+) -> Result<String> {
+    let redactions = wallet.redactions();
+    let output = runner.run(
+        &wallet.wallet_binary,
+        &wallet.wallet_home,
+        LocalWalletInvocation::ProfileHomeProbe,
+        &redactions,
+    )?;
+    if output.stdout.len() > LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT {
+        bail!(
+            "wallet account list output exceeded {} bytes; refusing to parse partial account data",
+            LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT
+        );
+    }
+    let stdout = local_wallet_accounts_output_text(&output.stdout, &redactions);
+    let accounts = parse_local_wallet_accounts_output(&stdout);
+    if let Some(account) = accounts
+        .iter()
+        .find(|account| account.privacy == "public" && account.typed_id == requested_from)
+    {
+        return Ok(account.typed_id.clone());
+    }
+
+    let matching_labels = accounts
+        .iter()
+        .filter(|account| account.privacy == "public" && account.label == requested_from)
+        .collect::<Vec<_>>();
+    match matching_labels.as_slice() {
+        [account] => Ok(account.typed_id.clone()),
+        [] => bail!("sender must be an owned Public wallet account"),
+        _ => bail!(
+            "sender label matches multiple owned Public wallet accounts; use a Public/... account id"
+        ),
+    }
 }
 
 pub fn local_wallet_command(profile: Value, args: Vec<String>) -> Result<LocalWalletCommandReport> {
@@ -1037,6 +1078,8 @@ pub(crate) fn unix_time_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use anyhow::{Result, bail};
     use serde_json::json;
 
@@ -1571,6 +1614,49 @@ exit 12
         }
     }
 
+    #[derive(Debug)]
+    struct WalletSendRunner {
+        accounts_output: LocalWalletOutput,
+        send_output: LocalWalletOutput,
+        expected_wallet_home: String,
+        expected_send_args: Vec<String>,
+        invocations: RefCell<Vec<&'static str>>,
+    }
+
+    impl LocalWalletRunner for WalletSendRunner {
+        fn run(
+            &self,
+            binary: &str,
+            wallet_home: &str,
+            invocation: LocalWalletInvocation<'_>,
+            _redactions: &[&str],
+        ) -> Result<LocalWalletOutput> {
+            if binary != "wallet" {
+                bail!("unexpected wallet binary: {binary}");
+            }
+            if wallet_home != self.expected_wallet_home {
+                bail!("unexpected wallet home: {wallet_home}");
+            }
+            match invocation {
+                LocalWalletInvocation::ProfileHomeProbe => {
+                    self.invocations.borrow_mut().push("account list");
+                    Ok(self.accounts_output.clone())
+                }
+                LocalWalletInvocation::Args { args, label } => {
+                    self.invocations.borrow_mut().push("auth-transfer send");
+                    if label != "wallet auth-transfer send" {
+                        bail!("unexpected label: {label}");
+                    }
+                    if args != self.expected_send_args {
+                        bail!("unexpected args: {args:?}");
+                    }
+                    Ok(self.send_output.clone())
+                }
+                _ => bail!("unexpected wallet invocation"),
+            }
+        }
+    }
+
     #[test]
     fn local_wallet_accounts_accepts_complete_output_larger_than_command_detail_limit() -> Result<()>
     {
@@ -1806,6 +1892,108 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
         if report.exit_status != "exit status: 0" {
             bail!("unexpected exit status: {}", report.exit_status);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_send_resolves_an_owned_public_label_before_mutation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
+        let runner = WalletSendRunner {
+            accounts_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"m/0 Public/owned-sender [primary]\n".to_vec(),
+                stderr: Vec::new(),
+            },
+            send_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"Transaction hash is submitted-tx".to_vec(),
+                stderr: Vec::new(),
+            },
+            expected_wallet_home: wallet_home.display().to_string(),
+            expected_send_args: vec![
+                "auth-transfer".to_owned(),
+                "send".to_owned(),
+                "--from".to_owned(),
+                "Public/owned-sender".to_owned(),
+                "--amount".to_owned(),
+                "1".to_owned(),
+                "--to".to_owned(),
+                "Public/recipient".to_owned(),
+            ],
+            invocations: RefCell::new(Vec::new()),
+        };
+
+        let report = local_wallet_send_transaction_with_runner(
+            &runner,
+            json!({
+                "wallet_binary": "wallet",
+                "wallet_home": wallet_home,
+                "network_profile": "testnet"
+            }),
+            json!({
+                "from": "primary",
+                "to": "Public/recipient",
+                "amount": "1"
+            }),
+        )?;
+
+        assert_eq!(report.from.as_deref(), Some("Public/owned-sender"));
+        assert_eq!(report.tx_hash.as_deref(), Some("submitted-tx"));
+        assert_eq!(
+            runner.invocations.into_inner(),
+            vec!["account list", "auth-transfer send"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_send_rejects_unowned_sender_before_mutation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
+        let runner = WalletSendRunner {
+            accounts_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"m/0 Public/owned-sender [primary]\n".to_vec(),
+                stderr: Vec::new(),
+            },
+            send_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            expected_wallet_home: wallet_home.display().to_string(),
+            expected_send_args: Vec::new(),
+            invocations: RefCell::new(Vec::new()),
+        };
+
+        let error = local_wallet_send_transaction_with_runner(
+            &runner,
+            json!({
+                "wallet_binary": "wallet",
+                "wallet_home": wallet_home,
+                "network_profile": "testnet"
+            }),
+            json!({
+                "from": "Public/unowned-sender",
+                "to": "Public/recipient",
+                "amount": "1"
+            }),
+        )
+        .err()
+        .context("unowned wallet sender unexpectedly submitted")?;
+
+        assert_eq!(
+            format!("{error:#}"),
+            "sender must be an owned Public wallet account"
+        );
+        assert_eq!(runner.invocations.into_inner(), vec!["account list"]);
         Ok(())
     }
 
