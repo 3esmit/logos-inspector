@@ -1,12 +1,26 @@
-use std::{fmt, future::Future, num::NonZeroUsize, pin::Pin, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    num::NonZeroUsize,
+    pin::Pin,
+    sync::{Arc, atomic::AtomicU8},
+    time::Duration,
+};
 
 use reqwest::{Client, Url};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use super::model::{CatalogBlockCheckpoint, CatalogBlockReference};
 use crate::{
-    source_routing::bedrock_layer, support::http_response::ensure_response_content_length,
+    modules::logos_core::{
+        ModuleCall, ModuleCallControl, ModuleTransportKind, SharedModuleTransport,
+        dispatch_module_call_controlled,
+    },
+    source_routing::bedrock_layer,
+    support::http_response::ensure_response_content_length,
 };
 
 pub const DEFAULT_CATALOG_L1_RANGE_BLOCKS: usize = 16;
@@ -20,6 +34,7 @@ const CATALOG_RANGE_RESPONSE_MAX_BYTES: usize = 64 * 1024 * 1024;
 // Mirrors the upstream processed-block NDJSON codec bound.
 const CATALOG_NDJSON_LINE_MAX_BYTES: usize = 3 * 1024 * 1024;
 const CATALOG_ERROR_RESPONSE_MAX_BYTES: usize = 16 * 1024;
+const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 
 pub type CatalogL1SourceResult<T> = Result<T, CatalogL1SourceError>;
 pub type CatalogL1SourceFuture<'a, T> =
@@ -301,6 +316,160 @@ impl CatalogL1Source for DirectCatalogL1Source {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct LogoscoreCatalogL1Source {
+    transport: SharedModuleTransport,
+    cancellation: CancellationToken,
+    limits: CatalogL1SourceLimits,
+}
+
+impl LogoscoreCatalogL1Source {
+    pub(crate) fn new(transport: SharedModuleTransport) -> CatalogL1SourceResult<Self> {
+        if transport.kind() != ModuleTransportKind::LogoscoreCli {
+            return Err(CatalogL1SourceError::Unavailable(
+                "LogosCore CLI Catalog reads require the LogosCore CLI transport".to_owned(),
+            ));
+        }
+        Ok(Self {
+            transport,
+            cancellation: CancellationToken::new(),
+            limits: CatalogL1SourceLimits::default(),
+        })
+    }
+
+    pub(crate) fn for_evidence(transport: SharedModuleTransport) -> CatalogL1SourceResult<Self> {
+        let mut source = Self::new(transport)?;
+        source.limits.block_response_bytes = EVIDENCE_BLOCK_RESPONSE_MAX_BYTES;
+        Ok(source)
+    }
+
+    #[must_use]
+    pub(crate) fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    async fn call(
+        &self,
+        method: &str,
+        args: Vec<Value>,
+        output_limit: usize,
+    ) -> CatalogL1SourceResult<Value> {
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            BLOCKCHAIN_MODULE,
+            method,
+            args,
+        )
+        .map_err(|error| CatalogL1SourceError::InvalidRequest(error.to_string()))?;
+        let control = ModuleCallControl::new(
+            self.cancellation.clone(),
+            Instant::now() + CATALOG_L1_REQUEST_TIMEOUT,
+            Arc::new(AtomicU8::new(1)),
+        )
+        .with_json_output_limit(output_limit)
+        .map_err(|error| CatalogL1SourceError::InvalidRequest(error.to_string()))?;
+        dispatch_module_call_controlled(self.transport.as_ref(), call, control)
+            .await
+            .map(|reply| reply.into_value())
+            .map_err(|error| source_unavailable("LogosCore CLI module call failed", error))
+    }
+
+    async fn fetch_chain_status(&self) -> CatalogL1SourceResult<CatalogL1ChainStatus> {
+        let value = self
+            .call(
+                "get_cryptarchia_info",
+                Vec::new(),
+                self.limits.metadata_response_bytes,
+            )
+            .await?;
+        parse_chain_status(&value)
+    }
+
+    async fn fetch_time_status(&self) -> CatalogL1SourceResult<CatalogL1TimeStatus> {
+        let value = self
+            .call(
+                "get_time_info",
+                Vec::new(),
+                self.limits.metadata_response_bytes,
+            )
+            .await?;
+        parse_time_status(&value)
+    }
+
+    async fn fetch_finalized_range(
+        &self,
+        request: CatalogL1RangeRequest,
+    ) -> CatalogL1SourceResult<CatalogL1RangePage> {
+        let from_slot = i32::try_from(request.slot_from()).map_err(|_| {
+            CatalogL1SourceError::InvalidRequest(
+                "range start exceeds the LogosCore CLI signed integer limit".to_owned(),
+            )
+        })?;
+        let to_slot = i32::try_from(request.slot_to()).map_err(|_| {
+            CatalogL1SourceError::InvalidRequest(
+                "target LIB slot exceeds the LogosCore CLI signed integer limit".to_owned(),
+            )
+        })?;
+        let blocks_limit = i32::try_from(request.blocks_limit().get()).map_err(|_| {
+            CatalogL1SourceError::InvalidRequest(
+                "range block limit exceeds the LogosCore CLI signed integer limit".to_owned(),
+            )
+        })?;
+        let value = self
+            .call(
+                "get_finalized_blocks_range",
+                vec![json!(from_slot), json!(to_slot), json!(blocks_limit)],
+                self.limits.range_response_bytes,
+            )
+            .await?;
+        parse_catalog_l1_range_array(value, request, self.limits)
+    }
+
+    async fn fetch_block(&self, block_id: String) -> CatalogL1SourceResult<Option<CatalogL1Block>> {
+        let requested_id = canonical_hex_id(&block_id, "requested block id")?;
+        let value = self
+            .call(
+                "get_block",
+                vec![json!(requested_id)],
+                self.limits.block_response_bytes,
+            )
+            .await?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let block = parse_block(value, "block detail")?;
+        if block.checkpoint.block_id != requested_id {
+            return Err(invalid_response(format!(
+                "block detail returned id {}, requested {requested_id}",
+                block.checkpoint.block_id
+            )));
+        }
+        Ok(Some(block))
+    }
+}
+
+impl CatalogL1Source for LogoscoreCatalogL1Source {
+    fn chain_status(&self) -> CatalogL1SourceFuture<'_, CatalogL1ChainStatus> {
+        Box::pin(self.fetch_chain_status())
+    }
+
+    fn time_status(&self) -> CatalogL1SourceFuture<'_, CatalogL1TimeStatus> {
+        Box::pin(self.fetch_time_status())
+    }
+
+    fn finalized_range(
+        &self,
+        request: CatalogL1RangeRequest,
+    ) -> CatalogL1SourceFuture<'_, CatalogL1RangePage> {
+        Box::pin(self.fetch_finalized_range(request))
+    }
+
+    fn block(&self, block_id: String) -> CatalogL1SourceFuture<'_, Option<CatalogL1Block>> {
+        Box::pin(self.fetch_block(block_id))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CatalogL1SourceLimits {
     metadata_response_bytes: usize,
@@ -329,6 +498,55 @@ pub fn parse_catalog_l1_range_ndjson(
     let mut parser = CatalogL1NdjsonParser::new(request, CatalogL1SourceLimits::default());
     parser.push_chunk(body)?;
     parser.finish()
+}
+
+fn parse_catalog_l1_range_array(
+    value: Value,
+    request: CatalogL1RangeRequest,
+    limits: CatalogL1SourceLimits,
+) -> CatalogL1SourceResult<CatalogL1RangePage> {
+    let encoded = serde_json::to_vec(&value).map_err(|error| {
+        invalid_response(format!(
+            "failed to encode finalized range response for validation: {error}"
+        ))
+    })?;
+    if encoded.len() > limits.range_response_bytes {
+        return Err(invalid_response(format!(
+            "finalized range body exceeded {} byte limit",
+            limits.range_response_bytes
+        )));
+    }
+    let values = value
+        .as_array()
+        .ok_or_else(|| invalid_response("finalized range response is not an array"))?;
+    if values.len() > request.blocks_limit().get() {
+        return Err(invalid_response(format!(
+            "finalized range returned more than {} requested blocks",
+            request.blocks_limit()
+        )));
+    }
+
+    let mut events = Vec::with_capacity(values.len());
+    let mut snapshot = None;
+    let mut previous_slot = None;
+    for (index, value) in values.iter().enumerate() {
+        let encoded = serde_json::to_vec(value).map_err(|error| {
+            invalid_response(format!(
+                "failed to encode finalized range event at array index {}: {error}",
+                index.saturating_add(1)
+            ))
+        })?;
+        let location = format!("array index {}", index.saturating_add(1));
+        parse_range_event_bytes(
+            &encoded,
+            &request,
+            &mut events,
+            &mut snapshot,
+            &mut previous_slot,
+            &location,
+        )?;
+    }
+    Ok(CatalogL1RangePage { events })
 }
 
 struct CatalogL1NdjsonParser {
@@ -407,46 +625,60 @@ impl CatalogL1NdjsonParser {
                 self.line_number, self.limits.ndjson_line_bytes
             )));
         }
-        if self.events.len() >= self.request.blocks_limit().get() {
-            return Err(invalid_response(format!(
-                "finalized range returned more than {} requested blocks",
-                self.request.blocks_limit()
-            )));
-        }
-
-        let wire: WireProcessedBlockEvent = serde_json::from_slice(line).map_err(|error| {
-            invalid_response(format!(
-                "invalid finalized range event on line {}: {error}; line={}",
-                self.line_number,
-                response_preview(line)
-            ))
-        })?;
-        let event = parse_wire_event(wire, &self.request)?;
-        if self
-            .previous_slot
-            .is_some_and(|previous| event.block.checkpoint.slot <= previous)
-        {
-            return Err(invalid_response(format!(
-                "finalized range block slots are not strictly ascending at line {}",
-                self.line_number
-            )));
-        }
-        if self
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot != &event.snapshot)
-        {
-            return Err(invalid_response(format!(
-                "finalized range chain snapshot changed at line {}",
-                self.line_number
-            )));
-        }
-
-        self.previous_slot = Some(event.block.checkpoint.slot);
-        self.snapshot.get_or_insert_with(|| event.snapshot.clone());
-        self.events.push(event);
-        Ok(())
+        let location = format!("line {}", self.line_number);
+        parse_range_event_bytes(
+            line,
+            &self.request,
+            &mut self.events,
+            &mut self.snapshot,
+            &mut self.previous_slot,
+            &location,
+        )
     }
+}
+
+fn parse_range_event_bytes(
+    bytes: &[u8],
+    request: &CatalogL1RangeRequest,
+    events: &mut Vec<CatalogL1BlockEvent>,
+    snapshot: &mut Option<CatalogL1ChainSnapshot>,
+    previous_slot: &mut Option<u64>,
+    location: &str,
+) -> CatalogL1SourceResult<()> {
+    if events.len() >= request.blocks_limit().get() {
+        return Err(invalid_response(format!(
+            "finalized range returned more than {} requested blocks",
+            request.blocks_limit()
+        )));
+    }
+    let wire: WireProcessedBlockEvent = serde_json::from_slice(bytes).map_err(|error| {
+        invalid_response(format!(
+            "invalid finalized range event at {location}: {error}; event={}",
+            response_preview(bytes)
+        ))
+    })?;
+    let event = parse_wire_event(wire, request)?;
+    if previous_slot
+        .as_ref()
+        .is_some_and(|previous| event.block.checkpoint.slot <= *previous)
+    {
+        return Err(invalid_response(format!(
+            "finalized range block slots are not strictly ascending at {location}"
+        )));
+    }
+    if snapshot
+        .as_ref()
+        .is_some_and(|current| current != &event.snapshot)
+    {
+        return Err(invalid_response(format!(
+            "finalized range chain snapshot changed at {location}"
+        )));
+    }
+
+    *previous_slot = Some(event.block.checkpoint.slot);
+    snapshot.get_or_insert_with(|| event.snapshot.clone());
+    events.push(event);
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -719,6 +951,7 @@ mod tests {
     use std::{
         io::{Read as _, Write as _},
         net::TcpListener,
+        sync::{Arc, Mutex},
         thread,
     };
 
@@ -727,6 +960,104 @@ mod tests {
     use tokio::runtime::Runtime;
 
     use super::*;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallControl, ModuleCallFuture, ModuleCallReply, ModuleTransport,
+    };
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct RecordedCliCall {
+        module: String,
+        method: String,
+        args: Vec<Value>,
+        output_limit: usize,
+    }
+
+    #[derive(Default)]
+    struct CatalogCliRecordingTransport {
+        calls: Mutex<Vec<RecordedCliCall>>,
+    }
+
+    impl CatalogCliRecordingTransport {
+        fn reply(&self, call: &ModuleCall, output_limit: usize) -> Result<ModuleCallReply> {
+            let mut calls = self
+                .calls
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Catalog CLI call recording lock is poisoned"))?;
+            calls.push(RecordedCliCall {
+                module: call.module().to_owned(),
+                method: call.method().to_owned(),
+                args: call.args().to_vec(),
+                output_limit,
+            });
+            drop(calls);
+
+            let value = match call.method() {
+                "get_cryptarchia_info" => json!({
+                    "cryptarchia_info": {
+                        "tip": id('f'),
+                        "slot": 30,
+                        "lib": id('d'),
+                        "lib_slot": 20,
+                        "genesis_id": id('0')
+                    }
+                }),
+                "get_time_info" => json!({
+                    "genesis_time_unix_ms": 1_000,
+                    "slot_duration_ms": 500,
+                    "current_slot": 30,
+                    "current_epoch": 2
+                }),
+                "get_finalized_blocks_range" => json!([serde_json::from_slice::<Value>(
+                    &event_line(10, 'a', '0', 30, 'f', 20, 'd')?
+                )?]),
+                "get_block" => json!({
+                    "header": {
+                        "id": call
+                            .args()
+                            .first()
+                            .and_then(Value::as_str)
+                            .context("get_block call did not include a block id")?,
+                        "parent_block": id('0'),
+                        "slot": 10
+                    },
+                    "transactions": []
+                }),
+                other => bail!("unexpected Catalog CLI method `{other}`"),
+            };
+            Ok(ModuleCallReply::new(
+                ModuleTransportKind::LogoscoreCli,
+                value,
+            ))
+        }
+
+        fn calls(&self) -> Result<Vec<RecordedCliCall>> {
+            Ok(self
+                .calls
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Catalog CLI call recording lock is poisoned"))?
+                .clone())
+        }
+    }
+
+    impl ModuleTransport for CatalogCliRecordingTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let result = self.reply(&call, CATALOG_METADATA_RESPONSE_MAX_BYTES);
+            Box::pin(async move { result })
+        }
+
+        fn call_controlled(
+            &self,
+            call: ModuleCall,
+            control: ModuleCallControl,
+        ) -> ModuleCallFuture<'_> {
+            let result = self.reply(&call, control.json_output_limit());
+            Box::pin(async move { result })
+        }
+    }
 
     #[test]
     fn range_request_canonicalizes_target_and_rejects_invalid_limits() -> Result<()> {
@@ -748,6 +1079,187 @@ mod tests {
         }
         if CatalogL1RangeRequest::new(10, target, MAX_CATALOG_L1_RANGE_BLOCKS + 1).is_ok() {
             bail!("oversized block limit should fail");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cli_range_array_parser_enforces_catalog_snapshot_contract() -> Result<()> {
+        let request = CatalogL1RangeRequest::new(10, block_reference(20, 'd'), 2)?;
+        let first: Value = serde_json::from_slice(&event_line(10, 'a', '0', 30, 'f', 20, 'd')?)?;
+        let second: Value = serde_json::from_slice(&event_line(14, 'b', 'a', 30, 'f', 20, 'd')?)?;
+        let page = parse_catalog_l1_range_array(
+            json!([first.clone(), second]),
+            request.clone(),
+            CatalogL1SourceLimits::default(),
+        )?;
+        let first_event = page.events.first();
+        let second_event = page.events.get(1);
+        if page.events.len() != 2
+            || first_event.is_none()
+            || second_event.is_none()
+            || first_event.zip(second_event).is_none_or(|(left, right)| {
+                left.snapshot != right.snapshot || right.block.checkpoint.slot != 14
+            })
+        {
+            bail!("CLI range array did not preserve the verified Catalog page: {page:?}");
+        }
+
+        let changed: Value = serde_json::from_slice(&event_line(14, 'b', 'a', 31, 'e', 20, 'd')?)?;
+        let error = parse_catalog_l1_range_array(
+            json!([first, changed]),
+            request.clone(),
+            CatalogL1SourceLimits::default(),
+        )
+        .err()
+        .context("CLI range array with a changing snapshot should fail")?;
+        if !error
+            .to_string()
+            .contains("snapshot changed at array index 2")
+        {
+            bail!("unexpected CLI snapshot error: {error}");
+        }
+
+        let non_array = parse_catalog_l1_range_array(
+            json!({"events": []}),
+            request.clone(),
+            CatalogL1SourceLimits::default(),
+        )
+        .err()
+        .context("CLI non-array range response should fail")?;
+        if !non_array.to_string().contains("response is not an array") {
+            bail!("unexpected CLI non-array error: {non_array}");
+        }
+
+        let oversized = parse_catalog_l1_range_array(
+            json!([]),
+            request,
+            CatalogL1SourceLimits {
+                range_response_bytes: 1,
+                ..CatalogL1SourceLimits::default()
+            },
+        )
+        .err()
+        .context("CLI oversized range response should fail")?;
+        if !oversized.to_string().contains("body exceeded 1 byte limit") {
+            bail!("unexpected CLI range size error: {oversized}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cli_source_uses_only_typed_catalog_methods_and_bounded_outputs() -> Result<()> {
+        let transport = Arc::new(CatalogCliRecordingTransport::default());
+        let source = LogoscoreCatalogL1Source::new(transport.clone())?;
+        let runtime = Runtime::new()?;
+        runtime.block_on(async {
+            let status = source.chain_status().await?;
+            if status.genesis_id.as_deref() != Some(id('0').as_str()) {
+                bail!("CLI chain status did not retain the explicit genesis id: {status:?}");
+            }
+            let time = source.time_status().await?;
+            if time.current_slot != 30 || time.current_epoch != 2 {
+                bail!("CLI time status was not decoded: {time:?}");
+            }
+            let page = source
+                .finalized_range(CatalogL1RangeRequest::new(10, block_reference(20, 'd'), 2)?)
+                .await?;
+            if page.events.len() != 1
+                || page
+                    .events
+                    .first()
+                    .is_none_or(|event| event.block.checkpoint.slot != 10)
+            {
+                bail!("CLI finalized range was not decoded: {page:?}");
+            }
+            let block = source
+                .block(id('a'))
+                .await?
+                .context("CLI block response was unexpectedly empty")?;
+            if block.checkpoint.block_id != id('a') {
+                bail!("CLI block identity was not verified: {block:?}");
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let calls = transport.calls()?;
+        let methods = calls
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>();
+        if methods
+            != [
+                "get_cryptarchia_info",
+                "get_time_info",
+                "get_finalized_blocks_range",
+                "get_block",
+            ]
+        {
+            bail!("CLI Catalog used an unexpected method sequence: {methods:?}");
+        }
+        if calls.iter().any(|call| call.module != BLOCKCHAIN_MODULE)
+            || calls.iter().any(|call| call.method == "get_blocks")
+        {
+            bail!("CLI Catalog bypassed the typed blockchain module contract: {calls:?}");
+        }
+        if calls.get(2).is_none_or(|call| {
+            call.args != json!([10, 20, 2]).as_array().cloned().unwrap_or_default()
+                || call.output_limit != CATALOG_RANGE_RESPONSE_MAX_BYTES
+        }) {
+            bail!(
+                "CLI Catalog range call did not preserve typed arguments or 64 MiB cap: {calls:?}"
+            );
+        }
+        if calls.get(3).is_none_or(|call| {
+            call.args != vec![json!(id('a'))]
+                || call.output_limit != CATALOG_BLOCK_RESPONSE_MAX_BYTES
+        }) {
+            bail!(
+                "CLI Catalog block call did not preserve typed arguments or block cap: {calls:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cli_source_rejects_range_slots_outside_signed_module_contract() -> Result<()> {
+        let transport = Arc::new(CatalogCliRecordingTransport::default());
+        let source = LogoscoreCatalogL1Source::new(transport.clone())?;
+        let request = CatalogL1RangeRequest::new(
+            0,
+            block_reference(u64::try_from(i32::MAX)?.saturating_add(1), 'd'),
+            1,
+        )?;
+        let error = Runtime::new()?
+            .block_on(source.finalized_range(request))
+            .err()
+            .context("out-of-range CLI slot should fail before dispatch")?;
+        if !error.to_string().contains("target LIB slot exceeds") {
+            bail!("unexpected signed-range error: {error}");
+        }
+        if !transport.calls()?.is_empty() {
+            bail!("CLI range dispatched despite signed argument rejection");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cli_evidence_source_uses_evidence_output_limit() -> Result<()> {
+        let transport = Arc::new(CatalogCliRecordingTransport::default());
+        let source = LogoscoreCatalogL1Source::for_evidence(transport.clone())?;
+        let block = Runtime::new()?
+            .block_on(source.block(id('a')))?
+            .context("CLI evidence block response was unexpectedly empty")?;
+        if block.checkpoint.block_id != id('a') {
+            bail!("CLI evidence block identity was not verified: {block:?}");
+        }
+        let calls = transport.calls()?;
+        if calls.len() != 1
+            || calls.first().is_none_or(|call| {
+                call.method != "get_block" || call.output_limit != EVIDENCE_BLOCK_RESPONSE_MAX_BYTES
+            })
+        {
+            bail!("CLI evidence did not apply its 16 MiB output cap: {calls:?}");
         }
         Ok(())
     }

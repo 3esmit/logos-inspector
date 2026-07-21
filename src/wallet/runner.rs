@@ -15,7 +15,8 @@ use super::{
     LOCAL_WALLET_PROFILE_TIMEOUT, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
 };
 use crate::support::command_runner::{
-    CommandControl, CommandRunPolicy, output_text, run_command, run_command_controlled,
+    CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, output_text, run_command,
+    run_command_controlled,
 };
 
 pub(super) enum LocalWalletInvocation<'a> {
@@ -190,6 +191,7 @@ fn run_local_wallet_command(
             poll_interval: LOCAL_WALLET_POLL_INTERVAL,
             redactions,
             output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
     )?;
     Ok(normalize_output(output))
@@ -210,6 +212,7 @@ fn run_local_wallet_command_controlled(
             poll_interval: LOCAL_WALLET_POLL_INTERVAL,
             redactions,
             output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
         control,
     )?;

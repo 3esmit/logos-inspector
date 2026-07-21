@@ -1260,7 +1260,17 @@ QtObject {
 
     function zoneCatalogL1SourceDescriptor() {
         const source = sourceRouting.coreSourceView("blockchain")
+        const resolvedMode = String(source && source.resolvedMode || "")
         const endpoint = String(source && source.endpoint || "").trim()
+        if (source && resolvedMode === "logoscore_cli") {
+            const descriptor = {
+                kind: "logoscore_cli"
+            }
+            if (localNodesEnabled && networkProfile === "default") {
+                descriptor.default_topology = "logos_testnet"
+            }
+            return descriptor
+        }
         if (source && String(source.effectiveMode || "") === "rpc" && endpoint.length > 0) {
             const descriptor = {
                 kind: "direct_http",
@@ -1276,7 +1286,7 @@ QtObject {
         if (source && String(source.effectiveMode || "") !== "rpc") {
             return {
                 kind: "unavailable",
-                reason: qsTr("Zone Catalog requires a Direct RPC Bedrock source. %1 does not expose the finalized range and time data required to verify Zones.")
+                reason: qsTr("Zone Catalog requires a Direct RPC Bedrock source or a LogosCore CLI source with Catalog reads. %1 does not expose the finalized range and time data required to verify Zones.")
                     .arg(sourceLabel)
             }
         }

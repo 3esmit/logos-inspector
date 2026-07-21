@@ -192,14 +192,21 @@ QtObject {
         }
         const kind = String(value.kind || "")
         const endpoint = String(value.endpoint || "").trim()
-        if (kind !== "direct_http" || endpoint.length === 0) {
+        const defaultTopology = String(value.default_topology || "") === "logos_testnet"
+            ? "logos_testnet" : ""
+        if (kind === "direct_http" && endpoint.length > 0) {
+            return {
+                kind: kind,
+                endpoint: endpoint,
+                default_topology: defaultTopology
+            }
+        }
+        if (kind !== "logoscore_cli") {
             return null
         }
         return {
             kind: kind,
-            endpoint: endpoint,
-            default_topology: String(value.default_topology || "") === "logos_testnet"
-                ? "logos_testnet" : ""
+            default_topology: defaultTopology
         }
     }
 
@@ -211,8 +218,12 @@ QtObject {
     }
 
     function sourceKey(value) {
-        return value ? String(value.kind || "") + "\n" + String(value.endpoint || "")
-            + "\n" + String(value.default_topology || "") : ""
+        if (!value) {
+            return ""
+        }
+        const kind = String(value.kind || "")
+        const endpoint = kind === "direct_http" ? String(value.endpoint || "") : ""
+        return kind + "\n" + endpoint + "\n" + String(value.default_topology || "")
     }
 
     function syncCatalogSource() {
@@ -253,8 +264,10 @@ QtObject {
         const generation = sourceGeneration
         const key = desiredSourceKey
         const source = {
-            kind: desiredSource.kind,
-            endpoint: desiredSource.endpoint
+            kind: desiredSource.kind
+        }
+        if (desiredSource.kind === "direct_http") {
+            source.endpoint = desiredSource.endpoint
         }
         if (String(desiredSource.default_topology || "").length) {
             source.default_topology = desiredSource.default_topology

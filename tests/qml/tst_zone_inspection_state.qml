@@ -1120,6 +1120,39 @@ TestCase {
         compare(request.args[0].source.default_topology, "logos_testnet")
     }
 
+    function test_logoscore_cli_catalog_configuration_omits_endpoint() {
+        zoneState.sourceDescriptor = {
+            kind: "logoscore_cli",
+            endpoint: "http://127.0.0.1:8080/",
+            default_topology: "logos_testnet"
+        }
+        zoneState.start()
+
+        const request = gateway.pendingRequest("zoneCatalogConfigure")
+        verify(request !== null)
+        compare(request.args[0].source.kind, "logoscore_cli")
+        verify(request.args[0].source.endpoint === undefined)
+        compare(request.args[0].source.default_topology, "logos_testnet")
+        verify(zoneState.desiredSource.endpoint === undefined)
+        compare(zoneState.desiredSourceKey, "logoscore_cli\n\nlogos_testnet")
+    }
+
+    function test_logoscore_cli_source_key_ignores_endpoint() {
+        const endpointFree = zoneState.normalizedSource({
+            kind: "logoscore_cli"
+        })
+        const withEndpoint = zoneState.normalizedSource({
+            kind: "logoscore_cli",
+            endpoint: "https://ignored.example"
+        })
+
+        verify(endpointFree !== null)
+        verify(withEndpoint !== null)
+        verify(endpointFree.endpoint === undefined)
+        verify(withEndpoint.endpoint === undefined)
+        compare(zoneState.sourceKey(endpointFree), zoneState.sourceKey(withEndpoint))
+    }
+
     function test_configure_race_accepts_only_latest_source() {
         zoneState.sourceDescriptor = {
             kind: "direct_http",

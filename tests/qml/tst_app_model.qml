@@ -1411,12 +1411,18 @@ TestCase {
         model.nodeUrl = "http://127.0.0.1:8080/"
 
         verify(model.setNetworkConnectorMode("l1", "logoscore_cli"))
-        const unavailable = model.zoneCatalogL1SourceDescriptor()
-        compare(unavailable.kind, "unavailable")
-        verify(String(unavailable.reason).indexOf("Direct RPC") >= 0)
-        verify(String(unavailable.reason).indexOf("LogosCore CLI") >= 0)
-        verify(unavailable.endpoint === undefined)
+        const cli = model.zoneCatalogL1SourceDescriptor()
+        compare(cli.kind, "logoscore_cli")
+        verify(cli.endpoint === undefined)
+        compare(cli.default_topology, "logos_testnet")
 
+        model.localNodesEnabled = false
+        const nonLocalCli = model.zoneCatalogL1SourceDescriptor()
+        compare(nonLocalCli.kind, "logoscore_cli")
+        verify(nonLocalCli.endpoint === undefined)
+        verify(nonLocalCli.default_topology === undefined)
+
+        model.localNodesEnabled = true
         verify(model.setNetworkConnectorMode("l1", "rpc"))
         const direct = model.zoneCatalogL1SourceDescriptor()
         compare(direct.kind, "direct_http")

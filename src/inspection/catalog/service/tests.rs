@@ -19,6 +19,23 @@ use crate::inspection::catalog::{
 };
 
 #[test]
+fn logoscore_cli_source_descriptor_is_endpoint_free_and_separate_from_direct_http() -> Result<()> {
+    let cli = ZoneCatalogSourceDescriptor::logoscore_cli();
+    let direct = ZoneCatalogSourceDescriptor::direct_http("https://catalog.example")?;
+    ensure!(
+        cli.kind() == ZoneCatalogSourceKind::LogoscoreCli
+            && cli.direct_endpoint().is_none()
+            && cli.fingerprint() != direct.fingerprint(),
+        "LogosCore CLI descriptor retained direct endpoint state or namespace"
+    );
+    ensure!(
+        cli == ZoneCatalogSourceDescriptor::logoscore_cli(),
+        "equivalent LogosCore CLI descriptors did not remain stable"
+    );
+    Ok(())
+}
+
+#[test]
 fn promotion_resumes_prepared_transition_and_keeps_catalog_file() -> Result<()> {
     let runtime = Runtime::new()?;
     runtime.block_on(async {

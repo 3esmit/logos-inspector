@@ -15,7 +15,9 @@ pub(super) use logos_inspector_testnet_v02_helper_protocol::{
 };
 
 use super::{LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT};
-use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
+use crate::support::command_runner::{
+    CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, output_text, run_command,
+};
 
 #[cfg(all(debug_assertions, feature = "development-testnet-v02-helper"))]
 const DEVELOPMENT_HELPER_MANIFEST: &str = concat!(
@@ -95,6 +97,7 @@ fn invoke_helper(request: HelperRequest) -> Result<HelperResponse> {
             poll_interval: super::LOCAL_WALLET_POLL_INTERVAL,
             redactions: &redactions,
             output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
     )?;
     parse_helper_response(&output.stdout, &redactions)

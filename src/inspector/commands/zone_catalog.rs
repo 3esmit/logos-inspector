@@ -13,9 +13,11 @@ mod projection;
 
 use projection::ZoneProjectionLedger;
 
+#[cfg(test)]
+use super::zone_evidence::DirectEvidenceBlockReader;
 use super::{
     decode_object_request,
-    zone_evidence::{DirectEvidenceBlockReader, EvidenceBlockReader, ZoneEvidenceCommandInterface},
+    zone_evidence::{EvidenceBlockReader, RoutedEvidenceBlockReader, ZoneEvidenceCommandInterface},
 };
 use crate::{
     inspection::{
@@ -212,18 +214,20 @@ impl ZoneCatalogCommandInterface {
             module_transport.clone(),
             module_transport_kind,
         ));
-        Self::with_dependencies(
+        Self::with_all_dependencies(
             runtime,
             worker,
             source_store,
             Arc::new(ChannelSourceMonitor::with_module_transport(
                 runtime.handle(),
-                module_transport,
+                Arc::clone(&module_transport),
                 module_transport_kind,
             )),
+            Arc::new(RoutedEvidenceBlockReader::new(module_transport)),
         )
     }
 
+    #[cfg(test)]
     fn with_dependencies(
         runtime: &Runtime,
         worker: Arc<dyn ZoneCatalogWorker>,
@@ -337,6 +341,10 @@ impl ZoneCatalogCommandInterface {
                 default_topology,
             } => (
                 ZoneCatalogSourceDescriptor::direct_http(endpoint)?,
+                default_topology,
+            ),
+            ZoneCatalogSourceRequest::LogoscoreCli { default_topology } => (
+                ZoneCatalogSourceDescriptor::logoscore_cli(),
                 default_topology,
             ),
         };
@@ -851,6 +859,39 @@ mod tests {
             .map_err(|_| anyhow::anyhow!("fake Testnet defaults lock poisoned"))?;
         if scopes.is_empty() || scopes.iter().any(|scope| scope != &network_scope) {
             bail!("verified Testnet Channel did not admit scoped defaults: {scopes:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn logoscore_cli_catalog_configuration_accepts_an_endpoint_free_source() -> Result<()> {
+        let runtime = Runtime::new()?;
+        let network_scope = scope('9');
+        let channel_id = identity('a');
+        let block = evidence_block(&channel_id, b"CLI catalog evidence");
+        let (worker, mut started) =
+            PublishingWorker::new(evidence_snapshot(network_scope, &channel_id, &block));
+        let interface = ZoneCatalogCommandInterface::with_dependencies(
+            &runtime,
+            Arc::new(worker),
+            Arc::new(FakeSourceStore::default()),
+            Arc::new(FakeMonitor::default()),
+        );
+
+        let report = interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{
+                "source": {
+                    "kind": "logoscore_cli"
+                }
+            }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("CLI catalog worker did not start")?;
+        if report.get("source_revision").and_then(Value::as_u64) != Some(1) {
+            bail!("endpoint-free CLI catalog configure was rejected: {report}");
         }
         Ok(())
     }

@@ -15,11 +15,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
 
-const COMMAND_CAPTURE_LIMIT: usize = 16 * 1024 * 1024;
+pub(crate) const DEFAULT_COMMAND_CAPTURE_LIMIT: usize = 16 * 1024 * 1024;
 #[cfg(all(unix, not(target_os = "fuchsia")))]
 const COMMAND_CAPTURE_POLL_BUDGET: usize = 256 * 1024;
-#[cfg(all(unix, not(target_os = "fuchsia")))]
-const COMMAND_CAPTURE_FINAL_BUDGET: usize = COMMAND_CAPTURE_LIMIT + 8192;
 pub(crate) const MAX_CONCURRENT_COMMANDS: usize = 4;
 const TERMINATION_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 const TERMINATION_RETRY_WINDOW: Duration = Duration::from_millis(250);
@@ -35,6 +33,7 @@ pub(crate) struct CommandRunPolicy<'a> {
     pub(crate) poll_interval: Duration,
     pub(crate) redactions: &'a [&'a str],
     pub(crate) output_limit: usize,
+    pub(crate) capture_limit: usize,
 }
 
 #[derive(Clone)]
@@ -263,6 +262,7 @@ pub(crate) fn acquire_streaming_command_permit(
         poll_interval: TERMINATION_RETRY_INTERVAL,
         redactions: &[],
         output_limit: 0,
+        capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
     };
     let budget = control.command_budget.as_ref().unwrap_or(&COMMAND_BUDGET);
     let permit = budget.acquire(&policy, Some(control), None)?;
@@ -438,7 +438,12 @@ where
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to run {}", policy.label))?;
-    let mut capture = match capture_setup.start(&mut child, policy.label, termination_scope) {
+    let mut capture = match capture_setup.start(
+        &mut child,
+        policy.label,
+        termination_scope,
+        policy.capture_limit,
+    ) {
         Ok(capture) => capture,
         Err(error) => {
             let cleanup = match terminate_and_reap_bounded_with(
@@ -654,20 +659,22 @@ fn validate_output(output: Output, policy: &CommandRunPolicy<'_>) -> Result<Outp
 struct CapturedOutput {
     bytes: Vec<u8>,
     truncated: bool,
+    capture_limit: usize,
 }
 
 impl CapturedOutput {
     #[cfg(all(unix, not(target_os = "fuchsia")))]
-    const fn new() -> Self {
+    const fn new(capture_limit: usize) -> Self {
         Self {
             bytes: Vec::new(),
             truncated: false,
+            capture_limit,
         }
     }
 
     #[cfg(all(unix, not(target_os = "fuchsia")))]
     fn retain(&mut self, bytes: &[u8]) {
-        let remaining = COMMAND_CAPTURE_LIMIT.saturating_sub(self.bytes.len());
+        let remaining = self.capture_limit.saturating_sub(self.bytes.len());
         self.bytes.extend(bytes.iter().take(remaining).copied());
         self.truncated |= bytes.len() > remaining;
     }
@@ -681,19 +688,19 @@ fn captured_bytes(
     if stdout.truncated || stderr.truncated {
         bail!(
             "{label} output exceeded the {} byte capture limit",
-            COMMAND_CAPTURE_LIMIT
+            stdout.capture_limit
         );
     }
     Ok((stdout.bytes, stderr.bytes))
 }
 
 #[cfg(any(not(unix), target_os = "fuchsia", test))]
-fn enforce_capture_length(length: u64) -> io::Result<()> {
-    let limit = u64::try_from(COMMAND_CAPTURE_LIMIT)
+fn enforce_capture_length(length: u64, capture_limit: usize) -> io::Result<()> {
+    let limit = u64::try_from(capture_limit)
         .map_err(|_| io::Error::other("command capture limit cannot be represented as u64"))?;
     if length > limit {
         return Err(io::Error::other(format!(
-            "command output exceeded the {COMMAND_CAPTURE_LIMIT} byte capture limit"
+            "command output exceeded the {capture_limit} byte capture limit"
         )));
     }
     Ok(())
@@ -714,8 +721,9 @@ impl CaptureSetup {
         child: &mut Child,
         label: &str,
         termination_scope: CommandTerminationScope,
+        capture_limit: usize,
     ) -> Result<OutputCapture> {
-        OutputCapture::start(child, label, termination_scope)
+        OutputCapture::start(child, label, termination_scope, capture_limit)
     }
 }
 
@@ -731,6 +739,7 @@ impl OutputCapture {
         child: &mut Child,
         label: &str,
         termination_scope: CommandTerminationScope,
+        capture_limit: usize,
     ) -> Result<Self> {
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,
@@ -773,8 +782,8 @@ impl OutputCapture {
             );
         }
         Ok(Self {
-            stdout: PipeCapture::new(stdout),
-            stderr: PipeCapture::new(stderr),
+            stdout: PipeCapture::new(stdout, capture_limit),
+            stderr: PipeCapture::new(stderr, capture_limit),
         })
     }
 
@@ -784,11 +793,12 @@ impl OutputCapture {
     }
 
     fn finish(mut self, label: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+        let final_budget = self.stdout.output.capture_limit.saturating_add(8192);
         self.stdout
-            .drain(COMMAND_CAPTURE_FINAL_BUDGET)
+            .drain(final_budget)
             .with_context(|| format!("failed to read {label} stdout"))?;
         self.stderr
-            .drain(COMMAND_CAPTURE_FINAL_BUDGET)
+            .drain(final_budget)
             .with_context(|| format!("failed to read {label} stderr"))?;
         captured_bytes(self.stdout.output, self.stderr.output, label)
     }
@@ -806,10 +816,10 @@ impl<R> PipeCapture<R>
 where
     R: io::Read,
 {
-    const fn new(reader: R) -> Self {
+    const fn new(reader: R, capture_limit: usize) -> Self {
         Self {
             reader,
-            output: CapturedOutput::new(),
+            output: CapturedOutput::new(capture_limit),
             eof: false,
         }
     }
@@ -894,10 +904,12 @@ impl CaptureSetup {
         _child: &mut Child,
         _label: &str,
         _termination_scope: CommandTerminationScope,
+        capture_limit: usize,
     ) -> Result<OutputCapture> {
         Ok(OutputCapture {
             stdout: self.stdout,
             stderr: self.stderr,
+            capture_limit,
         })
     }
 }
@@ -906,33 +918,37 @@ impl CaptureSetup {
 struct OutputCapture {
     stdout: tempfile::NamedTempFile,
     stderr: tempfile::NamedTempFile,
+    capture_limit: usize,
 }
 
 #[cfg(any(not(unix), target_os = "fuchsia"))]
 impl OutputCapture {
     fn drain_available(&mut self) -> io::Result<()> {
-        enforce_capture_length(self.stdout.as_file().metadata()?.len())?;
-        enforce_capture_length(self.stderr.as_file().metadata()?.len())
+        enforce_capture_length(self.stdout.as_file().metadata()?.len(), self.capture_limit)?;
+        enforce_capture_length(self.stderr.as_file().metadata()?.len(), self.capture_limit)
     }
 
     fn finish(mut self, label: &str) -> Result<(Vec<u8>, Vec<u8>)> {
-        let stdout = read_file_capture(&mut self.stdout)
+        let stdout = read_file_capture(&mut self.stdout, self.capture_limit)
             .with_context(|| format!("failed to read {label} stdout"))?;
-        let stderr = read_file_capture(&mut self.stderr)
+        let stderr = read_file_capture(&mut self.stderr, self.capture_limit)
             .with_context(|| format!("failed to read {label} stderr"))?;
         captured_bytes(stdout, stderr, label)
     }
 }
 
 #[cfg(any(not(unix), target_os = "fuchsia"))]
-fn read_file_capture(file: &mut tempfile::NamedTempFile) -> io::Result<CapturedOutput> {
+fn read_file_capture(
+    file: &mut tempfile::NamedTempFile,
+    capture_limit: usize,
+) -> io::Result<CapturedOutput> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
-    let limit = u64::try_from(COMMAND_CAPTURE_LIMIT)
+    let limit = u64::try_from(capture_limit)
         .map_err(|_| io::Error::other("command capture limit cannot be represented as u64"))?;
     let initial_length = file.as_file().metadata()?.len();
     file.as_file_mut().seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::with_capacity(COMMAND_CAPTURE_LIMIT.min(64 * 1024));
+    let mut bytes = Vec::with_capacity(capture_limit.min(64 * 1024));
     {
         let mut bounded = file.as_file_mut().take(limit);
         bounded.read_to_end(&mut bytes)?;
@@ -941,6 +957,7 @@ fn read_file_capture(file: &mut tempfile::NamedTempFile) -> io::Result<CapturedO
     Ok(CapturedOutput {
         bytes,
         truncated: initial_length > limit || final_length > limit,
+        capture_limit,
     })
 }
 
@@ -1348,6 +1365,7 @@ mod tests {
             poll_interval,
             redactions: &[],
             output_limit: 256,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         }
     }
 
@@ -2079,7 +2097,12 @@ mod tests {
         let termination_scope = configure_termination_scope(&mut command);
         let capture_setup = CaptureSetup::configure(&mut command, policy.label)?;
         let mut child = command.spawn()?;
-        let capture = capture_setup.start(&mut child, policy.label, termination_scope)?;
+        let capture = capture_setup.start(
+            &mut child,
+            policy.label,
+            termination_scope,
+            policy.capture_limit,
+        )?;
         let mut recovery = CommandRecovery {
             child,
             capture: Some(capture),
@@ -2229,7 +2252,7 @@ mod tests {
 
     #[test]
     fn output_beyond_capture_limit_is_drained_then_rejected() -> Result<()> {
-        let count = (COMMAND_CAPTURE_LIMIT + 1).to_string();
+        let count = (DEFAULT_COMMAND_CAPTURE_LIMIT + 1).to_string();
         let mut command = Command::new("sh");
         command
             .arg("-c")
@@ -2242,8 +2265,9 @@ mod tests {
             "oversized command output unexpectedly succeeded",
         )?;
 
-        let expected =
-            format!("test command output exceeded the {COMMAND_CAPTURE_LIMIT} byte capture limit");
+        let expected = format!(
+            "test command output exceeded the {DEFAULT_COMMAND_CAPTURE_LIMIT} byte capture limit"
+        );
         if error.to_string() != expected {
             bail!("unexpected capture-limit error: {error:#}");
         }
@@ -2251,15 +2275,37 @@ mod tests {
     }
 
     #[test]
+    fn command_policy_can_raise_or_lower_its_capture_limit() -> Result<()> {
+        let mut policy = test_policy(Duration::from_millis(2));
+        policy.capture_limit = 16;
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("head -c \"$1\" /dev/zero")
+            .arg("command-runner-test")
+            .arg("17");
+
+        let error = command_error(
+            run_command(command, policy),
+            "custom capture limit unexpectedly accepted oversized output",
+        )?;
+        if error.to_string() != "test command output exceeded the 16 byte capture limit" {
+            bail!("custom capture-limit error was not precise: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn file_capture_length_guard_rejects_first_byte_beyond_limit() -> Result<()> {
-        let limit = u64::try_from(COMMAND_CAPTURE_LIMIT)
+        let limit = u64::try_from(DEFAULT_COMMAND_CAPTURE_LIMIT)
             .context("test capture limit cannot be represented as u64")?;
-        enforce_capture_length(limit)?;
-        let error = enforce_capture_length(limit.saturating_add(1))
+        enforce_capture_length(limit, DEFAULT_COMMAND_CAPTURE_LIMIT)?;
+        let error = enforce_capture_length(limit.saturating_add(1), DEFAULT_COMMAND_CAPTURE_LIMIT)
             .err()
             .context("capture length guard accepted oversized output")?;
-        let expected =
-            format!("command output exceeded the {COMMAND_CAPTURE_LIMIT} byte capture limit");
+        let expected = format!(
+            "command output exceeded the {DEFAULT_COMMAND_CAPTURE_LIMIT} byte capture limit"
+        );
         if error.to_string() != expected {
             bail!("unexpected capture length error: {error}");
         }

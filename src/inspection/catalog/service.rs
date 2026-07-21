@@ -73,8 +73,15 @@ impl std::error::Error for ZoneCatalogServiceError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneCatalogSourceDescriptor {
-    endpoint: String,
+    kind: ZoneCatalogSourceKind,
+    endpoint: Option<String>,
     fingerprint: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZoneCatalogSourceKind {
+    DirectHttp,
+    LogoscoreCli,
 }
 
 impl ZoneCatalogSourceDescriptor {
@@ -86,14 +93,31 @@ impl ZoneCatalogSourceDescriptor {
         digest.update(b"catalog-l1-direct-http\0");
         digest.update(endpoint.as_bytes());
         Ok(Self {
-            endpoint,
+            kind: ZoneCatalogSourceKind::DirectHttp,
+            endpoint: Some(endpoint),
             fingerprint: format!("sha256:{}", hex::encode(digest.finalize())),
         })
     }
 
     #[must_use]
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
+    pub(crate) fn logoscore_cli() -> Self {
+        let mut digest = Sha256::new();
+        digest.update(b"catalog-l1-logoscore-cli-v1\0");
+        Self {
+            kind: ZoneCatalogSourceKind::LogoscoreCli,
+            endpoint: None,
+            fingerprint: format!("sha256:{}", hex::encode(digest.finalize())),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn kind(&self) -> ZoneCatalogSourceKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub(crate) fn direct_endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref()
     }
 
     #[must_use]

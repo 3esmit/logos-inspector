@@ -137,7 +137,11 @@ impl InspectorCommandSurface {
         recover_local_state().context("failed to recover local configuration state")?;
         let runtime = Runtime::new().context("failed to create tokio runtime")?;
         let module_transport_kind = module_transport.kind();
-        let catalog_worker = Arc::new(DirectZoneCatalogWorker::for_config_dir()?);
+        let catalog_worker = Arc::new(
+            DirectZoneCatalogWorker::for_config_dir_with_module_transport(Arc::clone(
+                &module_transport,
+            ))?,
+        );
         let zone_catalog = Arc::new(
             ZoneCatalogCommandInterface::with_worker_and_module_transport(
                 &runtime,

@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::modules::logos_core::LogoscoreCliRuntime;
 use crate::support::command_runner::{
-    CommandControl, CommandRunPolicy, run_command, run_command_controlled,
+    CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, run_command,
+    run_command_controlled,
 };
 
 use super::process::{find_command, process_is_alive};
@@ -423,6 +424,7 @@ impl LogoscoreRuntimeProfile {
             poll_interval: Duration::from_millis(25),
             redactions: &[],
             output_limit: 4096,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         };
         match control {
             Some(control) => run_command_controlled(command, policy, control.clone()),
@@ -630,6 +632,7 @@ fn system_service_main_process_id(target: &LogoscoreServiceTarget) -> Option<u32
             poll_interval: Duration::from_millis(25),
             redactions: &[],
             output_limit: 1024,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         },
     )
     .ok()?;
@@ -684,6 +687,7 @@ fn system_service_stop_status(
         poll_interval: Duration::from_millis(25),
         redactions: &[],
         output_limit: 1024,
+        capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
     };
     let output = match control {
         Some(control) => run_command_controlled(
