@@ -68,6 +68,41 @@ pub(super) fn identity_is_missing(workspace: &Path, config_path: &Path) -> Resul
     Ok(validated_nodekey(&config)?.is_none())
 }
 
+pub(super) fn redact_config_for_editor(config: &Value) -> Result<Value> {
+    let mut redacted = config.clone();
+    redacted
+        .as_object_mut()
+        .context("managed Messaging config must be a JSON object")?
+        .remove(NODE_KEY_FIELD);
+    Ok(redacted)
+}
+
+pub(super) fn has_persisted_identity(config: &Value) -> Result<bool> {
+    Ok(validated_nodekey(config)?.is_some())
+}
+
+pub(super) fn write_editor_config(
+    workspace: &Path,
+    config_path: &Path,
+    editor_config: Value,
+    existing_config: &Value,
+) -> Result<()> {
+    validate_config_path(workspace, config_path)?;
+    if editor_config
+        .as_object()
+        .context("managed Messaging config must be a JSON object")?
+        .contains_key(NODE_KEY_FIELD)
+    {
+        bail!("Messaging peer identity is protected and cannot be edited here");
+    }
+    let nodekey = validated_nodekey(existing_config)?
+        .context("managed Messaging config has no persisted peer identity")?
+        .to_owned();
+    let mut replacement = editor_config;
+    insert_nodekey(&mut replacement, nodekey)?;
+    write_private_config(config_path, &replacement)
+}
+
 fn read_optional_config(path: &Path) -> Result<Option<Value>> {
     match fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text)

@@ -1,9 +1,10 @@
 use std::{
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 use crate::inspection::NetworkScope;
 use crate::support::command_runner::CommandControl;
@@ -11,6 +12,7 @@ use crate::support::{confirmation::ConfirmationPolicy, state_store::config_dir};
 
 use super::action_workspace::{LocalNodeActionControls, LocalNodeActionWorkspace};
 use super::adapters::{NodeStatusContext, adapter_for};
+use super::config::{LocalNodeConfigSnapshot, LocalNodeConfigValidation};
 use super::lifecycle::acquire_state_lock;
 use super::model::{
     LOCAL_NODES_STATE_VERSION, LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest,
@@ -85,6 +87,53 @@ impl LocalNodeActionEngine {
             workspace_root: state.managed_workspace_root.clone(),
             devnets: state.devnets.clone(),
         })
+    }
+
+    pub(super) fn config_snapshot(
+        &self,
+        profile: &str,
+        node: NodeKind,
+    ) -> Result<LocalNodeConfigSnapshot> {
+        let _state_lock = acquire_state_lock()?;
+        let state = self.store.load()?;
+        let runtime = self.runtime_store.load_resolved()?;
+        super::config::snapshot(&state, runtime.as_ref(), profile, node)
+    }
+
+    pub(super) fn config_validate(
+        &self,
+        profile: &str,
+        node: NodeKind,
+        text: &str,
+    ) -> Result<LocalNodeConfigValidation> {
+        let _state_lock = acquire_state_lock()?;
+        let state = self.store.load()?;
+        super::config::validate(&state, profile, node, text)
+    }
+
+    pub(super) fn save_config(
+        &self,
+        profile: &str,
+        node: NodeKind,
+        text: &str,
+        expected_revision: &str,
+        confirmation: Option<&str>,
+    ) -> Result<LocalNodeConfigSnapshot> {
+        ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+
+        let _state_lock = acquire_state_lock()?;
+        let mut state = self.store.load()?;
+        let runtime = self.runtime_store.load_resolved()?;
+        super::config::save(
+            &mut state,
+            runtime.as_ref(),
+            profile,
+            node,
+            text,
+            expected_revision,
+            |updated_state| self.store.save(updated_state),
+        )?;
+        super::config::snapshot(&state, runtime.as_ref(), profile, node)
     }
 
     pub(super) fn apply(
@@ -399,21 +448,67 @@ impl LocalNodeStore {
 
     pub(super) fn save(&self, state: &LocalNodesState) -> Result<()> {
         let path = self.state_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create config directory {}", parent.display())
-            })?;
-        }
         let text =
             serde_json::to_string_pretty(state).context("failed to serialize local node state")?;
-        fs::write(&path, text)
-            .with_context(|| format!("failed to write local node state to {}", path.display()))?;
-        Ok(())
+        atomic_write_local_node_state(&path, text.as_bytes())
     }
 
     fn state_path(&self) -> PathBuf {
         state_path_for_config(&self.config_dir)
     }
+}
+
+fn atomic_write_local_node_state(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("local node state path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            bail!("local node state must be a regular file")
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect local node state {}", path.display()));
+        }
+    }
+    let mut staged = tempfile::Builder::new()
+        .prefix(".local-nodes-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .context("failed to stage local node state")?;
+    staged
+        .write_all(bytes)
+        .context("failed to write staged local node state")?;
+    staged
+        .as_file_mut()
+        .flush()
+        .context("failed to flush staged local node state")?;
+    staged
+        .as_file()
+        .sync_all()
+        .context("failed to sync staged local node state")?;
+    staged
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to replace local node state {}", path.display()))?;
+    sync_local_node_state_directory(parent)
+}
+
+#[cfg(unix)]
+fn sync_local_node_state_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)
+        .context("failed to open local node state directory")?
+        .sync_all()
+        .context("failed to sync local node state directory")
+}
+
+#[cfg(not(unix))]
+fn sync_local_node_state_directory(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn migrate_local_nodes_state(state: &mut LocalNodesState) -> Result<bool> {

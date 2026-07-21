@@ -38,6 +38,16 @@ TestCase {
         state.packageCatalogError = ""
         state.packageCatalogLoading = false
         state.packageCatalogGeneration = 0
+        state.nodeConfigSnapshot = null
+        state.nodeConfigError = ""
+        state.nodeConfigNode = ""
+        state.nodeConfigLoading = false
+        state.nodeConfigSaving = false
+        state.nodeConfigGeneration = 0
+        state.nodeConfigValidationGeneration = 0
+        state.nodeConfigValidationLoading = false
+        state.nodeConfigValidationText = ""
+        state.nodeConfigValidation = null
         state.observedNodes = ({})
         state.clearActionDraft()
     }
@@ -198,6 +208,31 @@ TestCase {
         return report
     }
 
+    function nodeConfigSnapshot(revision, editable) {
+        return {
+            profile: "default",
+            topology_id: "logos-testnet",
+            node: "storage",
+            node_label: "Storage",
+            config_path: "/tmp/logos-testnet/configs/storage.json",
+            config_role: "Runtime configuration",
+            format: "json",
+            raw_text: "{\n  \"data-dir\": \"/tmp/logos-testnet/data/storage\",\n  \"listen-ip\": \"0.0.0.0\",\n  \"listen-port\": 8091,\n  \"disc-port\": 8090,\n  \"nat\": \"any\",\n  \"network\": \"logos.test\",\n  \"log-level\": \"INFO\"\n}",
+            revision: String(revision || "revision-1"),
+            editable: editable !== false,
+            validation_scope: "JSON syntax and Inspector-managed field checks",
+            common_fields: [{
+                path: "/data-dir",
+                label: "Data directory",
+                section: "Local data",
+                kind: "path",
+                value: "/tmp/logos-testnet/data/storage",
+                required: true
+            }],
+            protected_fields: []
+        }
+    }
+
     function test_refresh_updates_report_and_operations() {
         gateway.responses = ({
             localNodesStatus: {
@@ -219,6 +254,98 @@ TestCase {
         compare(state.error, "")
         compare(state.revision, 1)
         compare(state.summaryText(), "1/2 running")
+    }
+
+    function test_node_configuration_load_validate_save_and_refresh() {
+        const initial = nodeConfigSnapshot("revision-1")
+        const saved = nodeConfigSnapshot("revision-2")
+        gateway.responses = ({
+            localNodeConfig: {
+                ok: true,
+                value: initial,
+                text: "OK",
+                error: ""
+            },
+            localNodeConfigValidate: {
+                ok: true,
+                value: {
+                    valid: true,
+                    error: "",
+                    common_fields: initial.common_fields
+                },
+                text: "OK",
+                error: ""
+            },
+            localNodeConfigSave: {
+                ok: true,
+                value: saved,
+                text: "OK",
+                error: ""
+            },
+            localNodesStatus: {
+                ok: true,
+                value: testnetReport(),
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.loadNodeConfig("storage")
+
+        compare(gateway.lastMethod, "localNodeConfig")
+        compare(gateway.lastArgs[0], "default")
+        compare(gateway.lastArgs[1], "storage")
+        compare(state.nodeConfigSnapshot.revision, "revision-1")
+        compare(state.nodeConfigNode, "storage")
+
+        state.validateNodeConfig(initial.raw_text)
+        compare(gateway.lastMethod, "localNodeConfigValidate")
+        compare(gateway.lastArgs[2], initial.raw_text)
+        verify(state.nodeConfigValidation.valid)
+        compare(state.nodeConfigValidationText, initial.raw_text)
+
+        state.saveNodeConfig(initial.raw_text, initial.revision)
+        compare(gateway.calls[2].method, "localNodeConfigSave")
+        compare(gateway.calls[2].args[0], "default")
+        compare(gateway.calls[2].args[1], "storage")
+        compare(gateway.calls[2].args[2], initial.raw_text)
+        compare(gateway.calls[2].args[3], "revision-1")
+        compare(gateway.calls[2].args[4], "confirm-local-node-action")
+        compare(state.nodeConfigSnapshot.revision, "revision-2")
+        verify(!state.nodeConfigSaving)
+        verify(!gateway.busy)
+        compare(gateway.history.length, 1)
+        compare(gateway.history[0].operation.method, "localNodeConfigSave")
+        compare(gateway.history[0].detail, "Configuration saved.")
+    }
+
+    function test_node_configuration_validation_retains_error_without_raw_text() {
+        const initial = nodeConfigSnapshot("revision-1")
+        gateway.responses = ({
+            localNodeConfig: {
+                ok: true,
+                value: initial,
+                text: "OK",
+                error: ""
+            },
+            localNodeConfigValidate: {
+                ok: true,
+                value: {
+                    valid: false,
+                    error: "Listen port must be between 1 and 65535.",
+                    common_fields: []
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.loadNodeConfig("storage")
+        state.validateNodeConfig("{\n  \"listen-port\": 0\n}")
+
+        verify(!state.nodeConfigValidation.valid)
+        compare(state.nodeConfigValidation.error, "Listen port must be between 1 and 65535.")
+        compare(state.nodeConfigValidationText, "{\n  \"listen-port\": 0\n}")
     }
 
     function test_refresh_records_error() {

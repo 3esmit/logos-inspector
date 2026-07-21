@@ -58,6 +58,7 @@ Item {
             state.packageCatalogLoading = false
             state.packageCatalogGeneration = 0
             state.clearActionDraft()
+            state.clearNodeConfig()
         }
 
         function test_package_panel_prefills_modules_dir_and_exact_release() {
@@ -244,6 +245,142 @@ Item {
             popup.close()
         }
 
+        function test_node_configuration_forces_save_or_undo_before_tab_switch() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+            verify(configure.enabled)
+
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "visible", true)
+            tryCompare(panel, "activeNode", "bedrock")
+            compare(panel.currentTab, "common")
+            compare(panel.nodeLabel(), "Bedrock")
+            verify(panel.editable)
+            tryCompare(panel, "validDraft", true)
+
+            panel.updateCommonText({
+                path: "/http_addr",
+                kind: "string",
+                label: "HTTP API address"
+            }, "127.0.0.1:9090")
+            verify(panel.dirty)
+            verify(panel.draftText.indexOf("127.0.0.1:9090") >= 0)
+
+            panel.requestTab("raw")
+            compare(panel.currentTab, "common")
+            verify(panel.tabGuardMessage.indexOf("Save or undo") >= 0)
+
+            panel.undoDraft()
+            verify(!panel.dirty)
+            panel.requestTab("raw")
+            compare(panel.currentTab, "raw")
+            const raw = findChild(panel, "nodeConfigRawInput")
+            const save = findChild(panel, "nodeConfigSaveButton")
+            verify(!!raw, "Raw editor exists")
+            verify(!!save, "Save control exists")
+            compare(raw.Accessible.name, "Raw JSON node configuration")
+
+            panel.setDraftText("{")
+            verify(panel.validationError.length > 0)
+            verify(!save.enabled)
+        }
+
+        function test_node_configuration_retries_same_node_after_load_error() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+
+            gateway.responses.localNodeConfig = {
+                ok: false,
+                value: null,
+                text: "Unavailable",
+                error: "Temporary configuration failure"
+            }
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(state, "nodeConfigError", "Temporary configuration failure")
+            compare(panel.activeNode, "bedrock")
+
+            gateway.responses.localNodeConfig = {
+                ok: true,
+                value: sampleBedrockConfig(),
+                text: "OK",
+                error: ""
+            }
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(state, "nodeConfigError", "")
+            tryCompare(panel, "editable", true)
+            const configCalls = gateway.calls.filter(function (call) {
+                return call.method === "localNodeConfig"
+            })
+            compare(configCalls.length, 2)
+        }
+
+        function test_node_configuration_retries_same_node_after_becoming_editable() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+
+            const readOnlySnapshot = sampleBedrockConfig()
+            readOnlySnapshot.editable = false
+            readOnlySnapshot.blocked_reason = "Stop this node before editing configuration."
+            gateway.responses.localNodeConfig = {
+                ok: true,
+                value: readOnlySnapshot,
+                text: "OK",
+                error: ""
+            }
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "editable", false)
+            verify(!panel.validDraft)
+
+            gateway.responses.localNodeConfig = {
+                ok: true,
+                value: sampleBedrockConfig(),
+                text: "OK",
+                error: ""
+            }
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "editable", true)
+            tryCompare(panel, "validDraft", true)
+            const configCalls = gateway.calls.filter(function (call) {
+                return call.method === "localNodeConfig"
+            })
+            compare(configCalls.length, 2)
+        }
+
+        function test_node_configuration_resets_after_profile_change_and_can_reopen() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "activeNode", "bedrock")
+            verify(panel.visible)
+
+            state.networkProfile = "local"
+            tryCompare(panel, "activeNode", "")
+            verify(!panel.visible)
+
+            state.report = sampleReport("stopped")
+            state.revision += 1
+            const reopenedConfigure = findChild(page, "nodeConfigurebedrock")
+            verify(!!reopenedConfigure, "Configuration control is recreated")
+            mouseClick(reopenedConfigure,
+                       reopenedConfigure.width / 2,
+                       reopenedConfigure.height / 2)
+            tryCompare(panel, "activeNode", "bedrock")
+            verify(panel.visible)
+        }
+
         function createPage(report, catalog) {
             gateway.responses = ({
                 localNodesStatus: {
@@ -261,6 +398,28 @@ Item {
                 localNodePackageCatalog: {
                     ok: true,
                     value: catalog,
+                    text: "OK",
+                    error: ""
+                },
+                localNodeConfig: {
+                    ok: true,
+                    value: sampleBedrockConfig(),
+                    text: "OK",
+                    error: ""
+                },
+                localNodeConfigValidate: {
+                    ok: true,
+                    value: {
+                        valid: true,
+                        error: "",
+                        common_fields: sampleBedrockConfig().common_fields
+                    },
+                    text: "OK",
+                    error: ""
+                },
+                localNodeConfigSave: {
+                    ok: true,
+                    value: sampleBedrockConfig(),
                     text: "OK",
                     error: ""
                 }
@@ -293,7 +452,8 @@ Item {
                     available_actions: ["start"],
                     install_state: "installed",
                     run_state: "stopped",
-                    ownership: "inspector_managed"
+                    ownership: "inspector_managed",
+                    config_path: "/tmp/logos-testnet/configs/bedrock.init.json"
                 }, {
                     key: "indexer",
                     kind: "indexer",
@@ -345,6 +505,38 @@ Item {
                     }]
                 },
                 installed: installed
+            }
+        }
+
+        function sampleBedrockConfig() {
+            return {
+                profile: "default",
+                topology_id: "logos-testnet",
+                node: "bedrock",
+                node_label: "Bedrock",
+                config_path: "/tmp/logos-testnet/configs/bedrock.init.json",
+                config_role: "Initialization source",
+                format: "json",
+                raw_text: "{\n  \"initial_peers\": [],\n  \"net_port\": 3000,\n  \"blend_port\": 3001,\n  \"http_addr\": \"127.0.0.1:8080\",\n  \"skip_ibd\": false,\n  \"state_path\": \"/tmp/logos-testnet/data/bedrock/state\",\n  \"storage_path\": \"/tmp/logos-testnet/data/bedrock/storage\",\n  \"logs_path\": \"/tmp/logos-testnet/data/bedrock/logs\",\n  \"log_filter\": \"info\",\n  \"output\": \"/tmp/logos-testnet/configs/bedrock.yaml\"\n}",
+                revision: "config-revision-1",
+                editable: true,
+                validation_scope: "JSON syntax and Inspector-managed field checks",
+                common_fields: [{
+                    path: "/http_addr",
+                    label: "HTTP API address",
+                    section: "API",
+                    kind: "string",
+                    value: "127.0.0.1:8080",
+                    required: true
+                }, {
+                    path: "/skip_ibd",
+                    label: "Skip initial block download",
+                    section: "Protocol",
+                    kind: "boolean",
+                    value: false,
+                    required: true
+                }],
+                protected_fields: ["Generated Bedrock runtime keys"]
             }
         }
 
