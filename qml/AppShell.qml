@@ -496,6 +496,7 @@ Item {
         LocalPages.LocalNodesPage {
             theme: theme
             model: appModel.localNodes
+            pageScroller: pageScroll.contentItem
         }
     }
 
