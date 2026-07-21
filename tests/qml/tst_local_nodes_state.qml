@@ -175,6 +175,19 @@ TestCase {
         return report
     }
 
+    function attachedRuntimeReport(runtimeState) {
+        const report = sampleReport()
+        report.available_runtime_actions = runtimeState === "running"
+            ? ["stop_runtime"] : ["start_runtime"]
+        report.runtime = {
+            ownership: "local_attached",
+            run_state: runtimeState,
+            service_unit: "logos-node.service",
+            detail: "local LogosCore daemon is running under system service `logos-node.service`"
+        }
+        return report
+    }
+
     function test_refresh_updates_report_and_operations() {
         gateway.responses = ({
             localNodesStatus: {
@@ -960,6 +973,55 @@ TestCase {
         compare(gateway.calls[0].args[1].action, "stop_runtime")
         verify(gateway.calls[0].args[1].allow_identity_rotation)
         verify(!state.pendingAllowIdentityRotation)
+    }
+
+    function test_attached_runtime_start_confirmation_controls_only_the_service() {
+        state.report = attachedRuntimeReport("stopped")
+        state.revision += 1
+        state.beginRuntimeAction("start_runtime", "/tmp/modules", "/tmp/logoscore")
+
+        compare(state.actionDraftTitle(), "Start local service")
+        compare(
+            state.actionDraftMessage(),
+            "This starts the local service logos-node.service. Inspector does not alter node configuration, module contexts, or Messaging identity.")
+        compare(state.pendingRuntimeModulesDir, "")
+        compare(state.pendingRuntimeBinaryPath, "")
+        verify(!state.pendingAllowIdentityRotation)
+    }
+
+    function test_attached_runtime_stop_confirmation_snapshots_service_ownership() {
+        state.report = attachedRuntimeReport("running")
+        state.revision += 1
+        state.beginRuntimeAction("stop_runtime", "/tmp/modules", "/tmp/logoscore")
+        state.report = sampleReport()
+        state.revision += 1
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: attachedRuntimeReport("stopped"),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        compare(state.actionDraftTitle(), "Stop local service")
+        compare(
+            state.actionDraftMessage(),
+            "This stops the local service logos-node.service. Inspector does not alter node configuration, module contexts, or Messaging identity.")
+        verify(!state.pendingAllowIdentityRotation)
+        state.runPendingAction()
+
+        compare(gateway.calls[0].args[1].action, "stop_runtime")
+        verify(gateway.calls[0].args[1].runtime_modules_dir === undefined)
+        verify(gateway.calls[0].args[1].runtime_binary_path === undefined)
+        verify(gateway.calls[0].args[1].allow_identity_rotation === undefined)
+        compare(gateway.history[0].operation.label, "Stop local service")
     }
 
     function test_package_catalog_loads_exact_releases_for_modules_directory() {

@@ -48,7 +48,7 @@ impl LocalNodeActionEngine {
     pub(super) fn status(&self, profile: &str) -> Result<LocalNodeReport> {
         let _state_lock = acquire_state_lock()?;
         let state = self.store.load()?;
-        let runtime = self.runtime_store.load()?;
+        let runtime = self.runtime_store.load_resolved()?;
         Ok(self.projector.report(profile, &state, runtime.as_ref()))
     }
 
@@ -73,7 +73,7 @@ impl LocalNodeActionEngine {
     }
 
     pub(super) fn runtime_profile(&self) -> Result<Option<LogoscoreRuntimeProfile>> {
-        self.runtime_store.load()
+        self.runtime_store.load_resolved()
     }
 
     pub(super) fn devnets(&self, profile: &str) -> Result<LocalDevnetListReport> {
@@ -148,7 +148,7 @@ impl LocalNodeActionEngine {
 
         let _state_lock = acquire_state_lock()?;
         let mut state = self.store.load()?;
-        let mut runtime = self.runtime_store.load()?;
+        let mut runtime = self.runtime_store.load_resolved()?;
         let workflow = LocalNodeWorkflow::for_state(profile, &state);
         workflow.validate_request(&request)?;
 
@@ -329,10 +329,13 @@ impl LocalNodeReportProjector {
 
 fn runtime_actions(_profile: &str, runtime: Option<&LogoscoreRuntimeProfile>) -> Vec<NodeAction> {
     match runtime {
-        Some(runtime) if runtime.is_managed() && runtime.is_running() => {
+        Some(runtime) if runtime.is_controllable() && runtime.is_running() => {
             vec![NodeAction::StopRuntime]
         }
         Some(runtime) if runtime.is_managed() => vec![NodeAction::StartRuntime],
+        Some(runtime) if runtime.is_attached() && runtime.service_target().is_some() => {
+            vec![NodeAction::StartRuntime]
+        }
         None => vec![NodeAction::StartRuntime],
         Some(_) => Vec::new(),
     }
@@ -527,6 +530,49 @@ mod tests {
 
     use super::*;
     use crate::local_nodes::model::LocalNodeDeployment;
+    use crate::local_nodes::runtime::{
+        LogoscoreRuntimeOwnership, LogoscoreServiceScope, LogoscoreServiceTarget,
+        LogoscoreTimeoutProfile,
+    };
+
+    fn attached_runtime(
+        daemon_process_id: Option<u32>,
+        service_target: Option<LogoscoreServiceTarget>,
+    ) -> LogoscoreRuntimeProfile {
+        LogoscoreRuntimeProfile {
+            id: "local-attached".to_owned(),
+            binary_path: "/bin/sh".to_owned(),
+            config_dir: "/tmp/logoscore-client".to_owned(),
+            modules_dir: None,
+            persistence_path: None,
+            ownership: LogoscoreRuntimeOwnership::LocalAttached,
+            timeout_profile: LogoscoreTimeoutProfile::Probe,
+            daemon_process_id,
+            service_target,
+        }
+    }
+
+    #[test]
+    fn attached_runtime_actions_require_a_verified_service_target() {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let running = attached_runtime(Some(42), Some(target.clone()));
+        assert_eq!(
+            runtime_actions("default", Some(&running)),
+            [NodeAction::StopRuntime]
+        );
+
+        let stopped = attached_runtime(None, Some(target));
+        assert_eq!(
+            runtime_actions("default", Some(&stopped)),
+            [NodeAction::StartRuntime]
+        );
+
+        let read_only = attached_runtime(None, None);
+        assert!(runtime_actions("default", Some(&read_only)).is_empty());
+    }
 
     fn state_with_indexer(
         config_dir: &Path,

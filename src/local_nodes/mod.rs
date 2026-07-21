@@ -158,11 +158,11 @@ pub(crate) fn channel_indexer_action_controlled(
     )
 }
 
-pub(crate) fn running_managed_logoscore_runtime() -> Result<Option<LogoscoreCliRuntime>> {
+pub(crate) fn running_local_logoscore_runtime() -> Result<Option<LogoscoreCliRuntime>> {
     let config_dir = crate::support::state_store::config_dir()?;
-    let profile = runtime::LogoscoreRuntimeStore::system(config_dir).load()?;
+    let profile = runtime::LogoscoreRuntimeStore::system(config_dir).load_resolved()?;
     profile
-        .filter(runtime::LogoscoreRuntimeProfile::is_running)
+        .filter(|profile| profile.is_running() && (profile.is_managed() || profile.is_attached()))
         .map(|profile| profile.cli_runtime())
         .transpose()
 }
@@ -791,6 +791,7 @@ mod tests {
             ownership: runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: runtime::LogoscoreTimeoutProfile::Lifecycle,
             daemon_process_id: Some(std::process::id()),
+            service_target: None,
         });
         let request = LocalNodeActionRequest {
             action: NodeAction::Initialize,

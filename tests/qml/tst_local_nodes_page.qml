@@ -200,6 +200,47 @@ Item {
             }).length, 0)
         }
 
+        function test_attached_service_runtime_controls_have_unambiguous_accessibility() {
+            const page = createPage(attachedServiceReport("stopped"), samplePackageCatalog(null))
+            const start = findChild(page, "runtimeStartButton")
+            const stop = findChild(page, "runtimeStopButton")
+            const popup = findChild(page, "localNodesConfirmPopup")
+            verify(!!start, "Object exists")
+            verify(!!stop, "Object exists")
+            verify(!!popup, "Object exists")
+
+            verify(start.enabled)
+            verify(!stop.enabled)
+            compare(start.text, "Start service")
+            compare(start.Accessible.name, "Start local service")
+            mouseClick(start, start.width / 2, start.height / 2)
+            tryCompare(popup, "opened", true)
+            compare(popup.title, "Start local service")
+            compare(
+                popup.message,
+                "This starts the local service logos-node.service. Inspector does not alter node configuration, module contexts, or Messaging identity.")
+            verify(!state.pendingAllowIdentityRotation)
+            popup.close()
+        }
+
+        function test_attached_running_service_exposes_stop_without_identity_rotation() {
+            const page = createPage(attachedServiceReport("running"), samplePackageCatalog(null))
+            const stop = findChild(page, "runtimeStopButton")
+            const popup = findChild(page, "localNodesConfirmPopup")
+            verify(!!stop, "Object exists")
+            verify(!!popup, "Object exists")
+
+            verify(stop.enabled)
+            compare(stop.text, "Stop service")
+            compare(stop.Accessible.name, "Stop local service")
+            mouseClick(stop, stop.width / 2, stop.height / 2)
+            tryCompare(popup, "opened", true)
+            compare(popup.title, "Stop local service")
+            verify(popup.message.indexOf("does not alter node configuration") >= 0)
+            verify(!state.pendingAllowIdentityRotation)
+            popup.close()
+        }
+
         function createPage(report, catalog) {
             gateway.responses = ({
                 localNodesStatus: {
@@ -268,6 +309,17 @@ Item {
                     detail: "Test runtime"
                 }
             }
+        }
+
+        function attachedServiceReport(runtimeState) {
+            const report = sampleReport(runtimeState)
+            report.runtime = {
+                ownership: "local_attached",
+                run_state: runtimeState,
+                service_unit: "logos-node.service",
+                detail: "local LogosCore daemon is running under system service `logos-node.service`"
+            }
+            return report
         }
 
         function samplePackageCatalog(installed) {
