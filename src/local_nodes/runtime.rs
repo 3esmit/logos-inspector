@@ -61,6 +61,13 @@ impl LogoscoreServiceAction {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum LogoscoreServiceStopOutcome {
+    Stopped,
+    StoppedWithFailure(String),
+    StillRunning(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum LogoscoreTimeoutProfile {
@@ -431,6 +438,16 @@ impl LogoscoreRuntimeProfile {
         Ok(display)
     }
 
+    pub(super) fn attached_service_stop_outcome(
+        &self,
+        control: Option<&CommandControl>,
+    ) -> Result<LogoscoreServiceStopOutcome> {
+        let target = self
+            .service_target()
+            .context("local LogosCore daemon has no verified service lifecycle backend")?;
+        system_service_stop_status(target, control).map(SystemServiceStopStatus::outcome)
+    }
+
     pub(super) fn refresh_attached_process_id(&mut self) -> Result<()> {
         if !self.is_attached() {
             bail!("only a local attached LogosCore runtime can refresh service state");
@@ -621,6 +638,126 @@ fn system_service_main_process_id(target: &LogoscoreServiceTarget) -> Option<u32
         .trim()
         .parse::<u32>()
         .ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SystemServiceStopStatus {
+    active_state: String,
+    sub_state: String,
+    result: String,
+    exec_main_code: String,
+    exec_main_status: String,
+}
+
+impl SystemServiceStopStatus {
+    fn outcome(self) -> LogoscoreServiceStopOutcome {
+        let detail = self.detail();
+        if self.active_state == "inactive" && self.sub_state == "dead" && self.result == "success" {
+            LogoscoreServiceStopOutcome::Stopped
+        } else if matches!(self.active_state.as_str(), "inactive" | "failed") {
+            LogoscoreServiceStopOutcome::StoppedWithFailure(detail)
+        } else {
+            LogoscoreServiceStopOutcome::StillRunning(detail)
+        }
+    }
+
+    fn detail(&self) -> String {
+        let properties = [
+            format!("ActiveState={}", self.active_state),
+            format!("SubState={}", self.sub_state),
+            format!("Result={}", self.result),
+            format!("ExecMainCode={}", self.exec_main_code),
+            format!("ExecMainStatus={}", self.exec_main_status),
+        ];
+        properties.join(", ")
+    }
+}
+
+fn system_service_stop_status(
+    target: &LogoscoreServiceTarget,
+    control: Option<&CommandControl>,
+) -> Result<SystemServiceStopStatus> {
+    let command = service_stop_status_command(target);
+    let policy = CommandRunPolicy {
+        label: "local LogosCore service stop status",
+        timeout: LIFECYCLE_TIMEOUT,
+        poll_interval: Duration::from_millis(25),
+        redactions: &[],
+        output_limit: 1024,
+    };
+    let output = match control {
+        Some(control) => run_command_controlled(
+            command,
+            policy,
+            control.with_deadline(Instant::now() + LIFECYCLE_TIMEOUT),
+        ),
+        None => run_command(command, policy),
+    }
+    .with_context(|| {
+        format!(
+            "failed to inspect local LogosCore service `{}`",
+            target.unit
+        )
+    })?;
+    parse_system_service_stop_status(&output.stdout).with_context(|| {
+        format!(
+            "local LogosCore service `{}` returned incomplete state",
+            target.unit
+        )
+    })
+}
+
+fn service_stop_status_command(target: &LogoscoreServiceTarget) -> Command {
+    let mut command = Command::new("systemctl");
+    if target.scope == LogoscoreServiceScope::User {
+        command.arg("--user");
+    }
+    command.args([
+        "show",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--property=Result",
+        "--property=ExecMainCode",
+        "--property=ExecMainStatus",
+    ]);
+    command.arg(&target.unit);
+    command
+}
+
+fn parse_system_service_stop_status(output: &[u8]) -> Result<SystemServiceStopStatus> {
+    let text = std::str::from_utf8(output).context("system service status is not UTF-8")?;
+    let mut active_state = None;
+    let mut sub_state = None;
+    let mut result = None;
+    let mut exec_main_code = None;
+    let mut exec_main_status = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "ActiveState" => set_system_service_property(&mut active_state, key, value)?,
+            "SubState" => set_system_service_property(&mut sub_state, key, value)?,
+            "Result" => set_system_service_property(&mut result, key, value)?,
+            "ExecMainCode" => set_system_service_property(&mut exec_main_code, key, value)?,
+            "ExecMainStatus" => set_system_service_property(&mut exec_main_status, key, value)?,
+            _ => {}
+        }
+    }
+    Ok(SystemServiceStopStatus {
+        active_state: active_state.context("missing ActiveState")?,
+        sub_state: sub_state.context("missing SubState")?,
+        result: result.context("missing Result")?,
+        exec_main_code: exec_main_code.context("missing ExecMainCode")?,
+        exec_main_status: exec_main_status.context("missing ExecMainStatus")?,
+    })
+}
+
+fn set_system_service_property(slot: &mut Option<String>, key: &str, value: &str) -> Result<()> {
+    if slot.replace(value.to_owned()).is_some() {
+        bail!("duplicate {key}");
+    }
+    Ok(())
 }
 
 fn service_action_command(
@@ -1194,6 +1331,95 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
             ["--user", "start", "logos-node.service"]
         );
         assert_eq!(display, "systemctl --user start logos-node.service");
+    }
+
+    #[test]
+    fn service_stop_status_command_uses_verified_service_scope() {
+        let system = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let command = service_stop_status_command(&system);
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "show",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainCode",
+                "--property=ExecMainStatus",
+                "logos-node.service",
+            ]
+        );
+
+        let user = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::User,
+            unit: "logos-node.service".to_owned(),
+        };
+        let command = service_stop_status_command(&user);
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "--user",
+                "show",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainCode",
+                "--property=ExecMainStatus",
+                "logos-node.service",
+            ]
+        );
+    }
+
+    #[test]
+    fn service_stop_status_requires_a_clean_terminal_systemd_result() -> Result<()> {
+        let clean = parse_system_service_stop_status(
+            b"ActiveState=inactive\nSubState=dead\nResult=success\nExecMainCode=exited\nExecMainStatus=0\n",
+        )?;
+        anyhow::ensure!(clean.outcome() == LogoscoreServiceStopOutcome::Stopped);
+
+        let failed = parse_system_service_stop_status(
+            b"ActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=killed\nExecMainStatus=7\n",
+        )?;
+        let LogoscoreServiceStopOutcome::StoppedWithFailure(detail) = failed.outcome() else {
+            bail!("failed systemd result was not reported as a terminal failure");
+        };
+        anyhow::ensure!(
+            detail
+                == "ActiveState=failed, SubState=failed, Result=signal, ExecMainCode=killed, ExecMainStatus=7"
+        );
+
+        let still_running = parse_system_service_stop_status(
+            b"ActiveState=active\nSubState=running\nResult=success\nExecMainCode=exited\nExecMainStatus=0\n",
+        )?;
+        anyhow::ensure!(matches!(
+            still_running.outcome(),
+            LogoscoreServiceStopOutcome::StillRunning(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn service_stop_status_rejects_missing_or_duplicate_properties() {
+        let missing = parse_system_service_stop_status(
+            b"ActiveState=inactive\nSubState=dead\nResult=success\nExecMainCode=exited\n",
+        );
+        assert!(missing.is_err());
+
+        let duplicate = parse_system_service_stop_status(
+            b"ActiveState=inactive\nActiveState=failed\nSubState=dead\nResult=success\nExecMainCode=exited\nExecMainStatus=0\n",
+        );
+        assert!(duplicate.is_err());
     }
 
     #[test]
