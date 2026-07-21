@@ -100,20 +100,23 @@ QtObject {
                 return
             }
             startPending = false
-            appendResult(operationLabel, response)
             let projectedOperation = null
+            let terminalAccepted = false
             if (response && response.ok) {
                 terminalOperationId = ""
                 projectedOperation = reconcileStartOperation(response.value)
                 if (acceptUpdate(projectedOperation)) {
                     started(projectedOperation)
                     if (isTerminal(projectedOperation)) {
-                        acceptTerminal(projectedOperation)
+                        terminalAccepted = acceptTerminal(projectedOperation)
                     }
                 }
             } else {
                 pendingStartOperations = ({})
                 startFailed(response)
+            }
+            if (!terminalAccepted) {
+                appendResult(operationLabel, response)
             }
             if (onResponse) {
                 onResponse(response, projectedOperation)

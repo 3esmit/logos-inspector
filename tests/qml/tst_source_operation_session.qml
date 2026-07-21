@@ -260,6 +260,33 @@ TestCase {
         )
     }
 
+    function test_terminal_start_response_records_one_operation_row() {
+        gateway.responses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "delivery-subscribe-1",
+                    domain: "delivery",
+                    method: "deliverySubscribe",
+                    status: "completed",
+                    label: "Subscribe",
+                    result: { subscribed: true }
+                }
+            }
+        })
+
+        deliverySession.start(
+            "deliverySubscribe",
+            ["/logos-inspector/1/chat/proto"],
+            "Subscribe"
+        )
+
+        compare(deliverySession.operationLog.length, 1)
+        compare(deliverySession.operationLog[0].label, "Subscribe")
+        compare(deliverySession.operationLog[0].status, "ok")
+        compare(gateway.history.length, 1)
+    }
+
     function test_cancel_is_single_flight_before_async_response() {
         storageSession.acceptUpdate({
             operationId: "async-cancel-operation",
