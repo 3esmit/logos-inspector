@@ -15,6 +15,7 @@ ColumnLayout {
 
     property string pendingAction: ""
     property string pendingChannelId: ""
+    property bool actionConfirmationOpen: false
     property bool configurationOpen: false
     readonly property var node: root.zoneState.managedIndexerNode || ({})
     readonly property var runtime: root.zoneState.managedIndexerRuntime || ({})
@@ -59,10 +60,12 @@ ColumnLayout {
     Component.onCompleted: root.zoneState.refreshManagedIndexer()
 
     Timer {
+        objectName: "managedIndexerStatusRefreshTimer"
+
         interval: 2500
         repeat: true
         running: root.visible && !root.actionInFlight && !root.configurationOpen
-            && !root.hasDirtyDraft
+            && !root.hasDirtyDraft && !root.actionConfirmationOpen
         onTriggered: root.zoneState.refreshManagedIndexer()
     }
 
@@ -265,6 +268,7 @@ ColumnLayout {
     ConfirmActionPopup {
         id: actionPopup
 
+        objectName: "managedIndexerActionConfirmation"
         theme: root.theme
         title: root.pendingAction === "start"
             ? qsTr("Start Channel Indexer") : qsTr("Stop Channel Indexer")
@@ -282,9 +286,13 @@ ColumnLayout {
             root.pendingChannelId = ""
             root.zoneState.runManagedIndexerAction(action, channelId)
         }
+        onClosed: Qt.callLater(function () {
+            root.actionConfirmationOpen = false
+        })
     }
 
     function confirmAction(action, channelId) {
+        actionConfirmationOpen = true
         pendingAction = String(action || "")
         pendingChannelId = String(channelId || "")
         actionPopup.open()
