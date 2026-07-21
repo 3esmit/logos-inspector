@@ -303,7 +303,8 @@ ColumnLayout {
                         ? qsTr("Start local service") : qsTr("Start Local Runtime")
                     primary: true
                     enabled: root.model.runtimeActionEnabled("start_runtime")
-                    Layout.preferredWidth: 96
+                    Layout.minimumWidth: implicitWidth
+                    Layout.preferredWidth: Math.max(96, implicitWidth)
                     onClicked: root.openRuntimeConfirm("start_runtime")
                 }
 
@@ -314,7 +315,8 @@ ColumnLayout {
                     accessibleName: root.model.localAttachedRuntime()
                         ? qsTr("Stop local service") : qsTr("Stop Local Runtime")
                     enabled: root.model.runtimeActionEnabled("stop_runtime")
-                    Layout.preferredWidth: 96
+                    Layout.minimumWidth: implicitWidth
+                    Layout.preferredWidth: Math.max(96, implicitWidth)
                     onClicked: root.openRuntimeConfirm("stop_runtime")
                 }
             }
