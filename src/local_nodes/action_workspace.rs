@@ -34,7 +34,9 @@ use super::package::{
 };
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::process::{find_command, process_group_has_live_members, spawn_detached, stop_process};
-use super::runtime::{LogoscoreRuntimeProfile, LogoscoreServiceAction};
+use super::runtime::{
+    LogoscoreRuntimeProfile, LogoscoreServiceAction, LogoscoreServiceStopOutcome,
+};
 use super::workflow::node_set_for_profile;
 use super::{INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit};
 
@@ -652,12 +654,39 @@ fn attached_runtime_stop(
         }
 
         let command = profile.control_attached_service(LogoscoreServiceAction::Stop, control)?;
-        profile.daemon_process_id = None;
-        Ok(OperationOutcome {
-            status: "stopped".to_owned(),
-            detail: format!("local LogosCore service `{service_unit}` is stopped"),
-            command: Some(command),
-        })
+        match profile.attached_service_stop_outcome(control) {
+            Ok(LogoscoreServiceStopOutcome::Stopped) => {
+                profile.daemon_process_id = None;
+                Ok(OperationOutcome {
+                    status: "stopped".to_owned(),
+                    detail: format!("local LogosCore service `{service_unit}` is stopped"),
+                    command: Some(command),
+                })
+            }
+            Ok(LogoscoreServiceStopOutcome::StoppedWithFailure(detail)) => {
+                profile.daemon_process_id = None;
+                Ok(OperationOutcome {
+                    status: "failed".to_owned(),
+                    detail: format!(
+                        "local LogosCore service `{service_unit}` no longer reports a running daemon, but systemd recorded an unsuccessful stop: {detail}"
+                    ),
+                    command: Some(command),
+                })
+            }
+            Ok(LogoscoreServiceStopOutcome::StillRunning(detail)) => Ok(OperationOutcome {
+                status: "failed".to_owned(),
+                detail: format!("local LogosCore service `{service_unit}` did not stop: {detail}"),
+                command: Some(command),
+            }),
+            Err(error) => Ok(OperationOutcome {
+                status: "failed".to_owned(),
+                detail: format!(
+                    "local LogosCore service `{service_unit}` accepted stop, but Inspector could not verify its service result: {}",
+                    operation_error_detail(&error)
+                ),
+                command: Some(command),
+            }),
+        }
     })
 }
 
