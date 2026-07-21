@@ -24,6 +24,7 @@ ColumnLayout {
     property bool confirmationAccepted: false
     property int confirmationGeneration: 0
     property var pageScroller: null
+    property string pendingConfigurationReveal: ""
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -42,6 +43,37 @@ ColumnLayout {
                 root.selectedIndexerPackage = root.model.defaultPackageSelection()
             }
             root.syncIndexerPackageVersionIndex()
+        }
+
+        function onNodeConfigSnapshotChanged() {
+            root.revealNodeConfiguration()
+        }
+
+        function onNodeConfigLoadingChanged() {
+            if (!root.model.nodeConfigLoading) {
+                root.revealNodeConfiguration()
+            }
+        }
+
+        function onNetworkProfileChanged() {
+            root.pendingConfigurationReveal = ""
+        }
+    }
+
+    Timer {
+        id: configurationRevealTimer
+
+        interval: 75
+        repeat: false
+        onTriggered: {
+            const scroller = root.pageScroller
+            if (!root.pendingConfigurationReveal.length || !scroller
+                    || !nodeConfigurationPanel.visible
+                    || root.model.nodeConfigLoading) {
+                return
+            }
+            scroller.positionViewAtChild(nodeConfigurationPanel, Flickable.AlignTop)
+            root.pendingConfigurationReveal = ""
         }
     }
 
@@ -1066,22 +1098,16 @@ ColumnLayout {
 
     function openNodeConfiguration(node) {
         if (nodeConfigurationPanel.selectNode(node)) {
+            root.pendingConfigurationReveal = String(node || "")
             root.revealNodeConfiguration()
         }
     }
 
     function revealNodeConfiguration() {
-        Qt.callLater(function () {
-            Qt.callLater(function () {
-                const scroller = root.pageScroller
-                if (!scroller || !scroller.contentItem || !nodeConfigurationPanel.visible) {
-                    return
-                }
-                const point = nodeConfigurationPanel.mapToItem(scroller.contentItem, 0, 0)
-                const maximum = Math.max(0, scroller.contentHeight - scroller.height)
-                scroller.contentY = Math.max(0, Math.min(point.y - root.theme.gap, maximum))
-            })
-        })
+        if (!root.pendingConfigurationReveal.length || root.model.nodeConfigLoading) {
+            return
+        }
+        configurationRevealTimer.restart()
     }
 
     function openNetworkConfirm(action) {
