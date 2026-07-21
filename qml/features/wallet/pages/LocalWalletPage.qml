@@ -1057,14 +1057,26 @@ ColumnLayout {
 
     component OperationRow: Item {
         id: rowRoot
+        objectName: rowRoot.header ? "walletOperationHeader" : "walletOperationRow"
 
         required property Theme theme
         property var columns: []
         property string status: ""
         property bool header: false
+        readonly property int verticalPadding: rowRoot.header ? 0 : rowRoot.theme.gapSmall
+        readonly property int maxDetailLines: 3
+        readonly property int contentHeight: rowRoot.header
+            ? 34
+            : Math.max(40, detailCell.implicitHeight + (rowRoot.verticalPadding * 2))
 
         Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 34 : 40
+        Layout.minimumHeight: rowRoot.contentHeight
+        Layout.preferredHeight: rowRoot.contentHeight
+
+        Accessible.role: Accessible.StaticText
+        Accessible.ignored: rowRoot.header
+        Accessible.name: rowRoot.accessibleName()
+        Accessible.description: rowRoot.accessibleDescription()
 
         Rectangle {
             anchors.fill: parent
@@ -1076,27 +1088,53 @@ ColumnLayout {
             anchors.fill: parent
             anchors.leftMargin: 12
             anchors.rightMargin: 12
+            anchors.topMargin: rowRoot.verticalPadding
+            anchors.bottomMargin: rowRoot.verticalPadding
             columns: 4
             columnSpacing: 10
 
             Repeater {
-                model: 4
+                model: 3
 
                 Text {
                     required property int index
 
-                    text: String(rowRoot.columns[index] || "-")
+                    text: rowRoot.columnText(index)
                     color: rowRoot.textColor(index)
                     textFormat: Text.PlainText
+                    wrapMode: Text.NoWrap
                     elide: Text.ElideRight
                     font.family: rowRoot.header ? "" : "monospace"
                     font.pixelSize: rowRoot.header ? rowRoot.theme.labelText : rowRoot.theme.dataText
                     font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
                     font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
                     Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 3
+                    Layout.alignment: Qt.AlignTop
                 }
             }
+
+            Text {
+                id: detailCell
+                objectName: "walletOperationDetail"
+
+                text: rowRoot.columnText(3)
+                color: rowRoot.textColor(3)
+                textFormat: Text.PlainText
+                wrapMode: rowRoot.header ? Text.NoWrap : Text.WrapAnywhere
+                maximumLineCount: rowRoot.header ? 1 : rowRoot.maxDetailLines
+                elide: Text.ElideRight
+                font.family: rowRoot.header ? "" : "monospace"
+                font.pixelSize: rowRoot.header ? rowRoot.theme.labelText : rowRoot.theme.dataText
+                font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
+                font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
+                Layout.preferredWidth: rowRoot.columnWidth(3)
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+            }
+        }
+
+        function columnText(index) {
+            return String(rowRoot.columns[index] || "-")
         }
 
         function textColor(index) {
@@ -1128,6 +1166,24 @@ ColumnLayout {
                 return 90
             }
             return 260
+        }
+
+        function accessibleName() {
+            if (rowRoot.header) {
+                return qsTr("Wallet operation columns")
+            }
+            return qsTr("%1: %2")
+                .arg(rowRoot.columnText(1))
+                .arg(rowRoot.columnText(2))
+        }
+
+        function accessibleDescription() {
+            if (rowRoot.header) {
+                return ""
+            }
+            return qsTr("%1. %2")
+                .arg(rowRoot.columnText(0))
+                .arg(rowRoot.columnText(3))
         }
     }
 }

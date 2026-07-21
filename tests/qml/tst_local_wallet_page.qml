@@ -194,6 +194,32 @@ TestCase {
         tryCompare(operationsTab, "checked", true)
     }
 
+    function test_operations_tab_gives_multiline_error_its_own_bounded_row() {
+        const detail = "wallet binary cannot read configured wallet home\nCaused by: invalid type: map, expected a string\nline three must remain inside this operation\nline four must be elided instead of overlapping the next row"
+        model.localWalletOperations = [{
+            time: "12:34:56",
+            label: qsTr("Profile status"),
+            status: "down",
+            detail: detail
+        }]
+        model.localWalletTab = "operations"
+
+        let row = null
+        tryVerify(function () {
+            row = findChild(page, "walletOperationRow")
+            return row !== null && row.visible
+        })
+        verify(!!row, "Object exists")
+        tryVerify(function () {
+            return row.height > 40
+        })
+        verify(row.height < 96)
+        compare(
+            row.Accessible.description,
+            qsTr("%1. %2").arg("12:34:56").arg(detail)
+        )
+    }
+
     function test_accepting_create_account_popup_calls_model_command() {
         model.walletCreatePrivacy = "private"
         model.walletCreateLabel = "receiver"
