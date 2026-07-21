@@ -641,7 +641,7 @@ impl Default for LogoscoreCliTransport {
             LogoscoreRuntimeBinding::Fixed(configured_runtime())
         } else {
             LogoscoreRuntimeBinding::ConfiguredWithFallback(Arc::new(
-                crate::local_nodes::running_managed_logoscore_runtime,
+                crate::local_nodes::running_local_logoscore_runtime,
             ))
         };
         Self { runtime }
@@ -1239,6 +1239,19 @@ fn finish_watch_recovery(mut recovery: LogoscoreWatchRecovery) {
 }
 
 impl LogoscoreCliRuntime {
+    #[must_use]
+    pub(crate) fn local(binary_path: String, config_dir: String) -> Self {
+        Self {
+            runner: LogosCoreRunner {
+                program: binary_path,
+                sudo_user: None,
+                home: None,
+                config_dir: Some(config_dir),
+                label: "local LogosCore".to_owned(),
+            },
+        }
+    }
+
     #[must_use]
     pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
         Self {

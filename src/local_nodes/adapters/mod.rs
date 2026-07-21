@@ -420,6 +420,13 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 if config.lifecycle_state.is_pending() {
                     return Vec::new();
                 }
+                if self.package_managed()
+                    && context
+                        .runtime
+                        .is_some_and(LogoscoreRuntimeProfile::is_attached)
+                {
+                    return Vec::new();
+                }
                 if self.package_managed() && !installation_available {
                     return context
                         .workflow_actions
@@ -475,6 +482,14 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         context: &NodeStatusContext<'_>,
     ) -> String {
         if install_state == "needs_configuration" {
+            if self.package_managed()
+                && context
+                    .runtime
+                    .is_some_and(LogoscoreRuntimeProfile::is_attached)
+            {
+                return "adopt the local service configuration before managing the Indexer package"
+                    .to_owned();
+            }
             if self.package_managed() && context.config.is_none_or(|config| !config.installed) {
                 return format!("{} package is not installed", self.label());
             }
@@ -487,13 +502,13 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 return "logoscore not found".to_owned();
             }
             if context.runtime.is_none() {
-                return "start an Inspector-managed logoscore runtime".to_owned();
+                return "start a local LogosCore runtime".to_owned();
             }
             if !context
                 .runtime
                 .is_some_and(LogoscoreRuntimeProfile::is_running)
             {
-                return "Inspector-managed logoscore daemon is stopped".to_owned();
+                return "local LogosCore daemon is stopped".to_owned();
             }
             return "module context is not initialized".to_owned();
         }
@@ -595,7 +610,10 @@ mod tests {
     use anyhow::{Result, bail};
 
     use super::*;
-    use crate::local_nodes::runtime::{LogoscoreRuntimeOwnership, LogoscoreTimeoutProfile};
+    use crate::local_nodes::runtime::{
+        LogoscoreRuntimeOwnership, LogoscoreServiceScope, LogoscoreServiceTarget,
+        LogoscoreTimeoutProfile,
+    };
 
     fn registered_process_config(
         installed: bool,
@@ -652,6 +670,24 @@ mod tests {
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
             daemon_process_id: Some(process::id()),
+            service_target: None,
+        }
+    }
+
+    fn attached_runtime() -> LogoscoreRuntimeProfile {
+        LogoscoreRuntimeProfile {
+            id: "local-attached".to_owned(),
+            binary_path: "/usr/bin/logoscore".to_owned(),
+            config_dir: "/tmp/logoscore-client".to_owned(),
+            modules_dir: None,
+            persistence_path: None,
+            ownership: LogoscoreRuntimeOwnership::LocalAttached,
+            timeout_profile: LogoscoreTimeoutProfile::Probe,
+            daemon_process_id: Some(process::id()),
+            service_target: Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: "logos-node.service".to_owned(),
+            }),
         }
     }
 
@@ -987,6 +1023,29 @@ mod tests {
 
         assert_eq!(status.install_state, "needs_configuration");
         assert_eq!(status.available_actions, [NodeAction::Install]);
+    }
+
+    #[test]
+    fn attached_local_service_does_not_offer_indexer_package_mutation() {
+        let adapter = adapter_for(NodeKind::Indexer);
+        let config =
+            managed_module_config(NodeKind::Indexer, false, NodeLifecycleState::NotInitialized);
+        let runtime = attached_runtime();
+
+        let status = adapter.project_status(NodeStatusContext {
+            config: Some(&config),
+            runtime: Some(&runtime),
+            tools: &configured_tools(),
+            process_running: false,
+            executable_available: false,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+
+        assert_eq!(status.available_actions, Vec::<NodeAction>::new());
+        assert_eq!(
+            status.detail,
+            "adopt the local service configuration before managing the Indexer package"
+        );
     }
 
     #[test]

@@ -8,14 +8,18 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::modules::logos_core::LogoscoreCliRuntime;
-use crate::support::command_runner::CommandControl;
+use crate::support::command_runner::{
+    CommandControl, CommandRunPolicy, run_command, run_command_controlled,
+};
 
 use super::process::{find_command, process_is_alive};
 
 const RUNTIME_FILE: &str = "logoscore_runtime.json";
 const MANAGED_RUNTIME_ID: &str = "inspector-managed-local";
+const ATTACHED_RUNTIME_ID: &str = "local-attached";
 const CHANNEL_INDEXER_RUNTIME_ID_PREFIX: &str = "inspector-managed-indexer-";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -25,6 +29,35 @@ const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) enum LogoscoreRuntimeOwnership {
     External,
     InspectorManaged,
+    LocalAttached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum LogoscoreServiceScope {
+    System,
+    User,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct LogoscoreServiceTarget {
+    pub(super) scope: LogoscoreServiceScope,
+    pub(super) unit: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LogoscoreServiceAction {
+    Start,
+    Stop,
+}
+
+impl LogoscoreServiceAction {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +80,8 @@ pub(super) struct LogoscoreRuntimeProfile {
     pub(super) timeout_profile: LogoscoreTimeoutProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) daemon_process_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) service_target: Option<LogoscoreServiceTarget>,
 }
 
 impl LogoscoreRuntimeProfile {
@@ -56,13 +91,17 @@ impl LogoscoreRuntimeProfile {
         binary_path: Option<&str>,
         modules_dir: Option<&str>,
     ) -> Result<Self> {
-        if let Some(existing) = existing
-            && existing.ownership != LogoscoreRuntimeOwnership::InspectorManaged
+        if existing.is_some_and(Self::is_attached) {
+            bail!(
+                "the local LogosCore daemon is connected; use its verified service controls instead"
+            );
+        }
+        if existing.is_some_and(|profile| profile.ownership == LogoscoreRuntimeOwnership::External)
         {
-            bail!("an external logoscore runtime cannot be started or owned by Inspector");
+            bail!("a non-local logoscore runtime cannot be started by Inspector");
         }
         if existing.is_some_and(Self::is_running) {
-            bail!("the Inspector-managed logoscore runtime is already running");
+            bail!("the local logoscore runtime is already running");
         }
 
         let binary_path = canonical_executable(
@@ -81,6 +120,7 @@ impl LogoscoreRuntimeProfile {
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
             daemon_process_id: None,
+            service_target: None,
         })
     }
 
@@ -91,9 +131,7 @@ impl LogoscoreRuntimeProfile {
         base: &Self,
     ) -> Result<Self> {
         if !base.is_managed() {
-            bail!(
-                "an external logoscore runtime cannot provide an Inspector-managed Channel Indexer"
-            );
+            bail!("a local attached logoscore runtime cannot provide an isolated Channel Indexer");
         }
         base.validate_for_config_root(config_root)?;
         validate_runtime_key(network_scope_key, "Channel Indexer network scope")?;
@@ -114,7 +152,41 @@ impl LogoscoreRuntimeProfile {
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
             daemon_process_id: None,
+            service_target: None,
         })
+    }
+
+    pub(super) fn discover_local() -> Result<Option<Self>> {
+        let Ok(binary_path) = canonical_executable(None) else {
+            return Ok(None);
+        };
+        let Some(config_dir) = local_client_config_dir() else {
+            return Ok(None);
+        };
+        if !local_client_transport_is_proven(Path::new(&config_dir)) {
+            return Ok(None);
+        }
+        let output = match LogoscoreCliRuntime::local(binary_path.clone(), config_dir.clone())
+            .status_with_timeout(PROBE_TIMEOUT)
+        {
+            Ok(output) => output,
+            Err(_) => return Ok(None),
+        };
+        let Some(process_id) = running_daemon_process_id(&output.value) else {
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
+            id: ATTACHED_RUNTIME_ID.to_owned(),
+            binary_path,
+            config_dir,
+            modules_dir: None,
+            persistence_path: None,
+            ownership: LogoscoreRuntimeOwnership::LocalAttached,
+            timeout_profile: LogoscoreTimeoutProfile::Probe,
+            daemon_process_id: Some(process_id),
+            service_target: system_service_target(process_id),
+        }))
     }
 
     #[must_use]
@@ -123,16 +195,40 @@ impl LogoscoreRuntimeProfile {
     }
 
     #[must_use]
+    pub(super) fn is_attached(&self) -> bool {
+        self.ownership == LogoscoreRuntimeOwnership::LocalAttached
+    }
+
+    #[must_use]
+    pub(super) fn is_controllable(&self) -> bool {
+        self.is_managed() || self.service_target().is_some()
+    }
+
+    #[must_use]
     pub(super) fn is_running(&self) -> bool {
-        self.is_managed() && self.daemon_process_id.is_some_and(process_is_alive)
+        match self.ownership {
+            LogoscoreRuntimeOwnership::InspectorManaged => {
+                self.daemon_process_id.is_some_and(process_is_alive)
+            }
+            // The current user may legitimately lack signal permission for a daemon owned by
+            // another local service account. The successful CLI status probe is authoritative.
+            LogoscoreRuntimeOwnership::LocalAttached => self.daemon_process_id.is_some(),
+            LogoscoreRuntimeOwnership::External => false,
+        }
     }
 
     pub(super) fn cli_runtime(&self) -> Result<LogoscoreCliRuntime> {
-        if !self.is_managed() {
-            bail!("Inspector only controls explicitly managed logoscore runtimes");
-        }
         if self.binary_path.trim().is_empty() || self.config_dir.trim().is_empty() {
-            bail!("managed logoscore runtime is missing binary or config path");
+            bail!("local logoscore runtime is missing binary or config path");
+        }
+        if self.is_attached() {
+            return Ok(LogoscoreCliRuntime::local(
+                self.binary_path.clone(),
+                self.config_dir.clone(),
+            ));
+        }
+        if !self.is_managed() {
+            bail!("Inspector cannot control a non-local logoscore runtime");
         }
         Ok(LogoscoreCliRuntime::managed(
             self.binary_path.clone(),
@@ -141,6 +237,9 @@ impl LogoscoreRuntimeProfile {
     }
 
     pub(super) fn daemon_command(&self) -> Result<Command> {
+        if !self.is_managed() {
+            bail!("only an Inspector-managed logoscore runtime can be started directly");
+        }
         let modules_dir = self
             .modules_dir
             .as_deref()
@@ -170,7 +269,7 @@ impl LogoscoreRuntimeProfile {
         let detail = last_error
             .map(|error| error.to_string())
             .unwrap_or_else(|| "no probe response".to_owned());
-        bail!("managed logoscore runtime did not become ready: {detail}")
+        bail!("local logoscore runtime did not become ready: {detail}")
     }
 
     pub(super) fn wait_until_ready_controlled(&self, control: &CommandControl) -> Result<()> {
@@ -196,7 +295,7 @@ impl LogoscoreRuntimeProfile {
         let detail = last_error
             .map(|error| error.to_string())
             .unwrap_or_else(|| "no probe response".to_owned());
-        bail!("managed logoscore runtime did not become ready: {detail}")
+        bail!("local logoscore runtime did not become ready: {detail}")
     }
 
     pub(super) fn wait_until_stopped(&self) -> bool {
@@ -223,6 +322,9 @@ impl LogoscoreRuntimeProfile {
     }
 
     pub(super) fn validate_for_config_root(&self, config_root: &Path) -> Result<()> {
+        if self.is_attached() {
+            return self.validate_attached();
+        }
         if !self.is_managed() {
             return Ok(());
         }
@@ -243,6 +345,99 @@ impl LogoscoreRuntimeProfile {
             bail!("managed logoscore runtime has no modules directory");
         }
         Ok(())
+    }
+
+    fn validate_attached(&self) -> Result<()> {
+        if self.id != ATTACHED_RUNTIME_ID {
+            bail!("local attached logoscore runtime profile has an unexpected id");
+        }
+        if self.timeout_profile != LogoscoreTimeoutProfile::Probe {
+            bail!("local attached logoscore runtime profile has an unexpected timeout profile");
+        }
+        if canonical_executable(Some(&self.binary_path))? != self.binary_path {
+            bail!("local attached logoscore runtime binary path is not canonical");
+        }
+        if self.config_dir.trim().is_empty() || !Path::new(&self.config_dir).is_absolute() {
+            bail!("local attached logoscore runtime config path must be absolute");
+        }
+        if self.modules_dir.is_some() || self.persistence_path.is_some() {
+            bail!("local attached logoscore runtime must not declare managed paths");
+        }
+        if let Some(target) = &self.service_target
+            && !valid_systemd_unit(&target.unit)
+        {
+            bail!("local attached logoscore service unit is invalid");
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub(super) fn service_target(&self) -> Option<&LogoscoreServiceTarget> {
+        if self.is_attached() {
+            self.service_target.as_ref()
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn control_attached_service(
+        &self,
+        action: LogoscoreServiceAction,
+        control: Option<&CommandControl>,
+    ) -> Result<String> {
+        let target = self
+            .service_target()
+            .context("local LogosCore daemon has no verified service lifecycle backend")?;
+        let (command, display) = service_action_command(target, action);
+        let policy = CommandRunPolicy {
+            label: "local LogosCore service control",
+            timeout: LIFECYCLE_TIMEOUT,
+            poll_interval: Duration::from_millis(25),
+            redactions: &[],
+            output_limit: 4096,
+        };
+        match control {
+            Some(control) => run_command_controlled(command, policy, control.clone()),
+            None => run_command(command, policy),
+        }
+        .with_context(|| {
+            format!(
+                "failed to {} local LogosCore service `{}`",
+                action.as_str(),
+                target.unit
+            )
+        })?;
+        Ok(display)
+    }
+
+    pub(super) fn refresh_attached_process_id(&mut self) -> Result<()> {
+        if !self.is_attached() {
+            bail!("only a local attached LogosCore runtime can refresh service state");
+        }
+        let target = self
+            .service_target()
+            .context("local LogosCore daemon has no verified service lifecycle backend")?;
+        let output = self.cli_runtime()?.status_with_timeout(PROBE_TIMEOUT)?;
+        let process_id = running_daemon_process_id(&output.value)
+            .context("local LogosCore daemon did not report a running process id")?;
+        let service_process_id = system_service_main_process_id(target)
+            .context("local LogosCore service did not report a main process id")?;
+        if service_process_id != process_id {
+            bail!(
+                "local LogosCore daemon process id {process_id} does not match service `{}` main process id {service_process_id}",
+                target.unit
+            );
+        }
+        self.daemon_process_id = Some(process_id);
+        Ok(())
+    }
+
+    fn reports_running(&self) -> bool {
+        self.cli_runtime()
+            .and_then(|runtime| runtime.status_with_timeout(PROBE_TIMEOUT))
+            .ok()
+            .and_then(|output| running_daemon_process_id(&output.value))
+            .is_some()
     }
 }
 
@@ -284,6 +479,153 @@ fn validate_runtime_key(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn local_client_config_dir() -> Option<String> {
+    let configured = env::var("LOGOSCORE_CONFIG_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var("LOGOSCORE_HOME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|home| PathBuf::from(home).join(".logoscore"))
+        })
+        .or_else(|| {
+            env::var("HOME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|home| PathBuf::from(home).join(".logoscore"))
+        })?;
+    let absolute = if configured.is_absolute() {
+        configured
+    } else {
+        env::current_dir().ok()?.join(configured)
+    };
+    Some(absolute.display().to_string())
+}
+
+fn local_client_transport_is_proven(config_dir: &Path) -> bool {
+    const CLIENT_CONFIG_LIMIT: u64 = 64 * 1024;
+
+    let path = config_dir.join("client/config.json");
+    let Ok(metadata) = fs::metadata(&path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > CLIENT_CONFIG_LIMIT {
+        return false;
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return false;
+    };
+    value
+        .pointer("/daemon/core_service/transport")
+        .and_then(Value::as_str)
+        .is_some_and(|transport| transport == "local")
+}
+
+fn running_daemon_process_id(status: &Value) -> Option<u32> {
+    let daemon = status.get("daemon")?.as_object()?;
+    (daemon.get("status")?.as_str()? == "running")
+        .then(|| daemon.get("pid")?.as_u64())
+        .flatten()
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_target(process_id: u32) -> Option<LogoscoreServiceTarget> {
+    let cgroup = fs::read_to_string(format!("/proc/{process_id}/cgroup")).ok()?;
+    let target = cgroup.lines().find_map(system_service_target_from_cgroup)?;
+    system_service_main_process_id(&target)
+        .filter(|main_process_id| *main_process_id == process_id)
+        .map(|_| target)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_service_target(_process_id: u32) -> Option<LogoscoreServiceTarget> {
+    None
+}
+
+fn system_service_target_from_cgroup(line: &str) -> Option<LogoscoreServiceTarget> {
+    let (_, path) = line.rsplit_once(':')?;
+    let unit = path.rsplit('/').next()?.trim();
+    if !valid_systemd_unit(unit) {
+        return None;
+    }
+    let scope = if path.starts_with("/user.slice/") {
+        LogoscoreServiceScope::User
+    } else {
+        LogoscoreServiceScope::System
+    };
+    Some(LogoscoreServiceTarget {
+        scope,
+        unit: unit.to_owned(),
+    })
+}
+
+fn valid_systemd_unit(unit: &str) -> bool {
+    unit.len() > ".service".len()
+        && unit.len() <= 255
+        && unit.ends_with(".service")
+        && unit
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'@'))
+}
+
+fn system_service_main_process_id(target: &LogoscoreServiceTarget) -> Option<u32> {
+    let mut command = Command::new("systemctl");
+    if target.scope == LogoscoreServiceScope::User {
+        command.arg("--user");
+    }
+    command
+        .arg("show")
+        .arg("--property=MainPID")
+        .arg("--value")
+        .arg(&target.unit);
+    let output = run_command(
+        command,
+        CommandRunPolicy {
+            label: "local LogosCore service probe",
+            timeout: PROBE_TIMEOUT,
+            poll_interval: Duration::from_millis(25),
+            redactions: &[],
+            output_limit: 1024,
+        },
+    )
+    .ok()?;
+    std::str::from_utf8(&output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+}
+
+fn service_action_command(
+    target: &LogoscoreServiceTarget,
+    action: LogoscoreServiceAction,
+) -> (Command, String) {
+    let mut display = String::new();
+    let mut command = if target.scope == LogoscoreServiceScope::System {
+        display.push_str("sudo -n -- systemctl");
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg("--").arg("systemctl");
+        command
+    } else {
+        display.push_str("systemctl --user");
+        let mut command = Command::new("systemctl");
+        command.arg("--user");
+        command
+    };
+    display.push(' ');
+    display.push_str(action.as_str());
+    display.push(' ');
+    display.push_str(&target.unit);
+    command.arg(action.as_str()).arg(&target.unit);
+    (command, display)
+}
+
 fn controlled_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
     control.check_active()?;
     let remaining = control.deadline().saturating_duration_since(Instant::now());
@@ -307,6 +649,8 @@ pub struct LogoscoreRuntimeStatus {
     pub persistence_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_unit: Option<String>,
     pub detail: String,
 }
 
@@ -322,14 +666,17 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
             modules_dir: None,
             persistence_path: None,
             process_id: None,
-            detail: "no Inspector-managed logoscore runtime configured".to_owned(),
+            service_unit: None,
+            detail: "no local logoscore runtime configured".to_owned(),
         };
     };
     let running = profile.is_running();
+    let service_unit = profile.service_target().map(|target| target.unit.clone());
     LogoscoreRuntimeStatus {
         ownership: match profile.ownership {
             LogoscoreRuntimeOwnership::External => "external",
             LogoscoreRuntimeOwnership::InspectorManaged => "inspector_managed",
+            LogoscoreRuntimeOwnership::LocalAttached => "local_attached",
         }
         .to_owned(),
         run_state: if running { "running" } else { "stopped" }.to_owned(),
@@ -339,13 +686,38 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
         modules_dir: profile.modules_dir.clone(),
         persistence_path: profile.persistence_path.clone(),
         process_id: profile.daemon_process_id.filter(|_| running),
-        detail: if running {
-            "Inspector-managed logoscore daemon process is running".to_owned()
-        } else if profile.is_managed() {
-            "Inspector-managed logoscore daemon is stopped".to_owned()
-        } else {
-            "external logoscore runtime is not controlled by Inspector".to_owned()
-        },
+        service_unit: service_unit.clone(),
+        detail: runtime_status_detail(profile, running, service_unit.as_deref()),
+    }
+}
+
+fn runtime_status_detail(
+    profile: &LogoscoreRuntimeProfile,
+    running: bool,
+    service_unit: Option<&str>,
+) -> String {
+    match (profile.ownership, running, service_unit) {
+        (LogoscoreRuntimeOwnership::LocalAttached, true, Some(unit)) => {
+            format!("local LogosCore daemon is running under system service `{unit}`")
+        }
+        (LogoscoreRuntimeOwnership::LocalAttached, true, None) => {
+            "local LogosCore daemon is running through the local CLI connection".to_owned()
+        }
+        (LogoscoreRuntimeOwnership::LocalAttached, false, Some(unit)) => {
+            format!("local LogosCore daemon is stopped; system service `{unit}` can start it")
+        }
+        (LogoscoreRuntimeOwnership::LocalAttached, false, None) => {
+            "local LogosCore daemon is stopped".to_owned()
+        }
+        (LogoscoreRuntimeOwnership::InspectorManaged, true, _) => {
+            "local LogosCore daemon is running".to_owned()
+        }
+        (LogoscoreRuntimeOwnership::InspectorManaged, false, _) => {
+            "local LogosCore daemon is stopped".to_owned()
+        }
+        (LogoscoreRuntimeOwnership::External, _, _) => {
+            "non-local LogosCore runtime is not controlled by Inspector".to_owned()
+        }
     }
 }
 
@@ -381,6 +753,21 @@ impl LogoscoreRuntimeStore {
             bail!("managed logoscore runtime profile has an unexpected global runtime id");
         }
         Ok(Some(profile))
+    }
+
+    pub(super) fn load_resolved(&self) -> Result<Option<LogoscoreRuntimeProfile>> {
+        let mut persisted = self.load()?;
+        if persisted.as_ref().is_some_and(|profile| {
+            profile.is_managed() && profile.is_running() && profile.reports_running()
+        }) {
+            return Ok(persisted);
+        }
+        if let Some(profile) = persisted.as_mut()
+            && (profile.is_managed() || profile.is_attached())
+        {
+            profile.daemon_process_id = None;
+        }
+        Ok(LogoscoreRuntimeProfile::discover_local()?.or(persisted))
     }
 
     pub(super) fn save(&self, profile: Option<&LogoscoreRuntimeProfile>) -> Result<()> {
@@ -471,6 +858,24 @@ fn canonical_directory(requested: Option<&str>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn attached_profile(
+        daemon_process_id: Option<u32>,
+        service_target: Option<LogoscoreServiceTarget>,
+    ) -> LogoscoreRuntimeProfile {
+        LogoscoreRuntimeProfile {
+            id: ATTACHED_RUNTIME_ID.to_owned(),
+            binary_path: "/bin/sh".to_owned(),
+            config_dir: "/tmp/logoscore-client".to_owned(),
+            modules_dir: None,
+            persistence_path: None,
+            ownership: LogoscoreRuntimeOwnership::LocalAttached,
+            timeout_profile: LogoscoreTimeoutProfile::Probe,
+            daemon_process_id,
+            service_target,
+        }
+    }
 
     #[test]
     fn managed_runtime_uses_isolated_paths_and_daemon_argv() -> Result<()> {
@@ -628,6 +1033,142 @@ printf '%s\n' '{"daemon":{"status":"running"}}'
         assert_eq!(report.ownership, "external");
         assert_eq!(report.run_state, "not_configured");
         assert!(report.process_id.is_none());
+    }
+
+    #[test]
+    fn local_client_transport_requires_an_explicit_local_core_service() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let client = directory.path().join("client");
+        fs::create_dir_all(&client)?;
+        let config = client.join("config.json");
+        fs::write(
+            &config,
+            r#"{"daemon":{"core_service":{"transport":"local"}}}"#,
+        )?;
+        anyhow::ensure!(local_client_transport_is_proven(directory.path()));
+
+        fs::write(
+            &config,
+            r#"{"daemon":{"core_service":{"transport":"remote"}}}"#,
+        )?;
+        anyhow::ensure!(!local_client_transport_is_proven(directory.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn running_daemon_process_id_accepts_only_a_running_u32_process() {
+        assert_eq!(
+            running_daemon_process_id(&json!({"daemon":{"status":"running","pid":42}})),
+            Some(42)
+        );
+        assert_eq!(
+            running_daemon_process_id(&json!({"daemon":{"status":"stopped","pid":42}})),
+            None
+        );
+        assert_eq!(
+            running_daemon_process_id(&json!({
+                "daemon":{"status":"running","pid":u64::from(u32::MAX) + 1}
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn cgroup_service_target_only_accepts_valid_service_units() {
+        let system = system_service_target_from_cgroup("0::/system.slice/logos-node.service")
+            .expect("system service target");
+        assert_eq!(system.scope, LogoscoreServiceScope::System);
+        assert_eq!(system.unit, "logos-node.service");
+
+        let user = system_service_target_from_cgroup(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/logos-node.service",
+        )
+        .expect("user service target");
+        assert_eq!(user.scope, LogoscoreServiceScope::User);
+        assert_eq!(user.unit, "logos-node.service");
+        assert!(system_service_target_from_cgroup("0::/system.slice/ssh.service;rm").is_none());
+        assert!(system_service_target_from_cgroup("0::/system.slice/session-1.scope").is_none());
+    }
+
+    #[test]
+    fn service_action_commands_have_fixed_argv() {
+        let system = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let (command, display) = service_action_command(&system, LogoscoreServiceAction::Stop);
+        assert_eq!(command.get_program(), "sudo");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["-n", "--", "systemctl", "stop", "logos-node.service"]
+        );
+        assert_eq!(display, "sudo -n -- systemctl stop logos-node.service");
+
+        let user = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::User,
+            unit: "logos-node.service".to_owned(),
+        };
+        let (command, display) = service_action_command(&user, LogoscoreServiceAction::Start);
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["--user", "start", "logos-node.service"]
+        );
+        assert_eq!(display, "systemctl --user start logos-node.service");
+    }
+
+    #[test]
+    fn attached_runtime_status_uses_cli_proven_process_and_service_target() {
+        let service_target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let running = attached_profile(Some(42), Some(service_target.clone()));
+        let report = status(Some(&running));
+        assert_eq!(report.ownership, "local_attached");
+        assert_eq!(report.run_state, "running");
+        assert_eq!(report.process_id, Some(42));
+        assert_eq!(report.service_unit.as_deref(), Some("logos-node.service"));
+        assert!(running.is_controllable());
+
+        let stopped = attached_profile(None, Some(service_target));
+        let report = status(Some(&stopped));
+        assert_eq!(report.run_state, "stopped");
+        assert!(report.detail.contains("can start it"));
+        assert!(stopped.is_controllable());
+
+        let read_only = attached_profile(Some(42), None);
+        assert!(read_only.is_running());
+        assert!(!read_only.is_controllable());
+    }
+
+    #[test]
+    fn attached_runtime_cannot_be_replaced_by_a_new_managed_runtime() {
+        let profile = attached_profile(
+            None,
+            Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: "logos-node.service".to_owned(),
+            }),
+        );
+        let error = LogoscoreRuntimeProfile::create_or_restart(
+            Path::new("/tmp/logos-inspector-runtime-test"),
+            Some(&profile),
+            Some("/bin/sh"),
+            Some("/tmp"),
+        )
+        .expect_err("attached local service must not be replaced");
+        assert!(
+            error
+                .to_string()
+                .contains("use its verified service controls instead")
+        );
     }
 
     #[test]

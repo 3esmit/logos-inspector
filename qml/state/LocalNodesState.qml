@@ -33,6 +33,8 @@ QtObject {
     property string pendingRuntimeBinaryPath: ""
     property string pendingPackageVersion: ""
     property string pendingPackageRootHash: ""
+    property bool pendingAttachedRuntime: false
+    property string pendingRuntimeServiceUnit: ""
     property bool pendingAllowIdentityRotation: false
 
     onBusyChanged: {
@@ -325,9 +327,9 @@ QtObject {
         case "initialize":
             return qsTr("Initialize");
         case "start_runtime":
-            return qsTr("Start Local Runtime");
+            return localAttachedRuntime() ? qsTr("Start local service") : qsTr("Start Local Runtime");
         case "stop_runtime":
-            return qsTr("Stop Local Runtime");
+            return localAttachedRuntime() ? qsTr("Stop local service") : qsTr("Stop Local Runtime");
         case "uninstall":
             return qsTr("Uninstall");
         case "new_network":
@@ -378,6 +380,16 @@ QtObject {
         pendingNode = "";
         pendingNetworkId = "";
         pendingWorkspace = "";
+        pendingAttachedRuntime = localAttachedRuntime();
+        pendingRuntimeServiceUnit = pendingAttachedRuntime ? runtimeServiceUnit() : "";
+        if (pendingAttachedRuntime) {
+            pendingRuntimeModulesDir = "";
+            pendingRuntimeBinaryPath = "";
+            pendingPackageVersion = "";
+            pendingPackageRootHash = "";
+            pendingAllowIdentityRotation = false;
+            return;
+        }
         const requestedModulesDir = String(modulesDir || "").trim();
         pendingRuntimeModulesDir = requestedModulesDir.length
             ? requestedModulesDir : runtimeModulesDir();
@@ -397,6 +409,8 @@ QtObject {
         pendingRuntimeBinaryPath = "";
         pendingPackageVersion = "";
         pendingPackageRootHash = "";
+        pendingAttachedRuntime = false;
+        pendingRuntimeServiceUnit = "";
         pendingAllowIdentityRotation = false;
     }
 
@@ -426,6 +440,12 @@ QtObject {
                 && pendingPackageVersion.length) {
             return qsTr("Install Indexer %1").arg(pendingPackageVersion);
         }
+        if (pendingAttachedRuntime && pendingAction === "start_runtime") {
+            return qsTr("Start local service");
+        }
+        if (pendingAttachedRuntime && pendingAction === "stop_runtime") {
+            return qsTr("Stop local service");
+        }
         if (pendingNode.length) {
             return qsTr("%1 %2").arg(actionLabel(pendingAction)).arg(nodeLabel(pendingNode));
         }
@@ -448,9 +468,21 @@ QtObject {
             return qsTr("This loads the Local Devnet manifest from %1 and sets it as Active Devnet.").arg(pendingWorkspace);
         }
         if (action === "start_runtime") {
+            if (pendingAttachedRuntime) {
+                const service = pendingRuntimeServiceUnit.length
+                    ? qsTr("the local service %1").arg(pendingRuntimeServiceUnit)
+                    : qsTr("the local service");
+                return qsTr("This starts %1. Inspector does not alter node configuration, module contexts, or Messaging identity.").arg(service);
+            }
             return qsTr("This starts an Inspector-managed LogosCore runtime using modules from %1. If it must replace a stopped runtime with remaining module contexts, Inspector first verifies persisted Messaging peer identity. A legacy Messaging context without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity.").arg(pendingRuntimeModulesDir.length ? pendingRuntimeModulesDir : runtimeModulesDir());
         }
         if (action === "stop_runtime") {
+            if (pendingAttachedRuntime) {
+                const service = pendingRuntimeServiceUnit.length
+                    ? qsTr("the local service %1").arg(pendingRuntimeServiceUnit)
+                    : qsTr("the local service");
+                return qsTr("This stops %1. Inspector does not alter node configuration, module contexts, or Messaging identity.").arg(service);
+            }
             return qsTr("This stops only the Inspector-managed LogosCore runtime and clears its module contexts. Inspector first verifies persisted Messaging peer identity. A legacy Messaging context without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity.");
         }
         const node = nodeByKind(pendingNode) || {};
@@ -568,6 +600,16 @@ QtObject {
     function runtimeInfo() {
         const reportValue = report || null;
         return reportValue && reportValue.runtime ? reportValue.runtime : null;
+    }
+
+    function localAttachedRuntime() {
+        const runtime = runtimeInfo();
+        return String(runtime && runtime.ownership ? runtime.ownership : "") === "local_attached";
+    }
+
+    function runtimeServiceUnit() {
+        const runtime = runtimeInfo();
+        return String(runtime && runtime.service_unit ? runtime.service_unit : "").trim();
     }
 
     function runtimeModulesDir() {

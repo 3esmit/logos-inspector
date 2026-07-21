@@ -34,7 +34,7 @@ use super::package::{
 };
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::process::{find_command, process_group_has_live_members, spawn_detached, stop_process};
-use super::runtime::LogoscoreRuntimeProfile;
+use super::runtime::{LogoscoreRuntimeProfile, LogoscoreServiceAction};
 use super::workflow::node_set_for_profile;
 use super::{INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit};
 
@@ -396,6 +396,12 @@ fn runtime_start(
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
+    if runtime
+        .as_ref()
+        .is_some_and(LogoscoreRuntimeProfile::is_attached)
+    {
+        return attached_runtime_start(runtime, request, control);
+    }
     operation_result(request, None, || {
         let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             runtime_config_root,
@@ -469,6 +475,12 @@ fn runtime_stop(
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
+    if runtime
+        .as_ref()
+        .is_some_and(LogoscoreRuntimeProfile::is_attached)
+    {
+        return attached_runtime_stop(runtime, request, control);
+    }
     operation_result(request, None, || {
         let Some(profile) = runtime.as_mut() else {
             return Ok(OperationOutcome {
@@ -548,6 +560,107 @@ fn runtime_stop(
     })
 }
 
+fn attached_runtime_start(
+    runtime: &mut Option<LogoscoreRuntimeProfile>,
+    request: &LocalNodeActionRequest,
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
+    operation_result(request, None, || {
+        let Some(mut profile) = runtime
+            .as_ref()
+            .filter(|profile| profile.is_attached())
+            .cloned()
+        else {
+            bail!("local LogosCore service attachment disappeared before start");
+        };
+        let Some(service_unit) = profile.service_target().map(|target| target.unit.clone()) else {
+            return Ok(needs_configuration(
+                "local LogosCore daemon is connected but its service lifecycle backend is not verified",
+            ));
+        };
+        if profile.is_running() {
+            return Ok(OperationOutcome {
+                status: "started".to_owned(),
+                detail: format!("local LogosCore service `{service_unit}` is already running"),
+                command: None,
+            });
+        }
+
+        let command = profile.control_attached_service(LogoscoreServiceAction::Start, control)?;
+        let readiness = match control {
+            Some(control) => profile.wait_until_ready_controlled(control),
+            None => profile.wait_until_ready(),
+        };
+        match readiness {
+            Ok(()) => match profile.refresh_attached_process_id() {
+                Ok(()) => {
+                    *runtime = Some(profile);
+                    Ok(OperationOutcome {
+                        status: "started".to_owned(),
+                        detail: format!("local LogosCore service `{service_unit}` is ready"),
+                        command: Some(command),
+                    })
+                }
+                Err(error) => {
+                    *runtime = Some(profile);
+                    Ok(OperationOutcome {
+                        status: "starting".to_owned(),
+                        detail: format!(
+                            "local LogosCore service `{service_unit}` accepted start; {}",
+                            operation_error_detail(&error)
+                        ),
+                        command: Some(command),
+                    })
+                }
+            },
+            Err(error) if is_control_interruption(&error) => Err(error),
+            Err(error) => {
+                *runtime = Some(profile);
+                Ok(OperationOutcome {
+                    status: "starting".to_owned(),
+                    detail: format!(
+                        "local LogosCore service `{service_unit}` accepted start; {}",
+                        operation_error_detail(&error)
+                    ),
+                    command: Some(command),
+                })
+            }
+        }
+    })
+}
+
+fn attached_runtime_stop(
+    runtime: &mut Option<LogoscoreRuntimeProfile>,
+    request: &LocalNodeActionRequest,
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
+    operation_result(request, None, || {
+        let Some(profile) = runtime.as_mut().filter(|profile| profile.is_attached()) else {
+            bail!("local LogosCore service attachment disappeared before stop");
+        };
+        let Some(service_unit) = profile.service_target().map(|target| target.unit.clone()) else {
+            return Ok(needs_configuration(
+                "local LogosCore daemon is connected but its service lifecycle backend is not verified",
+            ));
+        };
+        if !profile.is_running() {
+            return Ok(OperationOutcome {
+                status: "stopped".to_owned(),
+                detail: format!("local LogosCore service `{service_unit}` is already stopped"),
+                command: None,
+            });
+        }
+
+        let command = profile.control_attached_service(LogoscoreServiceAction::Stop, control)?;
+        profile.daemon_process_id = None;
+        Ok(OperationOutcome {
+            status: "stopped".to_owned(),
+            detail: format!("local LogosCore service `{service_unit}` is stopped"),
+            command: Some(command),
+        })
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeContextResetIdentityPreparation {
     Ready { generated: bool },
@@ -596,6 +709,9 @@ fn prepare_runtime_context_reset_messaging_identities(
 }
 
 fn reap_runtime_process_group(profile: &LogoscoreRuntimeProfile) -> Result<()> {
+    if !profile.is_managed() {
+        bail!("only an Inspector-managed LogosCore runtime can have its process group reaped");
+    }
     let Some(process_id) = profile.daemon_process_id else {
         return Ok(());
     };
@@ -613,6 +729,9 @@ fn restart_managed_runtime_for_messaging_context(
     runtime: &mut LogoscoreRuntimeProfile,
     control: Option<&CommandControl>,
 ) -> Result<()> {
+    if !runtime.is_managed() {
+        bail!("only an Inspector-managed LogosCore runtime can restart a Messaging context");
+    }
     if runtime.is_running() {
         return Ok(());
     }
@@ -723,6 +842,11 @@ fn install_indexer_package(
 ) -> Result<OperationOutcome> {
     if request.node != Some(NodeKind::Indexer) {
         bail!("package installation is only implemented for Indexer");
+    }
+    if runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
+        return Ok(needs_configuration(
+            "Indexer package installation is unavailable until the attached local service configuration is adopted",
+        ));
     }
     require_runtime_stopped(runtime)?;
     let version = required_trimmed_request_value(
@@ -1959,9 +2083,7 @@ fn node_purge(
 
 fn require_runtime_stopped(runtime: Option<&LogoscoreRuntimeProfile>) -> Result<()> {
     if runtime.is_some_and(LogoscoreRuntimeProfile::is_running) {
-        bail!(
-            "stop the Inspector-managed logoscore runtime before changing Local Devnet workspaces"
-        );
+        bail!("stop the local LogosCore runtime before changing Local Devnet workspaces");
     }
     Ok(())
 }
@@ -4235,6 +4357,7 @@ esac
             ownership: super::super::runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: super::super::runtime::LogoscoreTimeoutProfile::Lifecycle,
             daemon_process_id: None,
+            service_target: None,
         };
 
         validate_runtime_modules_dir(Some(&runtime), modules_dir.to_string_lossy().as_ref())?;
@@ -4375,6 +4498,7 @@ esac
             ownership: super::super::runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: super::super::runtime::LogoscoreTimeoutProfile::Lifecycle,
             daemon_process_id: None,
+            service_target: None,
         };
 
         reconcile_indexer_runtime_modules_dir(&mut state, &runtime)?;

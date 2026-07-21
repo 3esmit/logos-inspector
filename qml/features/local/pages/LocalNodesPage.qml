@@ -296,17 +296,23 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 ActionButton {
+                    objectName: "runtimeStartButton"
                     theme: root.theme
-                    text: qsTr("Start")
+                    text: root.model.localAttachedRuntime() ? qsTr("Start service") : qsTr("Start")
+                    accessibleName: root.model.localAttachedRuntime()
+                        ? qsTr("Start local service") : qsTr("Start Local Runtime")
                     primary: true
-                    enabled: root.model.runtimeActionEnabled("start_runtime") && (root.runtimeModulesDir.trim().length > 0 || root.model.runtimeModulesDir().length > 0)
+                    enabled: root.model.runtimeActionEnabled("start_runtime")
                     Layout.preferredWidth: 96
                     onClicked: root.openRuntimeConfirm("start_runtime")
                 }
 
                 ActionButton {
+                    objectName: "runtimeStopButton"
                     theme: root.theme
-                    text: qsTr("Stop")
+                    text: root.model.localAttachedRuntime() ? qsTr("Stop service") : qsTr("Stop")
+                    accessibleName: root.model.localAttachedRuntime()
+                        ? qsTr("Stop local service") : qsTr("Stop Local Runtime")
                     enabled: root.model.runtimeActionEnabled("stop_runtime")
                     Layout.preferredWidth: 96
                     onClicked: root.openRuntimeConfirm("stop_runtime")

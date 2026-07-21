@@ -888,8 +888,10 @@ fn ready_module_watch_runtime(
 fn module_watch_runtime() -> Result<LogoscoreCliRuntime> {
     let engine = LocalNodeActionEngine::system()?;
     let profile = engine.runtime_profile()?;
-    let managed = profile.as_ref().filter(|profile| profile.is_managed());
-    managed
+    let local = profile
+        .as_ref()
+        .filter(|profile| profile.is_managed() || profile.is_attached());
+    local
         .map(LogoscoreRuntimeProfile::cli_runtime)
         .transpose()?
         .map_or_else(|| LogoscoreCliTransport::default().runtime(), Ok)
@@ -1306,20 +1308,21 @@ fn observe_modules(
     runtime_profile: Option<&LogoscoreRuntimeProfile>,
     cancellation: &CancellationToken,
 ) -> ModuleObservation {
-    let managed_runtime = runtime_profile.filter(|profile| profile.is_managed());
-    let runtime = managed_runtime
+    let local_runtime =
+        runtime_profile.filter(|profile| profile.is_managed() || profile.is_attached());
+    let runtime = local_runtime
         .map(LogoscoreRuntimeProfile::cli_runtime)
         .transpose()
         .and_then(|runtime| runtime.map_or_else(|| LogoscoreCliTransport::default().runtime(), Ok));
     let Ok(runtime) = runtime else {
-        return unavailable_observation(state, managed_runtime.is_some());
+        return unavailable_observation(state, local_runtime.is_some());
     };
     let now = Instant::now();
     let deadline = now.checked_add(DAEMON_STATUS_TIMEOUT).unwrap_or(now);
     let control = CommandControl::new(cancellation.clone(), deadline);
     let output = runtime.status_controlled(control);
     let Ok(output) = output else {
-        return unavailable_observation(state, managed_runtime.is_some());
+        return unavailable_observation(state, local_runtime.is_some());
     };
     let status_observed_at = Instant::now();
     let daemon = match output
@@ -1334,7 +1337,7 @@ fn observe_modules(
     let loaded_modules = loaded_modules(&output.value);
     let mut probes =
         collect_liveness_probes(state, &loaded_modules, daemon != DaemonState::Unavailable);
-    if managed_runtime.is_some() {
+    if local_runtime.is_some() {
         reconcile_messaging_liveness(&mut probes, &runtime, cancellation);
         reconcile_indexer_liveness(&mut probes, &runtime, cancellation);
     }
@@ -1354,16 +1357,16 @@ fn observe_modules(
 
 fn unavailable_observation(
     state: &LocalNodesState,
-    managed_runtime_unavailable: bool,
+    local_runtime_unavailable: bool,
 ) -> ModuleObservation {
     let mut probes = collect_liveness_probes(state, &BTreeSet::new(), false);
-    if managed_runtime_unavailable {
+    if local_runtime_unavailable {
         for probe in probes
             .iter_mut()
             .filter(|probe| probe.requires_module_context)
         {
             probe.liveness_known = false;
-            probe.unavailable_detail = Some("Inspector-managed runtime status is unavailable");
+            probe.unavailable_detail = Some("local LogosCore runtime status is unavailable");
         }
     }
     ModuleObservation {
@@ -3054,7 +3057,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_managed_runtime_never_uses_tcp_as_module_liveness() -> Result<()> {
+    fn unavailable_local_runtime_never_uses_tcp_as_module_liveness() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let state = state_with_node(
             &directory,
@@ -3072,7 +3075,7 @@ mod tests {
         anyhow::ensure!(
             !probe.liveness_known
                 && probe.unavailable_detail
-                    == Some("Inspector-managed runtime status is unavailable")
+                    == Some("local LogosCore runtime status is unavailable")
         );
         Ok(())
     }
