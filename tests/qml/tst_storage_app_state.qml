@@ -384,6 +384,68 @@ TestCase {
         compare(state.lastOperation, "List")
     }
 
+    function test_manifest_bootstrap_keeps_loading_when_observation_is_temporarily_skipped() {
+        gate.manifestsLoading = true
+        gateway.deferStorageObservations = true
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-after-skip-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [{ cid: "z-after-skip", filename: "after-skip.bin", datasetSize: 29 }],
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(false)
+
+        compare(gateway.storageObservationCount, 1)
+        compare(state.lastOperation, "Loading")
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: false,
+            pending: true,
+            skipped: true,
+            text: "",
+            error: "A higher-priority source observation is already pending."
+        }))
+
+        verify(state.manifestRefreshDeferred)
+        verify(!state.manifestObservationPending)
+        compare(state.lastOperation, "Loading")
+
+        gate.manifestsLoading = false
+        gate.revision += 1
+
+        compare(gateway.requestCount, 1)
+        compare(state.manifestRows()[0].cid, "z-after-skip")
+        compare(state.lastOperation, "List")
+    }
+
+    function test_manifest_bootstrap_reports_source_observation_failure() {
+        gate.manifestsLoading = true
+        gateway.deferStorageObservations = true
+
+        state.refreshManifests(false)
+
+        compare(gateway.storageObservationCount, 1)
+        verify(gateway.completeStorageObservationAt(0, {
+            ok: false,
+            text: "",
+            error: "storage source unavailable"
+        }))
+
+        verify(!state.manifestRefreshDeferred)
+        verify(!state.manifestObservationPending)
+        compare(state.lastOperation, "Error")
+    }
+
     function test_operation_status_text_keeps_reconciled_terminal_state() {
         compare(state.operationStatusText({ status: "awaiting_external" }), "Waiting")
         compare(state.operationStatusText({ status: "completed" }), "Complete")
