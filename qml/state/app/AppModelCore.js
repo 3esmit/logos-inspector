@@ -37,10 +37,10 @@ function handleMessagingConfigurationChanged(root) {
 
 function handleStorageConfigurationChanged(root) {
     resetDashboardConfiguration(root)
+    root.storageApp.invalidateSourceRequests()
     root.metrics.invalidateConfiguration("storage", qsTr("Storage configuration changed."))
     root.refreshCapabilityRegistryIfLoaded()
     with (root) {
-        storageApp.invalidateSourceRequests()
         saveSettingsState()
     }
 }

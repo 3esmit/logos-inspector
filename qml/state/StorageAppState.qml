@@ -283,6 +283,9 @@ QtObject {
             }
             manifestObservationPending = false
             if (!response || response.ok !== true) {
+                if (manifestObservationIsTransient(response)) {
+                    return
+                }
                 const showDeferredLog = manifestDeferredShowLog
                 manifestRefreshDeferred = false
                 manifestDeferredShowLog = false
@@ -300,6 +303,13 @@ QtObject {
             }
             retryDeferredManifestRefresh()
         })
+    }
+
+    function manifestObservationIsTransient(response) {
+        return response && (response.pending === true
+            || response.cancelled === true
+            || response.superseded === true
+            || response.skipped === true)
     }
 
     function retryDeferredManifestRefresh() {

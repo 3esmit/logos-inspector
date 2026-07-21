@@ -2878,6 +2878,37 @@ TestCase {
         model.settingsStateLoaded = false
     }
 
+    function test_storage_configuration_cancels_stale_manifest_bootstrap_without_error() {
+        model.bridge = asyncImportBridgeClient
+        asyncImportHost.deferAsyncRequests = true
+        model.capabilityRegistryLoaded = false
+        model.settingsStateLoaded = false
+        model.storageApp.operationSession.reset()
+        model.storageApp.invalidateSourceRequests()
+
+        model.storageApp.deferManifestRefresh(false)
+
+        tryVerify(function () {
+            return asyncImportHost.pendingAsyncRequests.length === 1
+        })
+        compare(asyncImportHost.lastMethod, "storageSourceReport")
+        compare(model.storageApp.lastOperation, "Loading")
+
+        model.handleStorageConfigurationChanged()
+
+        compare(model.storageApp.lastOperation, "Loading")
+        verify(!model.storageApp.manifestObservationPending)
+
+        verify(asyncImportHost.completeAsyncAt(0, {
+            ok: false,
+            value: null,
+            text: "",
+            error: "stale storage observation"
+        }))
+        wait(0)
+        compare(model.storageApp.lastOperation, "Loading")
+    }
+
     function test_legacy_mutating_diagnostics_settings_are_ignored() {
         fakeHost.responses = {
             loadSettingsState: {
