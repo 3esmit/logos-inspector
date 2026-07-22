@@ -987,6 +987,7 @@ QtObject {
             runtimeDiagnosticsReduced: runtimeDiagnosticsReduced,
             runtimeMetricsOnly: runtimeMetricsRequested
                 && runtimeDiagnosticsReduced
+                && String(origin || "") === "scheduler"
         }
     }
 
@@ -1023,8 +1024,10 @@ QtObject {
     }
 
     function sourceObservationRequestsRuntimeMetrics(kind, args, origin) {
+        const requestOrigin = String(origin || "")
         if (String(kind || "") !== "messaging"
-                || String(origin || "") !== "scheduler"
+                || (requestOrigin !== "scheduler"
+                    && requestOrigin !== "dashboard")
                 || !Array.isArray(args) || args.length === 0
                 || !args[0] || typeof args[0] !== "object") {
             return false
