@@ -11,5 +11,6 @@ pub(crate) mod local_state;
 pub(crate) mod raw_source_transport;
 pub(crate) mod settings_backup;
 pub(crate) mod state_store;
+pub(crate) mod storage_download_contract;
 pub(crate) mod time;
 pub(crate) mod work_tracker;

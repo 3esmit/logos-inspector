@@ -769,6 +769,18 @@ mod tests {
         if unavailable_contains(&supported, "storage.backup.sync_read_by_cid") {
             bail!("exact Basecamp runtime contract was not credited: {supported}");
         }
+        let mut universal_metadata = source_report();
+        *universal_metadata
+            .pointer_mut("/module_info/value/methods/1/signature")
+            .context("Basecamp Storage metadata lacks versioned download signature")? = json!(
+            crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_UNIVERSAL_METHOD_SIGNATURE
+        );
+        let universal_metadata = storage_capability(universal_metadata)?;
+        if unavailable_contains(&universal_metadata, "storage.backup.sync_read_by_cid") {
+            bail!(
+                "universal Storage V2 metadata was not credited for Basecamp backup read: {universal_metadata}"
+            );
+        }
         if !unavailable_contains(&supported, "storage.backup.sync_upload") {
             bail!("Basecamp backup upload was overclaimed: {supported}");
         }
@@ -948,6 +960,17 @@ mod tests {
         let supported = serde_json::to_value(report(source_report(json!([
             { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
         ]))))?;
+        let mut universal_metadata = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut universal_metadata,
+            "/module_info/value/value/methods/1/signature",
+            json!(
+                crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_UNIVERSAL_METHOD_SIGNATURE
+            ),
+        )?;
+        let universal_metadata = serde_json::to_value(report(universal_metadata))?;
         let unsupported = serde_json::to_value(report(source_report(json!([]))))?;
         let wrong_signature = serde_json::to_value(report(source_report(json!([
             { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2()" }
@@ -1019,6 +1042,8 @@ mod tests {
         let wrong_watch_protocol = serde_json::to_value(report(wrong_watch_protocol))?;
         let supported = capability_for(&supported, "storage")
             .context("supported Storage capability missing")?;
+        let universal_metadata = capability_for(&universal_metadata, "storage")
+            .context("universal-metadata Storage capability missing")?;
         let unsupported = capability_for(&unsupported, "storage")
             .context("unsupported Storage capability missing")?;
         let wrong_signature = capability_for(&wrong_signature, "storage")
@@ -1043,6 +1068,11 @@ mod tests {
 
         if unavailable_contains(supported, "storage.backup.sync_read_by_cid") {
             bail!("exact runtime contract was not credited: {supported}");
+        }
+        if unavailable_contains(universal_metadata, "storage.backup.sync_read_by_cid") {
+            bail!(
+                "universal Storage V2 metadata was not credited for LogosCore backup read: {universal_metadata}"
+            );
         }
         if !unavailable_contains(unsupported, "storage.backup.sync_read_by_cid") {
             bail!("missing runtime event overclaimed backup read: {unsupported}");
