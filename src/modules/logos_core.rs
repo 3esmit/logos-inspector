@@ -1951,7 +1951,7 @@ impl LogoscoreCliRuntime {
             .prefix("logos-inspector-upload-")
             .tempdir()
             .context("failed to create logoscore upload workspace")?;
-        shared_transport.share_directory(directory.path())?;
+        shared_transport.share_directory(directory.path(), 0o750)?;
         let path = directory.path().join(filename);
         fs::write(&path, bytes).context("failed to write logoscore upload payload")?;
         shared_transport.share_file(&path, 0o640)?;
@@ -1973,7 +1973,10 @@ impl LogoscoreCliRuntime {
             .prefix("logos-inspector-download-")
             .tempdir()
             .context("failed to create logoscore download workspace")?;
-        shared_transport.share_directory(directory.path())?;
+        // Storage V2 creates a sibling `.partial` file before atomically
+        // replacing this destination, so the module's shared group needs
+        // write access to the workspace itself.
+        shared_transport.share_directory(directory.path(), 0o770)?;
         let path = directory.path().join(safe_filename);
         fs::OpenOptions::new()
             .read(true)
@@ -2275,18 +2278,18 @@ impl SharedFilesystemTransport {
         }
     }
 
-    fn share_directory(&self, path: &Path) -> Result<()> {
+    fn share_directory(&self, path: &Path, mode: u32) -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{PermissionsExt as _, chown};
 
             chown(path, None, Some(self.group))
                 .context("failed to assign logoscore shared directory group")?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o750))
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
                 .context("failed to secure logoscore shared directory")?;
         }
         #[cfg(not(unix))]
-        let _path = path;
+        let (_path, _mode) = (path, mode);
         Ok(())
     }
 
@@ -4239,6 +4242,25 @@ mod tests {
             }
             thread::sleep(LOGOSCORE_POLL_INTERVAL);
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_download_workspace_is_group_writable() -> Result<()> {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let directory = tempfile::tempdir()?;
+        let group = fs::metadata(directory.path())?.gid();
+        let shared_transport = SharedFilesystemTransport { group };
+
+        shared_transport.share_directory(directory.path(), 0o770)?;
+
+        let mode = fs::metadata(directory.path())?.permissions().mode() & 0o777;
+        anyhow::ensure!(
+            mode == 0o770,
+            "Storage V2 download workspace must grant shared-group write access, got {mode:o}"
+        );
         Ok(())
     }
 

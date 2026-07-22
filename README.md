@@ -1,250 +1,135 @@
 # Logos Inspector
 
-Logos Inspector is a native inspection toolkit for Logos networks. It currently
-targets Logos Blockchain and Logos Execution Zone, with room for future
-inspectors for Logos messaging, storage, and other services.
+Native CLI and Qt/QML desktop inspector for Logos networks.
 
-## Components
+Logos Inspector is aimed at developers and operators investigating Logos
+Blockchain and Logos Execution Zone state. It is currently versioned as
+`0.2.0-rc6` and licensed under MIT.
 
-- `src/lib.rs`: shared inspection library.
-- `src/main.rs`: native GUI and CLI entry point.
-- `src/cli.rs`: CLI shell over the shared library.
-- `src/gui.rs`: thin launcher for the standalone QML flake app.
-- `crates/core-ffi`: C ABI bridge used by the Basecamp core module package.
-- `crates/standalone-gui`: CXX-Qt standalone host over the shared QML UI.
-- `core/`: Logos core module package named `logos_inspector`.
-- `qml/Main.qml`, `qml/`: Logos QML UI plugin.
+## What it provides
 
-The CLI calls the package library directly. The QML GUI follows the Logos UI
-plugin model and routes UI actions through the injected `logos.callModule()`
-bridge when hosted by Logos Basecamp or the standalone CXX-Qt host.
-The host must provide the declared runtime modules for inspection actions.
+- Node, block, transaction, account, program, and channel inspection.
+- Navigation between linked chain entities in a native desktop UI.
+- User-supplied IDL decoding for program-owned account data and instruction
+  words; Inspector does not assume knowledge of a particular program.
+- Endpoint, source, module, capability, local-node, wallet, storage, and
+  delivery diagnostics.
+- A JSON-producing CLI for automation and focused investigations.
+
+Most features are diagnostic. Potentially mutating wallet and backup actions
+are exposed as separate, explicit operations.
 
 ## Quick start
 
-Clone the repository, prepare the circuit artifacts, then launch the native
-GUI:
+With Nix flakes enabled, the standalone GUI is available through the project
+flake:
 
 ```bash
 git clone https://github.com/3esmit/logos-inspector.git
 cd logos-inspector
-python3 scripts/setup-circuits.py --install-dir /tmp/logos-blockchain-circuits
-export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
-export RISC0_SKIP_BUILD=1
-cargo run -- gui
+nix run .#standalone
 ```
 
-The launcher starts the standalone GUI binary when it is available beside the
-CLI binary; otherwise it runs the `standalone` Nix flake target. Install Nix
-with flakes enabled for the fallback path.
+The flake provides the standalone app for x86_64 Linux, AArch64 Linux, and
+AArch64 macOS.
 
-## Requirements
-
-- Rust `1.94.0`.
-- Nix with flakes enabled for the QML UI.
-- Python 3 for circuit bootstrap.
-- Network access to the selected sequencer and indexer endpoints.
-- Logos blockchain circuits from `build-artifacts.json` when building Rust
-  dependencies that require circuit verification keys.
-
-## Build
-
-Prepare the Logos blockchain circuits once per machine or CI workspace:
-
-```bash
-python3 scripts/setup-circuits.py --install-dir /tmp/logos-blockchain-circuits
-export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
-export RISC0_SKIP_BUILD=1
-```
-
-Build the CLI/native launcher crate:
-
-```bash
-cargo build -p logos-inspector
-```
-
-Build the standalone QML host alongside the launcher:
-
-```bash
-cargo build -p logos-inspector -p logos-inspector-standalone-gui
-```
-
-Cargo targets are declared explicitly, so untracked `build.rs`, binary, test,
-example, and benchmark files are not discovered. Rust modules explicitly named
-by tracked source still resolve from the working tree; use the Nix build for a
-Git-filtered source boundary.
-
-Run the local verification profile:
-
-```bash
-python3 scripts/check-build-pipeline.py local
-```
-
-Focused profiles are available for Rust, QML, web UI, package identity, and
-external artifact checks:
-
-```bash
-python3 scripts/check-build-pipeline.py --list
-python3 scripts/check-build-pipeline.py rust
-python3 scripts/check-build-pipeline.py qml
-python3 scripts/check-build-pipeline.py web
-```
-
-Check the Nix standalone build plan before running a full build:
-
-```bash
-df -h /
-nix build --dry-run .#standalone
-```
-
-Use the Git flake form shown above. `nix build .` includes tracked files and
-tracked working-tree changes while excluding untracked files. Do not use
-`nix build path:.`, which imports the entire working tree before filtering.
-Verify the source boundary with
-`python3 scripts/check-nix-tracked-source.py` on a Nix-enabled host.
-
-Build plugin outputs:
-
-```bash
-nix build
-```
-
-Build the Basecamp core runtime module:
-
-```bash
-nix build .#core-lgx
-```
-
-This writes portable package `result/logos-inspector-lib.lgx`.
-
-Build the Basecamp UI plugin LGX:
-
-```bash
-nix build .#lgx
-```
-
-This writes portable package `result/logos-inspector-ui-module.lgx`.
-
-Build the standalone Nix package:
-
-```bash
-nix build --max-jobs 1 --cores 2 .#standalone
-```
-
-On Windows, run the same script with Python and set the environment variable in
-PowerShell:
-
-```powershell
-py -3 scripts/setup-circuits.py --install-dir $env:TEMP\logos-blockchain-circuits
-$env:LOGOS_BLOCKCHAIN_CIRCUITS="$env:TEMP\logos-blockchain-circuits"
-```
-
-## CLI
-
-Run CLI mode:
+For the CLI, Rust `1.94` is required:
 
 ```bash
 cargo run -- cli --help
 ```
 
-Examples:
+For example, inspect a reachable node with an explicit endpoint:
 
 ```bash
-cargo run -- cli blockchain-node
-cargo run -- cli blockchain-blocks --slot-from 0 --slot-to 100
-cargo run -- cli channels --slot-from 0 --slot-to 100
-cargo run -- cli blockchain-module
-cargo run -- cli storage --source-mode rest --cid <cid>
-cargo run -- cli messaging --source-mode rest
-cargo run -- cli wallet status --wallet-binary <wallet> --wallet-home <wallet-home>
-cargo run -- cli wallet accounts --wallet-binary <wallet> --wallet-home <wallet-home>
-cargo run -- cli wallet bedrock-balance <64-hex-public-key>
-cargo run -- cli decode-account --data-hex <hex> --idl <idl.json> --idl-account <account-type>
-cargo run -- cli decode-instruction --program-id <program-id> --words <u32-list> --idl <idl.json> --accounts <account-list>
-cargo run -- cli program-file <program.bin>
-cargo run -- cli rpc http://127.0.0.1:8080/ chain_info '[]'
+cargo run -- cli blockchain-node --node-url http://127.0.0.1:8080
 ```
 
-## GUI
+Commands print JSON. Run `cargo run -- cli --help` to see the supported
+inspection, decoding, wallet, backup, and source-diagnostic commands.
 
-Run native GUI mode:
+## Build from source
+
+Use Nix to build the packaged standalone application:
 
 ```bash
-cargo run -- gui
+nix build .#standalone
 ```
 
-Running without arguments also starts the GUI:
+For Cargo-based development, install Rust `1.94`, Python 3, and the platform
+tools needed by the checks: a C/C++ toolchain, CMake, Qt 6 (including
+`qmllint` and `qmltestrunner`), and Node.js/npm.
+
+The CI workflow prepares the compatible Logos Blockchain circuit artifacts
+before Rust checks. The same setup can be used locally:
 
 ```bash
-cargo run
+python3 scripts/setup-circuits.py --install-dir /tmp/logos-blockchain-circuits
+export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
+RISC0_SKIP_BUILD=1 cargo check --workspace
 ```
 
-Run the Basecamp QML plugin directly:
+`setup-circuits.py` replaces the selected installation directory. Choose a
+disposable path or one whose contents may be overwritten.
+
+To run the standalone GUI directly from a source checkout after installing Qt
+6 and preparing the circuit artifacts:
 
 ```bash
-nix run .#qml-ui
+RISC0_SKIP_BUILD=1 cargo run -p logos-inspector-standalone-gui
 ```
 
-The Basecamp plugin requires a matching `logos_inspector` runtime module. If
-the UI is updated without rebuilding or reinstalling that module, calls can fail
-with `unknown inspector method`.
+## Verification
 
-Build both Basecamp packages, then install `result/logos-inspector-lib.lgx` as
-the core module and `result/logos-inspector-ui-module.lgx` as the UI plugin
-from Basecamp's **Install LGX Package** action.
-
-Run the standalone QML host:
+Run the contributor verification profile before opening a pull request:
 
 ```bash
-nix run .#standalone
+python3 scripts/check-build-pipeline.py local
 ```
 
-## Configuration
+It checks formatting, tracked build inputs and package metadata, generated
+artifacts, the Rust workspace, native CMake tests, the local web helper, and
+QML lint/tests. Focused profiles are available when needed:
 
-Environment variables:
+```bash
+python3 scripts/check-build-pipeline.py --list
+python3 scripts/check-build-pipeline.py rust
+python3 scripts/check-build-pipeline.py qml
+python3 scripts/check-build-pipeline.py native
+python3 scripts/check-build-pipeline.py web
+```
 
-- `LOGOS_BLOCKCHAIN_CIRCUITS`: Directory containing the compatible Logos
-  circuits release required by upstream Rust dependencies.
+GitHub Actions runs [the CI pipeline](.github/workflows/ci.yml) on pull
+requests and pushes to `main`.
 
-Default endpoints:
+## Architecture
 
-- Sequencer: `https://testnet.lez.logos.co/`
-- Indexer: `http://127.0.0.1:8779/`
-- Bedrock node: `http://127.0.0.1:8080/`
+| Path | Purpose |
+| --- | --- |
+| `src/` | Shared Rust inspection library and Clap CLI entry point. |
+| `crates/standalone-gui/` | CXX-Qt standalone host and bridge to the shared Rust services. |
+| `qml/` | Qt Quick screens, state, services, and theme. |
+| `crates/core-ffi/` | C ABI for the native core runtime integration. |
+| `core/` | Core module package that loads the FFI library. |
+| `flake.nix` | Nix builds for the standalone application and deployable modules. |
 
-Both CLI and GUI allow endpoint override.
+The Nix flake exposes `standalone` for the desktop application, `lgx` for the
+QML module, and `core-lgx` for the core module:
 
-### Choose a data source
+```bash
+nix build .#lgx
+nix build .#core-lgx
+```
 
-In the GUI, open **Network** and choose a connector independently for L1
-Bedrock, Storage, and Delivery. The selected connector determines the
-operations Inspector can offer.
+## Security
 
-- **LogosCore CLI** calls the corresponding loaded module through the local
-  LogosCore daemon (`blockchain_module`, `storage_module`, or
-  `delivery_module`). It has no endpoint field in Inspector.
-- **Direct RPC** sends JSON-RPC requests to the configured Bedrock endpoint.
-  Zone Catalog reads require this connector or a LogosCore CLI blockchain
-  module that exposes the required catalog-read methods.
-- **Direct REST** and **Metrics** connectors query their configured service
-  endpoints. Delivery additionally offers the Delivery Network Monitor source
-  for topology-oriented views.
+This is a local diagnostic tool. Treat wallet files, private keys, mnemonic
+phrases, and endpoint credentials as secrets. Do not enter private keys or
+mnemonics in the GUI, and do not commit them to the repository. See
+[SECURITY.md](SECURITY.md) for the project security guidance.
 
-Inspector validates the selected source and reports unavailable capabilities
-rather than silently switching to a different connector.
+## Contributing
 
-## IDL Decode
-
-Logos Inspector is program-agnostic. To decode program-owned account data or
-instruction words, provide the account or program address plus that program's
-IDL JSON. The core library handles Borsh account decoding and LEZ instruction
-word decoding, and both CLI and GUI use the same implementation.
-
-The GUI exposes IDL inputs in the `Account` and `IDL` tabs. No built-in Token,
-TokenDefinition, or AMM knowledge is required.
-
-## Dependency pins
-
-The core library depends on internal LEZ crates that are not published on
-crates.io. `build-artifacts.json` records the LEZ, circuits, and rapidsnark
-pins used by Cargo, Nix, CI, and the circuit setup script.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), run the local verification profile,
+and keep changes focused. The project is released under the
+[MIT License](LICENSE).
