@@ -92,6 +92,7 @@ TestCase {
             }]
         })
         model.metrics.setDashboardGraphEnabled("bedrock.peer_count", true)
+        model.metrics.setDashboardGraphEnabled("storage.peer_count", false)
         model.zoneInspection.networkScope = ZoneFixtureData.networkScope()
         model.zoneInspection.networkScopeKey = "genesis_id:"
             + ZoneFixtureData.networkScope().genesis_id
@@ -135,7 +136,30 @@ TestCase {
         compare(graphTile.samples[0].value, 27)
         compare(graphTile.samples[1].value, 28)
         compare(graphTile.validSampleCount(), 2)
-        compare(graphTile.Accessible.description, "2 history points; current value 28")
+        compare(graphTile.Accessible.description,
+            "Bedrock Blockchain. 2 history points; current value 28")
+    }
+
+    function test_duplicate_graph_titles_include_source_group_in_accessible_description() {
+        model.dashboardNode = nodeWithPeerCount(27)
+        model.metrics.setDashboardGraphEnabled("storage.peer_count", true)
+        model.metrics.recordDashboardSnapshot()
+
+        let bedrock = null
+        let storage = null
+        tryVerify(function () {
+            const tiles = dashboardGraphTiles(page)
+            bedrock = graphTile(tiles, "peer count", "Bedrock Blockchain")
+            storage = graphTile(tiles, "peer count", "Storage")
+            return bedrock !== null && storage !== null
+        })
+
+        compare(bedrock.Accessible.name, "peer count")
+        compare(storage.Accessible.name, "peer count")
+        verify(String(bedrock.Accessible.description).indexOf(
+            "Bedrock Blockchain. ") === 0)
+        verify(String(storage.Accessible.description).indexOf("Storage. ") === 0)
+        verify(bedrock.Accessible.description !== storage.Accessible.description)
     }
 
     function nodeWithPeerCount(peerCount) {
@@ -146,6 +170,31 @@ TestCase {
                 }
             }
         }
+    }
+
+    function dashboardGraphTiles(item, rows) {
+        const result = rows || []
+        if (!item) {
+            return result
+        }
+        if (item.objectName === "dashboardGraphTile") {
+            result.push(item)
+        }
+        const children = item.children || []
+        for (let index = 0; index < children.length; ++index) {
+            dashboardGraphTiles(children[index], result)
+        }
+        return result
+    }
+
+    function graphTile(tiles, title, group) {
+        for (let index = 0; index < tiles.length; ++index) {
+            const tile = tiles[index]
+            if (tile.title === title && tile.group === group) {
+                return tile
+            }
+        }
+        return null
     }
 
     function nodeWithSlots(slot, libSlot) {

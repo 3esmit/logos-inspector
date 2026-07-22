@@ -593,9 +593,14 @@ ColumnLayout {
         objectName: "dashboardGraphTile"
         Accessible.role: Accessible.Chart
         Accessible.name: graphRoot.title
-        Accessible.description: qsTr("%1 history points; current value %2")
-            .arg(graphRoot.historyPointCount)
-            .arg(graphRoot.value)
+        Accessible.description: graphRoot.group.length > 0
+            ? qsTr("%1. %2 history points; current value %3")
+                .arg(graphRoot.group)
+                .arg(graphRoot.historyPointCount)
+                .arg(graphRoot.value)
+            : qsTr("%1 history points; current value %2")
+                .arg(graphRoot.historyPointCount)
+                .arg(graphRoot.value)
 
         padding: graphRoot.theme.gap
         Layout.fillWidth: true
