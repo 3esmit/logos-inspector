@@ -509,6 +509,11 @@ impl std::error::Error for ModuleTransportClosed {}
 pub trait ModuleTransport: Send + Sync {
     fn kind(&self) -> ModuleTransportKind;
 
+    /// Requests that transport-owned local work stop during host shutdown.
+    ///
+    /// Transports without cancellable local work retain the no-op default.
+    fn begin_close(&self) {}
+
     fn logoscore_cli_transport(&self) -> Option<&LogoscoreCliTransport> {
         None
     }
@@ -711,6 +716,7 @@ impl LogoscoreRuntimeBinding {
 #[derive(Debug, Clone)]
 pub struct LogoscoreCliTransport {
     runtime: LogoscoreRuntimeBinding,
+    close_cancellation: CancellationToken,
 }
 
 impl Default for LogoscoreCliTransport {
@@ -722,7 +728,10 @@ impl Default for LogoscoreCliTransport {
                 crate::local_nodes::running_local_logoscore_runtime,
             ))
         };
-        Self { runtime }
+        Self {
+            runtime,
+            close_cancellation: CancellationToken::new(),
+        }
     }
 }
 
@@ -731,6 +740,7 @@ impl LogoscoreCliTransport {
     pub(crate) fn fixed_runtime(runtime: LogoscoreCliRuntime) -> Self {
         Self {
             runtime: LogoscoreRuntimeBinding::Fixed(runtime),
+            close_cancellation: CancellationToken::new(),
         }
     }
 
@@ -746,6 +756,7 @@ impl LogoscoreCliTransport {
     fn pinned(&self) -> Result<Self> {
         Ok(Self {
             runtime: LogoscoreRuntimeBinding::Fixed(self.runtime.resolve()?),
+            close_cancellation: self.close_cancellation.clone(),
         })
     }
 }
@@ -779,6 +790,7 @@ impl ModuleTransport for LogoscoreCliTransport {
 
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
         let runtime = self.runtime.clone();
+        let close_cancellation = self.close_cancellation.clone();
         Box::pin(async move {
             let runtime = runtime.resolve()?;
             let transport = call.transport();
@@ -793,16 +805,31 @@ impl ModuleTransport for LogoscoreCliTransport {
             let args = call.args().to_vec();
             let module_label = module.clone();
             let method_label = method.clone();
-            let output =
-                tokio::task::spawn_blocking(move || runtime.call_typed(&module, &method, &args))
-                    .await
-                    .context("LogosCore CLI module-call worker failed")??;
+            let deadline = StdInstant::now()
+                .checked_add(compound_command_timeout())
+                .context("LogosCore CLI call deadline overflowed")?;
+            let command_control = CommandControl::new(close_cancellation, deadline);
+            let output = tokio::task::spawn_blocking(move || {
+                runtime.call_typed_controlled_with_output_limit(
+                    &module,
+                    &method,
+                    &args,
+                    command_control,
+                    LOGOSCORE_JSON_OUTPUT_LIMIT,
+                )
+            })
+            .await
+            .context("LogosCore CLI module-call worker failed")??;
             let value = normalize_module_call_value(&module_label, &method_label, output.value)?;
             Ok(ModuleCallReply::new(
                 ModuleTransportKind::LogoscoreCli,
                 value,
             ))
         })
+    }
+
+    fn begin_close(&self) {
+        self.close_cancellation.cancel();
     }
 
     fn call_controlled(
@@ -878,25 +905,38 @@ impl ModuleTransport for LogoscoreCliTransport {
 
     fn status(&self) -> ModuleDiagnosticFuture<'_> {
         let runtime = self.runtime.clone();
+        let close_cancellation = self.close_cancellation.clone();
         Box::pin(async move {
             let runtime = runtime.resolve()?;
-            let output = tokio::task::spawn_blocking(move || runtime.status())
-                .await
-                .context("LogosCore CLI status worker failed")??;
+            let deadline = StdInstant::now()
+                .checked_add(command_timeout())
+                .context("LogosCore CLI status deadline overflowed")?;
+            let command_control = CommandControl::new(close_cancellation, deadline);
+            let output =
+                tokio::task::spawn_blocking(move || runtime.status_controlled(command_control))
+                    .await
+                    .context("LogosCore CLI status worker failed")??;
             serde_json::to_value(output).context("failed to serialize LogosCore CLI status")
         })
     }
 
     fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
         let runtime = self.runtime.clone();
+        let close_cancellation = self.close_cancellation.clone();
         Box::pin(async move {
             let runtime = runtime.resolve()?;
             let module_label = module.clone();
-            let output = tokio::task::spawn_blocking(move || runtime.module_info(&module))
-                .await
-                .with_context(|| {
-                    format!("LogosCore CLI module-info worker failed for `{module_label}`")
-                })??;
+            let deadline = StdInstant::now()
+                .checked_add(compound_command_timeout())
+                .context("LogosCore CLI module-info deadline overflowed")?;
+            let command_control = CommandControl::new(close_cancellation, deadline);
+            let output = tokio::task::spawn_blocking(move || {
+                runtime.module_info_controlled(&module, command_control)
+            })
+            .await
+            .with_context(|| {
+                format!("LogosCore CLI module-info worker failed for `{module_label}`")
+            })??;
             serde_json::to_value(output)
                 .with_context(|| format!("failed to serialize module info for `{module_label}`"))
         })
@@ -1385,6 +1425,24 @@ impl LogoscoreCliRuntime {
         })
     }
 
+    pub(crate) fn module_info_controlled(
+        &self,
+        module: &str,
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        let gate_control = control.clone();
+        self.with_controlled_command_gate(&gate_control, |runner| {
+            let modules =
+                run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
+                    .context("failed to list logoscore modules")?;
+            require_listed_module_loaded(module, &modules.value)?;
+            run_json_with_controlled(runner, ["module-info", module, "--json"], control)
+        })
+    }
+
     pub(crate) fn require_module_method(
         &self,
         module: &str,
@@ -1618,16 +1676,6 @@ impl LogoscoreCliRuntime {
         args: &[String],
     ) -> Result<LogosCoreOutput> {
         let command_args = call_arguments(module, method, args)?;
-        self.call_with_arguments(module, command_args)
-    }
-
-    pub(crate) fn call_typed(
-        &self,
-        module: &str,
-        method: &str,
-        args: &[Value],
-    ) -> Result<LogosCoreOutput> {
-        let command_args = typed_call_arguments(module, method, args)?;
         self.call_with_arguments(module, command_args)
     }
 
@@ -4350,6 +4398,7 @@ esac
                     label: "test logoscore".to_owned(),
                 },
             }),
+            close_cancellation: CancellationToken::new(),
         };
         let cancellation = CancellationToken::new();
         let cancel_request = cancellation.clone();
@@ -4403,6 +4452,89 @@ esac
             .arg(pid.trim())
             .status()?;
         anyhow::ensure!(!alive.success(), "CLI child was not reaped");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_cli_transport_cancels_an_ordinary_pinned_call() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-close-test");
+        let pid_path = directory.path().join("logoscore-close-test.pid");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    call)
+        printf '%s' "$$" > "${0}.pid"
+        while :; do :; done
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let transport = LogoscoreCliTransport {
+            runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime {
+                runner: LogosCoreRunner {
+                    program: program.to_string_lossy().into_owned(),
+                    sudo_user: None,
+                    home: None,
+                    config_dir: None,
+                    label: "test logoscore".to_owned(),
+                },
+            }),
+            close_cancellation: CancellationToken::new(),
+        };
+        let pinned = pin_module_transport(Arc::new(transport.clone()))?;
+        let close_request = transport.clone();
+        let pid_for_close = pid_path.clone();
+        let closer = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !pid_for_close.exists() {
+                if Instant::now() >= deadline {
+                    bail!("timed out waiting for ordinary CLI call process");
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            close_request.begin_close();
+            Ok::<(), anyhow::Error>(())
+        });
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "storage_module",
+            "get",
+            vec![],
+        )?;
+        let started = Instant::now();
+
+        let Err(error) = pinned.call(call).await else {
+            bail!("closing transport let ordinary CLI call complete");
+        };
+        closer.await.context("CLI closer task failed")??;
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(3),
+            "ordinary CLI call did not stop promptly after close: {:?}",
+            started.elapsed()
+        );
+        anyhow::ensure!(
+            format!("{error:#}").contains("cancellation requested"),
+            "ordinary CLI close lost cancellation evidence: {error:#}"
+        );
+        let pid = fs::read_to_string(&pid_path)?;
+        let alive = Command::new("sh")
+            .arg("-c")
+            .arg("kill -0 \"$1\" 2>/dev/null")
+            .arg("logoscore-reap-probe")
+            .arg(pid.trim())
+            .status()?;
+        anyhow::ensure!(!alive.success(), "ordinary CLI child was not reaped");
         Ok(())
     }
 
@@ -5033,6 +5165,7 @@ esac
                     label: "test logoscore".to_owned(),
                 },
             }),
+            close_cancellation: CancellationToken::new(),
         };
         let cancellation = CancellationToken::new();
         cancellation.cancel();
@@ -5666,6 +5799,7 @@ esac
                     .map(|runtime| runtime.clone())
                     .map_err(|_| anyhow::anyhow!("runtime resolver lock poisoned"))
             })),
+            close_cancellation: CancellationToken::new(),
         };
 
         let pinned = pin_module_transport(Arc::new(transport.clone()))?;
