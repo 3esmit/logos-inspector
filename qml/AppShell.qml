@@ -97,6 +97,7 @@ Item {
             appModel.loadIdlStateAsync(function () {
                 root.finishInitialNavigation(initialReference)
             })
+            appModel.basecampWallet.checkAvailability()
             moduleEventIntake.install()
         })
     }
@@ -530,7 +531,7 @@ Item {
 
     Component {
         id: localWalletPage
-        WalletPages.LocalWalletPage {
+        WalletPages.WalletPage {
             theme: theme
             model: appModel
         }
