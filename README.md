@@ -20,6 +20,24 @@ plugin model and routes UI actions through the injected `logos.callModule()`
 bridge when hosted by Logos Basecamp or the standalone CXX-Qt host.
 The host must provide the declared runtime modules for inspection actions.
 
+## Quick start
+
+Clone the repository, prepare the circuit artifacts, then launch the native
+GUI:
+
+```bash
+git clone https://github.com/3esmit/logos-inspector.git
+cd logos-inspector
+python3 scripts/setup-circuits.py --install-dir /tmp/logos-blockchain-circuits
+export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
+export RISC0_SKIP_BUILD=1
+cargo run -- gui
+```
+
+The launcher starts the standalone GUI binary when it is available beside the
+CLI binary; otherwise it runs the `standalone` Nix flake target. Install Nix
+with flakes enabled for the fallback path.
+
 ## Requirements
 
 - Rust `1.94.0`.
@@ -195,6 +213,25 @@ Default endpoints:
 - Bedrock node: `http://127.0.0.1:8080/`
 
 Both CLI and GUI allow endpoint override.
+
+### Choose a data source
+
+In the GUI, open **Network** and choose a connector independently for L1
+Bedrock, Storage, and Delivery. The selected connector determines the
+operations Inspector can offer.
+
+- **LogosCore CLI** calls the corresponding loaded module through the local
+  LogosCore daemon (`blockchain_module`, `storage_module`, or
+  `delivery_module`). It has no endpoint field in Inspector.
+- **Direct RPC** sends JSON-RPC requests to the configured Bedrock endpoint.
+  Zone Catalog reads require this connector or a LogosCore CLI blockchain
+  module that exposes the required catalog-read methods.
+- **Direct REST** and **Metrics** connectors query their configured service
+  endpoints. Delivery additionally offers the Delivery Network Monitor source
+  for topology-oriented views.
+
+Inspector validates the selected source and reports unavailable capabilities
+rather than silently switching to a different connector.
 
 ## IDL Decode
 
