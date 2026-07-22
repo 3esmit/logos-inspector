@@ -364,7 +364,7 @@ function footerFieldValue(root, key) {
         return root.numberText(root.tipMinusLib())
     case "bedrock.last_tip_time":
     case "bedrock.last_lib_time":
-        return qsTr("n/a")
+        return root.valueOrNa(sourceReportObservedAt(root, "blockchain"))
     case "bedrock.finality_lag_seconds":
         return root.valueOrNa(root.finalityLagSeconds())
     case "lez.rpc_health":
@@ -570,6 +570,11 @@ function configuredSourceError(root, kind) {
     const status = observation.status || null
     return status && status.known === true && status.ok !== true
         ? String(status.detail || "") : ""
+}
+
+function sourceReportObservedAt(root, kind) {
+    const observation = root.model.metrics.sourceObservation(kind) || {}
+    return String(observation.reportCheckedAt || "")
 }
 
 function footerFieldWidth(key) {

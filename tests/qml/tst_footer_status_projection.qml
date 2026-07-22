@@ -339,6 +339,28 @@ TestCase {
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "n/a")
     }
 
+    function test_bedrock_observation_times_use_last_accepted_report_time() {
+        model.configuredSourceObservations = ({
+            blockchain: {
+                reportCheckedAt: "10:01:02",
+                reportCheckedAtMs: 1,
+                checkedAt: "10:02:03",
+                checkedAtMs: 2,
+                stale: true
+            }
+        })
+
+        const tip = FooterStatusProjection.footerFieldItem(footerRoot, "bedrock.last_tip_time")
+        const lib = FooterStatusProjection.footerFieldItem(footerRoot, "bedrock.last_lib_time")
+
+        compare(tip.value, "10:01:02")
+        compare(tip.accessibleValue, "10:01:02")
+        verify(!tip.hidden)
+        compare(lib.value, "10:01:02")
+        compare(lib.accessibleValue, "10:01:02")
+        verify(!lib.hidden)
+    }
+
     function test_configured_source_report_owns_cid_probe_and_last_error() {
         const sourceReport = {
             health: { ready: true, reachable: true, summary: "Storage ready" },
