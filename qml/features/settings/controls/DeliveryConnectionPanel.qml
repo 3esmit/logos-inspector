@@ -29,10 +29,8 @@ SourceSettingsPanel {
 
         FieldRow {
             visible: root.deliverySource().usesRestEndpoint
-                || root.deliverySource().usesHealthEndpoint
             theme: root.theme
-            label: root.deliverySource().usesHealthEndpoint
-                ? qsTr("Waku REST health URL") : qsTr("Waku REST URL")
+            label: qsTr("Waku REST URL")
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8645")
@@ -47,6 +45,16 @@ SourceSettingsPanel {
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")
             onTextEdited: text => root.modelRef.messagingMetricsUrl = String(text || "").trim()
+        }
+
+        FieldRow {
+            visible: root.deliverySource().connectionType === "logoscore_cli"
+            theme: root.theme
+            label: qsTr("Store provider multiaddress")
+            sourceText: root.modelRef.messagingStorePeerAddress
+            syncSourceText: true
+            placeholderText: qsTr("/dns4/.../tcp/30303/p2p/...")
+            onTextEdited: text => root.modelRef.messagingStorePeerAddress = String(text || "").trim()
         }
 
         FieldRow {

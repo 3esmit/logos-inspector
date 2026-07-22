@@ -6,7 +6,6 @@ pub(crate) fn delivery_module_probe_plan(
     info_id: Option<&str>,
     runtime_diagnostics_enabled: bool,
     runtime_metrics_enabled: bool,
-    health_identity_required: bool,
 ) -> Vec<ModuleProbeStep<'_>> {
     if !runtime_diagnostics_enabled {
         if runtime_metrics_enabled {
@@ -15,14 +14,7 @@ pub(crate) fn delivery_module_probe_plan(
                 SourceProbeKey::DeliveryCollectOpenMetricsText,
             )];
         }
-        return if health_identity_required {
-            vec![ModuleProbeStep::keyed(
-                "getAvailableNodeInfoIDs",
-                SourceProbeKey::DeliveryAvailableNodeInfoIds,
-            )]
-        } else {
-            Vec::new()
-        };
+        return Vec::new();
     }
     let mut steps = vec![
         ModuleProbeStep::keyed("version", SourceProbeKey::DeliveryVersion),
@@ -66,21 +58,6 @@ pub(crate) fn delivery_advertised_identity_probe_plan(
     .collect()
 }
 
-pub(crate) fn delivery_advertised_health_identity_probe_plan(
-    available_info_ids: &Value,
-) -> Vec<ModuleProbeStep<'static>> {
-    delivery_info_id_advertised(available_info_ids, "MyENR")
-        .then(|| {
-            ModuleProbeStep::keyed_with_args(
-                "getNodeInfo",
-                vec!["MyENR"],
-                SourceProbeKey::DeliveryMyEnr,
-            )
-        })
-        .into_iter()
-        .collect()
-}
-
 fn delivery_info_id_advertised(available_info_ids: &Value, info_id: &str) -> bool {
     match available_info_ids {
         Value::String(value) => value
@@ -111,7 +88,7 @@ mod tests {
 
     #[test]
     fn delivery_plan_keys_explicit_known_node_info_step() {
-        let steps = delivery_module_probe_plan(Some("MyPeerId"), true, false, false);
+        let steps = delivery_module_probe_plan(Some("MyPeerId"), true, false);
         let peer_id_steps = steps
             .iter()
             .filter(|step| step.key == Some(SourceProbeKey::DeliveryMyPeerId))
@@ -127,7 +104,7 @@ mod tests {
 
     #[test]
     fn delivery_plan_defers_default_identity_until_availability_is_known() {
-        let steps = delivery_module_probe_plan(None, true, false, false);
+        let steps = delivery_module_probe_plan(None, true, false);
 
         assert!(steps.iter().all(|step| step.method != "getNodeInfo"));
     }
@@ -172,7 +149,7 @@ mod tests {
 
     #[test]
     fn delivery_plan_leaves_unknown_node_info_unkeyed() {
-        let steps = delivery_module_probe_plan(Some("Unknown"), true, false, false);
+        let steps = delivery_module_probe_plan(Some("Unknown"), true, false);
         let custom = steps.last();
 
         assert!(custom.is_some(), "missing custom node info probe");
@@ -186,14 +163,14 @@ mod tests {
 
     #[test]
     fn delivery_plan_defers_runtime_probes_until_explicitly_enabled() {
-        let steps = delivery_module_probe_plan(Some("MyPeerId"), false, false, false);
+        let steps = delivery_module_probe_plan(Some("MyPeerId"), false, false);
 
         assert!(steps.is_empty());
     }
 
     #[test]
     fn delivery_metrics_plan_probes_only_openmetrics() {
-        let steps = delivery_module_probe_plan(Some("MyPeerId"), false, true, true);
+        let steps = delivery_module_probe_plan(Some("MyPeerId"), false, true);
 
         assert_eq!(steps.len(), 1);
         assert_eq!(
@@ -205,20 +182,5 @@ mod tests {
             Some(SourceProbeKey::DeliveryCollectOpenMetricsText)
         );
         assert!(steps.first().is_some_and(|step| step.args.is_empty()));
-    }
-
-    #[test]
-    fn delivery_reduced_health_plan_probes_only_identity_inventory() {
-        let steps = delivery_module_probe_plan(None, false, false, true);
-
-        assert_eq!(steps.len(), 1);
-        assert_eq!(
-            steps.first().map(|step| step.method),
-            Some("getAvailableNodeInfoIDs")
-        );
-        assert_eq!(
-            steps.first().and_then(|step| step.key),
-            Some(SourceProbeKey::DeliveryAvailableNodeInfoIds)
-        );
     }
 }

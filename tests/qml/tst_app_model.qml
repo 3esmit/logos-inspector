@@ -217,6 +217,7 @@ TestCase {
         })
         model.blockchainSourceMode = "rpc"
         model.messagingSourceMode = "rest"
+        model.messagingStorePeerAddress = ""
         model.storageSourceMode = "rest"
         model.sourceRouting.sourcePolicy = ({})
         model.sourceRouting.sourcePolicyLoaded = false
@@ -2980,6 +2981,56 @@ TestCase {
         const payload = model.settingsStatePayload()
         verify(payload.messaging_mutating_diagnostics_enabled === undefined)
         verify(payload.storage_mutating_diagnostics_enabled === undefined)
+    }
+
+    function test_cli_delivery_store_provider_persists_and_routes_to_adapter() {
+        installSourceModePolicy(model)
+        const provider = "/dns4/provider.example/tcp/30303/p2p/peer"
+
+        model.setNetworkConnectorMode("delivery", "logoscore_cli")
+        model.messagingStorePeerAddress = provider
+
+        const adapter = model.sourceRouting.deliveryOperationAdapter()
+        compare(adapter.source_mode, "logoscore_cli")
+        compare(adapter.inputs.store_peer_addr, provider)
+        const reportArgs = model.sourceRouting.deliverySourceReportArgs()
+        compare(reportArgs[0].inputs.store_peer_addr, undefined)
+        const runtimeInputs = model.capabilityRegistryRuntimeInputs()
+        compare(runtimeInputs.messaging_store_peer_address, undefined)
+        const saved = model.settingsStatePayload()
+        compare(saved.messaging_store_peer_address, provider)
+
+        model.settingsStateLoaded = false
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: saved,
+                text: "OK",
+                error: ""
+            }
+        }
+        model.loadSettingsState()
+
+        compare(model.messagingStorePeerAddress, provider)
+        compare(model.sourceRouting.deliveryOperationAdapter().inputs.store_peer_addr,
+                provider)
+    }
+
+    function test_cli_delivery_store_provider_keeps_verified_source_evidence() {
+        installSourceModePolicy(model)
+        model.setNetworkConnectorMode("delivery", "logoscore_cli")
+        model.metrics.messagingSourceReport = {
+            marker: "verified-cli-delivery",
+            health: { ready: true, reachable: true, status: "healthy" }
+        }
+        const generation = model.metrics.familyConfigurationGeneration("messaging")
+
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+
+        compare(model.metrics.familyConfigurationGeneration("messaging"), generation)
+        compare(model.metrics.messagingSourceReport.marker, "verified-cli-delivery")
+        compare(model.sourceRouting.deliveryOperationAdapter().inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
     }
 
     function test_interactive_runtime_probes_do_not_depend_on_cached_node_status() {

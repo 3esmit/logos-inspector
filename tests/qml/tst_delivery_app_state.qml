@@ -13,6 +13,59 @@ TestCase {
     }
 
     QtObject {
+        id: deliveryGateFixture
+
+        property var blockedActions: []
+
+        function deliveryGate(action, options) {
+            const key = String(action || "")
+            const required = options && Array.isArray(options.required_inputs)
+                ? options.required_inputs : []
+            for (let index = 0; index < required.length; ++index) {
+                const input = required[index] || {}
+                if (String(input.value || "").trim().length === 0) {
+                    return {
+                        enabled: false,
+                        status: "input_required",
+                        missing: [{
+                            dependency: String(input.key || "input"),
+                            label: String(input.label || "Input"),
+                            status: "input_required",
+                            capability: String(input.key || "input"),
+                            provenance: "input"
+                        }],
+                        warnings: [],
+                        provenance: ["input"]
+                    }
+                }
+            }
+            const blocked = blockedActions.indexOf(key) >= 0
+            if (!blocked) {
+                return {
+                    enabled: true,
+                    status: "available",
+                    missing: [],
+                    warnings: [],
+                    provenance: ["test"]
+                }
+            }
+            return {
+                enabled: false,
+                status: "unavailable",
+                missing: [{
+                    dependency: "delivery.store.query",
+                    label: "Delivery Store",
+                    status: "unavailable",
+                    capability: "delivery.store.query",
+                    provenance: "test"
+                }],
+                warnings: [],
+                provenance: ["test"]
+            }
+        }
+    }
+
+    QtObject {
         id: managedNodesFixture
 
         property bool busy: false
@@ -100,6 +153,7 @@ TestCase {
         networkPreset: "logos.test"
         mutatingDiagnosticsEnabled: true
         managedNodes: managedNodesFixture
+        gateFacade: deliveryGateFixture
     }
 
     function init() {
@@ -114,6 +168,7 @@ TestCase {
         managedNodesFixture.pendingNode = ""
         managedNodesFixture.runCount = 0
         managedNodesFixture.refreshCount = 0
+        deliveryGateFixture.blockedActions = []
         state.sourceMode = "rest"
         state.effectiveSourceMode = "rest"
         state.sourceTargetKind = "rest_endpoint"
@@ -128,6 +183,13 @@ TestCase {
         state.operationSession.reset()
         state.lastOperationOwner = "delivery"
         state.managedNodeBaselineOperationFingerprint = ""
+        state.adapterInitialization = Qt.binding(function() {
+            return ({
+                source_mode: state.effectiveSourceMode,
+                inputs: state.usesRestEndpoint
+                    ? ({ rest_endpoint: state.restEndpoint }) : ({})
+            })
+        })
     }
 
     function setManagedMessaging(actions, runState) {
@@ -404,6 +466,69 @@ TestCase {
         verify(!gateway.resultIsError)
         compare(gateway.resultValue.pageSize, 25)
         compare(gateway.history.length, 1)
+    }
+
+    function test_store_query_is_blocked_by_delivery_capability_gate() {
+        deliveryGateFixture.blockedActions = ["store_query"]
+
+        const response = state.runDelivery("deliveryStoreQuery", [
+            "", "/logos/1/chat/proto", "", "", 20, true, true
+        ], "Store query")
+
+        verify(!response.ok)
+        compare(gateway.requestCount, 0)
+        compare(state.lastOperation, "Blocked")
+        verify(gateway.resultIsError)
+        verify(gateway.resultText.indexOf("delivery.store.query") >= 0)
+    }
+
+    function test_cli_store_query_requires_provider_or_uses_configured_provider() {
+        useManagedDeliverySource()
+        state.adapterInitialization = ({
+            source_mode: "logoscore_cli",
+            inputs: {}
+        })
+
+        const blocked = state.runDelivery("deliveryStoreQuery", [
+            "", "/logos/1/chat/proto", "", "", 20, true, true
+        ], "Store query")
+
+        verify(!blocked.ok)
+        compare(gateway.requestCount, 0)
+        verify(gateway.resultText.indexOf("Store provider multiaddress") >= 0)
+
+        state.adapterInitialization = ({
+            source_mode: "logoscore_cli",
+            inputs: {
+                store_peer_addr: "/dns4/provider.example/tcp/30303/p2p/peer"
+            }
+        })
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "delivery-cli-store-1",
+                    domain: "delivery",
+                    method: "deliveryStoreQuery",
+                    status: "completed",
+                    label: "Store query",
+                    result: { messages: [] },
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runDelivery("deliveryStoreQuery", [
+            "", "/logos/1/chat/proto", "", "", 20, true, true
+        ], "Store query")
+
+        compare(gateway.requestCount, 1)
+        compare(gateway.lastArgs[0].adapter.source_mode, "logoscore_cli")
+        compare(gateway.lastArgs[0].adapter.inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
+        compare(gateway.lastArgs[0].payload.peer_addr, "")
     }
 
     function test_store_query_projects_polled_terminal_result() {

@@ -571,7 +571,7 @@ TestCase {
         compare(manual.state, "unavailable")
         compare(manual.tone, "neutral")
         verify(manual.evidence.indexOf("Test Delivery source") >= 0)
-        verify(manual.evidence.indexOf("Direct Waku REST") >= 0)
+        verify(manual.evidence.indexOf("does not expose Store queries") >= 0)
         compare(payload.state, "unavailable")
 
         testRoot.deliveryCapabilities = ["delivery.store.query"]

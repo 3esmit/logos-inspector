@@ -1,8 +1,8 @@
 use crate::ProbeReport;
 use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
-    ModuleProbeStep, SourceProbeKey, delivery_advertised_health_identity_probe_plan,
-    delivery_advertised_identity_probe_plan, delivery_module_probe_plan,
+    ModuleProbeStep, SourceProbeKey, delivery_advertised_identity_probe_plan,
+    delivery_module_probe_plan,
 };
 
 use super::base::{
@@ -52,7 +52,6 @@ pub async fn delivery_report(
         info_id,
         runtime_diagnostics_enabled,
         false,
-        false,
     )
     .await
 }
@@ -63,14 +62,12 @@ pub(crate) async fn delivery_report_with_identity_binding(
     info_id: Option<&str>,
     runtime_diagnostics_enabled: bool,
     runtime_metrics_enabled: bool,
-    health_identity_required: bool,
 ) -> ModuleReport {
     let mut probes = Vec::new();
     for step in delivery_module_probe_plan(
         optional(info_id),
         runtime_diagnostics_enabled,
         runtime_metrics_enabled,
-        health_identity_required,
     ) {
         probes.push(delivery_probe(module_transport, adapter, &step).await);
     }
@@ -84,8 +81,6 @@ pub(crate) async fn delivery_report_with_identity_binding(
         .map(|available| {
             if runtime_diagnostics_enabled {
                 delivery_advertised_identity_probe_plan(available)
-            } else if health_identity_required {
-                delivery_advertised_health_identity_probe_plan(available)
             } else {
                 Vec::new()
             }
@@ -101,21 +96,20 @@ pub(crate) async fn delivery_report_with_identity_binding(
             probes.push(delivery_probe(module_transport, adapter, &step).await);
         }
     }
-    let module_info = if !runtime_diagnostics_enabled {
-        unavailable_metadata_probe(adapter, DELIVERY_MODULE)
-    } else {
-        match adapter {
-            ModuleTransportKind::Module => probes
-                .iter()
-                .find(|probe| {
-                    probe.probe_key.as_deref()
-                        == Some(crate::source_routing::SourceProbeKey::DeliveryVersion.as_str())
-                })
-                .cloned()
-                .unwrap_or_else(|| unavailable_metadata_probe(adapter, DELIVERY_MODULE)),
-            ModuleTransportKind::LogoscoreCli => {
-                module_info_probe(module_transport, adapter, DELIVERY_MODULE).await
-            }
+    let module_info = match adapter {
+        ModuleTransportKind::Module if !runtime_diagnostics_enabled => {
+            unavailable_metadata_probe(adapter, DELIVERY_MODULE)
+        }
+        ModuleTransportKind::Module => probes
+            .iter()
+            .find(|probe| {
+                probe.probe_key.as_deref()
+                    == Some(crate::source_routing::SourceProbeKey::DeliveryVersion.as_str())
+            })
+            .cloned()
+            .unwrap_or_else(|| unavailable_metadata_probe(adapter, DELIVERY_MODULE)),
+        ModuleTransportKind::LogoscoreCli => {
+            module_info_probe(module_transport, adapter, DELIVERY_MODULE).await
         }
     };
     ModuleReport::new(adapter, DELIVERY_MODULE, module_info, probes)
@@ -137,6 +131,7 @@ mod tests {
     };
 
     struct RecordingTransport {
+        adapter: ModuleTransportKind,
         calls: Arc<AtomicUsize>,
         module_info_calls: Arc<AtomicUsize>,
     }
@@ -147,12 +142,13 @@ mod tests {
 
     impl ModuleTransport for RecordingTransport {
         fn kind(&self) -> ModuleTransportKind {
-            ModuleTransportKind::Module
+            self.adapter
         }
 
         fn call(&self, _call: ModuleCall) -> ModuleCallFuture<'_> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            Box::pin(async { Ok(ModuleCallReply::new(ModuleTransportKind::Module, json!({}))) })
+            let adapter = self.adapter;
+            Box::pin(async move { Ok(ModuleCallReply::new(adapter, json!({}))) })
         }
 
         fn module_info(&self, _module: String) -> ModuleDiagnosticFuture<'_> {
@@ -190,6 +186,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let module_info_calls = Arc::new(AtomicUsize::new(0));
         let transport: SharedModuleTransport = Arc::new(RecordingTransport {
+            adapter: ModuleTransportKind::Module,
             calls: Arc::clone(&calls),
             module_info_calls: Arc::clone(&module_info_calls),
         });
@@ -216,6 +213,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let module_info_calls = Arc::new(AtomicUsize::new(0));
         let transport: SharedModuleTransport = Arc::new(RecordingTransport {
+            adapter: ModuleTransportKind::Module,
             calls: Arc::clone(&calls),
             module_info_calls: Arc::clone(&module_info_calls),
         });
@@ -225,7 +223,6 @@ mod tests {
             ModuleTransportKind::Module,
             Some("MyPeerId"),
             false,
-            true,
             true,
         )
         .await;
@@ -244,6 +241,40 @@ mod tests {
                 != Some(SourceProbeKey::DeliveryCollectOpenMetricsText.as_str())
         {
             bail!("metrics-only Delivery report returned unexpected probes");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_metrics_report_reads_module_metadata_for_capability_contract() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let module_info_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(RecordingTransport {
+            adapter: ModuleTransportKind::LogoscoreCli,
+            calls: Arc::clone(&calls),
+            module_info_calls: Arc::clone(&module_info_calls),
+        });
+
+        let report = delivery_report_with_identity_binding(
+            &transport,
+            ModuleTransportKind::LogoscoreCli,
+            None,
+            false,
+            true,
+        )
+        .await;
+
+        if calls.load(Ordering::Relaxed) != 1 {
+            bail!("CLI metrics report did not dispatch exactly one runtime call");
+        }
+        if module_info_calls.load(Ordering::Relaxed) != 1 {
+            bail!("CLI metrics report did not query module metadata");
+        }
+        if !report.module_info.ok {
+            bail!(
+                "CLI metrics report did not retain module metadata: {:?}",
+                report.module_info
+            );
         }
         Ok(())
     }
@@ -289,37 +320,5 @@ mod tests {
         assert_eq!(peer_id_probes, 1);
         assert_eq!(enr_probes, 1);
         assert_eq!(multiaddress_probes, 0);
-    }
-
-    #[tokio::test]
-    async fn reduced_health_report_probes_only_advertised_enr() {
-        let identity_calls = Arc::new(AtomicUsize::new(0));
-        let transport: SharedModuleTransport = Arc::new(AdvertisedIdentityTransport {
-            identity_calls: Arc::clone(&identity_calls),
-        });
-
-        let report = delivery_report_with_identity_binding(
-            &transport,
-            ModuleTransportKind::Module,
-            None,
-            false,
-            false,
-            true,
-        )
-        .await;
-        let keys = report
-            .probes
-            .iter()
-            .filter_map(|probe| probe.probe_key.as_deref())
-            .collect::<Vec<_>>();
-
-        assert_eq!(identity_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            keys,
-            [
-                SourceProbeKey::DeliveryAvailableNodeInfoIds.as_str(),
-                SourceProbeKey::DeliveryMyEnr.as_str(),
-            ]
-        );
     }
 }

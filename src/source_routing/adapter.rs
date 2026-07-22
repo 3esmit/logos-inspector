@@ -550,8 +550,19 @@ pub(crate) mod contract_tests {
         assert_eq!(unique.len(), keys.len(), "duplicate adapter input key");
 
         match adapter.connection_type {
-            AdapterConnectionType::Module | AdapterConnectionType::LogoscoreCli => {
-                assert!(keys.is_empty(), "module adapters take no user input");
+            AdapterConnectionType::Module => {
+                assert!(
+                    keys.is_empty(),
+                    "managed module adapters take no user input"
+                );
+                assert_eq!(adapter.target, "module");
+                assert!(adapter.module_id.is_some(), "module id is layer-owned");
+            }
+            AdapterConnectionType::LogoscoreCli => {
+                assert!(
+                    required.is_empty(),
+                    "LogosCore CLI connection inputs must not be required to select a source"
+                );
                 assert_eq!(adapter.target, "module");
                 assert!(adapter.module_id.is_some(), "module id is layer-owned");
             }

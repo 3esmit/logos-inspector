@@ -21,6 +21,7 @@ QtObject {
     property string nodeUrl: ""
     property string messagingRestUrl: ""
     property string messagingMetricsUrl: ""
+    property string messagingStorePeerAddress: ""
     property string messagingNetworkPreset: ""
     property bool messagingMutatingDiagnosticsEnabled: true
     property string storageRestUrl: ""
@@ -161,7 +162,8 @@ QtObject {
             connectorSourceMode("delivery", messagingSourceMode),
             {
                 rest_endpoint: configuredMessagingRestUrl(),
-                metrics_endpoint: messagingMetricsUrl
+                metrics_endpoint: messagingMetricsUrl,
+                store_peer_addr: messagingStorePeerAddress
             }
         )
     }

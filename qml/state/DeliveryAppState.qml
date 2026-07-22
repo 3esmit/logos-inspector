@@ -7,6 +7,7 @@ QtObject {
     id: root
 
     required property var gateway
+    property var gateFacade: null
 
     property bool busy: false
     property string sourceMode: "rest"
@@ -85,6 +86,71 @@ QtObject {
 
     function deliveryDataSource() {
         return sourceTargetKind !== "none"
+    }
+
+    function deliveryActionGate(action, requiredInputs) {
+        const options = {
+            required_inputs: Array.isArray(requiredInputs) ? requiredInputs : []
+        }
+        if (gateFacade && typeof gateFacade.deliveryGate === "function") {
+            return gateFacade.deliveryGate(action, options)
+        }
+        return {
+            enabled: false,
+            status: "disabled",
+            missing: [{ dependency: "delivery", label: qsTr("Delivery capability"), status: "unavailable", capability: "delivery", provenance: "capability_registry" }],
+            warnings: [],
+            provenance: ["capability_registry"]
+        }
+    }
+
+    function deliveryActionEnabled(action, requiredInputs) {
+        return deliveryActionGate(action, requiredInputs).enabled === true
+    }
+
+    function deliveryActionProblem(action, requiredInputs) {
+        const gate = deliveryActionGate(action, requiredInputs)
+        return gate.enabled ? "" : gateDetailText(gate)
+    }
+
+    function deliveryStoreProviderRequiredInputs(peerAddress) {
+        const adapter = adapterInitialization && typeof adapterInitialization === "object"
+            ? adapterInitialization : ({})
+        if (String(sourceMode || "") !== "logoscore_cli"
+                && String(adapter.source_mode || "") !== "logoscore_cli") {
+            return []
+        }
+        const inputs = adapter.inputs && typeof adapter.inputs === "object"
+            ? adapter.inputs : ({})
+        const configured = String(inputs.store_peer_addr || "").trim()
+        const requested = String(peerAddress || "").trim()
+        return [{
+            key: "store_provider",
+            label: qsTr("Store provider multiaddress"),
+            value: requested.length > 0 ? requested : configured
+        }]
+    }
+
+    function deliveryStoreProviderGate(peerAddress) {
+        return deliveryActionGate("store_query", deliveryStoreProviderRequiredInputs(peerAddress))
+    }
+
+    function deliveryStoreProviderProblem(peerAddress) {
+        const gate = deliveryStoreProviderGate(peerAddress)
+        return gate.enabled ? "" : gateDetailText(gate)
+    }
+
+    function deliveryCommandGate(command, args) {
+        const required = Array.isArray(command && command.requiredInputs)
+            ? command.requiredInputs.slice(0) : []
+        if (String(command && command.action || "") === "store_query") {
+            const values = Array.isArray(args) ? args : []
+            const providerInputs = deliveryStoreProviderRequiredInputs(values[0])
+            for (let index = 0; index < providerInputs.length; ++index) {
+                required.push(providerInputs[index])
+            }
+        }
+        return deliveryActionGate(String(command && command.action || ""), required)
     }
 
     function managedNodeLifecycleSource() {
@@ -352,10 +418,19 @@ QtObject {
 
     function runDelivery(method, args, label) {
         const command = SourceOperationCommandCatalog.deliveryCommand(method, args)
+        const gate = deliveryCommandGate(command, args)
+        if (!gate.enabled) {
+            return blockedDeliveryResponse(label, gate, true)
+        }
         return startDeliveryOperation(command.method, args, label)
     }
 
     function startDeliveryOperation(method, args, label) {
+        const command = SourceOperationCommandCatalog.deliveryCommand(method, args)
+        const gate = deliveryCommandGate(command, args)
+        if (!gate.enabled) {
+            return blockedDeliveryResponse(label, gate, true)
+        }
         const storeQuery = String(method || "") === "deliveryStoreQuery"
         lastOperationOwner = "delivery"
         lastOperation = qsTr("Starting")
@@ -384,6 +459,30 @@ QtObject {
             return started
         }
         return null
+    }
+
+    function blockedDeliveryResponse(label, gate, logResponse) {
+        const response = {
+            ok: false,
+            value: null,
+            text: "",
+            error: gateDetailText(gate)
+        }
+        lastOperation = qsTr("Blocked")
+        if (logResponse) {
+            deliveryOperations.appendResult(String(label || qsTr("Delivery operation")), response)
+            gateway.setResult(
+                String(label || qsTr("Delivery operation")),
+                response.error,
+                true,
+                null
+            )
+        }
+        return response
+    }
+
+    function gateDetailText(gate) {
+        return SourceOperationCommandCatalog.gateDetailText(gate, qsTr("Delivery capability"))
     }
 
     function pollDeliveryOperation(showResult) {

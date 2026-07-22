@@ -60,11 +60,13 @@ TestCase {
     QtObject {
         id: sourceRoutingStub
 
+        property var deliveryAdapter: ({
+            source_mode: "rest",
+            inputs: {}
+        })
+
         function deliveryOperationAdapter() {
-            return {
-                source_mode: "rest",
-                inputs: {}
-            }
+            return deliveryAdapter
         }
         function storageOperationAdapter() {
             return {
@@ -295,6 +297,11 @@ TestCase {
         syncStoreCalls = 0
         commentDecodeError = ""
         currentZoneScope = "zone-a"
+        sourceRoutingStub.deliveryAdapter = ({
+            source_mode: "rest",
+            inputs: {}
+        })
+        social.messagingSourceMode = "rest"
         social.invalidateSourceRequests()
         social.socialIdentities.clear()
         social.selectedSocialIdentityKey = ""
@@ -972,5 +979,37 @@ TestCase {
         gateEnabled = true
         verify(social.commentsView("/valid/topic").readGate.enabled)
         compare(social.commentTopic("cryptarchia", "block", "a"), "/cryptarchia/block/a/comments")
+    }
+
+    function test_cli_store_reads_require_configured_provider() {
+        gateEnabled = true
+        social.messagingSourceMode = "logoscore_cli"
+        sourceRoutingStub.deliveryAdapter = ({
+            source_mode: "logoscore_cli",
+            inputs: {}
+        })
+        wait(0)
+
+        const unavailable = social.commentsView("/valid/topic")
+        verify(!unavailable.readGate.enabled)
+        verify(unavailable.readError.indexOf("Store provider multiaddress") >= 0)
+        verify(!social.loadComments("/valid/topic", true, 20, ""))
+        verify(!social.refreshSharedIdlsForAccount(
+            autoShareEntity(), "aabb", "program-1"))
+        compare(startRequests.length, 0)
+
+        sourceRoutingStub.deliveryAdapter = ({
+            source_mode: "logoscore_cli",
+            inputs: {
+                store_peer_addr: "/dns4/provider.example/tcp/30303/p2p/peer"
+            }
+        })
+        wait(0)
+
+        verify(social.commentsView("/valid/topic").readGate.enabled)
+        verify(social.loadComments("/valid/topic", true, 20, ""))
+        compare(startRequests.length, 1)
+        compare(startRequests[0].adapter.inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
     }
 }

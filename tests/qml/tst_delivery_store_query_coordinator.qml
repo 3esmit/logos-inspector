@@ -55,6 +55,10 @@ TestCase {
 
     function init() {
         coordinator.invalidateSource()
+        coordinator.adapterInitialization = ({
+            source_mode: "rest",
+            inputs: { endpoint: "http://delivery" }
+        })
         coordinator.nextGeneration = 0
         coordinator.nextPollToken = 0
         coordinator.maxPendingQueries = 16
@@ -106,6 +110,24 @@ TestCase {
         compare(value.marker, "result")
         compare(coordinator.pendingCount, 0)
         compare(gateway.history.length, 1)
+    }
+
+    function test_cli_store_request_preserves_configured_provider_adapter() {
+        const provider = "/dns4/provider.example/tcp/30303/p2p/peer"
+        coordinator.adapterInitialization = ({
+            source_mode: "logoscore_cli",
+            inputs: { store_peer_addr: provider }
+        })
+
+        coordinator.start(scope("comments|cli", "/topic/cli"), "", 20, "Comments", function () {
+            return false
+        })
+
+        compare(gateway.startRequests.length, 1)
+        compare(gateway.startRequests[0].adapter.source_mode, "logoscore_cli")
+        compare(gateway.startRequests[0].adapter.inputs.store_peer_addr, provider)
+        compare(gateway.startRequests[0].payload.peer_addr, "")
+        compare(gateway.startRequests[0].payload.content_topics, "/topic/cli")
     }
 
     function test_dispatched_or_missing_result_is_not_query_success() {

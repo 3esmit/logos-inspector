@@ -131,9 +131,23 @@ const METRICS_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     label: "Metrics URL",
     required: true,
 }];
+const CLI_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
+    key: "store_peer_addr",
+    label: "Store provider multiaddress",
+    required: false,
+}];
 
 const MODULE_CAPABILITIES: &[&str] = &[
     "delivery.identity.read",
+    "delivery.subscribe",
+    "delivery.unsubscribe",
+    "delivery.send",
+    "delivery.node.start",
+    "delivery.node.stop",
+];
+const LOGOSCORE_CLI_CAPABILITIES: &[&str] = &[
+    "delivery.identity.read",
+    "delivery.store.query",
     "delivery.subscribe",
     "delivery.unsubscribe",
     "delivery.send",
@@ -193,8 +207,8 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             connection_type: AdapterConnectionType::LogoscoreCli,
             target: "module",
             module_id: Some(DELIVERY_MODULE),
-            inputs: &[],
-            capabilities: MODULE_CAPABILITIES,
+            inputs: CLI_INPUTS,
+            capabilities: LOGOSCORE_CLI_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
             capability_scopes: &["delivery"],
@@ -317,8 +331,6 @@ struct MessagingReportOptions {
     runtime_diagnostics_enabled: bool,
     #[serde(default)]
     runtime_metrics_enabled: bool,
-    #[serde(default)]
-    health_endpoint: Option<String>,
 }
 
 impl<'a> MessagingAdapter<'a> {
@@ -390,16 +402,9 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Messagi
     let envelope: MessagingReportEnvelope = serde_json::from_value(value.clone())
         .context("Messaging adapter initialization must be an object")?;
     let source_mode = initialization.source_mode().to_owned();
-    let rest_endpoint = if crate::source_routing::DeliverySourceMode::from_token(&source_mode)
-        == crate::source_routing::DeliverySourceMode::LogoscoreCli
-    {
-        envelope.options.health_endpoint
-    } else {
-        initialization.input("rest_endpoint").map(ToOwned::to_owned)
-    };
     Ok(MessagingReportInputs {
         source_mode,
-        rest_endpoint,
+        rest_endpoint: initialization.input("rest_endpoint").map(ToOwned::to_owned),
         metrics_endpoint: initialization
             .input("metrics_endpoint")
             .map(ToOwned::to_owned),
@@ -418,7 +423,6 @@ pub(crate) async fn module_report(
     content_topic: Option<&str>,
     runtime_diagnostics_enabled: bool,
     runtime_metrics_enabled: bool,
-    health_identity_required: bool,
 ) -> ModuleReport {
     crate::modules::delivery_report_with_identity_binding(
         module_transport,
@@ -426,7 +430,6 @@ pub(crate) async fn module_report(
         content_topic,
         runtime_diagnostics_enabled,
         runtime_metrics_enabled,
-        health_identity_required,
     )
     .await
 }
@@ -539,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn messaging_module_adapters_do_not_advertise_store_queries() {
+    fn messaging_cli_adapter_advertises_store_query_with_explicit_provider_input() -> Result<()> {
         let supports_store_query = |key: &str| {
             MESSAGING_SOURCE_MODES
                 .iter()
@@ -547,19 +550,44 @@ mod tests {
                 .is_some_and(|mode| mode.adapter.capabilities.contains(&"delivery.store.query"))
         };
 
-        assert!(!supports_store_query("module"));
-        assert!(!supports_store_query("logoscore_cli"));
-        assert!(supports_store_query("rest"));
+        if supports_store_query("module")
+            || !supports_store_query("logoscore_cli")
+            || !supports_store_query("rest")
+        {
+            bail!("Delivery Store capability declarations drifted");
+        }
+
+        let cli = MESSAGING_SOURCE_MODES
+            .iter()
+            .find(|mode| mode.key == "logoscore_cli")
+            .context("LogosCore CLI Delivery source policy is missing")?;
+        let expected = [AdapterInputPolicy {
+            key: "store_peer_addr",
+            label: "Store provider multiaddress",
+            required: false,
+        }];
+        if cli.adapter.inputs != expected {
+            bail!(
+                "LogosCore CLI Delivery inputs drifted: {:?}",
+                cli.adapter.inputs
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn messaging_cli_health_endpoint_is_report_only() -> Result<()> {
+    fn messaging_cli_adapter_has_no_rest_health_input() -> Result<()> {
         let cli = MESSAGING_SOURCE_MODES
             .iter()
             .find(|mode| mode.key == "logoscore_cli")
             .context("LogosCore CLI Delivery source policy is missing")?;
 
-        if !cli.adapter.inputs.is_empty() {
+        if cli
+            .adapter
+            .inputs
+            .iter()
+            .any(|input| input.key == "rest_endpoint")
+        {
             bail!("LogosCore CLI health endpoint leaked into module adapter inputs");
         }
         Ok(())
@@ -598,8 +626,7 @@ mod tests {
             "source_mode": "logoscore_cli",
             "inputs": {},
             "options": {
-                "runtime_diagnostics_enabled": true,
-                "health_endpoint": "http://delivery"
+                "runtime_diagnostics_enabled": true
             }
         }]))?;
 
@@ -610,7 +637,7 @@ mod tests {
             || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
             || report_inputs(&metrics)?.runtime_diagnostics_enabled
             || report_inputs(&metrics)?.runtime_metrics_enabled
-            || report_inputs(&cli)?.rest_endpoint.as_deref() != Some("http://delivery")
+            || report_inputs(&cli)?.rest_endpoint.is_some()
             || !report_inputs(&cli)?.runtime_diagnostics_enabled
             || report_inputs(&cli)?.runtime_metrics_enabled
         {

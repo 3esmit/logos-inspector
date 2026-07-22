@@ -515,15 +515,25 @@ ColumnLayout {
         id: storeTab
 
         Panel {
+            id: storePanel
+
             theme: root.theme
             title: qsTr("Store")
+            readonly property string storeProvider: {
+                const configured = String(root.model.messagingStorePeerAddress || "").trim()
+                const pageValue = String(storePeer.text || "").trim()
+                return pageValue.length > 0 ? pageValue : configured
+            }
+            readonly property var storeQueryGate: root.deliveryState.deliveryStoreProviderGate(storeProvider)
+            readonly property string storeQueryProblem: root.deliveryState.deliveryStoreProviderProblem(storeProvider)
 
             StatusMessage {
-                visible: !root.deliveryRestSource()
+                visible: storePanel.storeQueryGate.enabled !== true
                 theme: root.theme
                 tone: "warning"
-                title: qsTr("REST source required")
-                message: qsTr("Store queries use Direct Waku REST.")
+                title: qsTr("Store query unavailable")
+                message: storePanel.storeQueryProblem.length > 0 ? storePanel.storeQueryProblem
+                    : qsTr("Select a Store-query-capable Delivery connector and configure its Store provider.")
                 Layout.fillWidth: true
             }
 
@@ -586,7 +596,7 @@ ColumnLayout {
 
                     text: qsTr("Include payloads")
                     checked: false
-                    enabled: root.deliveryRestSource()
+                    enabled: storePanel.storeQueryGate.enabled === true
                     palette.text: root.theme.text
                     palette.windowText: enabled ? root.theme.text : root.theme.textDim
                     Layout.fillWidth: true
@@ -601,7 +611,8 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Query Store")
                     primary: true
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryRestSource()
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy()
+                        && storePanel.storeQueryGate.enabled === true
                     Layout.preferredWidth: 132
                     onClicked: root.runDelivery("deliveryStoreQuery", [
                         storePeer.text.trim(),
@@ -728,10 +739,6 @@ ColumnLayout {
 
     function deliveryModuleSource() {
         return root.deliveryState.deliveryModuleSource()
-    }
-
-    function deliveryRestSource() {
-        return root.deliveryState.deliveryRestSource()
     }
 
     function deliveryMessageSource() {

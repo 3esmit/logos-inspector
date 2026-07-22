@@ -13,8 +13,8 @@ use crate::{
             evidence::SourceEvidence,
             http,
             report::{
-                MetricsProbeSpec, SourceReportBuilder, SourceReportKind, keyed_probe_err,
-                keyed_probe_result, source_text_metrics_report, unsupported_source_report,
+                MetricsProbeSpec, SourceReportBuilder, SourceReportKind, keyed_probe_result,
+                source_text_metrics_report, unsupported_source_report,
             },
         },
     },
@@ -86,31 +86,17 @@ pub(crate) async fn delivery_source_report_with_runtime_metrics(
     module_transport: &SharedModuleTransport,
 ) -> SourceReport {
     match MessagingAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
-        MessagingAdapter::Module { transport } => {
-            let metrics_only = runtime_metrics_enabled && !runtime_diagnostics_enabled;
-            let health_endpoint = if transport
-                == crate::modules::logos_core::ModuleTransportKind::LogoscoreCli
-                && !metrics_only
-            {
-                optional(rest_endpoint)
-            } else {
-                None
-            };
-            module_source_report(
-                SourceReportKind::Delivery(DeliverySourceReportKind::Module),
-                layer::module_report(
-                    module_transport,
-                    transport,
-                    None,
-                    runtime_diagnostics_enabled,
-                    runtime_metrics_enabled,
-                    health_endpoint.is_some(),
-                )
-                .await,
-                health_endpoint,
+        MessagingAdapter::Module { transport } => module_source_report(
+            SourceReportKind::Delivery(DeliverySourceReportKind::Module),
+            layer::module_report(
+                module_transport,
+                transport,
+                None,
+                runtime_diagnostics_enabled,
+                runtime_metrics_enabled,
             )
-            .await
-        }
+            .await,
+        ),
         MessagingAdapter::Rest {
             endpoint,
             metrics_endpoint,
@@ -165,20 +151,7 @@ fn delivery_network_monitor_probe_plan() -> Vec<DeliveryProbeStep> {
     ]
 }
 
-async fn module_source_report(
-    kind: SourceReportKind,
-    report: ModuleReport,
-    health_endpoint: Option<&str>,
-) -> SourceReport {
-    let module_enr = report
-        .probes
-        .iter()
-        .find(|probe| {
-            probe.ok && probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryMyEnr.as_str())
-        })
-        .and_then(|probe| probe.value.as_ref())
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
+fn module_source_report(kind: SourceReportKind, report: ModuleReport) -> SourceReport {
     let adapter = match report.adapter {
         crate::modules::logos_core::ModuleTransportKind::Module => AdapterConnectionType::Module,
         crate::modules::logos_core::ModuleTransportKind::LogoscoreCli => {
@@ -187,96 +160,7 @@ async fn module_source_report(
     };
     let evidence =
         SourceEvidence::new(report.module, report.module_info, report.probes).with_adapter(adapter);
-    let mut builder = SourceReportBuilder::from_evidence(kind, evidence);
-    if let Some(endpoint) = health_endpoint {
-        append_module_health(&mut builder, endpoint, module_enr.as_deref()).await;
-    }
-    builder.finish()
-}
-
-async fn append_module_health(
-    report: &mut SourceReportBuilder,
-    endpoint: &str,
-    module_enr: Option<&str>,
-) {
-    let info_step = DeliveryProbeStep::new(
-        SourceProbeKey::DeliveryInfo,
-        "delivery_rest.info",
-        "/info",
-        DeliveryProbeNormalizer::Info,
-    );
-    let health_step = DeliveryProbeStep::new(
-        SourceProbeKey::DeliveryHealth,
-        "delivery_rest.health",
-        "/health",
-        DeliveryProbeNormalizer::Health,
-    );
-    let (info_probe, health_probe) = tokio::join!(
-        bounded_http_json_probe(endpoint, &info_step),
-        bounded_http_json_probe(endpoint, &health_step),
-    );
-    let rest_enr = info_probe
-        .value
-        .as_ref()
-        .and_then(|value| scalar_field(value, &["enrUri", "enr"]))
-        .and_then(|value| value.as_str().map(ToOwned::to_owned));
-    report.push_probe(info_probe);
-    let health_source = transport::probe_json_source(endpoint, &health_step.path);
-    if let Some(error) = delivery_health_identity_error(module_enr, rest_enr.as_deref()) {
-        report.push_probe(keyed_probe_err(
-            SourceProbeKey::DeliveryHealth,
-            health_step.label,
-            health_source,
-            error,
-        ));
-        return;
-    }
-    let health_value = health_probe.value.clone();
-    report.push_probe(health_probe);
-    if let Some(value) = health_value.as_ref() {
-        push_delivery_probe(
-            report,
-            SourceProbeKey::DeliveryNodeHealth,
-            "nodeHealth",
-            &health_source,
-            value,
-            &["nodeHealth"],
-        );
-        push_delivery_probe(
-            report,
-            SourceProbeKey::DeliveryConnectionStatus,
-            "connectionStatus",
-            &health_source,
-            value,
-            &["connectionStatus"],
-        );
-        push_delivery_probe(
-            report,
-            SourceProbeKey::DeliveryProtocolsHealth,
-            "protocolsHealth",
-            &health_source,
-            value,
-            &["protocolsHealth"],
-        );
-    }
-}
-
-fn delivery_health_identity_error(
-    module_enr: Option<&str>,
-    rest_enr: Option<&str>,
-) -> Option<&'static str> {
-    match (module_enr, rest_enr) {
-        (None, _) => {
-            Some("Delivery module ENR is unavailable; REST health identity cannot be verified")
-        }
-        (Some(_), None) => {
-            Some("Delivery REST ENR is unavailable; health identity cannot be verified")
-        }
-        (Some(expected), Some(observed)) if expected != observed => {
-            Some("Delivery REST health endpoint does not match the module identity")
-        }
-        (Some(_), Some(_)) => None,
-    }
+    SourceReportBuilder::from_evidence(kind, evidence).finish()
 }
 
 async fn bounded_http_json_probe(endpoint: &str, step: &DeliveryProbeStep) -> ProbeReport {
@@ -547,58 +431,26 @@ fn scalar_field(value: &Value, keys: &[&str]) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io::{ErrorKind, Read as _, Write as _},
-        net::TcpListener,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-        thread,
-        time::{Duration, Instant},
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
-    use anyhow::{Context as _, Result, anyhow, bail, ensure};
-    use serde_json::{Value, json};
+    use anyhow::{Result, ensure};
+    use serde_json::json;
 
     use super::*;
     use crate::modules::logos_core::{
-        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport, ModuleTransportKind,
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleDiagnosticFuture, ModuleTransport,
+        ModuleTransportKind,
     };
 
-    struct ReducedHealthTransport {
+    struct CliMetricsTransport {
         calls: Arc<AtomicUsize>,
+        module_info_calls: Arc<AtomicUsize>,
     }
 
-    struct MetricsOnlyTransport {
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ModuleTransport for ReducedHealthTransport {
-        fn kind(&self) -> ModuleTransportKind {
-            ModuleTransportKind::LogoscoreCli
-        }
-
-        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            let value = match call.method() {
-                "getAvailableNodeInfoIDs" => json!(["MyENR"]),
-                "getNodeInfo" => json!("enr:test"),
-                method => {
-                    let method = method.to_owned();
-                    return Box::pin(async move { bail!("unexpected call `{method}`") });
-                }
-            };
-            Box::pin(async move {
-                Ok(ModuleCallReply::new(
-                    ModuleTransportKind::LogoscoreCli,
-                    value,
-                ))
-            })
-        }
-    }
-
-    impl ModuleTransport for MetricsOnlyTransport {
+    impl ModuleTransport for CliMetricsTransport {
         fn kind(&self) -> ModuleTransportKind {
             ModuleTransportKind::LogoscoreCli
         }
@@ -609,7 +461,7 @@ mod tests {
             Box::pin(async move {
                 ensure!(
                     method == "collectOpenMetricsText",
-                    "unexpected metrics-only call `{method}`"
+                    "unexpected CLI Delivery call `{method}`"
                 );
                 Ok(ModuleCallReply::new(
                     ModuleTransportKind::LogoscoreCli,
@@ -617,64 +469,10 @@ mod tests {
                 ))
             })
         }
-    }
-
-    fn spawn_health_server(rest_enr: &str) -> Result<(String, thread::JoinHandle<Result<usize>>)> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(true)?;
-        let endpoint = format!("http://{}", listener.local_addr()?);
-        let info_body = json!({ "enrUri": rest_enr }).to_string();
-        let health_body = json!({
-            "nodeHealth": "READY",
-            "connectionStatus": "Connected",
-            "protocolsHealth": [
-                { "Relay": "READY" },
-                { "Store": "NOT_MOUNTED" },
-                {
-                    "Rendezvous": "NOT_READY",
-                    "desc": "No Rendezvous peers are available yet"
-                },
-                { "Store Client": "READY" }
-            ]
-        })
-        .to_string();
-        let server = thread::spawn(move || -> Result<usize> {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut served = 0;
-            while served < 2 && Instant::now() < deadline {
-                let (mut stream, _address) = match listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
-                        continue;
-                    }
-                    Err(error) => return Err(error.into()),
-                };
-                stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-                let mut request = [0_u8; 1024];
-                let length = stream.read(&mut request)?;
-                let request = String::from_utf8_lossy(
-                    request
-                        .get(..length)
-                        .context("Delivery status request exceeded read buffer")?,
-                );
-                let body = if request.starts_with("GET /info ") {
-                    info_body.as_str()
-                } else if request.starts_with("GET /health ") {
-                    health_body.as_str()
-                } else {
-                    bail!("unexpected Delivery status request")
-                };
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )?;
-                served += 1;
-            }
-            Ok(served)
-        });
-        Ok((endpoint, server))
+        fn module_info(&self, _module: String) -> ModuleDiagnosticFuture<'_> {
+            self.module_info_calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(json!({ "name": "delivery_module", "methods": [] })) })
+        }
     }
 
     #[test]
@@ -737,88 +535,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn module_health_requires_matching_rest_identity() {
-        assert_eq!(
-            delivery_health_identity_error(Some("enr:a"), Some("enr:a")),
-            None
-        );
-        assert!(delivery_health_identity_error(Some("enr:a"), Some("enr:b")).is_some());
-        assert!(delivery_health_identity_error(None, Some("enr:a")).is_some());
-        assert!(delivery_health_identity_error(Some("enr:a"), None).is_some());
-    }
-
     #[tokio::test]
-    async fn reduced_cli_report_binds_and_reports_live_health() -> Result<()> {
-        let (endpoint, server) = spawn_health_server("enr:test")?;
+    async fn cli_report_ignores_rest_endpoint_and_uses_cli_evidence() -> Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
-        let transport: SharedModuleTransport = Arc::new(ReducedHealthTransport {
+        let module_info_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(CliMetricsTransport {
             calls: Arc::clone(&calls),
-        });
-
-        let report =
-            delivery_source_report("logoscore_cli", Some(&endpoint), None, false, &transport).await;
-        let served = server
-            .join()
-            .map_err(|_| anyhow!("Delivery health server thread panicked"))??;
-        let node_health = report.probes.iter().find(|probe| {
-            probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryNodeHealth.as_str())
-        });
-        let connection = report.probes.iter().find(|probe| {
-            probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryConnectionStatus.as_str())
-        });
-        let protocols = report.probes.iter().find(|probe| {
-            probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryProtocolsHealth.as_str())
-        });
-
-        ensure!(
-            served == 2,
-            "Delivery health server received {served} requests"
-        );
-        ensure!(
-            calls.load(Ordering::Relaxed) == 2,
-            "reduced health binding dispatched unexpected module calls"
-        );
-        ensure!(report.health.ready, "reduced Delivery report was not ready");
-        ensure!(
-            node_health.and_then(|probe| probe.value.as_ref())
-                == Some(&Value::String("READY".into())),
-            "reduced Delivery report omitted node health"
-        );
-        ensure!(
-            connection.and_then(|probe| probe.value.as_ref())
-                == Some(&Value::String("Connected".into())),
-            "reduced Delivery report omitted connection status"
-        );
-        let expected_protocols = json!([
-            { "Relay": "READY" },
-            { "Store": "NOT_MOUNTED" },
-            {
-                "Rendezvous": "NOT_READY",
-                "desc": "No Rendezvous peers are available yet"
-            },
-            { "Store Client": "READY" }
-        ]);
-        ensure!(
-            protocols.and_then(|probe| probe.value.as_ref()) == Some(&expected_protocols),
-            "reduced Delivery report omitted protocol health"
-        );
-        ensure!(
-            report.probe_facts.iter().any(|fact| {
-                fact.key == SourceProbeKey::DeliveryProtocolsHealth.as_str()
-                    && fact.ok
-                    && fact.value.as_ref() == Some(&expected_protocols)
-            }),
-            "reduced Delivery facts omitted protocol health"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn metrics_only_cli_report_skips_health_endpoint() -> Result<()> {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let transport: SharedModuleTransport = Arc::new(MetricsOnlyTransport {
-            calls: Arc::clone(&calls),
+            module_info_calls: Arc::clone(&module_info_calls),
         });
 
         let report = delivery_source_report_with_runtime_metrics(
@@ -838,64 +561,23 @@ mod tests {
 
         ensure!(
             calls.load(Ordering::Relaxed) == 1,
-            "metrics-only Delivery source dispatched unexpected module calls"
+            "CLI Delivery source dispatched unexpected runtime calls"
         );
+        ensure!(
+            module_info_calls.load(Ordering::Relaxed) == 1,
+            "CLI Delivery source did not query module metadata"
+        );
+        ensure!(report.health.ready, "CLI Delivery report was not ready");
         ensure!(
             keys == [SourceProbeKey::DeliveryCollectOpenMetricsText.as_str()],
-            "metrics-only Delivery source returned unexpected probes: {keys:?}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cli_report_rejects_protocol_health_from_mismatched_identity() -> Result<()> {
-        let (endpoint, server) = spawn_health_server("enr:other")?;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let transport: SharedModuleTransport = Arc::new(ReducedHealthTransport {
-            calls: Arc::clone(&calls),
-        });
-
-        let report =
-            delivery_source_report("logoscore_cli", Some(&endpoint), None, false, &transport).await;
-        let served = server
-            .join()
-            .map_err(|_| anyhow!("Delivery health server thread panicked"))??;
-        let derived_keys = [
-            SourceProbeKey::DeliveryNodeHealth,
-            SourceProbeKey::DeliveryConnectionStatus,
-            SourceProbeKey::DeliveryProtocolsHealth,
-        ];
-
-        ensure!(
-            served == 2,
-            "Delivery health server received {served} requests"
+            "CLI Delivery source returned unexpected probes: {keys:?}"
         );
         ensure!(
-            calls.load(Ordering::Relaxed) == 2,
-            "mismatched health binding dispatched unexpected module calls"
-        );
-        ensure!(!report.health.ready, "mismatched health report was ready");
-        ensure!(
-            report.probes.iter().any(|probe| {
-                probe.probe_key.as_deref() == Some(SourceProbeKey::DeliveryHealth.as_str())
-                    && !probe.ok
-                    && probe.error.as_deref()
-                        == Some("Delivery REST health endpoint does not match the module identity")
+            report.probes.iter().all(|probe| {
+                probe.probe_key.as_deref() != Some(SourceProbeKey::DeliveryHealth.as_str())
+                    && probe.probe_key.as_deref() != Some(SourceProbeKey::DeliveryInfo.as_str())
             }),
-            "mismatched health report omitted identity failure"
-        );
-        ensure!(
-            derived_keys.iter().all(|key| {
-                report
-                    .probes
-                    .iter()
-                    .all(|probe| probe.probe_key.as_deref() != Some(key.as_str()))
-                    && report
-                        .probe_facts
-                        .iter()
-                        .all(|fact| fact.key != key.as_str())
-            }),
-            "mismatched health report exposed identity-bound fields"
+            "CLI Delivery source leaked REST health probes"
         );
         Ok(())
     }

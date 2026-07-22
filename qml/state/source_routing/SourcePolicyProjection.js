@@ -174,16 +174,16 @@ function coreSourceArgs(root, sourceMode, endpoint, extra) {
 }
 
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, runtimeDiagnosticsEnabled) {
-    const descriptor = sourceModeDescriptor(root, "delivery", sourceMode)
     const initialization = adapterInitialization(root, "delivery", sourceMode, {
         rest_endpoint: String(restEndpoint || ""),
         metrics_endpoint: String(metricsEndpoint || "")
     })
+    // Store provider selection belongs to an individual Store operation, not
+    // Delivery source inspection. Keeping it out of the report request also
+    // prevents a saved provider from invalidating healthy CLI source evidence.
+    delete initialization.inputs.store_peer_addr
     initialization.options = {
         runtime_diagnostics_enabled: runtimeDiagnosticsEnabled !== false
-    }
-    if (descriptor.key === "logoscore_cli") {
-        initialization.options.health_endpoint = String(restEndpoint || "")
     }
     return [initialization]
 }
