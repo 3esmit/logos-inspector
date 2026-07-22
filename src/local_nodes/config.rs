@@ -379,10 +379,11 @@ pub(super) fn snapshot(
     kind: NodeKind,
 ) -> Result<LocalNodeConfigSnapshot> {
     require_configuration_editor_node(kind)?;
-    let record = active_record(state, profile)?;
+    let record = state.active_topology(normalized_profile(profile));
     if attached_service_blocks_configuration(runtime, state, record) {
         return Ok(unadopted_service_snapshot(profile, kind));
     }
+    let record = record.context("active local node topology is required")?;
     let node = node_record(record, kind)?;
     let target = config_target(node)?;
     let bytes = read_config_bytes(&record.workspace, &target.path)?;
@@ -497,12 +498,16 @@ where
     W: FnMut(NodeKind, &str, &Path, &Value, &Value) -> Result<()>,
 {
     require_configuration_editor_node(request.kind)?;
+    let attached_service_blocks_configuration = {
+        let record = state.active_topology(normalized_profile(request.profile));
+        attached_service_blocks_configuration(request.runtime, state, record)
+    };
+    if attached_service_blocks_configuration {
+        bail!(UNADOPTED_LOCAL_SERVICE);
+    }
     let previous_state = state.clone();
     let (workspace, node, target, manifest_path) = {
         let record = active_record(state, request.profile)?;
-        if attached_service_blocks_configuration(request.runtime, state, record) {
-            bail!(UNADOPTED_LOCAL_SERVICE);
-        }
         let node = node_record(record, request.kind)?.clone();
         let target = config_target(&node)?;
         (
@@ -796,10 +801,10 @@ fn edit_blocked_reason(
 fn attached_service_blocks_configuration(
     runtime: Option<&LogoscoreRuntimeProfile>,
     state: &LocalNodesState,
-    record: &LocalDevnetRecord,
+    record: Option<&LocalDevnetRecord>,
 ) -> bool {
     runtime.is_some_and(LogoscoreRuntimeProfile::is_attached)
-        && !topology_workspace_is_managed(state, record)
+        && record.is_none_or(|record| !topology_workspace_is_managed(state, record))
 }
 
 fn topology_workspace_is_managed(state: &LocalNodesState, record: &LocalDevnetRecord) -> bool {
@@ -1714,6 +1719,40 @@ mod tests {
             persist_success,
         )
         .expect_err("an attached service must not write an unmanaged configuration");
+        assert_eq!(error.to_string(), UNADOPTED_LOCAL_SERVICE);
+        assert_eq!(fs::read(config_path)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn attached_service_without_topology_never_reads_or_writes_configuration() -> Result<()> {
+        let (directory, mut state) = state_for(NodeKind::Storage, json!({}))?;
+        let config_path = directory.path().join("devnet/configs/storage.json");
+        let before = fs::read(&config_path)?;
+        state.active_devnet = None;
+        state.devnets.clear();
+        let runtime = attached_runtime();
+
+        let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
+        assert!(!snapshot.editable);
+        assert!(snapshot.topology_id.is_empty());
+        assert!(snapshot.raw_text.is_empty());
+        assert!(snapshot.config_path.is_empty());
+        assert_eq!(snapshot.config_role, "Unadopted local service");
+        assert_eq!(
+            snapshot.blocked_reason.as_deref(),
+            Some(UNADOPTED_LOCAL_SERVICE)
+        );
+        let error = save(
+            &mut state,
+            Some(&runtime),
+            "local",
+            NodeKind::Storage,
+            "{}",
+            "revision",
+            persist_success,
+        )
+        .expect_err("an attached service without a topology must not write a configuration");
         assert_eq!(error.to_string(), UNADOPTED_LOCAL_SERVICE);
         assert_eq!(fs::read(config_path)?, before);
         Ok(())
