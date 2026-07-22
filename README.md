@@ -48,6 +48,14 @@ cargo run -- cli blockchain-node --node-url http://127.0.0.1:8080
 Commands print JSON. Run `cargo run -- cli --help` to see the supported
 inspection, decoding, wallet, backup, and source-diagnostic commands.
 
+## Documentation
+
+- [Operate Inspector on Testnet](docs/testnet-operations.md): source health,
+  local LogosCore services, Channel Indexers, Zones, and sequencer dashboards.
+- [Inspect and interact with Logos networks](docs/inspect-and-interact.md):
+  Bedrock and Zone inspection, automatic IDL decoding, program interaction,
+  wallets, Delivery, and backups.
+
 ## Build from source
 
 Use Nix to build the packaged standalone application:
