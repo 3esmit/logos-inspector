@@ -2994,9 +2994,9 @@ TestCase {
         compare(adapter.source_mode, "logoscore_cli")
         compare(adapter.inputs.store_peer_addr, provider)
         const reportArgs = model.sourceRouting.deliverySourceReportArgs()
-        compare(reportArgs[0].inputs.store_peer_addr, provider)
+        compare(reportArgs[0].inputs.store_peer_addr, undefined)
         const runtimeInputs = model.capabilityRegistryRuntimeInputs()
-        compare(runtimeInputs.messaging_store_peer_address, provider)
+        compare(runtimeInputs.messaging_store_peer_address, undefined)
         const saved = model.settingsStatePayload()
         compare(saved.messaging_store_peer_address, provider)
 
@@ -3014,6 +3014,23 @@ TestCase {
         compare(model.messagingStorePeerAddress, provider)
         compare(model.sourceRouting.deliveryOperationAdapter().inputs.store_peer_addr,
                 provider)
+    }
+
+    function test_cli_delivery_store_provider_keeps_verified_source_evidence() {
+        installSourceModePolicy(model)
+        model.setNetworkConnectorMode("delivery", "logoscore_cli")
+        model.metrics.messagingSourceReport = {
+            marker: "verified-cli-delivery",
+            health: { ready: true, reachable: true, status: "healthy" }
+        }
+        const generation = model.metrics.familyConfigurationGeneration("messaging")
+
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+
+        compare(model.metrics.familyConfigurationGeneration("messaging"), generation)
+        compare(model.metrics.messagingSourceReport.marker, "verified-cli-delivery")
+        compare(model.sourceRouting.deliveryOperationAdapter().inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
     }
 
     function test_interactive_runtime_probes_do_not_depend_on_cached_node_status() {

@@ -1096,7 +1096,7 @@ QtObject {
     onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
     onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
     onMessagingMetricsUrlChanged: handleMessagingConfigurationChanged()
-    onMessagingStorePeerAddressChanged: handleMessagingConfigurationChanged()
+    onMessagingStorePeerAddressChanged: saveSettingsState()
     onMessagingNetworkPresetChanged: handleMessagingConfigurationChanged()
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
@@ -1798,7 +1798,6 @@ QtObject {
             storage_metrics_url: sourceRouting.configuredStorageMetricsUrl(),
             messaging_rest_url: sourceRouting.configuredMessagingRestUrl(),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
-            messaging_store_peer_address: String(messagingStorePeerAddress || ""),
             storage_mutating_diagnostics_enabled: true,
             messaging_mutating_diagnostics_enabled: true,
             wallet_profile_configured: walletProfileConfigured(),

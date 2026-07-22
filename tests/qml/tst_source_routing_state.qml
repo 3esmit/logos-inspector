@@ -296,8 +296,8 @@ TestCase {
         compare(args[0].source_mode, "logoscore_cli")
         compare(args[0].inputs.rest_endpoint, undefined)
         compare(args[0].inputs.metrics_endpoint, undefined)
-        compare(args[0].inputs.store_peer_addr,
-                "/dns4/provider.example/tcp/30303/p2p/peer")
+        compare(args[0].inputs.store_peer_addr, undefined)
+        compare(Object.keys(args[0].inputs).length, 0)
         compare(args[0].options.runtime_diagnostics_enabled, true)
         compare(args[0].options.runtime_metrics_enabled, undefined)
 
@@ -311,8 +311,7 @@ TestCase {
         const clearedArgs = state.deliverySourceReportArgs()
         compare(clearedArgs[0].source_mode, "logoscore_cli")
         compare(clearedArgs[0].inputs.rest_endpoint, undefined)
-        compare(clearedArgs[0].inputs.store_peer_addr,
-                "/dns4/provider.example/tcp/30303/p2p/peer")
+        compare(clearedArgs[0].inputs.store_peer_addr, undefined)
         compare(clearedArgs[0].options.runtime_diagnostics_enabled, true)
     }
 
