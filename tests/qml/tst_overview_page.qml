@@ -92,6 +92,7 @@ TestCase {
             }]
         })
         model.metrics.setDashboardGraphEnabled("bedrock.peer_count", true)
+        model.metrics.setDashboardGraphEnabled("storage.peer_count", false)
         model.zoneInspection.networkScope = ZoneFixtureData.networkScope()
         model.zoneInspection.networkScopeKey = "genesis_id:"
             + ZoneFixtureData.networkScope().genesis_id
