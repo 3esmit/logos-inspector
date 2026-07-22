@@ -4804,7 +4804,8 @@ esac
         let control = CommandControl::new(
             CancellationToken::new(),
             StdInstant::now() + Duration::from_secs(5),
-        );
+        )
+        .with_isolated_test_budget();
 
         let Err(error) = runtime.discover_module_controlled_with(
             "storage_module",
