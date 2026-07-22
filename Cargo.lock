@@ -4794,9 +4794,7 @@ dependencies = [
  "cxx-qt-lib",
  "logos-inspector",
  "rust-rapidsnark",
- "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
