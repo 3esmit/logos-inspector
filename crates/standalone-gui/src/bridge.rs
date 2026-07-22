@@ -93,15 +93,6 @@ struct ActiveCall {
     lifecycle: Arc<CallLifecycle>,
 }
 
-impl ActiveCall {
-    fn delivery_allowed(&self) -> bool {
-        self.lifecycle
-            .state
-            .lock()
-            .is_ok_and(|state| !state.closing)
-    }
-}
-
 impl Drop for ActiveCall {
     fn drop(&mut self) {
         if let Ok(mut state) = self.lifecycle.state.lock() {
@@ -112,16 +103,18 @@ impl Drop for ActiveCall {
 }
 
 struct QueuedCallDelivery {
-    active_call: ActiveCall,
+    // Qt may discard or never run a queued callback after its event loop exits.
+    // Delivery therefore observes shutdown but must not retain backend work.
+    lifecycle: Arc<CallLifecycle>,
 }
 
 impl QueuedCallDelivery {
-    fn new(active_call: ActiveCall) -> Self {
-        Self { active_call }
+    fn new(lifecycle: Arc<CallLifecycle>) -> Self {
+        Self { lifecycle }
     }
 
     fn deliver(self, deliver: impl FnOnce()) {
-        if self.active_call.delivery_allowed() {
+        if self.lifecycle.is_closing().is_ok_and(|closing| !closing) {
             deliver();
         }
     }
@@ -230,7 +223,7 @@ impl qobject::LogosBridge {
             .name("logos-inspector-standalone-call".to_owned())
             .spawn(move || {
                 let response_json = call_module_response_json(&module, &method, &args_json);
-                let delivery = QueuedCallDelivery::new(active_call);
+                let delivery = QueuedCallDelivery::new(Arc::clone(&active_call.lifecycle));
                 let _queue_result = qt_thread.queue(move |mut qobject| {
                     delivery.deliver(|| {
                         let response = QString::from(response_json);
@@ -458,14 +451,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queued_delivery_retains_active_call_until_execution() -> Result<()> {
+    fn queued_delivery_does_not_retain_completed_active_call() -> Result<()> {
         let lifecycle = Arc::new(CallLifecycle::default());
         let active_call = begin_async_call_for(Arc::clone(&lifecycle))?;
         let delivered = Arc::new(AtomicUsize::new(0));
         let delivered_by_closure = Arc::clone(&delivered);
-        let delivery = QueuedCallDelivery::new(active_call);
+        let delivery = QueuedCallDelivery::new(Arc::clone(&lifecycle));
 
         anyhow::ensure!(lifecycle.active_calls()? == 1);
+        drop(active_call);
+        anyhow::ensure!(lifecycle.active_calls()? == 0);
         delivery.deliver(move || {
             delivered_by_closure.fetch_add(1, Ordering::SeqCst);
         });
@@ -476,17 +471,17 @@ mod tests {
     }
 
     #[test]
-    fn dropped_queued_delivery_acknowledges_without_emitting() -> Result<()> {
+    fn closing_does_not_wait_for_undelivered_ui_callback() -> Result<()> {
         let lifecycle = Arc::new(CallLifecycle::default());
         let active_call = begin_async_call_for(Arc::clone(&lifecycle))?;
-        let delivered = Arc::new(AtomicUsize::new(0));
-        let delivery = QueuedCallDelivery::new(active_call);
+        let delivery = QueuedCallDelivery::new(Arc::clone(&lifecycle));
 
         anyhow::ensure!(lifecycle.active_calls()? == 1);
-        drop(delivery);
-
+        drop(active_call);
         anyhow::ensure!(lifecycle.active_calls()? == 0);
-        anyhow::ensure!(delivered.load(Ordering::SeqCst) == 0);
+        lifecycle.begin_close()?;
+        lifecycle.wait_for_quiescence()?;
+        drop(delivery);
         Ok(())
     }
 
@@ -496,8 +491,9 @@ mod tests {
         let active_call = begin_async_call_for(Arc::clone(&lifecycle))?;
         let delivered = Arc::new(AtomicUsize::new(0));
         let delivered_by_closure = Arc::clone(&delivered);
-        let delivery = QueuedCallDelivery::new(active_call);
+        let delivery = QueuedCallDelivery::new(Arc::clone(&lifecycle));
 
+        drop(active_call);
         lifecycle.begin_close()?;
         delivery.deliver(move || {
             delivered_by_closure.fetch_add(1, Ordering::SeqCst);
