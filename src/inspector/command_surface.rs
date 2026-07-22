@@ -35,11 +35,13 @@ const SURFACE_CLOSED: u8 = 2;
 pub(crate) struct InspectorCommandSurfaceCloseHandle {
     lifecycle: Arc<SurfaceLifecycle>,
     operations: super::commands::operations::RuntimeOperationCloseHandle,
+    module_transport: SharedModuleTransport,
 }
 
 impl InspectorCommandSurfaceCloseHandle {
     pub(crate) fn begin_close(&self) -> Result<()> {
         self.lifecycle.begin_close();
+        self.module_transport.begin_close();
         self.operations.begin_close()
     }
 }
@@ -253,6 +255,7 @@ impl InspectorCommandSurface {
         InspectorCommandSurfaceCloseHandle {
             lifecycle: Arc::clone(&self.lifecycle),
             operations: self.operations.close_handle(),
+            module_transport: Arc::clone(&self.module_transport),
         }
     }
 
@@ -413,7 +416,10 @@ mod tests {
         collections::HashSet,
         env, fs,
         process::Command,
-        sync::{Arc, Barrier},
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicBool, Ordering},
+        },
         thread,
     };
 
@@ -433,6 +439,11 @@ mod tests {
     struct ReplyModuleTransport {
         reply: Value,
         gate: Option<Arc<Semaphore>>,
+    }
+
+    #[derive(Debug)]
+    struct ClosingModuleTransport {
+        close_requested: Arc<AtomicBool>,
     }
 
     const SURFACE_RECOVERY_CHILD_ENV: &str = "LOGOS_INSPECTOR_SURFACE_RECOVERY_TEST_CHILD";
@@ -487,6 +498,32 @@ mod tests {
         }
     }
 
+    impl ModuleTransport for ClosingModuleTransport {
+        fn kind(&self) -> crate::modules::logos_core::ModuleTransportKind {
+            crate::modules::logos_core::ModuleTransportKind::LogoscoreCli
+        }
+
+        fn begin_close(&self) {
+            self.close_requested.store(true, Ordering::Release);
+        }
+
+        fn call(
+            &self,
+            call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            Box::pin(async move {
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    crate::modules::logos_core::ModuleTransportKind::LogoscoreCli,
+                    json!({
+                        "module": call.module(),
+                        "method": call.method(),
+                        "args": call.args(),
+                    }),
+                ))
+            })
+        }
+    }
+
     fn l1_capability_status(
         surface: &InspectorCommandSurface,
         configuration_generation: u64,
@@ -514,6 +551,22 @@ mod tests {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .context("L1 capability status")
+    }
+
+    #[test]
+    fn closing_surface_signals_its_module_transport() -> Result<()> {
+        let close_requested = Arc::new(AtomicBool::new(false));
+        let surface = InspectorCommandSurface::with_module_transport(ClosingModuleTransport {
+            close_requested: Arc::clone(&close_requested),
+        })?;
+
+        surface.begin_close()?;
+        anyhow::ensure!(
+            close_requested.load(Ordering::Acquire),
+            "surface close did not signal the module transport"
+        );
+        surface.shutdown()?;
+        Ok(())
     }
 
     #[test]
