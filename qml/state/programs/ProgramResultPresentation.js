@@ -119,7 +119,7 @@ function responseProgramText(page) {
         return page.numberText(value.length)
     }
     if (isProgramFile(value)) {
-        return page.shortHash(value.program_id_hex)
+        return shortHash(value.program_id_hex)
     }
     return "-"
 }
