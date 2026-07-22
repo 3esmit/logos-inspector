@@ -1077,6 +1077,7 @@ pub(crate) fn unix_time_text() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
 mod tests {
     use std::cell::RefCell;
 

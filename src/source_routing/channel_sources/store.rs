@@ -1206,6 +1206,7 @@ fn saved_report(path: &Path, durability: DirectoryDurability) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use std::{
         collections::VecDeque,

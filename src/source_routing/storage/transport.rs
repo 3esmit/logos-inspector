@@ -1749,10 +1749,10 @@ fn reject_json_rpc_error(value: &Value, context: &str) -> Result<()> {
     let Some(object) = value.as_object() else {
         return Ok(());
     };
-    if object.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
-        if let Some(error) = object.get("error") {
-            bail!("{context} returned JSON-RPC error: {error}");
-        }
+    if object.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && let Some(error) = object.get("error")
+    {
+        bail!("{context} returned JSON-RPC error: {error}");
     }
     Ok(())
 }

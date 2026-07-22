@@ -1247,7 +1247,7 @@ fn config_context_from_configs(
     ) {
         bail!("the configured Indexer source is not the Channel-owned Indexer module");
     }
-    let binding = source_binding_from_configs(&configs, &request.network_scope, &channel_id)?;
+    let binding = source_binding_from_configs(configs, &request.network_scope, &channel_id)?;
     if binding.source_id != selected_sequencer_source_id {
         bail!("selected Sequencer source changed; refresh Zone Sources before configuring Indexer");
     }
@@ -1666,6 +1666,7 @@ fn is_control_interruption(error: &anyhow::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use anyhow::{Context as _, Result};
     use serde_json::json;
