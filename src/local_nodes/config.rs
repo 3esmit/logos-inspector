@@ -379,17 +379,17 @@ pub(super) fn snapshot(
     kind: NodeKind,
 ) -> Result<LocalNodeConfigSnapshot> {
     require_configuration_editor_node(kind)?;
-    if runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
+    let record = active_record(state, profile)?;
+    if attached_service_blocks_configuration(runtime, state, record) {
         return Ok(unadopted_service_snapshot(profile, kind));
     }
-    let record = active_record(state, profile)?;
     let node = node_record(record, kind)?;
     let target = config_target(node)?;
     let bytes = read_config_bytes(&record.workspace, &target.path)?;
     let raw_value = parse_json(&bytes)?;
     let editor_value = redact_for_editor(kind, &raw_value)?;
     validate_editor_value(record, node, &editor_value)?;
-    let blocked_reason = match edit_blocked_reason(node, runtime, kind, &target) {
+    let blocked_reason = match edit_blocked_reason(node, kind, &target) {
         Some(reason) => Some(reason),
         None => messaging_identity_blocked_reason(kind, &raw_value)?,
     };
@@ -453,9 +453,6 @@ pub(super) fn save<F>(
 where
     F: FnMut(&LocalNodesState) -> Result<()>,
 {
-    if runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
-        bail!(UNADOPTED_LOCAL_SERVICE);
-    }
     save_with_writer(
         state,
         ConfigSaveRequest {
@@ -503,6 +500,9 @@ where
     let previous_state = state.clone();
     let (workspace, node, target, manifest_path) = {
         let record = active_record(state, request.profile)?;
+        if attached_service_blocks_configuration(request.runtime, state, record) {
+            bail!(UNADOPTED_LOCAL_SERVICE);
+        }
         let node = node_record(record, request.kind)?.clone();
         let target = config_target(&node)?;
         (
@@ -512,7 +512,7 @@ where
             PathBuf::from(&record.manifest_path),
         )
     };
-    if let Some(reason) = edit_blocked_reason(&node, request.runtime, request.kind, &target) {
+    if let Some(reason) = edit_blocked_reason(&node, request.kind, &target) {
         bail!("{reason}");
     }
     validate_managed_output_path(&workspace, &manifest_path, "managed topology manifest")?;
@@ -755,13 +755,9 @@ fn config_target(node: &LocalNodeConfigRecord) -> Result<ConfigTarget> {
 
 fn edit_blocked_reason(
     node: &LocalNodeConfigRecord,
-    runtime: Option<&LogoscoreRuntimeProfile>,
     kind: NodeKind,
     target: &ConfigTarget,
 ) -> Option<String> {
-    if runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
-        return Some(UNADOPTED_LOCAL_SERVICE.to_owned());
-    }
     if node.lifecycle_state.is_pending()
         || matches!(
             node.lifecycle_state,
@@ -795,6 +791,31 @@ fn edit_blocked_reason(
         );
     }
     None
+}
+
+fn attached_service_blocks_configuration(
+    runtime: Option<&LogoscoreRuntimeProfile>,
+    state: &LocalNodesState,
+    record: &LocalDevnetRecord,
+) -> bool {
+    runtime.is_some_and(LogoscoreRuntimeProfile::is_attached)
+        && !topology_workspace_is_managed(state, record)
+}
+
+fn topology_workspace_is_managed(state: &LocalNodesState, record: &LocalDevnetRecord) -> bool {
+    let managed_root = Path::new(&state.managed_workspace_root);
+    let workspace = Path::new(&record.workspace);
+    if !path_is_inside(managed_root, workspace) {
+        return false;
+    }
+    let Ok(canonical_managed_root) = fs::canonicalize(managed_root) else {
+        return false;
+    };
+    let Ok(canonical_workspace) = fs::canonicalize(workspace) else {
+        return false;
+    };
+    canonical_workspace != canonical_managed_root
+        && canonical_workspace.starts_with(&canonical_managed_root)
 }
 
 fn redact_for_editor(kind: NodeKind, value: &Value) -> Result<Value> {
@@ -1270,6 +1291,20 @@ mod tests {
         Ok(())
     }
 
+    fn attached_runtime() -> LogoscoreRuntimeProfile {
+        LogoscoreRuntimeProfile {
+            id: "local-attached".to_owned(),
+            binary_path: "/bin/sh".to_owned(),
+            config_dir: "/tmp/logoscore".to_owned(),
+            modules_dir: None,
+            persistence_path: None,
+            ownership: LogoscoreRuntimeOwnership::LocalAttached,
+            timeout_profile: LogoscoreTimeoutProfile::Probe,
+            daemon_process_id: None,
+            service_target: None,
+        }
+    }
+
     #[test]
     fn messaging_snapshot_hides_peer_identity_and_preserves_it_on_save() -> Result<()> {
         let (directory, mut state) = state_for(
@@ -1608,36 +1643,79 @@ mod tests {
     }
 
     #[test]
-    fn attached_service_snapshot_never_reads_or_exposes_managed_config() -> Result<()> {
-        let (directory, mut state) = state_for(NodeKind::Storage, json!({}))?;
-        let _keep = directory;
-        state.active_devnet = None;
-        state.devnets.clear();
-        let runtime = LogoscoreRuntimeProfile {
-            id: "local-attached".to_owned(),
-            binary_path: "/bin/sh".to_owned(),
-            config_dir: "/tmp/logoscore".to_owned(),
-            modules_dir: None,
-            persistence_path: None,
-            ownership: LogoscoreRuntimeOwnership::LocalAttached,
-            timeout_profile: LogoscoreTimeoutProfile::Probe,
-            daemon_process_id: None,
-            service_target: None,
-        };
+    fn attached_service_allows_owned_stopped_storage_configuration() -> Result<()> {
+        let (directory, mut state) = state_for(
+            NodeKind::Storage,
+            json!({
+                "data-dir": directory_placeholder(),
+                "listen-ip": "0.0.0.0",
+                "listen-port": 8091,
+                "disc-port": 8090,
+                "nat": "any",
+                "network": "logos.test",
+                "log-level": "INFO"
+            }),
+        )?;
+        let workspace = directory.path().join("devnet");
+        let config_path = workspace.join("configs/storage.json");
+        let mut original: Value = serde_json::from_slice(&fs::read(&config_path)?)?;
+        original["data-dir"] = Value::String(workspace.join("data/storage").display().to_string());
+        fs::write(&config_path, serde_json::to_vec_pretty(&original)?)?;
+        let runtime = attached_runtime();
 
         let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
+        assert!(snapshot.editable);
+        let mut replacement: Value = serde_json::from_str(&snapshot.raw_text)?;
+        replacement["log-level"] = Value::String("DEBUG".to_owned());
+        save(
+            &mut state,
+            Some(&runtime),
+            "local",
+            NodeKind::Storage,
+            &serde_json::to_string(&replacement)?,
+            &snapshot.revision,
+            persist_success,
+        )?;
 
+        let stored: Value = serde_json::from_slice(&fs::read(config_path)?)?;
+        assert_eq!(stored["log-level"], "DEBUG");
+        Ok(())
+    }
+
+    #[test]
+    fn attached_service_never_reads_or_writes_unmanaged_configuration() -> Result<()> {
+        let (directory, mut state) = state_for(NodeKind::Storage, json!({}))?;
+        let config_path = directory.path().join("devnet/configs/storage.json");
+        let before = fs::read(&config_path)?;
+        state.managed_workspace_root = directory
+            .path()
+            .join("unmanaged-workspace")
+            .display()
+            .to_string();
+        let runtime = attached_runtime();
+
+        let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
         assert!(!snapshot.editable);
         assert!(snapshot.topology_id.is_empty());
         assert!(snapshot.raw_text.is_empty());
         assert!(snapshot.config_path.is_empty());
         assert_eq!(snapshot.config_role, "Unadopted local service");
-        assert!(
-            snapshot
-                .blocked_reason
-                .as_deref()
-                .is_some_and(|reason| reason == UNADOPTED_LOCAL_SERVICE)
+        assert_eq!(
+            snapshot.blocked_reason.as_deref(),
+            Some(UNADOPTED_LOCAL_SERVICE)
         );
+        let error = save(
+            &mut state,
+            Some(&runtime),
+            "local",
+            NodeKind::Storage,
+            "{}",
+            "revision",
+            persist_success,
+        )
+        .expect_err("an attached service must not write an unmanaged configuration");
+        assert_eq!(error.to_string(), UNADOPTED_LOCAL_SERVICE);
+        assert_eq!(fs::read(config_path)?, before);
         Ok(())
     }
 
