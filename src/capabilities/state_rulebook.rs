@@ -358,16 +358,6 @@ fn delivery_state(
     if connector.id != "logoscore_cli_delivery_module" {
         return state;
     }
-    if inputs.messaging_store_peer_address.is_empty() {
-        return merge_state_constraints(
-            state,
-            vec!["delivery.store.query".to_owned()],
-            vec![
-                "Configure a Store provider multiaddress before querying Delivery Store".to_owned(),
-            ],
-            vec!["Delivery Store provider multiaddress is required for LogosCore CLI".to_owned()],
-        );
-    }
     if !inputs
         .source_report_for("delivery")
         .is_some_and(delivery_cli_store_query_supported)

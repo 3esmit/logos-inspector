@@ -393,20 +393,7 @@ fn delivery_report_initialization(
         "logoscore_cli" => json!({}),
         _ => json!({}),
     };
-    let options = if source_mode == "logoscore_cli" {
-        rest_url
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                json!({
-                    "runtime_diagnostics_enabled": true,
-                    "health_endpoint": value,
-                })
-            })
-            .unwrap_or_else(|| json!({ "runtime_diagnostics_enabled": true }))
-    } else {
-        json!({ "runtime_diagnostics_enabled": true })
-    };
+    let options = json!({ "runtime_diagnostics_enabled": true });
     json!({
         "source_mode": source_mode,
         "inputs": inputs,
@@ -669,24 +656,23 @@ mod tests {
             invocation.args
         );
 
-        let with_health = CliCommand::Messaging {
+        let with_rest_url = CliCommand::Messaging {
             source_mode: "logoscore_cli".to_owned(),
             rest_url: Some("http://delivery.example".to_owned()),
             metrics_url: None,
         }
         .invocation()?;
         ensure!(
-            with_health.args
+            with_rest_url.args
                 == json!([{
                     "source_mode": "logoscore_cli",
                     "inputs": {},
                     "options": {
-                        "runtime_diagnostics_enabled": true,
-                        "health_endpoint": "http://delivery.example"
+                        "runtime_diagnostics_enabled": true
                     }
                 }]),
-            "unexpected health args: {}",
-            with_health.args
+            "LogosCore CLI should not route a REST URL into Delivery health checks: {}",
+            with_rest_url.args
         );
         Ok(())
     }

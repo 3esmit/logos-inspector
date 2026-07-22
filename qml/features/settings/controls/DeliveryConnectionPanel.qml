@@ -29,10 +29,8 @@ SourceSettingsPanel {
 
         FieldRow {
             visible: root.deliverySource().usesRestEndpoint
-                || root.deliverySource().usesHealthEndpoint
             theme: root.theme
-            label: root.deliverySource().usesHealthEndpoint
-                ? qsTr("Waku REST health URL") : qsTr("Waku REST URL")
+            label: qsTr("Waku REST URL")
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8645")

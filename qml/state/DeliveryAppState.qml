@@ -113,6 +113,46 @@ QtObject {
         return gate.enabled ? "" : gateDetailText(gate)
     }
 
+    function deliveryStoreProviderRequiredInputs(peerAddress) {
+        const adapter = adapterInitialization && typeof adapterInitialization === "object"
+            ? adapterInitialization : ({})
+        if (String(sourceMode || "") !== "logoscore_cli"
+                && String(adapter.source_mode || "") !== "logoscore_cli") {
+            return []
+        }
+        const inputs = adapter.inputs && typeof adapter.inputs === "object"
+            ? adapter.inputs : ({})
+        const configured = String(inputs.store_peer_addr || "").trim()
+        const requested = String(peerAddress || "").trim()
+        return [{
+            key: "store_provider",
+            label: qsTr("Store provider multiaddress"),
+            value: requested.length > 0 ? requested : configured
+        }]
+    }
+
+    function deliveryStoreProviderGate(peerAddress) {
+        return deliveryActionGate("store_query", deliveryStoreProviderRequiredInputs(peerAddress))
+    }
+
+    function deliveryStoreProviderProblem(peerAddress) {
+        const gate = deliveryStoreProviderGate(peerAddress)
+        return gate.enabled ? "" : gateDetailText(gate)
+    }
+
+    function deliveryCommandGate(command, args) {
+        const required = Array.isArray(command && command.requiredInputs)
+            ? command.requiredInputs.slice(0) : []
+        if (String(command && command.action || "") === "store_query") {
+            const values = Array.isArray(args) ? args : []
+            const providerInputs = deliveryStoreProviderRequiredInputs(values[0])
+            for (let index = 0; index < providerInputs.length; ++index) {
+                required.push(providerInputs[index])
+            }
+        }
+        return deliveryActionGate(String(command && command.action || ""), required)
+    }
+
     function managedNodeLifecycleSource() {
         return sourceMode === "logoscore_cli"
     }
@@ -378,7 +418,7 @@ QtObject {
 
     function runDelivery(method, args, label) {
         const command = SourceOperationCommandCatalog.deliveryCommand(method, args)
-        const gate = deliveryActionGate(command.action, command.requiredInputs)
+        const gate = deliveryCommandGate(command, args)
         if (!gate.enabled) {
             return blockedDeliveryResponse(label, gate, true)
         }
@@ -387,7 +427,7 @@ QtObject {
 
     function startDeliveryOperation(method, args, label) {
         const command = SourceOperationCommandCatalog.deliveryCommand(method, args)
-        const gate = deliveryActionGate(command.action, command.requiredInputs)
+        const gate = deliveryCommandGate(command, args)
         if (!gate.enabled) {
             return blockedDeliveryResponse(label, gate, true)
         }

@@ -30,11 +30,6 @@ function deliverySourceView(root) {
     const mode = root.connectorSourceMode("delivery", root.messagingSourceMode)
     const options = SourcePolicyProjection.sourceModeOptions(root, "delivery")
     const configuredRestEndpoint = root.configuredMessagingRestUrl()
-    const descriptor = SourcePolicyProjection.sourceModeDescriptor(
-        root, "delivery", mode)
-    const reportRestEndpoint = descriptor.key === "logoscore_cli"
-        ? String(root.messagingRestUrl || "").trim()
-        : configuredRestEndpoint
     return sourceView(root, "delivery", mode, options, {
         label: root.deliverySourceLabel(),
         target: root.deliverySourceTarget(),
@@ -43,12 +38,11 @@ function deliverySourceView(root) {
         moduleName: root.deliveryModule,
         networkPreset: root.messagingNetworkPreset,
         mutatingDiagnosticsEnabled: true,
-        usesHealthEndpoint: descriptor.key === "logoscore_cli",
         reportArgs: function () {
             return SourcePolicyProjection.deliverySourceReportArgs(
                 root,
                 mode,
-                reportRestEndpoint,
+                configuredRestEndpoint,
                 root.messagingMetricsUrl,
                 root.runtimeDiagnosticsEnabled("delivery", mode)
             )
@@ -188,7 +182,6 @@ function sourceView(root, family, mode, options, details) {
             return SourcePolicyProjection.sourceModeAt(index, candidateOptions || options)
         },
         usesRestEndpoint: descriptor.usesRestEndpoint,
-        usesHealthEndpoint: details.usesHealthEndpoint === true,
         usesMetricsEndpoint: descriptor.usesMetricsEndpoint,
         supportsCidProbe: adapter.supports_cid_probe === true,
         supportsMutatingDiagnostics: adapter.supports_mutating_diagnostics === true,

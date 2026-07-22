@@ -403,9 +403,9 @@ mod tests {
             bail!("module report bypassed injected CLI status capability");
         }
         let metadata_calls = module_info_calls.load(Ordering::Relaxed);
-        if metadata_calls != 2 {
+        if metadata_calls != 3 {
             bail!(
-                "module report made {metadata_calls} injected CLI metadata calls; expected Blockchain and Capability only"
+                "module report made {metadata_calls} injected CLI metadata calls; expected Blockchain, Delivery, and Capability"
             );
         }
         if report
@@ -417,7 +417,7 @@ mod tests {
         {
             bail!("module report did not preserve injected CLI status: {report:?}");
         }
-        for module in [&report.blockchain, &report.capabilities] {
+        for module in [&report.blockchain, &report.delivery, &report.capabilities] {
             if module
                 .module_info
                 .value
@@ -428,17 +428,17 @@ mod tests {
                 bail!("module report did not preserve injected CLI metadata: {module:?}");
             }
         }
-        for module in [&report.storage, &report.delivery] {
-            let value = module.module_info.value.as_ref().ok_or_else(|| {
+        let module = &report.storage;
+        let value =
+            module.module_info.value.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("deferred module metadata is missing: {module:?}")
             })?;
-            if value.get("supported") != Some(&json!(false))
-                || value.get("adapter") != Some(&json!("logoscore_cli"))
-                || value.get("runner").is_some()
-                || !module.probes.is_empty()
-            {
-                bail!("deferred module report invoked runtime diagnostics: {module:?}");
-            }
+        if value.get("supported") != Some(&json!(false))
+            || value.get("adapter") != Some(&json!("logoscore_cli"))
+            || value.get("runner").is_some()
+            || !module.probes.is_empty()
+        {
+            bail!("deferred module report invoked runtime diagnostics: {module:?}");
         }
         Ok(())
     }

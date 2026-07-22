@@ -548,7 +548,8 @@ function socialGateWithTopic(root, gate, topic) {
 }
 
 function socialStoreGate(root) {
-    return normalizedSocialGate(root.gateway.socialGate("comments.read"))
+    return socialStoreProviderGate(root,
+        normalizedSocialGate(root.gateway.socialGate("comments.read")))
 }
 
 function socialCommentReadGate(root, topic) {
@@ -560,7 +561,25 @@ function socialCommentWriteGate(root, topic) {
 }
 
 function socialSharedIdlReadGate(root) {
-    return normalizedSocialGate(root.gateway.socialGate("shared_idl.read"))
+    return socialStoreProviderGate(root,
+        normalizedSocialGate(root.gateway.socialGate("shared_idl.read")))
+}
+
+function socialStoreProviderGate(root, gate) {
+    const state = normalizedSocialGate(gate)
+    const adapter = root && root.deliveryAdapterInitialization
+        && typeof root.deliveryAdapterInitialization === "object"
+        ? root.deliveryAdapterInitialization : ({})
+    if (String(adapter.source_mode || "") !== "logoscore_cli") {
+        return state
+    }
+    const inputs = adapter.inputs && typeof adapter.inputs === "object"
+        ? adapter.inputs : ({})
+    if (String(inputs.store_peer_addr || "").trim().length > 0) {
+        return state
+    }
+    return socialGateWithInputMissing(state, "delivery.store_provider",
+        qsTr("Store provider multiaddress"))
 }
 
 function socialSharedIdlWriteGate(root, topic) {

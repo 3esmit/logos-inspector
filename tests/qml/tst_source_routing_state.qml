@@ -266,7 +266,7 @@ TestCase {
         compare(args[0].options.privileged_debug_enabled, true)
     }
 
-    function test_logoscore_cli_delivery_report_includes_health_endpoint() {
+    function test_logoscore_cli_delivery_report_stays_cli_only() {
         state.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
         state.connectorConfig = ({
             scopes: {
@@ -288,7 +288,6 @@ TestCase {
         compare(sourceMode, "logoscore_cli")
         compare(source.usesRestEndpoint, false)
         compare(source.inputs.length, 1)
-        compare(state.deliverySourceView().usesHealthEndpoint, true)
         verify(state.deliverySourceView().capabilities.indexOf(
             "delivery.store.query") >= 0)
         verify(state.deliverySourceView().capabilities.indexOf(
@@ -299,7 +298,8 @@ TestCase {
         compare(args[0].inputs.metrics_endpoint, undefined)
         compare(args[0].inputs.store_peer_addr,
                 "/dns4/provider.example/tcp/30303/p2p/peer")
-        compare(args[0].options.health_endpoint, "http://delivery")
+        compare(args[0].options.runtime_diagnostics_enabled, true)
+        compare(args[0].options.runtime_metrics_enabled, undefined)
 
         const actionArgs = state.deliverySourceView().actionArgs(["topic", "payload"])
         compare(actionArgs.length, 3)
@@ -313,7 +313,7 @@ TestCase {
         compare(clearedArgs[0].inputs.rest_endpoint, undefined)
         compare(clearedArgs[0].inputs.store_peer_addr,
                 "/dns4/provider.example/tcp/30303/p2p/peer")
-        compare(clearedArgs[0].options.health_endpoint, "")
+        compare(clearedArgs[0].options.runtime_diagnostics_enabled, true)
     }
 
 }

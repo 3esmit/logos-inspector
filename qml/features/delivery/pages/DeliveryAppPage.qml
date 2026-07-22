@@ -15,8 +15,6 @@ ColumnLayout {
     required property Theme theme
     required property AppModel model
     readonly property var deliveryState: root.model.deliveryApp
-    readonly property var storeQueryGate: root.deliveryState.deliveryActionGate("store_query", [])
-    readonly property string storeQueryProblem: root.deliveryState.deliveryActionProblem("store_query", [])
     readonly property var socialIdentityView: root.model.social.identitiesView()
     property bool deliveryConfirmationAccepted: false
 
@@ -517,15 +515,24 @@ ColumnLayout {
         id: storeTab
 
         Panel {
+            id: storePanel
+
             theme: root.theme
             title: qsTr("Store")
+            readonly property string storeProvider: {
+                const configured = String(root.model.messagingStorePeerAddress || "").trim()
+                const pageValue = String(storePeer.text || "").trim()
+                return pageValue.length > 0 ? pageValue : configured
+            }
+            readonly property var storeQueryGate: root.deliveryState.deliveryStoreProviderGate(storeProvider)
+            readonly property string storeQueryProblem: root.deliveryState.deliveryStoreProviderProblem(storeProvider)
 
             StatusMessage {
-                visible: root.storeQueryGate.enabled !== true
+                visible: storePanel.storeQueryGate.enabled !== true
                 theme: root.theme
                 tone: "warning"
                 title: qsTr("Store query unavailable")
-                message: root.storeQueryProblem.length > 0 ? root.storeQueryProblem
+                message: storePanel.storeQueryProblem.length > 0 ? storePanel.storeQueryProblem
                     : qsTr("Select a Store-query-capable Delivery connector and configure its Store provider.")
                 Layout.fillWidth: true
             }
@@ -589,7 +596,7 @@ ColumnLayout {
 
                     text: qsTr("Include payloads")
                     checked: false
-                    enabled: root.storeQueryGate.enabled === true
+                    enabled: storePanel.storeQueryGate.enabled === true
                     palette.text: root.theme.text
                     palette.windowText: enabled ? root.theme.text : root.theme.textDim
                     Layout.fillWidth: true
@@ -605,7 +612,7 @@ ColumnLayout {
                     text: qsTr("Query Store")
                     primary: true
                     enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy()
-                        && root.storeQueryGate.enabled === true
+                        && storePanel.storeQueryGate.enabled === true
                     Layout.preferredWidth: 132
                     onClicked: root.runDelivery("deliveryStoreQuery", [
                         storePeer.text.trim(),

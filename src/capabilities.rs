@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn delivery_store_queries_require_a_verified_cli_contract() -> Result<()> {
-        let source_report = |module_info: Option<Value>| {
+        let source_report = |module_info: Option<Value>| -> Result<Value> {
             let mut report = json!({
                 "health": {
                     "ready": true,
@@ -559,12 +559,18 @@ mod tests {
                 }
             });
             if let Some(module_info) = module_info {
-                report["module_info"] = json!({
-                    "ok": true,
-                    "value": module_info
-                });
+                let object = report
+                    .as_object_mut()
+                    .context("Delivery source report fixture must be an object")?;
+                object.insert(
+                    "module_info".to_owned(),
+                    json!({
+                        "ok": true,
+                        "value": module_info
+                    }),
+                );
             }
-            report
+            Ok(report)
         };
         let delivery_capability = |build_mode,
                                    connector_id: &str,
@@ -583,7 +589,7 @@ mod tests {
                 "messaging_rest_url": endpoint.unwrap_or_default(),
                 "messaging_store_peer_address": store_peer.unwrap_or_default(),
                 "source_reports": {
-                    "delivery": source_report(module_info)
+                    "delivery": source_report(module_info)?
                 }
             });
             let value =
@@ -628,8 +634,10 @@ mod tests {
             None,
             Some(cli_module_info()),
         )?;
-        if !unavailable_contains(&cli_without_provider, "delivery.store.query") {
-            bail!("CLI Delivery overclaimed Store without a provider: {cli_without_provider}");
+        if unavailable_contains(&cli_without_provider, "delivery.store.query") {
+            bail!(
+                "verified CLI Delivery should expose Store before query-specific provider input: {cli_without_provider}"
+            );
         }
         if unavailable_contains(&cli_without_provider, "delivery.send") {
             bail!("CLI Delivery should retain send without Store provider: {cli_without_provider}");
@@ -698,7 +706,7 @@ mod tests {
         let default_inputs = json!({
             "messaging_rest_url": "http://127.0.0.1:8645",
             "source_reports": {
-                "delivery": source_report(None)
+                "delivery": source_report(None)?
             }
         });
         let default_value = serde_json::to_value(test_registry_report_with_value(

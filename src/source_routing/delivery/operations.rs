@@ -947,7 +947,7 @@ mod tests {
                 && call.module() == "delivery_module"
                 && call.method() == "storeQuery"
                 && call.args()
-                    == &[
+                    == [
                         json!(query.to_string()),
                         json!(provider),
                         json!(DELIVERY_STORE_TIMEOUT_MS),

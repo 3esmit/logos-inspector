@@ -14,7 +14,6 @@ pub(super) struct CapabilityRuntimeInputs {
     storage_metrics_url: String,
     messaging_rest_url: String,
     messaging_metrics_url: String,
-    pub(super) messaging_store_peer_address: String,
     l1_configuration_generation: Option<u64>,
     storage_configuration_generation: Option<u64>,
     delivery_configuration_generation: Option<u64>,
@@ -57,7 +56,6 @@ impl CapabilityRuntimeInputs {
             storage_metrics_url: string_input(value, "storage_metrics_url"),
             messaging_rest_url: string_input(value, "messaging_rest_url"),
             messaging_metrics_url: string_input(value, "messaging_metrics_url"),
-            messaging_store_peer_address: string_input(value, "messaging_store_peer_address"),
             l1_configuration_generation: configuration_generation(value, &["l1", "blockchain"]),
             storage_configuration_generation: configuration_generation(value, &["storage"]),
             delivery_configuration_generation: configuration_generation(

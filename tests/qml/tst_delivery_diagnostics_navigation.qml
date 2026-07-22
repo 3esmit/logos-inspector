@@ -259,6 +259,36 @@ TestCase {
         })
     }
 
+    function test_cli_store_page_accepts_one_off_provider() {
+        model.capabilityRegistryLoaded = true
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                key: "delivery",
+                label: "Delivery",
+                status: "available",
+                sub_capabilities: ["delivery.store.query"]
+            }]
+        })
+        model.messagingStorePeerAddress = ""
+        model.deliveryAppTab = "store"
+        model.shell.currentView = "messaging"
+
+        let query = null
+        let peer = null
+        tryVerify(function () {
+            query = findAccessibleByName(pageLoader.item, "Query Store")
+            peer = findAccessibleByName(pageLoader.item, "Peer address")
+            return query !== null && peer !== null
+        })
+        verify(!query.enabled)
+
+        peer.text = "/dns4/provider.example/tcp/30303/p2p/peer"
+        tryVerify(function () {
+            return query.enabled
+        })
+    }
+
     function test_topics_report_only_observed_source_facts() {
         model.metrics.messagingMetricsReport = ({
             probes: [{
