@@ -29,6 +29,9 @@ use crate::support::command_runner::{
     acquire_streaming_command_permit, output_text, run_command, run_command_controlled,
 };
 use crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES;
+use crate::support::storage_download_contract::{
+    STORAGE_DOWNLOAD_V2_METHOD, STORAGE_DOWNLOAD_V2_METHOD_SIGNATURES,
+};
 use crate::support::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
 
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -92,6 +95,39 @@ impl LogoscoreModuleDiscovery {
             );
         }
         Ok(())
+    }
+
+    pub(crate) fn require_method_with_signatures(
+        &self,
+        method: &str,
+        signatures: &[&str],
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !signatures.is_empty(),
+            "logoscore module method contract requires at least one signature"
+        );
+        let Some(found) = self
+            .methods
+            .iter()
+            .find(|candidate| candidate.name == method)
+        else {
+            bail!(
+                "logoscore module `{}` does not expose invokable method `{method}`",
+                self.module
+            );
+        };
+        if signatures
+            .iter()
+            .any(|signature| *signature == found.signature)
+        {
+            return Ok(());
+        }
+        bail!(
+            "logoscore module `{}` method `{method}` signature mismatch: expected one of `{}`, found `{}`",
+            self.module,
+            signatures.join("`, `"),
+            found.signature
+        )
     }
 
     pub(crate) fn require_event(&self, event: &str, signature: &str) -> Result<()> {
@@ -1410,6 +1446,23 @@ impl LogoscoreCliRuntime {
         Ok(())
     }
 
+    pub(crate) fn require_module_contract_with_method_signatures_controlled(
+        &self,
+        module: &str,
+        methods: &[(&str, &[&str])],
+        events: &[(&str, &str)],
+        control: CommandControl,
+    ) -> Result<()> {
+        let discovery = self.discover_module_controlled(module, control)?;
+        for (method, signatures) in methods {
+            discovery.require_method_with_signatures(method, signatures)?;
+        }
+        for (event, signature) in events {
+            discovery.require_event(event, signature)?;
+        }
+        Ok(())
+    }
+
     fn discover_module_controlled(
         &self,
         module: &str,
@@ -1938,15 +1991,18 @@ impl LogoscoreCliRuntime {
             .checked_add(command_timeout())
             .context("storage backup readiness deadline overflow")?;
         let control = CommandControl::new(CancellationToken::new(), deadline);
-        self.require_module_contract_controlled(
+        self.require_module_contract_with_method_signatures_controlled(
             "storage_module",
             &[
-                ("downloadProtocol", "downloadProtocol()"),
+                ("downloadProtocol", &["downloadProtocol()"] as &[&str]),
                 (
-                    "downloadToUrlV2",
-                    "downloadToUrlV2(QString,QString,bool,int,QString,int)",
+                    STORAGE_DOWNLOAD_V2_METHOD,
+                    &STORAGE_DOWNLOAD_V2_METHOD_SIGNATURES,
                 ),
-                ("downloadCancelV2", "downloadCancelV2(QString)"),
+                (
+                    "downloadCancelV2",
+                    &["downloadCancelV2(QString)"] as &[&str],
+                ),
             ],
             &[("storageDownloadDoneV2", "storageDownloadDoneV2(QString)")],
             control.clone(),
@@ -5628,6 +5684,25 @@ esac
         let discovery = module_discovery("storage_module", &modules, &info)?;
 
         discovery.require_method("init", "init(QString)")
+    }
+
+    #[test]
+    fn module_discovery_accepts_the_universal_storage_v2_signature() -> Result<()> {
+        let modules = json!([{"name": "storage_module", "status": "loaded"}]);
+        let info = json!({
+            "name": "storage_module",
+            "methods": [{
+                "isInvokable": true,
+                "name": "downloadToUrlV2",
+                "signature": crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_UNIVERSAL_METHOD_SIGNATURE,
+            }]
+        });
+        let discovery = module_discovery("storage_module", &modules, &info)?;
+
+        discovery.require_method_with_signatures(
+            "downloadToUrlV2",
+            &crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_METHOD_SIGNATURES,
+        )
     }
 
     #[test]

@@ -8,7 +8,12 @@ use crate::{
         normalize_module_call_value,
     },
     source_routing::{SourceProbeKey, storage_module_probe_plan},
-    support::settings_backup::SETTINGS_BACKUP_MAX_BYTES,
+    support::{
+        settings_backup::SETTINGS_BACKUP_MAX_BYTES,
+        storage_download_contract::{
+            STORAGE_DOWNLOAD_V2_METHOD, is_storage_download_v2_method_signature,
+        },
+    },
 };
 
 use super::base::{
@@ -168,10 +173,6 @@ fn ensure_storage_backup_download_metadata(module_info: &ProbeReport) -> Result<
         .context("Storage module metadata does not contain events")?;
     for (name, signature) in [
         ("downloadProtocol", "downloadProtocol()"),
-        (
-            "downloadToUrlV2",
-            "downloadToUrlV2(QString,QString,bool,int,QString,int)",
-        ),
         ("downloadCancelV2", "downloadCancelV2(QString)"),
     ] {
         anyhow::ensure!(
@@ -183,6 +184,17 @@ fn ensure_storage_backup_download_metadata(module_info: &ProbeReport) -> Result<
             "Storage module metadata does not expose invokable `{signature}`"
         );
     }
+    anyhow::ensure!(
+        methods.iter().any(|method| {
+            method.get("name").and_then(Value::as_str) == Some(STORAGE_DOWNLOAD_V2_METHOD)
+                && method
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_storage_download_v2_method_signature)
+                && method.get("isInvokable").and_then(Value::as_bool) == Some(true)
+        }),
+        "Storage module metadata does not expose an invokable versioned download method"
+    );
     anyhow::ensure!(
         events.iter().any(|event| {
             event.get("name").and_then(Value::as_str) == Some(STORAGE_DOWNLOAD_DONE_EVENT)
@@ -330,7 +342,7 @@ mod tests {
         }
     }
 
-    fn exact_module_info() -> Value {
+    fn module_info_with_download_signature(download_signature: &str) -> Value {
         json!({
             "name": STORAGE_MODULE,
             "methods": [
@@ -342,7 +354,7 @@ mod tests {
                 {
                     "isInvokable": true,
                     "name": "downloadToUrlV2",
-                    "signature": "downloadToUrlV2(QString,QString,bool,int,QString,int)"
+                    "signature": download_signature
                 },
                 {
                     "isInvokable": true,
@@ -355,6 +367,10 @@ mod tests {
                 "signature": "storageDownloadDoneV2(QString)"
             }]
         })
+    }
+
+    fn exact_module_info() -> Value {
+        module_info_with_download_signature("downloadToUrlV2(QString,QString,bool,int,QString,int)")
     }
 
     fn exact_protocol() -> Value {
@@ -405,6 +421,34 @@ mod tests {
                 != Some(BASECAMP_EVENT_TRANSPORT_PROTOCOL)
         {
             bail!("Basecamp backup readiness was not established: {readiness:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_report_accepts_universal_versioned_download_metadata() -> Result<()> {
+        let transport: SharedModuleTransport = Arc::new(FakeBasecampTransport {
+            module_info: module_info_with_download_signature(
+                crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_UNIVERSAL_METHOD_SIGNATURE,
+            ),
+            ..fake_transport()
+        });
+
+        let report =
+            storage_report(&transport, ModuleTransportKind::Module, None, false, true).await;
+        let readiness = report
+            .probes
+            .iter()
+            .find(|probe| {
+                probe.probe_key.as_deref()
+                    == Some(SourceProbeKey::StorageBackupDownloadReadiness.as_str())
+            })
+            .ok_or_else(|| anyhow::anyhow!("Basecamp readiness probe missing"))?;
+
+        if !readiness.ok {
+            bail!(
+                "universal Storage V2 metadata was not accepted for Basecamp readiness: {readiness:?}"
+            );
         }
         Ok(())
     }

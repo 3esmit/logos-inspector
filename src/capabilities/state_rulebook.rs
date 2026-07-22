@@ -10,7 +10,12 @@ use super::{
 };
 use crate::{
     source_routing::network_adapter_policy_for_connector,
-    support::settings_backup::SETTINGS_BACKUP_MAX_BYTES,
+    support::{
+        settings_backup::SETTINGS_BACKUP_MAX_BYTES,
+        storage_download_contract::{
+            STORAGE_DOWNLOAD_V2_METHOD, is_storage_download_v2_method_signature,
+        },
+    },
 };
 
 pub(super) fn capability_state(
@@ -192,11 +197,22 @@ fn storage_backup_download_contract_supported(
             })
         })
     };
+    let versioned_download_method_supported = methods.is_some_and(|methods| {
+        methods.iter().any(|method| {
+            method.get("name").and_then(serde_json::Value::as_str)
+                == Some(STORAGE_DOWNLOAD_V2_METHOD)
+                && method
+                    .get("signature")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(is_storage_download_v2_method_signature)
+                && method
+                    .get("isInvokable")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        })
+    });
     let metadata_supported = method_matches("downloadProtocol", "downloadProtocol()")
-        && method_matches(
-            "downloadToUrlV2",
-            "downloadToUrlV2(QString,QString,bool,int,QString,int)",
-        )
+        && versioned_download_method_supported
         && method_matches("downloadCancelV2", "downloadCancelV2(QString)")
         && events.is_some_and(|events| {
             events.iter().any(|event| {

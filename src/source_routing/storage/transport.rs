@@ -27,6 +27,11 @@ use crate::{
             CommandTerminationScope,
         },
         raw_source_transport::{request_bytes_bounded, request_success},
+        storage_download_contract::{
+            STORAGE_DOWNLOAD_V2_METHOD as STORAGE_DOWNLOAD_METHOD,
+            STORAGE_DOWNLOAD_V2_METHOD_SIGNATURE as STORAGE_DOWNLOAD_METHOD_SIGNATURE,
+            STORAGE_DOWNLOAD_V2_METHOD_SIGNATURES, is_storage_download_v2_method_signature,
+        },
     },
 };
 
@@ -47,9 +52,6 @@ const STORAGE_DOWNLOAD_PROTOCOL_VERSION: u64 = 2;
 const STORAGE_DOWNLOAD_PROTOCOL_METHOD: &str = "downloadProtocol";
 const STORAGE_MODULE_METHODS_METHOD: &str = "getPluginMethods";
 const STORAGE_MODULE_EVENTS_METHOD: &str = "getPluginEvents";
-const STORAGE_DOWNLOAD_METHOD: &str = "downloadToUrlV2";
-const STORAGE_DOWNLOAD_METHOD_SIGNATURE: &str =
-    "downloadToUrlV2(QString,QString,bool,int,QString,int)";
 const STORAGE_DOWNLOAD_CANCEL_METHOD: &str = "downloadCancelV2";
 const STORAGE_DOWNLOAD_DONE_EVENT: &str = "storageDownloadDoneV2";
 
@@ -646,7 +648,6 @@ fn validate_storage_download_interface(methods: &Value, events: &Value) -> Resul
         .context("Storage module event metadata is not an array")?;
     for (name, signature) in [
         (STORAGE_DOWNLOAD_PROTOCOL_METHOD, "downloadProtocol()"),
-        (STORAGE_DOWNLOAD_METHOD, STORAGE_DOWNLOAD_METHOD_SIGNATURE),
         (STORAGE_DOWNLOAD_CANCEL_METHOD, "downloadCancelV2(QString)"),
     ] {
         anyhow::ensure!(
@@ -662,6 +663,21 @@ fn validate_storage_download_interface(methods: &Value, events: &Value) -> Resul
             "Storage module does not expose exact method `{signature}`"
         );
     }
+    anyhow::ensure!(
+        methods.iter().any(|method| {
+            method.get("name").and_then(Value::as_str) == Some(STORAGE_DOWNLOAD_METHOD)
+                && method
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_storage_download_v2_method_signature)
+                && method.get("isInvokable").and_then(Value::as_bool) == Some(true)
+                && method
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|kind| kind == "method")
+        }),
+        "Storage module does not expose compatible method `{STORAGE_DOWNLOAD_METHOD_SIGNATURE}`"
+    );
     anyhow::ensure!(
         events.iter().any(|event| {
             event.get("name").and_then(Value::as_str) == Some(STORAGE_DOWNLOAD_DONE_EVENT)
@@ -986,12 +1002,21 @@ where
         "storage download byte limit must be positive"
     );
     let _download_permit = acquire_cli_backup_download(&control)?;
-    runtime.require_module_contract_controlled(
+    runtime.require_module_contract_with_method_signatures_controlled(
         super::layer::module_id(),
         &[
-            (STORAGE_DOWNLOAD_PROTOCOL_METHOD, "downloadProtocol()"),
-            (STORAGE_DOWNLOAD_METHOD, STORAGE_DOWNLOAD_METHOD_SIGNATURE),
-            (STORAGE_DOWNLOAD_CANCEL_METHOD, "downloadCancelV2(QString)"),
+            (
+                STORAGE_DOWNLOAD_PROTOCOL_METHOD,
+                &["downloadProtocol()"] as &[&str],
+            ),
+            (
+                STORAGE_DOWNLOAD_METHOD,
+                &STORAGE_DOWNLOAD_V2_METHOD_SIGNATURES,
+            ),
+            (
+                STORAGE_DOWNLOAD_CANCEL_METHOD,
+                &["downloadCancelV2(QString)"] as &[&str],
+            ),
         ],
         &[(
             STORAGE_DOWNLOAD_DONE_EVENT,
@@ -2493,6 +2518,37 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn host_backup_interface_accepts_universal_numeric_metadata() -> Result<()> {
+        let methods = json!([
+            {
+                "type": "method",
+                "isInvokable": true,
+                "name": STORAGE_DOWNLOAD_PROTOCOL_METHOD,
+                "signature": "downloadProtocol()"
+            },
+            {
+                "type": "method",
+                "isInvokable": true,
+                "name": STORAGE_DOWNLOAD_METHOD,
+                "signature": crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_UNIVERSAL_METHOD_SIGNATURE
+            },
+            {
+                "type": "method",
+                "isInvokable": true,
+                "name": STORAGE_DOWNLOAD_CANCEL_METHOD,
+                "signature": "downloadCancelV2(QString)"
+            }
+        ]);
+        let events = json!([{
+            "type": "event",
+            "name": STORAGE_DOWNLOAD_DONE_EVENT,
+            "signature": "storageDownloadDoneV2(QString)"
+        }]);
+
+        validate_storage_download_interface(&methods, &events)
+    }
+
     #[cfg(unix)]
     const SUCCEEDED_TERMINAL: &str = r#"{"protocol":"logos.storage.download","version":2,"moduleOperationId":"__OPERATION_ID__","cid":"__CID__","outcome":"succeeded"}"#;
 
@@ -3048,6 +3104,38 @@ mod tests {
         anyhow::ensure!(
             !fake.canceled.exists(),
             "successful CLI download was canceled"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_backup_download_accepts_universal_numeric_metadata() -> Result<()> {
+        let _test_permit = serialize_cli_backup_test();
+        let payload = br#"{"kind":"logos-inspector-settings-backup","version":1}"#;
+        let mut module_info = download_module_info(true);
+        *module_info
+            .pointer_mut("/methods/1/signature")
+            .context("Storage test metadata lacks versioned download signature")? = json!(
+            crate::support::storage_download_contract::STORAGE_DOWNLOAD_V2_UNIVERSAL_METHOD_SIGNATURE
+        );
+        let fake = FakeDownloadRuntime::new(payload, Some(SUCCEEDED_TERMINAL), &module_info)?;
+
+        let bytes = module_download_backup_bytes_blocking_controlled(
+            &fake.runtime,
+            "cid-universal-metadata",
+            false,
+            1024,
+            download_control(Duration::from_secs(3))?,
+        )?;
+
+        anyhow::ensure!(
+            bytes == payload,
+            "universal metadata changed CLI backup bytes"
+        );
+        anyhow::ensure!(
+            !fake.staged_path()?.exists(),
+            "universal metadata left CLI download staging behind"
         );
         Ok(())
     }
