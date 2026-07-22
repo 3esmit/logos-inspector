@@ -16,6 +16,7 @@ pub(crate) fn storage_module_probe_plan<'a>(
         ModuleProbeStep::keyed("spr", SourceProbeKey::StorageSpr),
         ModuleProbeStep::keyed("space", SourceProbeKey::StorageSpace),
         ModuleProbeStep::keyed("manifests", SourceProbeKey::StorageManifests),
+        ModuleProbeStep::keyed("collectMetrics", SourceProbeKey::StorageCollectMetrics),
     ];
     if privileged_debug_enabled {
         steps.push(ModuleProbeStep::keyed(
@@ -49,6 +50,16 @@ mod tests {
                 .iter()
                 .any(|step| step.method == "exists" && step.args == ["cid-1"])
         );
+    }
+
+    #[test]
+    fn storage_plan_includes_metrics_for_footer_telemetry() {
+        let steps = storage_module_probe_plan(None, false, true);
+
+        assert!(steps.iter().any(|step| {
+            step.method == "collectMetrics"
+                && step.key == Some(SourceProbeKey::StorageCollectMetrics)
+        }));
     }
 
     #[test]

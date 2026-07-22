@@ -950,7 +950,7 @@ TestCase {
         compare(observation.status.origin, "dashboard")
     }
 
-    function test_passive_observations_keep_storage_capability_facts_and_bound_scheduled_delivery_to_metrics() {
+    function test_passive_observations_keep_storage_capability_facts_and_request_delivery_metrics_at_dashboard_start() {
         const passiveOrigins = [
             "scheduler",
             "dashboard",
@@ -975,7 +975,7 @@ TestCase {
             )
             compare(
                 messaging.args[0].options.runtime_metrics_enabled === true,
-                origin === "scheduler"
+                origin === "scheduler" || origin === "dashboard"
             )
             compare(messaging.runtimeMetricsOnly, origin === "scheduler")
         }
@@ -998,6 +998,30 @@ TestCase {
             verify(messaging.args[0].options.runtime_metrics_enabled !== true)
             verify(!messaging.runtimeMetricsOnly)
         }
+    }
+
+    function test_dashboard_delivery_metrics_cache_and_complete_observer() {
+        let callbackResponse = null
+        metrics.observeNetworkConnection(
+            "messaging", false, false,
+            function (response) { callbackResponse = response }, "dashboard")
+
+        compare(gateway.requests.length, 1)
+        verify(gateway.requests[0].args[0].options.runtime_metrics_enabled)
+        verify(!gateway.requests[0].args[0].options.runtime_diagnostics_enabled)
+        verify(metrics.activeObservationLeases.messaging !== undefined)
+        compare(metrics.activeMessagingMetricsLease, null)
+
+        gateway.completeRequest(
+            0, success(deliveryMetricsReport(true, "dashboard-metrics", 12)))
+
+        verify(callbackResponse !== null)
+        verify(callbackResponse.ok)
+        compare(metrics.sourceReport("messaging").marker, "dashboard-metrics")
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 12)
+        compare(metrics.dashboardMetricLastSeen[
+            "messaging.peer_count"].value, 12)
+        compare(metrics.networkConnectionState("messaging").origin, "dashboard")
     }
 
     function test_scheduled_delivery_metrics_use_independent_lease_and_cache() {
