@@ -13,6 +13,39 @@ TestCase {
     }
 
     QtObject {
+        id: deliveryGateFixture
+
+        property var blockedActions: []
+
+        function deliveryGate(action, options) {
+            const key = String(action || "")
+            const blocked = blockedActions.indexOf(key) >= 0
+            if (!blocked) {
+                return {
+                    enabled: true,
+                    status: "available",
+                    missing: [],
+                    warnings: [],
+                    provenance: ["test"]
+                }
+            }
+            return {
+                enabled: false,
+                status: "unavailable",
+                missing: [{
+                    dependency: "delivery.store.query",
+                    label: "Delivery Store",
+                    status: "unavailable",
+                    capability: "delivery.store.query",
+                    provenance: "test"
+                }],
+                warnings: [],
+                provenance: ["test"]
+            }
+        }
+    }
+
+    QtObject {
         id: managedNodesFixture
 
         property bool busy: false
@@ -100,6 +133,7 @@ TestCase {
         networkPreset: "logos.test"
         mutatingDiagnosticsEnabled: true
         managedNodes: managedNodesFixture
+        gateFacade: deliveryGateFixture
     }
 
     function init() {
@@ -114,6 +148,7 @@ TestCase {
         managedNodesFixture.pendingNode = ""
         managedNodesFixture.runCount = 0
         managedNodesFixture.refreshCount = 0
+        deliveryGateFixture.blockedActions = []
         state.sourceMode = "rest"
         state.effectiveSourceMode = "rest"
         state.sourceTargetKind = "rest_endpoint"
@@ -404,6 +439,20 @@ TestCase {
         verify(!gateway.resultIsError)
         compare(gateway.resultValue.pageSize, 25)
         compare(gateway.history.length, 1)
+    }
+
+    function test_store_query_is_blocked_by_delivery_capability_gate() {
+        deliveryGateFixture.blockedActions = ["store_query"]
+
+        const response = state.runDelivery("deliveryStoreQuery", [
+            "", "/logos/1/chat/proto", "", "", 20, true, true
+        ], "Store query")
+
+        verify(!response.ok)
+        compare(gateway.requestCount, 0)
+        compare(state.lastOperation, "Blocked")
+        verify(gateway.resultIsError)
+        verify(gateway.resultText.indexOf("delivery.store.query") >= 0)
     }
 
     function test_store_query_projects_polled_terminal_result() {

@@ -50,6 +50,16 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            visible: root.deliverySource().connectionType === "logoscore_cli"
+            theme: root.theme
+            label: qsTr("Store provider multiaddress")
+            sourceText: root.modelRef.messagingStorePeerAddress
+            syncSourceText: true
+            placeholderText: qsTr("/dns4/.../tcp/30303/p2p/...")
+            onTextEdited: text => root.modelRef.messagingStorePeerAddress = String(text || "").trim()
+        }
+
+        FieldRow {
             theme: root.theme
             label: qsTr("Network preset")
             sourceText: root.modelRef.messagingNetworkPreset

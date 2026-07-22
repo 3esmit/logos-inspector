@@ -177,7 +177,8 @@ function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoin
     const descriptor = sourceModeDescriptor(root, "delivery", sourceMode)
     const initialization = adapterInitialization(root, "delivery", sourceMode, {
         rest_endpoint: String(restEndpoint || ""),
-        metrics_endpoint: String(metricsEndpoint || "")
+        metrics_endpoint: String(metricsEndpoint || ""),
+        store_peer_addr: String(root.messagingStorePeerAddress || "")
     })
     initialization.options = {
         runtime_diagnostics_enabled: runtimeDiagnosticsEnabled !== false

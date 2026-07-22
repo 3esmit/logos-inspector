@@ -51,6 +51,7 @@ TestCase {
         state.nodeUrl = "http://node"
         state.storageRestUrl = "http://storage"
         state.messagingRestUrl = "http://delivery"
+        state.messagingStorePeerAddress = ""
     }
 
     function test_messaging_network_preset_normalization_is_owned_by_source_routing() {
@@ -266,6 +267,7 @@ TestCase {
     }
 
     function test_logoscore_cli_delivery_report_includes_health_endpoint() {
+        state.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
         state.connectorConfig = ({
             scopes: {
                 delivery: {
@@ -285,16 +287,18 @@ TestCase {
 
         compare(sourceMode, "logoscore_cli")
         compare(source.usesRestEndpoint, false)
-        compare(source.inputs.length, 0)
+        compare(source.inputs.length, 1)
         compare(state.deliverySourceView().usesHealthEndpoint, true)
         verify(state.deliverySourceView().capabilities.indexOf(
-            "delivery.store.query") < 0)
+            "delivery.store.query") >= 0)
         verify(state.deliverySourceView().capabilities.indexOf(
             "delivery.topics.read") < 0)
         compare(args.length, 1)
         compare(args[0].source_mode, "logoscore_cli")
         compare(args[0].inputs.rest_endpoint, undefined)
         compare(args[0].inputs.metrics_endpoint, undefined)
+        compare(args[0].inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
         compare(args[0].options.health_endpoint, "http://delivery")
 
         const actionArgs = state.deliverySourceView().actionArgs(["topic", "payload"])
@@ -307,6 +311,8 @@ TestCase {
         const clearedArgs = state.deliverySourceReportArgs()
         compare(clearedArgs[0].source_mode, "logoscore_cli")
         compare(clearedArgs[0].inputs.rest_endpoint, undefined)
+        compare(clearedArgs[0].inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
         compare(clearedArgs[0].options.health_endpoint, "")
     }
 

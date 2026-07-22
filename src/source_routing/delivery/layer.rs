@@ -131,9 +131,23 @@ const METRICS_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     label: "Metrics URL",
     required: true,
 }];
+const CLI_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
+    key: "store_peer_addr",
+    label: "Store provider multiaddress",
+    required: false,
+}];
 
 const MODULE_CAPABILITIES: &[&str] = &[
     "delivery.identity.read",
+    "delivery.subscribe",
+    "delivery.unsubscribe",
+    "delivery.send",
+    "delivery.node.start",
+    "delivery.node.stop",
+];
+const LOGOSCORE_CLI_CAPABILITIES: &[&str] = &[
+    "delivery.identity.read",
+    "delivery.store.query",
     "delivery.subscribe",
     "delivery.unsubscribe",
     "delivery.send",
@@ -193,8 +207,8 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             connection_type: AdapterConnectionType::LogoscoreCli,
             target: "module",
             module_id: Some(DELIVERY_MODULE),
-            inputs: &[],
-            capabilities: MODULE_CAPABILITIES,
+            inputs: CLI_INPUTS,
+            capabilities: LOGOSCORE_CLI_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
             capability_scopes: &["delivery"],
@@ -539,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn messaging_module_adapters_do_not_advertise_store_queries() {
+    fn messaging_cli_adapter_advertises_store_query_with_explicit_provider_input() -> Result<()> {
         let supports_store_query = |key: &str| {
             MESSAGING_SOURCE_MODES
                 .iter()
@@ -548,8 +562,22 @@ mod tests {
         };
 
         assert!(!supports_store_query("module"));
-        assert!(!supports_store_query("logoscore_cli"));
+        assert!(supports_store_query("logoscore_cli"));
         assert!(supports_store_query("rest"));
+
+        let cli = MESSAGING_SOURCE_MODES
+            .iter()
+            .find(|mode| mode.key == "logoscore_cli")
+            .context("LogosCore CLI Delivery source policy is missing")?;
+        assert_eq!(
+            cli.adapter.inputs,
+            &[AdapterInputPolicy {
+                key: "store_peer_addr",
+                label: "Store provider multiaddress",
+                required: false,
+            }]
+        );
+        Ok(())
     }
 
     #[test]
@@ -559,7 +587,12 @@ mod tests {
             .find(|mode| mode.key == "logoscore_cli")
             .context("LogosCore CLI Delivery source policy is missing")?;
 
-        if !cli.adapter.inputs.is_empty() {
+        if cli
+            .adapter
+            .inputs
+            .iter()
+            .any(|input| input.key == "rest_endpoint")
+        {
             bail!("LogosCore CLI health endpoint leaked into module adapter inputs");
         }
         Ok(())

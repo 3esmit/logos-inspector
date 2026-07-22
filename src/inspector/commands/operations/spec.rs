@@ -1169,7 +1169,7 @@ mod tests {
                 OperationMethod::DeliveryStoreQuery,
                 &[
                     AffectedContextField::required(AffectedContextKey::Source),
-                    AffectedContextField::required(AffectedContextKey::Endpoint),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
                 ],
             ),
             (

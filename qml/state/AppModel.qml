@@ -32,6 +32,7 @@ QtObject {
         nodeUrl: root.nodeUrl
         messagingRestUrl: root.messagingRestUrl
         messagingMetricsUrl: root.messagingMetricsUrl
+        messagingStorePeerAddress: root.messagingStorePeerAddress
         messagingNetworkPreset: root.messagingNetworkPreset
         messagingMutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
         storageRestUrl: root.storageRestUrl
@@ -336,6 +337,7 @@ QtObject {
     property string messagingSourceMode: "rest"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
+    property string messagingStorePeerAddress: ""
     property string messagingNetworkPreset: "logos.test"
     property int messagingRollingWindow: 120
     property bool messagingAdminRestEnabled: false
@@ -710,6 +712,7 @@ QtObject {
         networkPreset: root.deliverySource.networkPreset
         mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
         managedNodes: localNodesState
+        gateFacade: root.capabilities
     }
     property alias deliveryAppTab: deliveryAppState.currentTab
     property string deliveryDiagnosticsTab: "overview"
@@ -1093,6 +1096,7 @@ QtObject {
     onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
     onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
     onMessagingMetricsUrlChanged: handleMessagingConfigurationChanged()
+    onMessagingStorePeerAddressChanged: handleMessagingConfigurationChanged()
     onMessagingNetworkPresetChanged: handleMessagingConfigurationChanged()
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
@@ -1794,6 +1798,7 @@ QtObject {
             storage_metrics_url: sourceRouting.configuredStorageMetricsUrl(),
             messaging_rest_url: sourceRouting.configuredMessagingRestUrl(),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
+            messaging_store_peer_address: String(messagingStorePeerAddress || ""),
             storage_mutating_diagnostics_enabled: true,
             messaging_mutating_diagnostics_enabled: true,
             wallet_profile_configured: walletProfileConfigured(),

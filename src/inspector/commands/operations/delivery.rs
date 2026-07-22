@@ -109,7 +109,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     )
     .with_context_inputs(&[
         AffectedContextField::required(AffectedContextKey::Source),
-        AffectedContextField::required(AffectedContextKey::Endpoint),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
     ]),
 ];
 

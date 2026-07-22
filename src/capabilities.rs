@@ -548,8 +548,29 @@ mod tests {
     }
 
     #[test]
-    fn delivery_store_queries_require_a_rest_connector() -> Result<()> {
-        let delivery_capability = |build_mode, connector_id: &str, endpoint: Option<&str>| {
+    fn delivery_store_queries_require_a_verified_cli_contract() -> Result<()> {
+        let source_report = |module_info: Option<Value>| {
+            let mut report = json!({
+                "health": {
+                    "ready": true,
+                    "reachable": true,
+                    "status": "ready",
+                    "detail": "delivery source reachable"
+                }
+            });
+            if let Some(module_info) = module_info {
+                report["module_info"] = json!({
+                    "ok": true,
+                    "value": module_info
+                });
+            }
+            report
+        };
+        let delivery_capability = |build_mode,
+                                   connector_id: &str,
+                                   endpoint: Option<&str>,
+                                   store_peer: Option<&str>,
+                                   module_info: Option<Value>| {
             let inputs = json!({
                 "network_connector_config": {
                     "scopes": {
@@ -560,15 +581,9 @@ mod tests {
                     }
                 },
                 "messaging_rest_url": endpoint.unwrap_or_default(),
+                "messaging_store_peer_address": store_peer.unwrap_or_default(),
                 "source_reports": {
-                    "delivery": {
-                        "health": {
-                            "ready": true,
-                            "reachable": true,
-                            "status": "ready",
-                            "detail": "delivery source reachable"
-                        }
-                    }
+                    "delivery": source_report(module_info)
                 }
             });
             let value =
@@ -578,26 +593,98 @@ mod tests {
                 .context("delivery capability missing")
         };
 
-        for (build_mode, connector_id) in [
-            (CapabilityBuildMode::Basecamp, "delivery_module"),
-            (
-                CapabilityBuildMode::Standalone,
-                "logoscore_cli_delivery_module",
-            ),
-        ] {
-            let delivery = delivery_capability(build_mode, connector_id, None)?;
-            if !unavailable_contains(&delivery, "delivery.store.query") {
-                bail!("{connector_id} overclaimed Delivery Store queries: {delivery}");
-            }
-            if unavailable_contains(&delivery, "delivery.send") {
-                bail!("{connector_id} should retain Delivery send: {delivery}");
-            }
+        let basecamp = delivery_capability(
+            CapabilityBuildMode::Basecamp,
+            "delivery_module",
+            None,
+            None,
+            None,
+        )?;
+        if !unavailable_contains(&basecamp, "delivery.store.query") {
+            bail!("Basecamp Delivery overclaimed Store queries: {basecamp}");
+        }
+        if unavailable_contains(&basecamp, "delivery.send") {
+            bail!("Basecamp Delivery should retain send: {basecamp}");
+        }
+
+        let cli_module_info = || {
+            json!({
+                "name": "delivery_module",
+                // The actual module metadata endpoint currently retains the
+                // prior package version after an in-place package upgrade.
+                // Store availability therefore follows its advertised API.
+                "version": "0.1.3",
+                "methods": [{
+                    "isInvokable": true,
+                    "name": "storeQuery",
+                    "signature": "storeQuery(QString,QString,int)"
+                }]
+            })
+        };
+        let cli_without_provider = delivery_capability(
+            CapabilityBuildMode::Standalone,
+            "logoscore_cli_delivery_module",
+            None,
+            None,
+            Some(cli_module_info()),
+        )?;
+        if !unavailable_contains(&cli_without_provider, "delivery.store.query") {
+            bail!("CLI Delivery overclaimed Store without a provider: {cli_without_provider}");
+        }
+        if unavailable_contains(&cli_without_provider, "delivery.send") {
+            bail!("CLI Delivery should retain send without Store provider: {cli_without_provider}");
+        }
+
+        let cli = delivery_capability(
+            CapabilityBuildMode::Standalone,
+            "logoscore_cli_delivery_module",
+            None,
+            Some("/dns4/provider.example/tcp/30303/p2p/peer"),
+            Some(cli_module_info()),
+        )?;
+        if unavailable_contains(&cli, "delivery.store.query") {
+            bail!("verified CLI Delivery did not expose Store queries: {cli}");
+        }
+
+        let mut alternate_metadata_signature = cli_module_info();
+        *alternate_metadata_signature
+            .pointer_mut("/methods/0/signature")
+            .context("Delivery metadata has no Store signature")? =
+            json!("storeQuery(QString,QString,qlonglong)");
+        let cli_alternate_signature = delivery_capability(
+            CapabilityBuildMode::Standalone,
+            "logoscore_cli_delivery_module",
+            None,
+            Some("/dns4/provider.example/tcp/30303/p2p/peer"),
+            Some(alternate_metadata_signature),
+        )?;
+        if unavailable_contains(&cli_alternate_signature, "delivery.store.query") {
+            bail!(
+                "compatible CLI Delivery metadata spelling did not expose Store queries: {cli_alternate_signature}"
+            );
+        }
+
+        let mut incompatible_module_info = cli_module_info();
+        *incompatible_module_info
+            .pointer_mut("/methods/0/signature")
+            .context("Delivery metadata has no Store signature")? = json!("storeQuery(QString)");
+        let cli_incompatible = delivery_capability(
+            CapabilityBuildMode::Standalone,
+            "logoscore_cli_delivery_module",
+            None,
+            Some("/dns4/provider.example/tcp/30303/p2p/peer"),
+            Some(incompatible_module_info),
+        )?;
+        if !unavailable_contains(&cli_incompatible, "delivery.store.query") {
+            bail!("incompatible CLI Delivery overclaimed Store queries: {cli_incompatible}");
         }
 
         let rest = delivery_capability(
             CapabilityBuildMode::Standalone,
             "direct_delivery_rest",
             Some("http://127.0.0.1:8645"),
+            None,
+            None,
         )?;
         if unavailable_contains(&rest, "delivery.store.query") {
             bail!("Direct Waku REST should provide Delivery Store queries: {rest}");
@@ -611,14 +698,7 @@ mod tests {
         let default_inputs = json!({
             "messaging_rest_url": "http://127.0.0.1:8645",
             "source_reports": {
-                "delivery": {
-                    "health": {
-                        "ready": true,
-                        "reachable": true,
-                        "status": "ready",
-                        "detail": "delivery source reachable"
-                    }
-                }
+                "delivery": source_report(None)
             }
         });
         let default_value = serde_json::to_value(test_registry_report_with_value(

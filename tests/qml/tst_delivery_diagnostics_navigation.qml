@@ -201,14 +201,43 @@ TestCase {
     }
 
     function test_store_availability_matches_selected_source_capability() {
+        model.capabilityRegistryLoaded = true
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                key: "delivery",
+                label: "Delivery",
+                status: "input_required",
+                sub_capabilities: ["delivery.store.query"],
+                unavailable_sub_capabilities: ["delivery.store.query"]
+            }]
+        })
         model.deliveryDiagnosticsTab = "store"
         tryVerify(function () {
             return findAccessibleByName(pageLoader.item,
                 "Store selected") !== null
                 && findAccessibleByName(pageLoader.item,
-                    "Manual query: unavailable. LogosCore CLI (Delivery) does not expose Store queries. Choose Direct Waku REST in Delivery settings.") !== null
+                    "Manual query: unavailable. Configure a Store provider multiaddress in Delivery settings.") !== null
                 && findAccessibleByName(pageLoader.item,
                     "Payload viewing: unavailable. Payload viewing requires a Store-query-capable source.") !== null
+        })
+
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                key: "delivery",
+                label: "Delivery",
+                status: "available",
+                sub_capabilities: ["delivery.store.query"]
+            }]
+        })
+
+        tryVerify(function () {
+            return findAccessibleByName(pageLoader.item,
+                "Manual query: available. Network / Delivery Store uses LogosCore CLI through the loaded Delivery module. Payloads are excluded by default.") !== null
+                && findAccessibleByName(pageLoader.item,
+                    "Payload viewing: opt-in. Enable Include payloads for one Store query.") !== null
         })
 
         model.messagingSourceMode = "rest"

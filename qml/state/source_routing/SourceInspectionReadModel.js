@@ -290,6 +290,12 @@ function deliveryView(page, common) {
     page.deliverySourceMode = function () {
         return String(page.sourceRoute().effectiveMode || "")
     }
+    page.deliveryStoreGate = function () {
+        if (model && typeof model.deliveryGate === "function") {
+            return model.deliveryGate("store_query", {})
+        }
+        return null
+    }
     page.moduleMetricsText = function () {
         return SourceObservation.deliveryModuleMetricsText(page)
     }

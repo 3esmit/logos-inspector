@@ -41,6 +41,8 @@ function applySettingsState(root, value) {
         root.loadNetworkConnectorConfig(value)
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
+        messagingStorePeerAddress = root.stringSetting(
+            value, "messaging_store_peer_address", messagingStorePeerAddress)
         messagingNetworkPreset = root.sourceRouting.normalizedMessagingNetworkPreset(
             root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
         messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
@@ -122,6 +124,7 @@ function settingsStatePayload(root) {
             network_connector_config: root.networkConnectorConfigPayload(),
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
+            messaging_store_peer_address: String(messagingStorePeerAddress || ""),
             messaging_network_preset: root.sourceRouting.normalizedMessagingNetworkPreset(messagingNetworkPreset),
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,

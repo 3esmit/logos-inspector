@@ -350,11 +350,90 @@ fn delivery_state(
             "Delivery adapter endpoint is required".to_owned(),
         );
     }
-    adapter_constrained_state(
+    let state = adapter_constrained_state(
         source_report_state(inputs, "delivery", "Delivery", sub_capabilities),
         connector,
         sub_capabilities,
-    )
+    );
+    if connector.id != "logoscore_cli_delivery_module" {
+        return state;
+    }
+    if inputs.messaging_store_peer_address.is_empty() {
+        return merge_state_constraints(
+            state,
+            vec!["delivery.store.query".to_owned()],
+            vec![
+                "Configure a Store provider multiaddress before querying Delivery Store".to_owned(),
+            ],
+            vec!["Delivery Store provider multiaddress is required for LogosCore CLI".to_owned()],
+        );
+    }
+    if !inputs
+        .source_report_for("delivery")
+        .is_some_and(delivery_cli_store_query_supported)
+    {
+        return merge_state_constraints(
+            state,
+            vec!["delivery.store.query".to_owned()],
+            vec![
+                "LogosCore CLI Delivery Store requires a loaded module that advertises storeQuery"
+                    .to_owned(),
+            ],
+            vec!["Loaded Delivery module does not provide the Store query contract".to_owned()],
+        );
+    }
+    state
+}
+
+const DELIVERY_STORE_QUERY_METHOD: &str = "storeQuery";
+// The current LogosCore metadata generator renders the module's `int64_t`
+// timeout as `int`. Older generator revisions exposed the Qt spelling instead.
+// Both declarations accept the bounded millisecond value dispatched below.
+const DELIVERY_STORE_QUERY_SIGNATURES: &[&str] = &[
+    "storeQuery(QString,QString,int)",
+    "storeQuery(QString,QString,qlonglong)",
+];
+
+fn delivery_cli_store_query_supported(report: &serde_json::Value) -> bool {
+    let Some(module_info) = delivery_module_info_value(report) else {
+        return false;
+    };
+    module_info
+        .get("methods")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|methods| {
+            methods.iter().any(|method| {
+                method.get("name").and_then(serde_json::Value::as_str)
+                    == Some(DELIVERY_STORE_QUERY_METHOD)
+                    && method
+                        .get("signature")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|signature| {
+                            DELIVERY_STORE_QUERY_SIGNATURES.contains(&signature)
+                        })
+                    && method
+                        .get("isInvokable")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            })
+        })
+}
+
+fn delivery_module_info_value(report: &serde_json::Value) -> Option<&serde_json::Value> {
+    let module_info = report.get("module_info")?;
+    if module_info.get("ok").is_some()
+        && module_info.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    [
+        module_info.pointer("/value/value"),
+        module_info.get("value"),
+        Some(module_info),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| value.get("methods").is_some())
 }
 
 fn adapter_constrained_state(

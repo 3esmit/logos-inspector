@@ -919,9 +919,10 @@ function deliveryTopicMessageCount(value) {
 }
 
 function deliveryStoreRows(page) {
-    const queryAvailable = deliverySourceCapabilityAvailable(
-        page, "delivery.store.query")
-    const sourceName = String(page.sourceName() || qsTr("Current Delivery source"))
+    const storeGate = deliveryStoreQueryGate(page)
+    const queryAvailable = storeGate !== null
+        ? storeGate.enabled === true
+        : deliverySourceCapabilityAvailable(page, "delivery.store.query")
     return [
         page.protocolStatusRow(qsTr("Store mounted state"), "Store", "messaging.store_peers"),
         page.metricRow(qsTr("Store peers"), "messaging.store_peers"),
@@ -932,8 +933,8 @@ function deliveryStoreRows(page) {
             qsTr("Manual query"),
             queryAvailable ? qsTr("available") : qsTr("unavailable"),
             queryAvailable
-                ? qsTr("Network / Delivery Store uses Direct Waku REST. Payloads are excluded by default.")
-                : qsTr("%1 does not expose Store queries. Choose Direct Waku REST in Delivery settings.").arg(sourceName),
+                ? deliveryStoreAvailableDetail(page)
+                : deliveryStoreUnavailableDetail(page, storeGate),
             queryAvailable ? "success" : "neutral"),
         page.statusRow(
             qsTr("Payload viewing"),
@@ -943,6 +944,39 @@ function deliveryStoreRows(page) {
                 : qsTr("Payload viewing requires a Store-query-capable source."),
             "neutral")
     ]
+}
+
+function deliveryStoreQueryGate(page) {
+    if (page && typeof page.deliveryStoreGate === "function") {
+        return page.deliveryStoreGate()
+    }
+    return null
+}
+
+function deliveryStoreAvailableDetail(page) {
+    const route = page && typeof page.sourceRoute === "function"
+        ? page.sourceRoute() : null
+    if (String(route && route.connectionType || "") === "logoscore_cli") {
+        return qsTr("Network / Delivery Store uses LogosCore CLI through the loaded Delivery module. Payloads are excluded by default.")
+    }
+    return qsTr("Network / Delivery Store uses Direct Waku REST. Payloads are excluded by default.")
+}
+
+function deliveryStoreUnavailableDetail(page, gate) {
+    const status = String(gate && gate.status || "")
+    if (status === "input_required") {
+        return qsTr("Configure a Store provider multiaddress in Delivery settings.")
+    }
+    if (status === "loading") {
+        return qsTr("Checking whether the loaded Delivery module supports Store queries.")
+    }
+    const sourceName = String(page && typeof page.sourceName === "function"
+        ? page.sourceName() : qsTr("Current Delivery source"))
+    if (page && typeof page.sourceRoute === "function"
+            && String(page.sourceRoute().connectionType || "") === "logoscore_cli") {
+        return qsTr("%1 does not provide the Store query contract.").arg(sourceName)
+    }
+    return qsTr("%1 does not expose Store queries.").arg(sourceName)
 }
 
 function deliverySourceCapabilityAvailable(page, key) {
