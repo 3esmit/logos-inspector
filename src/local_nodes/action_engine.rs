@@ -88,12 +88,11 @@ impl LocalNodeActionEngine {
 
     pub(super) fn channel_indexer_config_validate(
         &self,
-        profile: &str,
+        _profile: &str,
         request: &ChannelIndexerConfigRequest,
         text: &str,
     ) -> Result<ChannelIndexerConfigValidation> {
         let _state_lock = acquire_state_lock()?;
-        let _ = normalized_profile(profile);
         super::channel_indexer::config_validate(request, text)
     }
 

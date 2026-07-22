@@ -369,6 +369,7 @@ fn scalar_field(value: &Value, keys: &[&str]) -> Option<Value> {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
 mod tests {
     use std::sync::{
         Arc,

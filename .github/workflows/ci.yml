@@ -13,5 +13,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup show
+      - name: Install Qt 6 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes qt6-base-dev
       - name: Verify build pipeline
         run: python3 scripts/check-build-pipeline.py ci

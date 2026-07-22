@@ -596,6 +596,7 @@ fn empty_module_lookup(value: &Value) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::panic_in_result_fn)]
 mod tests {
     use std::sync::{Arc, Mutex};
 

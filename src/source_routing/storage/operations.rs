@@ -934,11 +934,13 @@ async fn logoscore_cli_download_by_terminal_event(
         let staged = runtime.stage_shared_download(&filename)?;
         let terminal = logoscore_cli_download_by_terminal_event_blocking(
             &runtime,
-            &worker_cid,
-            local_only,
-            block_size,
-            &staged,
-            max_bytes,
+            LogoscoreCliDownloadRequest {
+                cid: &worker_cid,
+                local_only,
+                block_size,
+                staged: &staged,
+                max_bytes,
+            },
             command_control,
             &worker_effect_may_have_started,
         );
@@ -996,16 +998,27 @@ enum DownloadTerminalEvent {
     Failed { error: String },
 }
 
-fn logoscore_cli_download_by_terminal_event_blocking(
-    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
-    cid: &str,
+struct LogoscoreCliDownloadRequest<'a> {
+    cid: &'a str,
     local_only: bool,
     block_size: u64,
-    staged: &crate::modules::logos_core::LogoscoreSharedDownload,
+    staged: &'a crate::modules::logos_core::LogoscoreSharedDownload,
     max_bytes: Option<usize>,
+}
+
+fn logoscore_cli_download_by_terminal_event_blocking(
+    runtime: &crate::modules::logos_core::LogoscoreCliRuntime,
+    request: LogoscoreCliDownloadRequest<'_>,
     control: CommandControl,
     effect_may_have_started: &AtomicBool,
 ) -> Result<String> {
+    let LogoscoreCliDownloadRequest {
+        cid,
+        local_only,
+        block_size,
+        staged,
+        max_bytes,
+    } = request;
     let mut watch = runtime
         .start_event_watch(
             super::layer::module_id(),
@@ -1147,18 +1160,18 @@ fn logoscore_cli_download_by_terminal_event_blocking(
         };
     match terminal {
         DownloadTerminalEvent::Succeeded => {
-            if let Some(max_bytes) = max_bytes {
-                if let Err(error) = validate_download_staging_bound(staged.path(), max_bytes) {
-                    return cleanup_active_download_error(
-                        runtime,
-                        cid,
-                        error.context(format!(
-                            "Storage download session `{session_id}` exceeded its byte limit"
-                        )),
-                        &mut watch,
-                        &control,
-                    );
-                }
+            if let Some(max_bytes) = max_bytes
+                && let Err(error) = validate_download_staging_bound(staged.path(), max_bytes)
+            {
+                return cleanup_active_download_error(
+                    runtime,
+                    cid,
+                    error.context(format!(
+                        "Storage download session `{session_id}` exceeded its byte limit"
+                    )),
+                    &mut watch,
+                    &control,
+                );
             }
             if let Err(error) = validate_completed_download(staged.path(), expected_bytes) {
                 return cleanup_active_download_error(
