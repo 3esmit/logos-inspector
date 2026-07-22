@@ -1052,9 +1052,11 @@ fn command_recovery_sender() -> Result<mpsc::SyncSender<CommandRecovery>> {
 fn handoff_command_recovery(
     sender: mpsc::SyncSender<CommandRecovery>,
     recovery: CommandRecovery,
-) -> std::result::Result<(), CommandRecovery> {
+) -> std::result::Result<(), Box<CommandRecovery>> {
     sender.try_send(recovery).map_err(|error| match error {
-        mpsc::TrySendError::Full(recovery) | mpsc::TrySendError::Disconnected(recovery) => recovery,
+        mpsc::TrySendError::Full(recovery) | mpsc::TrySendError::Disconnected(recovery) => {
+            Box::new(recovery)
+        }
     })
 }
 

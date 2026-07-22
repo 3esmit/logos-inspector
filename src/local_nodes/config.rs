@@ -1191,6 +1191,11 @@ fn node_label(kind: NodeKind) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic_in_result_fn
+)]
 mod tests {
     use std::fs;
 
