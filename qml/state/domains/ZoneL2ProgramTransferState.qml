@@ -117,7 +117,7 @@ QtObject {
         resetL2ProgramsState()
         if (!l2Context.l2SequencerReadEnabled) {
             l2ProgramsLoaded = true
-            l2ProgramsError = qsTr("Select a Sequencer source to inspect known programs.")
+            l2ProgramsError = qsTr("Select a Sequencer source to inspect programs.")
             return null
         }
         l2ProgramsRequestRevision += 1
@@ -142,7 +142,7 @@ QtObject {
             if (!l2Context.validL2ReportResponse(response, "lez.programs", requestRevision)) {
                 if (l2Context.acceptedL2Failure(response, requestContext, requestRevision)) {
                     l2ProgramsError = l2Context.responseError(response,
-                        qsTr("Known programs could not be loaded."))
+                        qsTr("Programs could not be loaded."))
                     l2ProgramsErrorDetails = response && response.error_details
                         ? response.error_details : null
                 }
@@ -153,7 +153,7 @@ QtObject {
             if (String(outcome.outcome || "") !== "found" || !outcome.value
                     || !Array.isArray(outcome.value.programs)
                     || !l2Context.validL2SingleSourceValue(outcome.value, sourceId, "sequencer")) {
-                l2ProgramsError = qsTr("Known programs returned invalid source data.")
+                l2ProgramsError = qsTr("Programs returned invalid source data.")
                 return
             }
             l2ProgramsReport = report

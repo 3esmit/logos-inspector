@@ -3,13 +3,14 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use borsh::BorshDeserialize as _;
 use common::block::Block;
 use common::transaction::LeeTransaction;
+use lee_core::program::ProgramId;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
 
 use super::{
     BlockSummary, ProgramIdEntry, TransactionSummary,
     block::{decode_sequencer_block_bytes, verify_block_content_hash},
-    programs::program_entries,
+    programs::{program_entries, program_entries_from_ids},
     summarize_block, summarize_transaction,
 };
 use crate::{parse_hash, rpc::raw_json_rpc};
@@ -36,6 +37,13 @@ pub async fn last_sequencer_block_id(endpoint: &str) -> Result<u64> {
 }
 
 pub async fn sequencer_program_ids(endpoint: &str) -> Result<Vec<ProgramIdEntry>> {
+    let response = raw_json_rpc(endpoint, "listPrograms", Value::Array(Vec::new()))
+        .await
+        .context("failed to fetch deployed Sequencer program ids")?;
+    if let Some(program_ids) = list_program_ids_from_response(&response)? {
+        return Ok(program_entries_from_ids(program_ids));
+    }
+
     let programs = sequencer_client(endpoint)?
         .get_program_ids()
         .await
@@ -209,6 +217,36 @@ fn sequencer_channel_id_from_response(response: &Value) -> Result<String> {
         })
 }
 
+fn list_program_ids_from_response(response: &Value) -> Result<Option<Vec<ProgramId>>> {
+    if response.get("error").is_some() {
+        if response.pointer("/error/code").and_then(Value::as_i64) == Some(-32601) {
+            return Ok(None);
+        }
+        return Err(super::evidence_protocol_error(
+            "Sequencer deployed program request returned an RPC error",
+        ));
+    }
+    let Some(result) = response.get("result") else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer deployed program response is malformed",
+        ));
+    };
+    let program_ids = serde_json::from_value::<Vec<ProgramId>>(result.clone()).map_err(|_| {
+        super::evidence_protocol_error("Sequencer deployed program response is malformed")
+    })?;
+    if program_ids.windows(2).any(|pair| {
+        let [previous, current] = pair else {
+            return false;
+        };
+        previous >= current
+    }) {
+        return Err(super::evidence_protocol_error(
+            "Sequencer deployed program response is not strictly ordered",
+        ));
+    }
+    Ok(Some(program_ids))
+}
+
 fn sequencer_block_bytes_from_response(response: &Value) -> Result<Option<Vec<u8>>> {
     if response.get("error").is_some() {
         return Err(super::evidence_protocol_error(
@@ -236,7 +274,7 @@ fn sequencer_block_bytes_from_response(response: &Value) -> Result<Option<Vec<u8
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Result, ensure};
+    use anyhow::{Result, bail, ensure};
 
     use super::*;
 
@@ -286,9 +324,94 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn deployed_program_response_preserves_canonical_entries() -> Result<()> {
+        let response = json!({
+            "result": [
+                [1, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0]
+            ]
+        });
+
+        let Some(program_ids) = list_program_ids_from_response(&response)? else {
+            bail!("deployed program response unexpectedly requested legacy fallback");
+        };
+        let entries = super::super::programs::program_entries_from_ids(program_ids);
+
+        ensure!(
+            entries.len() == 2,
+            "unexpected deployed program entry count"
+        );
+        let Some(first) = entries.first() else {
+            bail!("deployed program entries unexpectedly omitted the first program");
+        };
+        ensure!(
+            first.label.is_empty(),
+            "deployed program received a legacy label"
+        );
+        ensure!(
+            first.hex == "01000000".to_owned() + &"00".repeat(28),
+            "deployed program id did not use canonical little-endian bytes"
+        );
+        ensure!(
+            !first.base58.is_empty(),
+            "deployed program id did not produce a Base58 identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn only_numeric_method_not_found_falls_back_to_legacy_program_profile() -> Result<()> {
+        let fallback = list_program_ids_from_response(&json!({
+            "error": { "code": -32601, "message": "Method not found" }
+        }))?;
+        ensure!(
+            fallback.is_none(),
+            "numeric -32601 did not request legacy fallback"
+        );
+
+        for response in [
+            json!({ "error": { "code": -32603, "message": "Method not found" } }),
+            json!({ "error": { "code": "-32601", "message": "Method not found" } }),
+            json!({ "error": null }),
+        ] {
+            let error = list_program_response_error(&response)?;
+            ensure!(
+                super::super::is_evidence_protocol_error(&error),
+                "non-exact method error was not classified as a protocol failure"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_or_unordered_deployed_program_responses_are_protocol_failures() -> Result<()> {
+        for response in [
+            json!({}),
+            json!({ "result": null }),
+            json!({ "result": [[1, 2, 3]] }),
+            json!({ "result": [[2, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]] }),
+            json!({ "result": [[1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]] }),
+        ] {
+            let error = list_program_response_error(&response)?;
+            ensure!(
+                super::super::is_evidence_protocol_error(&error),
+                "invalid deployed program response was not classified as a protocol failure"
+            );
+        }
+        Ok(())
+    }
+
     fn identity_response_error(response: &Value) -> Result<anyhow::Error> {
         let Err(error) = sequencer_channel_id_from_response(response) else {
             anyhow::bail!("invalid identity response unexpectedly succeeded");
+        };
+        Ok(error)
+    }
+
+    fn list_program_response_error(response: &Value) -> Result<anyhow::Error> {
+        let Err(error) = list_program_ids_from_response(response) else {
+            bail!("invalid deployed program response unexpectedly succeeded");
         };
         Ok(error)
     }

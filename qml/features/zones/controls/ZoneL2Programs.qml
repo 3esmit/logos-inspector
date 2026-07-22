@@ -38,7 +38,7 @@ ColumnLayout {
     ListModel {
         id: tools
 
-        ListElement { value: "programs"; label: "Known Programs" }
+        ListElement { value: "programs"; label: "Programs" }
         ListElement { value: "interact"; label: "Interact" }
         ListElement { value: "proof"; label: "Commitment Proof" }
         ListElement { value: "nonces"; label: "Account Nonces" }
@@ -145,7 +145,7 @@ ColumnLayout {
             Layout.fillWidth: true
 
             Text {
-                text: qsTr("Known Programs (%1)")
+                text: qsTr("Programs (%1)")
                     .arg(Presentation.numberText(root.zoneState.l2Programs.length))
                 color: root.theme.text
                 textFormat: Text.PlainText
@@ -195,7 +195,7 @@ ColumnLayout {
             visible: root.zoneState.l2ProgramsLoaded
                 && root.zoneState.l2Programs.length === 0
                 && root.zoneState.l2ProgramsError.length === 0
-            text: qsTr("Selected Sequencer returned no known programs")
+            text: qsTr("Selected Sequencer returned no programs")
             color: root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: root.theme.dataText
