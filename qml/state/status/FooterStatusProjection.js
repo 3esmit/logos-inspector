@@ -447,8 +447,6 @@ function footerFieldValue(root, key) {
     case "messaging.message_propagated_events_recent":
     case "messaging.message_received_events_recent":
     case "messaging.message_error_events_recent":
-    case "messaging.publish_latency_ms":
-    case "messaging.receive_latency_ms":
         return root.valueOrNa(root.model.metrics.dashboardMetricValue(key))
     case "messaging.bootstrap_connected":
         return qsTr("n/a")

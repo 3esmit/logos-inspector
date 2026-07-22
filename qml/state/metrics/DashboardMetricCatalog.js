@@ -38,9 +38,7 @@ function dashboardGraphKeys() {
         "messaging.lightpush_requests_recent",
         "messaging.peer_exchange_requests_recent",
         "messaging.store_messages",
-        "messaging.store_errors_recent",
-        "messaging.publish_latency_ms",
-        "messaging.receive_latency_ms"
+        "messaging.store_errors_recent"
     ]
 }
 
@@ -652,9 +650,6 @@ function dashboardMetricRawValue(root, key) {
         return root.moduleMetricValue("messaging", ["waku_store_messages", "waku_archive_messages"])
     case "messaging.store_errors_recent":
         return dashboardMetricAggregateValue(root, key)
-    case "messaging.publish_latency_ms":
-    case "messaging.receive_latency_ms":
-        return null
     default:
         return null
     }

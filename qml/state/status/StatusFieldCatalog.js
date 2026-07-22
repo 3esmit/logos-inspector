@@ -51,8 +51,6 @@ function footerSelectorGroups(channelStatuses) {
             "messaging.message_propagated_events_recent",
             "messaging.message_received_events_recent",
             "messaging.message_error_events_recent",
-            "messaging.publish_latency_ms",
-            "messaging.receive_latency_ms",
             "messaging.last_error"
         ]) },
         { title: qsTr("Overall"), fields: fields([
@@ -105,9 +103,7 @@ function dashboardGraphGroups() {
             "messaging.message_sent_events_recent",
             "messaging.message_propagated_events_recent",
             "messaging.message_received_events_recent",
-            "messaging.message_error_events_recent",
-            "messaging.publish_latency_ms",
-            "messaging.receive_latency_ms"
+            "messaging.message_error_events_recent"
         ], "dashboard") }
     ]
 }
@@ -187,6 +183,26 @@ function normalizedFooterFieldSelections(value) {
     for (const key in source) {
         if (isChannelFooterKey(key)) {
             normalized[key] = source[key] === true
+        }
+    }
+    return normalized
+}
+
+function normalizedDashboardGraphSelections(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value)
+        ? value : ({})
+    const defaults = defaultDashboardGraphSelections()
+    const normalized = {}
+    const groups = dashboardGraphGroups()
+    for (let i = 0; i < groups.length; ++i) {
+        const fields = groups[i].fields || []
+        for (let j = 0; j < fields.length; ++j) {
+            const key = String(fields[j].key || "")
+            if (!key.length) {
+                continue
+            }
+            normalized[key] = source[key] === undefined
+                ? defaults[key] === true : source[key] === true
         }
     }
     return normalized
@@ -322,8 +338,6 @@ function shortLabel(key) {
         "messaging.message_propagated_events_recent": qsTr("Propagated"),
         "messaging.message_received_events_recent": qsTr("Received"),
         "messaging.message_error_events_recent": qsTr("Errors"),
-        "messaging.publish_latency_ms": qsTr("Pub n/a"),
-        "messaging.receive_latency_ms": qsTr("Recv n/a"),
         "messaging.last_error": qsTr("Delivery error"),
         "overall.status": qsTr("Overall"),
         "overall.main_risk": qsTr("Risk"),
@@ -462,8 +476,6 @@ function selectorLabels() {
         "messaging.message_propagated_events_recent": qsTr("Recent propagation events"),
         "messaging.message_received_events_recent": qsTr("Total received messages"),
         "messaging.message_error_events_recent": qsTr("Total Delivery errors"),
-        "messaging.publish_latency_ms": qsTr("Publish latency"),
-        "messaging.receive_latency_ms": qsTr("Receive latency"),
         "messaging.last_error": qsTr("Last Delivery error"),
         "overall.status": qsTr("Overall status"),
         "overall.main_risk": qsTr("Main risk"),
@@ -538,8 +550,6 @@ function footerDetails() {
         "messaging.message_propagated_events_recent": qsTr("Network propagations observed by the Delivery event watcher in the selected window"),
         "messaging.message_received_events_recent": qsTr("Delivery message counter total"),
         "messaging.message_error_events_recent": qsTr("Delivery error counter total"),
-        "messaging.publish_latency_ms": qsTr("Not exposed by current Delivery metrics"),
-        "messaging.receive_latency_ms": qsTr("Not exposed by current Delivery metrics"),
         "messaging.last_error": qsTr("Latest Delivery error"),
         "overall.status": qsTr("healthy, degraded, or down"),
         "overall.main_risk": qsTr("Most important current risk"),
