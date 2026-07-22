@@ -238,6 +238,8 @@ TestCase {
 
         verify(keys.indexOf("bedrock.peer_count") >= 0)
         verify(keys.indexOf("messaging.store_errors_recent") >= 0)
+        verify(keys.indexOf("messaging.publish_latency_ms") < 0)
+        verify(keys.indexOf("messaging.receive_latency_ms") < 0)
         compare(DashboardMetricCatalog.dashboardMetricGroup("storage.failed_transfers_recent"), "Storage")
         compare(DashboardMetricCatalog.dashboardMetricLabel("storage.failed_transfers_recent"), "transfer failures in window")
         compare(DashboardMetricCatalog.dashboardMetricLabel(

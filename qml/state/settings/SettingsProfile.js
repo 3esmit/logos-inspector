@@ -67,8 +67,8 @@ function applySettingsState(root, value) {
             root.metrics.footerFieldRevision += 1
         }
         if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
-            root.metrics.dashboardGraphSelections = root.mergeMap(
-                root.metrics.defaultDashboardGraphSelections(), value.dashboard_graphs)
+            root.metrics.dashboardGraphSelections = StatusFieldCatalog
+                .normalizedDashboardGraphSelections(value.dashboard_graphs)
             root.metrics.dashboardGraphRevision += 1
         }
         root.zoneMenuSelections = normalizedZoneMenuSelections(value.zone_navigation)

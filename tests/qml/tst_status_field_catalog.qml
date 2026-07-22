@@ -32,7 +32,7 @@ TestCase {
         verify(footer["storage.failed_transfers_recent"])
         verify(!footer["network.chain_id"])
         verify(dashboard["bedrock.finality_lag_seconds"])
-        verify(!dashboard["messaging.publish_latency_ms"])
+        verify(dashboard["messaging.publish_latency_ms"] === undefined)
     }
 
     function test_footer_selection_migration_removes_single_zone_fields() {
@@ -50,6 +50,20 @@ TestCase {
         verify(selections["channels.summary"] === undefined)
         verify(selections["channel." + "a".repeat(64)])
         verify(!selections["storage.module"])
+    }
+
+    function test_dashboard_selection_migration_removes_unavailable_delivery_latency_fields() {
+        const selections = StatusFieldCatalog.normalizedDashboardGraphSelections({
+            "bedrock.peer_count": true,
+            "storage.peer_count": false,
+            "messaging.publish_latency_ms": true,
+            "messaging.receive_latency_ms": true
+        })
+
+        verify(selections["bedrock.peer_count"])
+        verify(!selections["storage.peer_count"])
+        verify(selections["messaging.publish_latency_ms"] === undefined)
+        verify(selections["messaging.receive_latency_ms"] === undefined)
     }
 
     function test_configured_zones_are_individual_footer_toggles() {
@@ -172,8 +186,6 @@ TestCase {
             "messaging.message_propagated_events_recent": "Recent propagation events",
             "messaging.message_received_events_recent": "Total received messages",
             "messaging.message_error_events_recent": "Total Delivery errors",
-            "messaging.publish_latency_ms": "Publish latency",
-            "messaging.receive_latency_ms": "Receive latency",
             "messaging.last_error": "Last Delivery error",
             "overall.status": "Overall status",
             "overall.main_risk": "Main risk",

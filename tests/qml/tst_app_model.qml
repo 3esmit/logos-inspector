@@ -2748,11 +2748,15 @@ TestCase {
                     storage_refresh_rate: 33,
                     footer_fields: {
                         "storage.module": false,
-                        "overall.status": true
+                        "overall.status": true,
+                        "messaging.publish_latency_ms": true,
+                        "messaging.receive_latency_ms": true
                     },
                     dashboard_graphs: {
                         "bedrock.peer_count": true,
-                        "storage.peer_count": false
+                        "storage.peer_count": false,
+                        "messaging.publish_latency_ms": true,
+                        "messaging.receive_latency_ms": true
                     }
                 },
                 text: "OK",
@@ -2767,8 +2771,12 @@ TestCase {
         compare(model.metrics.storageRefreshRate, 33)
         verify(!model.metrics.footerFieldSelections["storage.module"])
         verify(model.metrics.footerFieldSelections["overall.status"])
+        verify(model.metrics.footerFieldSelections["messaging.publish_latency_ms"] === undefined)
+        verify(model.metrics.footerFieldSelections["messaging.receive_latency_ms"] === undefined)
         verify(model.metrics.dashboardGraphSelections["bedrock.peer_count"])
         verify(!model.metrics.dashboardGraphSelections["storage.peer_count"])
+        verify(model.metrics.dashboardGraphSelections["messaging.publish_latency_ms"] === undefined)
+        verify(model.metrics.dashboardGraphSelections["messaging.receive_latency_ms"] === undefined)
         compare(model.metrics.footerFieldRevision, footerRevision + 1)
         compare(model.metrics.dashboardGraphRevision, graphRevision + 1)
 
@@ -2778,8 +2786,12 @@ TestCase {
         compare(payload.storage_refresh_rate, 33)
         verify(!payload.footer_fields["storage.module"])
         verify(payload.footer_fields["overall.status"])
+        verify(payload.footer_fields["messaging.publish_latency_ms"] === undefined)
+        verify(payload.footer_fields["messaging.receive_latency_ms"] === undefined)
         verify(payload.dashboard_graphs["bedrock.peer_count"])
         verify(!payload.dashboard_graphs["storage.peer_count"])
+        verify(payload.dashboard_graphs["messaging.publish_latency_ms"] === undefined)
+        verify(payload.dashboard_graphs["messaging.receive_latency_ms"] === undefined)
 
         fakeHost.calls = []
         model.saveSettingsState()
