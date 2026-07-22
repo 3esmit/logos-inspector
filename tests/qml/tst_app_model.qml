@@ -1565,6 +1565,7 @@ TestCase {
             }
         }
 
+        fakeHost.calls = []
         model.loadSettingsState()
 
         compare(model.storageRestUrl, fallbackEndpoint)
@@ -2792,6 +2793,19 @@ TestCase {
         verify(!payload.dashboard_graphs["storage.peer_count"])
         verify(payload.dashboard_graphs["messaging.publish_latency_ms"] === undefined)
         verify(payload.dashboard_graphs["messaging.receive_latency_ms"] === undefined)
+
+        const migrationSaves = fakeHost.calls.filter(function (call) {
+            return call.method === "saveSettingsState"
+        })
+        compare(migrationSaves.length, 1)
+        verify(migrationSaves[0].args[0].footer_fields[
+            "messaging.publish_latency_ms"] === undefined)
+        verify(migrationSaves[0].args[0].footer_fields[
+            "messaging.receive_latency_ms"] === undefined)
+        verify(migrationSaves[0].args[0].dashboard_graphs[
+            "messaging.publish_latency_ms"] === undefined)
+        verify(migrationSaves[0].args[0].dashboard_graphs[
+            "messaging.receive_latency_ms"] === undefined)
 
         fakeHost.calls = []
         model.saveSettingsState()

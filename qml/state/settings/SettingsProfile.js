@@ -35,6 +35,7 @@ function updatedBackupContents(contents, area, enabled) {
 
 function applySettingsState(root, value) {
     with (root) {
+        let selectionMigrationRequired = false
         settingsStateError = ""
         root.loadNetworkProfileSettings(value)
         root.loadNetworkConnectorConfig(value)
@@ -62,13 +63,20 @@ function applySettingsState(root, value) {
         root.metrics.storageRefreshRate = root.metrics.canonicalRefreshRate(
             root.numberSetting(value, "storage_refresh_rate", root.metrics.storageRefreshRate))
         if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
-            root.metrics.footerFieldSelections = StatusFieldCatalog
+            const normalizedFooterFields = StatusFieldCatalog
                 .normalizedFooterFieldSelections(value.footer_fields)
+            selectionMigrationRequired = selectionMapsDiffer(
+                value.footer_fields, normalizedFooterFields)
+            root.metrics.footerFieldSelections = normalizedFooterFields
             root.metrics.footerFieldRevision += 1
         }
         if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
-            root.metrics.dashboardGraphSelections = StatusFieldCatalog
+            const normalizedDashboardGraphs = StatusFieldCatalog
                 .normalizedDashboardGraphSelections(value.dashboard_graphs)
+            selectionMigrationRequired = selectionMapsDiffer(
+                value.dashboard_graphs, normalizedDashboardGraphs)
+                || selectionMigrationRequired
+            root.metrics.dashboardGraphSelections = normalizedDashboardGraphs
             root.metrics.dashboardGraphRevision += 1
         }
         root.zoneMenuSelections = normalizedZoneMenuSelections(value.zone_navigation)
@@ -77,7 +85,30 @@ function applySettingsState(root, value) {
         root.social.loadSettings(value)
         root.favoriteStore.load(value.favorites)
         settingsStateLoaded = true
+        if (selectionMigrationRequired) {
+            root.saveSettingsState()
+        }
     }
+}
+
+function selectionMapsDiffer(source, normalized) {
+    const current = source && typeof source === "object" && !Array.isArray(source)
+        ? source : ({})
+    const expected = normalized && typeof normalized === "object" && !Array.isArray(normalized)
+        ? normalized : ({})
+    const keys = {}
+    for (const key in current) {
+        keys[key] = true
+    }
+    for (const key in expected) {
+        keys[key] = true
+    }
+    for (const key in keys) {
+        if (current[key] !== expected[key]) {
+            return true
+        }
+    }
+    return false
 }
 
 function settingsStatePayload(root) {
