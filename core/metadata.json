@@ -1,14 +1,18 @@
 {
   "name": "logos_inspector",
   "display_name": "Logos Inspector",
-  "version": "0.2.0-rc6",
+  "version": "0.2.0-rc7",
   "description": "Core runtime module for Logos Inspector",
   "author": "Logos Core Team",
   "type": "core",
   "interface": "universal",
   "category": "tools",
   "main": "logos_inspector_plugin",
-  "dependencies": [],
+  "dependencies": [
+    "blockchain_module",
+    "storage_module",
+    "delivery_module"
+  ],
   "include": [],
   "capabilities": [],
   "nix": {
