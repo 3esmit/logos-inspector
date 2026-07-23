@@ -470,6 +470,7 @@ QtObject {
 
     property string programTab: "idls"
     property string localWalletTab: "profiles"
+    property string basecampWalletTab: "provider"
     property string localWalletLookupTarget: ""
     property alias settingsSection: appShellState.settingsSection
     property alias settingsNetworkSection: appShellState.settingsNetworkSection
@@ -567,6 +568,11 @@ QtObject {
             }
 
         }
+    }
+    property Wallet.BasecampLezWalletState basecampWallet: Wallet.BasecampLezWalletState {
+        id: basecampWalletState
+
+        bridge: root.bridge
     }
     property alias walletStateLoaded: walletState.loaded
     property bool settingsStateLoaded: false

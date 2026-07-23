@@ -530,7 +530,7 @@ Item {
 
     Component {
         id: localWalletPage
-        WalletPages.LocalWalletPage {
+        WalletPages.WalletPage {
             theme: theme
             model: appModel
         }
