@@ -12,6 +12,22 @@ QtObject {
         if (!bridge || !model) {
             return 0
         }
+        const basecampModules = typeof bridge.prefersBasecampModules === "function"
+            && bridge.prefersBasecampModules()
+        if (basecampModules
+                && typeof bridge.ensureRuntimeModuleEventOwnership === "function") {
+            let completedSynchronously = false
+            let count = 0
+            const resolved = bridge.ensureRuntimeModuleEventOwnership(function () {
+                count = root.installSubscriptionCatalog(true)
+                completedSynchronously = true
+            })
+            return resolved === true && completedSynchronously ? count : 0
+        }
+        return root.installSubscriptionCatalog(basecampModules)
+    }
+
+    function installSubscriptionCatalog(basecampModules) {
         if (typeof bridge.startModuleWatcher === "function") {
             const started = bridge.startModuleWatcher()
             if (started === false) {
@@ -31,8 +47,7 @@ QtObject {
             const subscribed = bridge.subscribeModuleEvents(moduleName, events)
             count += subscribed
             if (moduleName === String(model.deliveryModule || "")
-                    && typeof bridge.prefersBasecampModules === "function"
-                    && bridge.prefersBasecampModules()) {
+                    && basecampModules) {
                 const ready = subscribed === events.length
                 root.ingest(moduleName,
                     ready ? "eventStreamReady" : "eventStreamUnavailable", [{

@@ -47,6 +47,17 @@ QtObject {
                 return root.bridge.callModule(root.inspectorModule, method, Array.isArray(args) ? args : [])
             }
 
+            function requestInspector(method, args, callback) {
+                return root.requestModuleAsync(
+                    root.inspectorModule,
+                    method,
+                    Array.isArray(args) ? args : [],
+                    "",
+                    false,
+                    callback
+                )
+            }
+
             function prefersBasecampModules() {
                 return root.prefersBasecampModules()
             }
@@ -724,6 +735,17 @@ QtObject {
             function callInspector(method, args) {
                 return root.bridge.callModule(root.inspectorModule, method, Array.isArray(args) ? args : [])
             }
+
+            function requestInspector(method, args, callback) {
+                return root.requestModuleAsync(
+                    root.inspectorModule,
+                    method,
+                    Array.isArray(args) ? args : [],
+                    "",
+                    false,
+                    callback
+                )
+            }
         }
         compatibilityAvailability: root.capabilityLocalAvailability()
     }
@@ -1374,15 +1396,30 @@ QtObject {
 
     function loadIdlState() {
         const response = bridge.callModule(inspectorModule, "loadIdlState", [])
+        return applyIdlStateResponse(response)
+    }
+
+    function loadIdlStateAsync(callback) {
+        return requestModuleAsync(inspectorModule, "loadIdlState", [], "", false,
+            function (response) {
+                applyIdlStateResponse(response)
+                if (typeof callback === "function") {
+                    callback(response)
+                }
+            })
+    }
+
+    function applyIdlStateResponse(response) {
         if (!response.ok || !response.value || typeof response.value !== "object") {
             idlRegistry.loaded = true
-            return
+            return false
         }
         idlRegistry.load(response.value)
         accountIdlSelections = response.value.account_idl_selections && typeof response.value.account_idl_selections === "object"
             ? response.value.account_idl_selections
             : ({})
         accountIdlSelectionRevision += 1
+        return true
     }
 
     function saveIdlState() { return AppModelIdentity.saveIdlState(root) }
@@ -1396,6 +1433,8 @@ QtObject {
     }
 
     function loadSettingsState() { return AppModelIdentity.loadSettingsState(root) }
+
+    function loadSettingsStateAsync(callback) { return AppModelIdentity.loadSettingsStateAsync(root, callback) }
 
     function restoreDefaultSettings() { return AppModelIdentity.restoreDefaultSettings(root) }
 
@@ -1422,6 +1461,8 @@ QtObject {
     function setSettingsBackupContent(area, enabled) { return backupImportState.setSettingsBackupContent(area, enabled) }
 
     function loadBackupCatalog() { return backupCatalogState.load() }
+
+    function loadBackupCatalogAsync(callback) { return backupCatalogState.loadAsync(callback) }
 
     function createLocalSettingsBackup(label, encrypted, contents) { return backupCatalogState.createLocal(label, encrypted === true, walletProfile(), backupImportState.normalizedBackupContents(contents || settingsBackupContents)) }
 
@@ -1636,8 +1677,19 @@ QtObject {
 
     function loadCapabilityRegistry() { return capabilityGateState.loadRegistry(root.prefersBasecampModules(), capabilityRegistryRuntimeInputs()) }
 
+    function loadCapabilityRegistryAsync(callback) {
+        return capabilityGateState.loadRegistryAsync(
+            root.prefersBasecampModules(),
+            capabilityRegistryRuntimeInputs(),
+            callback
+        )
+    }
+
     function refreshCapabilityRegistryIfLoaded() {
         if (capabilityRegistryLoaded) {
+            if (prefersBasecampModules()) {
+                return loadCapabilityRegistryAsync()
+            }
             loadCapabilityRegistry()
         }
     }

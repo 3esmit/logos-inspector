@@ -59,8 +59,8 @@ TestCase {
         property var calls: []
         property var asyncResponses: ({})
         property int nextAsyncToken: 1
-        property string asyncBridgeSchemaResponse: "logos-inspector-async-bridge/v1"
-        property bool logosInspectorOwnsRuntimeModuleEvents: true
+        property var logosInspectorOwnsRuntimeModuleEvents: undefined
+        property bool runtimeModuleEventOwnershipResponse: true
 
         function onModuleEvent(moduleName, eventName) {
             subscriptions = subscriptions.concat([{
@@ -71,10 +71,6 @@ TestCase {
         }
 
         function callModule(moduleName, method, args) {
-            if (String(moduleName || "") === "logos_inspector"
-                    && String(method || "") === "asyncBridgeSchema") {
-                return JSON.stringify(asyncBridgeSchemaResponse)
-            }
             calls = calls.concat([{
                 moduleName: String(moduleName || ""),
                 method: String(method || ""),
@@ -89,6 +85,11 @@ TestCase {
                 method: String(method || ""),
                 args: args || []
             }])
+            if (String(moduleName || "") === "logos_inspector"
+                    && String(method || "") === "logosInspectorOwnsRuntimeModuleEvents") {
+                callback(JSON.stringify(runtimeModuleEventOwnershipResponse))
+                return
+            }
             if (method === "callAsync") {
                 const token = "event-token-" + nextAsyncToken
                 nextAsyncToken += 1
@@ -179,6 +180,19 @@ TestCase {
             return true
         }
 
+        function backendOwnsRuntimeModuleEvents() {
+            return true
+        }
+
+        function callModuleJson(moduleName, method, argsJson) {
+            calls = calls.concat([{
+                moduleName: String(moduleName || ""),
+                method: String(method || ""),
+                args: JSON.parse(String(argsJson || "[]"))
+            }])
+            return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
+        }
+
         function callModule(moduleName, method, args) {
             calls = calls.concat([{
                 moduleName: String(moduleName || ""),
@@ -260,8 +274,8 @@ TestCase {
         basecampHost.calls = []
         basecampHost.asyncResponses = ({})
         basecampHost.nextAsyncToken = 1
-        basecampHost.asyncBridgeSchemaResponse = "logos-inspector-async-bridge/v1"
-        basecampHost.logosInspectorOwnsRuntimeModuleEvents = true
+        basecampHost.logosInspectorOwnsRuntimeModuleEvents = undefined
+        basecampHost.runtimeModuleEventOwnershipResponse = true
         replacementHost.subscriptions = []
         directEventOwnerHost.subscriptions = []
         directEventOwnerHost.calls = []
@@ -474,11 +488,15 @@ TestCase {
         verify(model.metrics.deliveryModuleEventStreamReason.indexOf("failed to start") >= 0)
     }
 
-    function test_basecamp_subscriptions_make_zero_traffic_coverage_explicit() {
+    function test_basecamp_core_relay_makes_zero_traffic_coverage_explicit() {
         bridge.host = basecampHost
 
         tryCompare(model.metrics, "deliveryModuleEventStreamStatus", "ready")
-        compare(basecampHost.subscriptions.length, 17)
+        compare(basecampHost.subscriptions.length, 0)
+        verify(basecampHost.calls.some(function (call) {
+            return call.moduleName === "logos_inspector"
+                && call.method === "logosInspectorOwnsRuntimeModuleEvents"
+        }))
         compare(model.metrics.dashboardMetricValue(
             "messaging.message_sent_events_recent"), null)
         verify(model.metrics.deliveryModuleEventMetricUnavailableReason(
@@ -487,7 +505,7 @@ TestCase {
 
     function test_basecamp_event_projects_without_second_runtime_ingress() {
         bridge.host = basecampHost
-        verify(!intake.forwardsRuntimeOperationEvents())
+        tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
         basecampHost.calls = []
 
         verify(intake.ingest(model.deliveryModule, "messageSent", ["request-2", "hash-2"]))
@@ -497,9 +515,9 @@ TestCase {
     }
 
     function test_basecamp_without_native_event_owner_keeps_legacy_ingress() {
+        basecampHost.runtimeModuleEventOwnershipResponse = false
         bridge.host = basecampHost
-        basecampHost.logosInspectorOwnsRuntimeModuleEvents = false
-        verify(intake.forwardsRuntimeOperationEvents())
+        tryVerify(function () { return intake.forwardsRuntimeOperationEvents() })
         basecampHost.calls = []
 
         verify(intake.ingest(model.deliveryModule, "messageSent", ["request-3", "hash-3"]))

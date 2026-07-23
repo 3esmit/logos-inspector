@@ -10,6 +10,16 @@ TestCase {
     QtObject {
         id: gateway
 
+        property int asyncRequestCount: 0
+        property string asyncMethod: ""
+        property var asyncArgs: []
+        property var asyncResponse: ({
+            ok: false,
+            value: null,
+            text: "",
+            error: "async unavailable"
+        })
+
         function callInspector(method, args) {
             return {
                 ok: false,
@@ -21,6 +31,17 @@ TestCase {
 
         function prefersBasecampModules() {
             return false
+        }
+
+        function requestInspector(method, args, callback) {
+            asyncRequestCount += 1
+            asyncMethod = String(method || "")
+            asyncArgs = args || []
+            const response = asyncResponse
+            Qt.callLater(function () {
+                callback(response)
+            })
+            return asyncRequestCount
         }
     }
 
@@ -44,6 +65,15 @@ TestCase {
     }
 
     function init() {
+        gateway.asyncRequestCount = 0
+        gateway.asyncMethod = ""
+        gateway.asyncArgs = []
+        gateway.asyncResponse = ({
+            ok: false,
+            value: null,
+            text: "",
+            error: "async unavailable"
+        })
         state.connectorConfig = ({})
         state.blockchainSourceMode = "rpc"
         state.messagingSourceMode = "rest"
@@ -52,6 +82,33 @@ TestCase {
         state.storageRestUrl = "http://storage"
         state.messagingRestUrl = "http://delivery"
         state.messagingStorePeerAddress = ""
+    }
+
+    function test_load_source_policy_async_uses_nonblocking_gateway() {
+        gateway.asyncResponse = {
+            ok: true,
+            value: {
+                defaults: {
+                    delivery_rest_endpoint: "https://delivery.test"
+                }
+            },
+            text: "OK",
+            error: ""
+        }
+        let callbackResponse = null
+
+        const requestId = state.loadSourcePolicyAsync(function (response) {
+            callbackResponse = response
+        })
+
+        compare(requestId, 1)
+        compare(gateway.asyncMethod, "sourcePolicy")
+        compare(gateway.asyncArgs.length, 0)
+        verify(!state.sourcePolicyLoaded)
+        tryVerify(function () { return callbackResponse !== null })
+        verify(state.sourcePolicyLoaded)
+        compare(state.sourcePolicy.defaults.delivery_rest_endpoint,
+                "https://delivery.test")
     }
 
     function test_messaging_network_preset_normalization_is_owned_by_source_routing() {

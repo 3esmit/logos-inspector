@@ -13,6 +13,33 @@ QtObject {
 
     function loadRegistry(prefersBasecamp, runtimeInputs) {
         const response = callGateway("capabilityRegistryReport", [prefersBasecamp === true, runtimeInputs || ({})])
+        return applyRegistryResponse(response)
+    }
+
+    function loadRegistryAsync(prefersBasecamp, runtimeInputs, callback) {
+        const args = [prefersBasecamp === true, runtimeInputs || ({})]
+        if (!gateway || typeof gateway.requestInspector !== "function") {
+            const response = {
+                ok: false,
+                value: null,
+                text: "",
+                error: qsTr("Capability registry bridge does not support asynchronous calls.")
+            }
+            applyRegistryResponse(response)
+            if (typeof callback === "function") {
+                callback(response)
+            }
+            return -1
+        }
+        return gateway.requestInspector("capabilityRegistryReport", args, function (response) {
+            applyRegistryResponse(response)
+            if (typeof callback === "function") {
+                callback(response)
+            }
+        })
+    }
+
+    function applyRegistryResponse(response) {
         if (response && response.ok === true && response.value && typeof response.value === "object" && Array.isArray(response.value.capabilities)) {
             registryReport = response.value
             registryLoaded = true

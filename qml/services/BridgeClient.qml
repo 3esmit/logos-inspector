@@ -13,6 +13,11 @@ QtObject {
     property var moduleEventSubscriptions: ({})
     property var moduleEventRegistrations: []
     property var shutdownBasecampTokenSettlements: []
+    property string basecampRuntimeModuleEventOwnership: "unknown"
+    property int basecampRuntimeModuleEventOwnershipEpoch: -1
+    property var basecampRuntimeModuleEventOwnershipCallbacks: []
+    property double basecampRuntimeModuleEventOwnershipDeadlineMs: 0
+    property bool basecampRuntimeModuleEventOwnershipProbeInFlight: false
     readonly property string basecampAsyncBridgeSchema: "logos-inspector-async-bridge/v1"
     property int basecampAsyncPollIntervalMs: 50
     property int basecampAsyncTimeoutMs: 30000
@@ -23,6 +28,12 @@ QtObject {
 
     onHostChanged: {
         hostEpoch += 1
+        basecampRuntimeModuleEventOwnershipRetryTimer.stop()
+        basecampRuntimeModuleEventOwnership = "unknown"
+        basecampRuntimeModuleEventOwnershipEpoch = -1
+        basecampRuntimeModuleEventOwnershipCallbacks = []
+        basecampRuntimeModuleEventOwnershipDeadlineMs = 0
+        basecampRuntimeModuleEventOwnershipProbeInFlight = false
         root.deactivateModuleEventCallbacks()
         moduleEventSubscriptions = ({})
         moduleEventRegistrations = []
@@ -39,6 +50,7 @@ QtObject {
 
     signal moduleEventReceived(string moduleName, string eventName, var args)
     signal callbackFailed(string error)
+    signal runtimeModuleEventOwnershipChanged(bool owned)
 
     function prefersBasecampModules() {
         return !root.closed && BridgeEnvelope.prefersBasecampModules(root.host)
@@ -48,6 +60,10 @@ QtObject {
         if (root.closed || !root.host) {
             return false
         }
+        if (root.prefersBasecampModules()) {
+            return root.basecampRuntimeModuleEventOwnershipEpoch === root.hostEpoch
+                && root.basecampRuntimeModuleEventOwnership === "owned"
+        }
         try {
             if (typeof root.host["backendOwnsRuntimeModuleEvents"] === "function"
                     && root.host["backendOwnsRuntimeModuleEvents"]() === true) {
@@ -55,7 +71,106 @@ QtObject {
             }
         } catch (error) {
         }
-        return BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
+        return false
+    }
+
+    function ensureRuntimeModuleEventOwnership(callback) {
+        if (root.closed || !root.host) {
+            root.notifyCallback(callback, false)
+            return false
+        }
+        if (!root.prefersBasecampModules() || root.backendOwnsRuntimeModuleEvents()) {
+            const owned = root.backendOwnsRuntimeModuleEvents()
+            root.notifyCallback(callback, owned)
+            return owned
+        }
+        const callbacks = Array.isArray(root.basecampRuntimeModuleEventOwnershipCallbacks)
+            ? root.basecampRuntimeModuleEventOwnershipCallbacks.slice()
+            : []
+        if (typeof callback === "function") {
+            callbacks.push(callback)
+        }
+        root.basecampRuntimeModuleEventOwnershipCallbacks = callbacks
+        if (root.basecampRuntimeModuleEventOwnershipEpoch === root.hostEpoch
+                && root.basecampRuntimeModuleEventOwnership === "unavailable") {
+            root.finishBasecampRuntimeModuleEventOwnership(false)
+            return false
+        }
+        if (root.basecampRuntimeModuleEventOwnershipEpoch === root.hostEpoch
+                && root.basecampRuntimeModuleEventOwnership === "probing") {
+            return false
+        }
+        root.basecampRuntimeModuleEventOwnership = "probing"
+        root.basecampRuntimeModuleEventOwnershipEpoch = root.hostEpoch
+        root.basecampRuntimeModuleEventOwnershipDeadlineMs = Date.now()
+            + Math.max(1, root.basecampAsyncTimeoutMs)
+        root.probeBasecampRuntimeModuleEventOwnership()
+        return false
+    }
+
+    function probeBasecampRuntimeModuleEventOwnership() {
+        if (root.closed || !root.prefersBasecampModules()
+                || root.basecampRuntimeModuleEventOwnership !== "probing"
+                || root.basecampRuntimeModuleEventOwnershipEpoch !== root.hostEpoch
+                || root.basecampRuntimeModuleEventOwnershipProbeInFlight) {
+            return
+        }
+        const probeHost = root.host
+        const probeEpoch = root.hostEpoch
+        const remainingMs = Math.max(
+            0,
+            root.basecampRuntimeModuleEventOwnershipDeadlineMs - Date.now()
+        )
+        if (remainingMs <= 0) {
+            root.finishBasecampRuntimeModuleEventOwnership(false)
+            return
+        }
+        root.basecampRuntimeModuleEventOwnershipProbeInFlight = true
+        const dispatched = BridgeEnvelope.probeBasecampInspectorRuntimeModuleEventOwnership(
+            probeHost,
+            Math.min(root.basecampAsyncStartAttemptTimeoutMs, remainingMs),
+            function (response) {
+                if (root.closed
+                        || root.host !== probeHost
+                        || root.hostEpoch !== probeEpoch
+                        || root.basecampRuntimeModuleEventOwnershipEpoch !== probeEpoch) {
+                    return
+                }
+                root.basecampRuntimeModuleEventOwnershipProbeInFlight = false
+                if (response && response.ok === true && response.value === true) {
+                    root.finishBasecampRuntimeModuleEventOwnership(true)
+                    return
+                }
+                if (BridgeEnvelope.retryableBasecampStartError(response)
+                        && Date.now() < root.basecampRuntimeModuleEventOwnershipDeadlineMs) {
+                    root.basecampRuntimeModuleEventOwnershipRetryTimer.restart()
+                    return
+                }
+                root.finishBasecampRuntimeModuleEventOwnership(false)
+            }
+        )
+        if (!dispatched) {
+            root.basecampRuntimeModuleEventOwnershipProbeInFlight = false
+            root.finishBasecampRuntimeModuleEventOwnership(false)
+        }
+    }
+
+    function finishBasecampRuntimeModuleEventOwnership(owned) {
+        if (root.closed) {
+            return
+        }
+        root.basecampRuntimeModuleEventOwnershipRetryTimer.stop()
+        root.basecampRuntimeModuleEventOwnershipProbeInFlight = false
+        root.basecampRuntimeModuleEventOwnership = owned === true ? "owned" : "unavailable"
+        root.basecampRuntimeModuleEventOwnershipEpoch = root.hostEpoch
+        const callbacks = Array.isArray(root.basecampRuntimeModuleEventOwnershipCallbacks)
+            ? root.basecampRuntimeModuleEventOwnershipCallbacks.slice()
+            : []
+        root.basecampRuntimeModuleEventOwnershipCallbacks = []
+        root.runtimeModuleEventOwnershipChanged(owned === true)
+        for (let index = 0; index < callbacks.length; ++index) {
+            root.notifyCallback(callbacks[index], owned === true)
+        }
     }
 
     function startModuleWatcher() {
@@ -103,20 +218,10 @@ QtObject {
         const inspectorAsyncRequest = root.prefersBasecampModules()
             && moduleName === "logos_inspector"
             && method !== "moduleVersion"
-        const basecampSchemaProbe = inspectorAsyncRequest
-            ? BridgeEnvelope.probeBasecampInspectorAsyncBridge(requestHost)
-            : {
-                status: "absent",
-                schema: "",
-                error: ""
-            }
-        const reportedBasecampSchema = String(basecampSchemaProbe.schema || "")
         const basecampPolling = BridgeEnvelope.usesBasecampInspectorPolling(
             requestHost,
             moduleName,
-            method,
-            root.basecampAsyncBridgeSchema,
-            reportedBasecampSchema
+            method
         )
         const authoritativeCompletion = basecampPolling
             && moduleName === "logos_inspector"
@@ -168,23 +273,6 @@ QtObject {
 
         if (basecampPolling) {
             root.beginBasecampCall(requestId)
-            return requestId
-        }
-
-        if (inspectorAsyncRequest && basecampSchemaProbe.status === "probe_failed") {
-            Qt.callLater(function () {
-                const owner = requestLifecycle.owner
-                if (!owner) {
-                    return
-                }
-                owner.finishAsyncCall(requestId, {
-                    ok: false,
-                    value: null,
-                    text: "",
-                    error: "Logos bridge call failed: Basecamp inspector async bridge probe failed: "
-                        + String(basecampSchemaProbe.error || "unknown capability error")
-                }, requestHostEpoch)
-            })
             return requestId
         }
 
@@ -403,7 +491,7 @@ QtObject {
         }
         if (!response || response.ok !== true) {
             if (entry.authoritativeCompletion
-                    || (BridgeEnvelope.retryableBasecampPollError(response)
+                    || (BridgeEnvelope.retryableBasecampStartError(response)
                         && Date.now() < entry.deadlineMs)) {
                 const pending = root.copyPendingCalls()
                 const pendingEntry = pending[requestId]
@@ -844,6 +932,10 @@ QtObject {
             return true
         }
         if (basecampSubscription) {
+            if (root.backendOwnsRuntimeModuleEvents()) {
+                root.rememberActiveModuleEventSubscription(key, null, null)
+                return true
+            }
             let globallyRegistered = false
             try {
                 if (subscriptionHost && subscriptionHost["onModuleEvent"]) {
@@ -1072,6 +1164,9 @@ QtObject {
         root.closed = true
         root.hostEpoch += 1
         root.basecampPollTimer.stop()
+        root.basecampRuntimeModuleEventOwnershipRetryTimer.stop()
+        root.basecampRuntimeModuleEventOwnershipCallbacks = []
+        root.basecampRuntimeModuleEventOwnershipProbeInFlight = false
         root.deactivateModuleEventCallbacks()
         root.moduleEventSubscriptions = ({})
         root.moduleEventRegistrations = []
@@ -1122,6 +1217,12 @@ QtObject {
         repeat: true
         running: !root.closed && root.hasBasecampPollingCalls()
         onTriggered: root.pollBasecampCalls()
+    }
+
+    property Timer basecampRuntimeModuleEventOwnershipRetryTimer: Timer {
+        interval: Math.max(1, root.basecampAsyncPollIntervalMs)
+        repeat: false
+        onTriggered: root.probeBasecampRuntimeModuleEventOwnership()
     }
 
     Component.onDestruction: root.shutdown()

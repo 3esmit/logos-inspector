@@ -121,10 +121,7 @@ TestCase {
     component BasecampAsyncHost: QtObject {
         signal moduleEventReceived(string moduleName, string eventName, var args)
 
-        property string asyncBridgeSchemaResponse: "logos-inspector-async-bridge/v1"
-        property string schemaProbeMode: "normal"
-        property string nativeEventOwnerProbeMode: "missing"
-        property int nativeEventOwnerProbeCount: 0
+        property var runtimeModuleEventOwnershipResponse: true
         property int syncCallCount: 0
         property int asyncCallCount: 0
         property string lastModule: ""
@@ -140,10 +137,7 @@ TestCase {
         property string subscribedEvent: ""
 
         function reset() {
-            asyncBridgeSchemaResponse = "logos-inspector-async-bridge/v1"
-            schemaProbeMode = "normal"
-            nativeEventOwnerProbeMode = "missing"
-            nativeEventOwnerProbeCount = 0
+            runtimeModuleEventOwnershipResponse = true
             syncCallCount = 0
             asyncCallCount = 0
             lastModule = ""
@@ -159,50 +153,9 @@ TestCase {
             subscribedEvent = ""
         }
 
-        function callModule(moduleName, method, args) {
-            if (String(moduleName || "") === "logos_inspector"
-                    && String(method || "") === "asyncBridgeSchema") {
-                if (schemaProbeMode === "throw") {
-                    throw new Error("schema probe transport failed")
-                }
-                if (schemaProbeMode === "malformed") {
-                    return "{"
-                }
-                if (schemaProbeMode === "missing") {
-                    return JSON.stringify({ error: "Invalid response" })
-                }
-                if (schemaProbeMode === "unavailable") {
-                    return JSON.stringify({ error: "Module not connected" })
-                }
-                return JSON.stringify(asyncBridgeSchemaResponse)
-            }
-            if (String(moduleName || "") === "logos_inspector"
-                    && String(method || "") === "logosInspectorOwnsRuntimeModuleEvents") {
-                nativeEventOwnerProbeCount += 1
-                if (nativeEventOwnerProbeMode === "throw") {
-                    throw new Error("native event owner probe failed")
-                }
-                if (nativeEventOwnerProbeMode === "malformed") {
-                    return "{"
-                }
-                if (nativeEventOwnerProbeMode === "missing") {
-                    return JSON.stringify({ error: "Invalid response" })
-                }
-                if (nativeEventOwnerProbeMode === "wrapped") {
-                    return JSON.stringify({ ok: true, value: true })
-                }
-                return JSON.stringify(nativeEventOwnerProbeMode === "true")
-            }
+        function callModule(_moduleName, _method, _args) {
             syncCallCount += 1
-            lastModule = String(moduleName || "")
-            lastMethod = String(method || "")
-            lastArgs = args || []
-            return JSON.stringify(JSON.stringify({
-                ok: true,
-                value: { transport: "sync" },
-                text: "sync",
-                error: ""
-            }))
+            return JSON.stringify({ error: "unexpected synchronous Basecamp call" })
         }
 
         function callModuleAsync(moduleName, method, args, callback, timeoutMs) {
@@ -213,6 +166,11 @@ TestCase {
             lastModule = String(moduleName || "")
             lastMethod = String(method || "")
             lastArgs = args || []
+            if (lastModule === "logos_inspector"
+                    && lastMethod === "logosInspectorOwnsRuntimeModuleEvents") {
+                callback(JSON.stringify(runtimeModuleEventOwnershipResponse))
+                return
+            }
             pendingCallback = callback
             const calls = pendingAsyncCalls.slice()
             calls.push({
@@ -618,19 +576,26 @@ TestCase {
         compare(asyncResponse.value.available, 12)
     }
 
-    function test_unadvertised_basecamp_host_fails_closed() {
+    function test_basecamp_start_does_not_probe_schema_synchronously() {
         client.host = basecampAsyncHost
-        basecampAsyncHost.asyncBridgeSchemaResponse = ""
 
         client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
             asyncResponse = response
         })
 
-        tryVerify(function () { return asyncResponse !== null })
-        compare(basecampAsyncHost.pendingCount("call"), 0)
-        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
-        verify(!asyncResponse.ok)
-        verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
+        compare(basecampAsyncHost.syncCallCount, 0)
+        compare(basecampAsyncHost.pendingCount("callAsync"), 1)
+        verify(completeBasecampStart(
+            basecampAsyncHost,
+            "lai_00000000000000000000000000000001"
+        ))
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ schemaProbeFree: true })
+        ))
+        verify(asyncResponse.ok)
+        verify(asyncResponse.value.schemaProbeFree)
     }
 
     function test_basecamp_direct_values_do_not_collide_with_inspector_envelope() {
@@ -1310,9 +1275,8 @@ TestCase {
         verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
     }
 
-    function test_advertised_schema_without_async_transport_fails_closed() {
+    function test_basecamp_without_async_transport_fails_closed_without_sync_probe() {
         client.host = basecampHost
-        basecampHost.asyncBridgeSchemaResponse = client.basecampAsyncBridgeSchema
 
         client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
             asyncResponse = response
@@ -1324,76 +1288,37 @@ TestCase {
         verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
     }
 
-    function test_incompatible_reported_schema_does_not_enter_legacy_route() {
+    function test_basecamp_start_retries_not_connected_without_sync_probe() {
         client.host = basecampAsyncHost
-        basecampAsyncHost.asyncBridgeSchemaResponse = "logos-inspector-async-bridge/v2"
-
-        client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
+        const requestId = client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
+            asyncCallbackCount += 1
             asyncResponse = response
         })
 
-        tryVerify(function () { return asyncResponse !== null })
-        compare(basecampAsyncHost.pendingCount("call"), 0)
-        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
-        verify(!asyncResponse.ok)
-        verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
-    }
-
-    function test_schema_probe_throw_fails_closed() {
-        client.host = basecampAsyncHost
-        basecampAsyncHost.schemaProbeMode = "throw"
-
-        client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
-            asyncResponse = response
-        })
-
-        tryVerify(function () { return asyncResponse !== null })
-        compare(basecampAsyncHost.asyncCallCount, 0)
-        verify(!asyncResponse.ok)
-        verify(asyncResponse.error.indexOf("async bridge probe failed") >= 0)
-    }
-
-    function test_malformed_schema_probe_fails_closed() {
-        client.host = basecampAsyncHost
-        basecampAsyncHost.schemaProbeMode = "malformed"
-
-        client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
-            asyncResponse = response
-        })
-
-        tryVerify(function () { return asyncResponse !== null })
-        compare(basecampAsyncHost.asyncCallCount, 0)
-        verify(!asyncResponse.ok)
-        verify(asyncResponse.error.indexOf("async bridge probe failed") >= 0)
-    }
-
-    function test_unavailable_schema_probe_fails_closed() {
-        client.host = basecampAsyncHost
-        basecampAsyncHost.schemaProbeMode = "unavailable"
-
-        client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
-            asyncResponse = response
-        })
-
-        tryVerify(function () { return asyncResponse !== null })
-        compare(basecampAsyncHost.asyncCallCount, 0)
-        verify(!asyncResponse.ok)
-        verify(asyncResponse.error.indexOf("async bridge probe failed") >= 0)
-    }
-
-    function test_known_missing_schema_method_fails_closed() {
-        client.host = basecampAsyncHost
-        basecampAsyncHost.schemaProbeMode = "missing"
-
-        client.callModuleAsync("logos_inspector", "sourcePolicy", [], function (response) {
-            asyncResponse = response
-        })
-
-        tryVerify(function () { return asyncResponse !== null })
-        compare(basecampAsyncHost.pendingCount("call"), 0)
-        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
-        verify(!asyncResponse.ok)
-        verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
+        compare(basecampAsyncHost.syncCallCount, 0)
+        verify(basecampAsyncHost.completeNext("callAsync", JSON.stringify({
+            error: "Module not connected",
+            module: "logos_inspector",
+            method: "callAsync"
+        })))
+        compare(asyncCallbackCount, 0)
+        verify(client.pendingCalls[requestId] !== undefined)
+        client.pendingCalls[requestId].nextStartAtMs = 0
+        client.pollBasecampCalls()
+        compare(basecampAsyncHost.asyncCallCount, 2)
+        compare(basecampAsyncHost.syncCallCount, 0)
+        verify(completeBasecampStart(
+            basecampAsyncHost,
+            "lai_10101010101010101010101010101010"
+        ))
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ recovered: true })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+        compare(asyncResponse.value.recovered, true)
     }
 
     function test_json_host_does_not_use_unrelated_callback_async_method() {
@@ -1471,16 +1396,15 @@ TestCase {
         compare(replacementBasecampAsyncHost.syncCallCount, 0)
     }
 
-    function test_runtime_event_owner_compatibility_property_is_exact_boolean() {
+    function test_basecamp_event_owner_requires_async_control() {
         client.host = nativeEventOwnerPropertyHost
+        let owned = null
 
-        verify(client.backendOwnsRuntimeModuleEvents())
-        compare(nativeEventOwnerPropertyHost.probeCallCount, 0)
-
-        nativeEventOwnerPropertyHost.logosInspectorOwnsRuntimeModuleEvents = false
         verify(!client.backendOwnsRuntimeModuleEvents())
-        nativeEventOwnerPropertyHost.logosInspectorOwnsRuntimeModuleEvents = "true"
-        verify(!client.backendOwnsRuntimeModuleEvents())
+        compare(client.ensureRuntimeModuleEventOwnership(function (value) {
+            owned = value
+        }), false)
+        compare(owned, false)
         compare(nativeEventOwnerPropertyHost.probeCallCount, 0)
     }
 
@@ -1504,65 +1428,78 @@ TestCase {
         compare(moduleEventReceiptCount, 1)
     }
 
-    function test_runtime_event_owner_direct_probe_requires_exact_true() {
+    function test_basecamp_event_owner_uses_asynchronous_core_probe() {
         client.host = basecampAsyncHost
-        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
+        let owned = null
 
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        compare(client.ensureRuntimeModuleEventOwnership(function (value) {
+            owned = value
+        }), false)
+        compare(owned, true)
         verify(client.backendOwnsRuntimeModuleEvents())
-        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 1)
-
-        basecampAsyncHost.nativeEventOwnerProbeMode = "false"
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        basecampAsyncHost.nativeEventOwnerProbeMode = "wrapped"
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        basecampAsyncHost.nativeEventOwnerProbeMode = "malformed"
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        basecampAsyncHost.nativeEventOwnerProbeMode = "missing"
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        basecampAsyncHost.nativeEventOwnerProbeMode = "throw"
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 6)
+        compare(basecampAsyncHost.syncCallCount, 0)
+        compare(basecampAsyncHost.asyncCallCount, 1)
+        compare(basecampAsyncHost.lastModule, "logos_inspector")
+        compare(basecampAsyncHost.lastMethod, "logosInspectorOwnsRuntimeModuleEvents")
     }
 
-    function test_runtime_event_owner_direct_probe_is_not_cached() {
+    function test_basecamp_event_owner_retries_initial_module_connection() {
         client.host = basecampAsyncHost
-        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
-        verify(client.backendOwnsRuntimeModuleEvents())
+        client.basecampAsyncPollIntervalMs = 1
+        basecampAsyncHost.runtimeModuleEventOwnershipResponse = {
+            error: "Module not connected"
+        }
+        let owned = null
 
-        basecampAsyncHost.nativeEventOwnerProbeMode = "false"
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 2)
+        client.ensureRuntimeModuleEventOwnership(function (value) {
+            owned = value
+        })
+        compare(owned, null)
+        compare(basecampAsyncHost.syncCallCount, 0)
+        compare(basecampAsyncHost.asyncCallCount, 1)
+
+        basecampAsyncHost.runtimeModuleEventOwnershipResponse = true
+        tryVerify(function () { return owned === true })
+        verify(basecampAsyncHost.asyncCallCount >= 2)
+        verify(client.backendOwnsRuntimeModuleEvents())
+        compare(basecampAsyncHost.syncCallCount, 0)
     }
 
-    function test_runtime_event_owner_reprobes_replacement_host() {
+    function test_basecamp_core_event_owner_uses_received_signal() {
         client.host = basecampAsyncHost
-        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
-        replacementBasecampAsyncHost.nativeEventOwnerProbeMode = "false"
-        verify(client.backendOwnsRuntimeModuleEvents())
+        let owned = false
+        client.ensureRuntimeModuleEventOwnership(function (value) {
+            owned = value
+        })
 
-        client.host = replacementBasecampAsyncHost
-
-        verify(!client.backendOwnsRuntimeModuleEvents())
-        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 1)
-        compare(replacementBasecampAsyncHost.nativeEventOwnerProbeCount, 1)
-    }
-
-    function test_basecamp_module_event_uses_boolean_subscription_and_received_signal() {
-        client.host = basecampAsyncHost
-        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
-
+        verify(owned)
         verify(client.backendOwnsRuntimeModuleEvents())
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
-        compare(basecampAsyncHost.subscriptionCallCount, 1)
-        compare(basecampAsyncHost.subscribedModule, "storage_module")
-        compare(basecampAsyncHost.subscribedEvent, "storageUploadDone")
+        compare(basecampAsyncHost.subscriptionCallCount, 0)
 
         basecampAsyncHost.moduleEventReceived("storage_module", "storageUploadDone", [{ cid: "cid-1" }])
 
         compare(receivedModule, "storage_module")
         compare(receivedEvent, "storageUploadDone")
         compare(receivedArgs[0].cid, "cid-1")
+    }
+
+    function test_basecamp_without_core_event_owner_uses_legacy_subscription() {
+        client.host = basecampAsyncHost
+        basecampAsyncHost.runtimeModuleEventOwnershipResponse = false
+        let owned = true
+
+        client.ensureRuntimeModuleEventOwnership(function (value) {
+            owned = value
+        })
+
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        verify(!owned)
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        compare(basecampAsyncHost.subscriptionCallCount, 1)
+        compare(basecampAsyncHost.syncCallCount, 0)
     }
 
     function test_failed_basecamp_module_event_subscription_can_retry() {

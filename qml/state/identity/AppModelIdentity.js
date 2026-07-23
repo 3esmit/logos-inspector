@@ -13,13 +13,33 @@ function loadSettingsState(root) {
     with (root) {
         settingsStateLoaded = false
         const response = bridge.callModule(inspectorModule, "loadSettingsState", [])
-        if (!response.ok || !response.value || typeof response.value !== "object") {
+        return applyLoadedSettingsState(root, response)
+    }
+}
+
+function loadSettingsStateAsync(root, callback) {
+    with (root) {
+        settingsStateLoaded = false
+        return requestModuleAsync(inspectorModule, "loadSettingsState", [], "", false,
+            function (response) {
+                applyLoadedSettingsState(root, response)
+                if (typeof callback === "function") {
+                    callback(response)
+                }
+            })
+    }
+}
+
+function applyLoadedSettingsState(root, response) {
+    with (root) {
+        if (!response || !response.ok || !response.value || typeof response.value !== "object") {
             settingsStateLoaded = true
             settingsStateError = response && response.error ? response.error : qsTr("Settings state is not readable.")
-            return
+            return false
         }
 
         SettingsProfile.applySettingsState(root, response.value)
+        return true
     }
 }
 

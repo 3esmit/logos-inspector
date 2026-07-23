@@ -154,6 +154,10 @@ QtObject {
         return response
     }
 
+    function requestInspector(method, args, callback) {
+        return request(method, args, "", false, callback)
+    }
+
     function supportsAsync() {
         return asyncSupported
     }
