@@ -55,6 +55,8 @@ inspection, decoding, wallet, backup, and source-diagnostic commands.
 - [Inspect and interact with Logos networks](docs/inspect-and-interact.md):
   Bedrock and Zone inspection, automatic IDL decoding, program interaction,
   wallets, Delivery, and backups.
+- [Release process](docs/release-process.md): alpha release artifacts,
+  checksums, cadence, and beta/stable promotion criteria.
 
 ## Build from source
 
