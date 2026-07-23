@@ -706,6 +706,12 @@ public:
         return calls_;
     }
 
+    std::size_t callCount() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return calls_.size();
+    }
+
 private:
     mutable std::mutex mutex_;
     Mode mode_ = Mode::accept;
@@ -1582,6 +1588,7 @@ bool newBlockOverflowKeepsTransportAvailable()
         "blockchain_module",
         "newBlock",
         R"(["first"])"));
+    REQUIRE(waitUntil([&fixture] { return fixture.ingress.callCount() >= 2; }));
     REQUIRE(fixture.protocol.emitEvent(
         "blockchain_module",
         "newBlock",
