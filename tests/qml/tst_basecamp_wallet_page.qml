@@ -24,12 +24,12 @@ TestCase {
         }
 
         function callModule(moduleName, method, args) {
-            return JSON.stringify({ status: "ready" })
+            return JSON.stringify({ cliFound: true, cliPath: "/provider/bin/wallet" })
         }
 
         function callModuleAsync(moduleName, method, args, callback) {
             calls.push({ module: String(moduleName), method: String(method), args: args || [] })
-            let value = ({ status: "ready" })
+            let value = ({ cliFound: true, cliPath: "/provider/bin/wallet" })
             if (String(method) === "connectRequest") {
                 value = { requestId: "connect-request" }
             }

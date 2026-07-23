@@ -62,8 +62,15 @@ QtObject {
                 availabilityDetail = response.error
                 return
             }
+            const value = response.value && typeof response.value === "object"
+                ? response.value : ({})
+            if (value.cliFound !== true) {
+                availability = "unavailable"
+                availabilityDetail = qsTr("Wallet CLI is unavailable.")
+                return
+            }
             availability = "available"
-            availabilityDetail = providerDetail(response.value)
+            availabilityDetail = providerDetail(value)
         })
         return true
     }
@@ -578,6 +585,9 @@ QtObject {
 
     function providerDetail(value) {
         if (value && typeof value === "object") {
+            if (value.cliFound === true) {
+                return qsTr("Wallet CLI ready")
+            }
             const status = String(value.status || value.state || "")
             const detail = String(value.detail || value.message || "")
             return detail.length > 0 ? detail : status

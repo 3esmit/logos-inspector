@@ -16,6 +16,7 @@ TestCase {
         property int jobPolls: 0
         property var currentPermissions: []
         property bool statusFails: false
+        property bool cliFound: true
 
         function reset() {
             calls = []
@@ -24,6 +25,7 @@ TestCase {
             jobPolls = 0
             currentPermissions = []
             statusFails = false
+            cliFound = true
         }
 
         function callModuleAsync(moduleName, method, args, callback) {
@@ -31,7 +33,10 @@ TestCase {
             let value = ({})
             switch (String(method)) {
             case "getStatus":
-                value = statusFails ? { error: "wallet module is unavailable" } : { status: "ready" }
+                value = statusFails ? { error: "wallet module is unavailable" } : {
+                    cliFound: cliFound,
+                    cliPath: cliFound ? "/provider/bin/wallet" : ""
+                }
                 break
             case "connectRequest":
                 currentPermissions = JSON.parse(String(args[1] || "[]"))
@@ -119,6 +124,20 @@ TestCase {
         verify(wallet.checkAvailability())
         tryCompare(wallet, "availability", "unavailable")
         compare(wallet.availabilityDetail, "wallet module is unavailable")
+    }
+
+    function test_availability_requires_the_wallet_cli() {
+        provider.cliFound = false
+
+        verify(wallet.checkAvailability())
+        tryCompare(wallet, "availability", "unavailable")
+        compare(wallet.availabilityDetail, qsTr("Wallet CLI is unavailable."))
+    }
+
+    function test_availability_reports_a_ready_wallet_cli() {
+        verify(wallet.checkAvailability())
+        tryCompare(wallet, "availability", "available")
+        compare(wallet.availabilityDetail, qsTr("Wallet CLI ready"))
     }
 
     function test_connect_requests_only_accounts_and_waits_for_wallet_approval() {
