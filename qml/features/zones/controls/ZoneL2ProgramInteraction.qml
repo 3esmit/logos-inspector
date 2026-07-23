@@ -456,13 +456,13 @@ ColumnLayout {
 
         StatusMessage {
             theme: root.theme
-            tone: root.receiptMatchesCurrentTarget() ? "success" : "warning"
+            tone: root.receiptMatchesCurrentTarget() ? "info" : "warning"
             title: qsTr("Transaction submitted")
             message: root.receiptMatchesCurrentTarget()
-                ? qsTr("Transaction %1 was accepted by source %2. Exact-source readback requested.")
+                ? qsTr("Transaction %1 was submitted to Sequencer source %2. Awaiting exact-source inclusion.")
                     .arg(root.shortValue(root.receipt && root.receipt.tx_hash))
                     .arg(root.shortValue(root.receiptSourceId()))
-                : qsTr("Transaction %1 was accepted by source %2, but the active Zone or Sequencer changed. Return to that exact source to inspect it.")
+                : qsTr("Transaction %1 was submitted to Sequencer source %2, but the active Zone or Sequencer changed. Return to that exact source to check inclusion.")
                     .arg(root.shortValue(root.receipt && root.receipt.tx_hash))
                     .arg(root.shortValue(root.receiptSourceId()))
             Layout.fillWidth: true
@@ -473,7 +473,7 @@ ColumnLayout {
             theme: root.theme
             tone: "warning"
             title: qsTr("Private sync pending")
-            message: qsTr("Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state.")
+            message: qsTr("Transaction was submitted and is awaiting inclusion. After inclusion, use Read incoming in Local Wallet to update local private account state.")
             Layout.fillWidth: true
         }
 

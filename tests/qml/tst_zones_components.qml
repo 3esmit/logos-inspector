@@ -1394,7 +1394,7 @@ TestCase {
         verify(hasVisibleText(transactionDetail, "Local submission metadata"))
         verify(hasVisibleText(transactionDetail, "Private sync pending"))
         verify(hasVisibleText(transactionDetail,
-            "Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state."))
+            "Transaction was submitted and is awaiting inclusion. After inclusion, use Read incoming in Local Wallet to update local private account state."))
         verify(hasVisibleText(transactionDetail, "Local submission decoded partially"))
         verify(hasVisibleText(transactionDetail, "invalid option tag 7"))
         verify(hasVisibleText(transactionDetail,

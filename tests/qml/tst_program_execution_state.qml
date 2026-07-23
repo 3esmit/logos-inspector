@@ -386,6 +386,7 @@ TestCase {
         compare(callbackResponse.value.tx_hash, "0xabc")
         compare(callbackTarget.endpoint, "https://verified.example.test")
         compare(gateway.history.length, 1)
+        compare(gateway.history[0].operation.status, "submitted")
         compare(submittedSpy.count, 1)
     }
 
@@ -527,5 +528,6 @@ TestCase {
         verify(gateway.complete(1, success(submitValue("0xlegacy", "seq-bound"))))
         compare(execution.idlInstructionPreviewValue.tx_hash, "0xlegacy")
         compare(gateway.history.length, 1)
+        compare(gateway.history[0].operation.status, "submitted")
     }
 }

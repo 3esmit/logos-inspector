@@ -77,7 +77,7 @@ QtObject {
             appendOperationHistory({
                 domain: "execution",
                 method: qsTr("Program deploy"),
-                status: response.ok ? "completed" : "failed",
+                status: response.ok ? "submitted" : "failed",
                 label: qsTr("Program deploy"),
                 result: response.ok ? response.value || {} : null,
                 error: response.ok ? "" : detail
@@ -166,7 +166,7 @@ QtObject {
             appendOperationHistory({
                 domain: "execution",
                 method: qsTr("IDL instruction"),
-                status: response.ok ? "completed" : "failed",
+                status: response.ok ? "submitted" : "failed",
                 label: qsTr("IDL instruction"),
                 result: response.ok ? response.value || {} : null,
                 error: response.ok ? "" : detail
@@ -399,7 +399,7 @@ QtObject {
             appendOperationHistory({
                 domain: "execution",
                 method: qsTr("IDL instruction"),
-                status: response.ok ? "completed" : "failed",
+                status: response.ok ? "submitted" : "failed",
                 label: qsTr("IDL instruction"),
                 result: response.ok ? response.value || {} : null,
                 error: response.ok ? "" : detail
