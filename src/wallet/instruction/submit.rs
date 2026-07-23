@@ -43,12 +43,12 @@ pub(super) async fn submit_instruction(
             targeted.expected_basic_auth.as_ref(),
         )?;
     }
+    ensure_controlled_public_signers(&prepared.accounts, |account_id| {
+        wallet.get_account_public_signing_key(account_id).is_some()
+    })?;
 
     match prepared.mode {
         InstructionMode::Public => {
-            ensure_controlled_public_signers(&prepared.accounts, |account_id| {
-                wallet.get_account_public_signing_key(account_id).is_some()
-            })?;
             let accounts = prepared
                 .accounts
                 .iter()
@@ -295,6 +295,17 @@ mod tests {
         }
     }
 
+    fn private_account(name: &str, value: u8, signer: bool) -> PreparedAccount {
+        PreparedAccount {
+            name: name.to_owned(),
+            account_id: AccountId::new([value; 32]),
+            privacy: AccountPrivacy::Private,
+            signer,
+            rest: false,
+            pda: false,
+        }
+    }
+
     #[test]
     fn rejects_required_public_signer_without_local_key() -> Result<()> {
         let sender = public_account("sender", 1, true);
@@ -337,6 +348,36 @@ mod tests {
         });
         if let Err(error) = result {
             bail!("valid signer with external recipient was rejected: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_uncontrolled_public_signer_alongside_private_account() -> Result<()> {
+        let public_signer = public_account("public_signer", 1, true);
+        let private_signer = private_account("private_signer", 2, true);
+        let lookup_count = std::cell::Cell::new(0_u8);
+
+        let result = ensure_controlled_public_signers(&[private_signer, public_signer], |_| {
+            lookup_count.set(lookup_count.get() + 1);
+            false
+        });
+
+        if result.is_ok() {
+            bail!("mixed instruction accepted an uncontrolled public signer");
+        }
+        if !result
+            .err()
+            .map(|error| error.to_string().contains("public_signer"))
+            .unwrap_or(false)
+        {
+            bail!("mixed instruction did not identify the uncontrolled public signer");
+        }
+        if lookup_count.get() != 1 {
+            bail!(
+                "mixed instruction looked up an unexpected number of public signing keys: {}",
+                lookup_count.get()
+            );
         }
         Ok(())
     }
