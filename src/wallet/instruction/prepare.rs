@@ -82,6 +82,7 @@ pub(super) fn prepare_instruction(
 
     Ok(PreparedInstruction {
         instruction: instruction_name,
+        #[cfg(feature = "local-wallet-runtime")]
         program_id,
         program_id_hex,
         program_binary,

@@ -132,6 +132,7 @@ fn resolve_local_wallet_profile_with_requirements(
     })
 }
 
+#[cfg(feature = "local-wallet-runtime")]
 pub(super) fn resolve_instruction_wallet_home(profile: Value) -> Result<PathBuf> {
     let profile = parse_local_wallet_profile(profile)?;
     let wallet_home = resolve_wallet_home_from_input(
@@ -355,6 +356,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-wallet-runtime")]
     #[test]
     fn instruction_wallet_home_does_not_require_wallet_binary() -> Result<()> {
         let home = TempWalletHome::new()?;

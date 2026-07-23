@@ -46,9 +46,11 @@ serde_json = "1"
 tokio = "1"
 
 [features]
-default = ["cli", "development-testnet-v02-helper"]
+default = ["cli", "development-testnet-v02-helper", "local-wallet-runtime"]
 cli = ["dep:clap"]
 development-testnet-v02-helper = []
+local-wallet-runtime = ["dep:wallet"]
+basecamp-wallet-provider = []
 
 [lib]
 path = "src/lib.rs"
@@ -96,7 +98,7 @@ lb-core = { package = "logos-blockchain-core", git = "https://github.com/logos-b
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["client"] }
-wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["fs", "process", "signal"] }
