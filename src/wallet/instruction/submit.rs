@@ -43,6 +43,9 @@ pub(super) async fn submit_instruction(
             targeted.expected_basic_auth.as_ref(),
         )?;
     }
+    ensure_controlled_public_signers(&prepared.accounts, |account_id| {
+        wallet.get_account_public_signing_key(account_id).is_some()
+    })?;
 
     match prepared.mode {
         InstructionMode::Public => {
@@ -203,6 +206,26 @@ fn public_account_identity(account: &PreparedAccount) -> AccountIdentity {
     }
 }
 
+fn ensure_controlled_public_signers(
+    accounts: &[PreparedAccount],
+    mut has_signing_key: impl FnMut(lee::AccountId) -> bool,
+) -> Result<()> {
+    for account in accounts {
+        if account.privacy != AccountPrivacy::Public || !account.signer {
+            continue;
+        }
+        if !has_signing_key(account.account_id) {
+            bail!(
+                "Required public signer `{}` ({}) is not controlled by the selected local wallet. \
+                 Import it or choose a locally controlled signer.",
+                account.name,
+                account.account_id,
+            );
+        }
+    }
+    Ok(())
+}
+
 fn private_account_identity(account: &PreparedAccount) -> AccountIdentity {
     match account.privacy {
         AccountPrivacy::Private => AccountIdentity::PrivateOwned(account.account_id),
@@ -239,6 +262,7 @@ fn load_program(path: &Path) -> Result<Program> {
 #[cfg(test)]
 mod tests {
     use anyhow::{Result, bail};
+    use lee::AccountId;
     use tempfile::tempdir;
 
     use super::*;
@@ -257,6 +281,104 @@ mod tests {
     fn write_config(path: &Path, config: &WalletConfig) -> Result<()> {
         let file = File::create(path)?;
         serde_json::to_writer(file, config)?;
+        Ok(())
+    }
+
+    fn public_account(name: &str, value: u8, signer: bool) -> PreparedAccount {
+        PreparedAccount {
+            name: name.to_owned(),
+            account_id: AccountId::new([value; 32]),
+            privacy: AccountPrivacy::Public,
+            signer,
+            rest: false,
+            pda: false,
+        }
+    }
+
+    fn private_account(name: &str, value: u8, signer: bool) -> PreparedAccount {
+        PreparedAccount {
+            name: name.to_owned(),
+            account_id: AccountId::new([value; 32]),
+            privacy: AccountPrivacy::Private,
+            signer,
+            rest: false,
+            pda: false,
+        }
+    }
+
+    #[test]
+    fn rejects_required_public_signer_without_local_key() -> Result<()> {
+        let sender = public_account("sender", 1, true);
+        let recipient = public_account("recipient", 2, false);
+        let lookup_count = std::cell::Cell::new(0_u8);
+
+        let result = ensure_controlled_public_signers(&[sender.clone(), recipient], |_| {
+            lookup_count.set(lookup_count.get() + 1);
+            false
+        });
+
+        if result.is_ok() {
+            bail!("uncontrolled required signer was accepted");
+        }
+        let error = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        if !error.contains("sender")
+            || !error.contains("not controlled by the selected local wallet")
+            || !error.contains("Import it or choose a locally controlled signer")
+        {
+            bail!("unexpected signer ownership error: {error}");
+        }
+        if lookup_count.get() != 1 {
+            bail!(
+                "unexpected public-signer lookup count: {}",
+                lookup_count.get()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn permits_controlled_signers_and_external_non_signers() -> Result<()> {
+        let sender = public_account("sender", 1, true);
+        let recipient = public_account("recipient", 2, false);
+        let result = ensure_controlled_public_signers(&[sender.clone(), recipient.clone()], |id| {
+            id == sender.account_id
+        });
+        if let Err(error) = result {
+            bail!("valid signer with external recipient was rejected: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_uncontrolled_public_signer_alongside_private_account() -> Result<()> {
+        let public_signer = public_account("public_signer", 1, true);
+        let private_signer = private_account("private_signer", 2, true);
+        let lookup_count = std::cell::Cell::new(0_u8);
+
+        let result = ensure_controlled_public_signers(&[private_signer, public_signer], |_| {
+            lookup_count.set(lookup_count.get() + 1);
+            false
+        });
+
+        if result.is_ok() {
+            bail!("mixed instruction accepted an uncontrolled public signer");
+        }
+        if !result
+            .err()
+            .map(|error| error.to_string().contains("public_signer"))
+            .unwrap_or(false)
+        {
+            bail!("mixed instruction did not identify the uncontrolled public signer");
+        }
+        if lookup_count.get() != 1 {
+            bail!(
+                "mixed instruction looked up an unexpected number of public signing keys: {}",
+                lookup_count.get()
+            );
+        }
         Ok(())
     }
 
