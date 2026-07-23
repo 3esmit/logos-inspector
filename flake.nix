@@ -7,6 +7,18 @@
     logos-protocol.url = "path:./nix/logos-protocol-overlay";
     logos-protocol.inputs.logos-nix.follows = "logos-module-builder/logos-nix";
     logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
+    blockchain_module = {
+      url = "github:3esmit/logos-blockchain-module?rev=8ed201e862f15c0f1af5fd18461172e3e82173d1";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
+    storage_module = {
+      url = "github:3esmit/logos-storage-module?rev=90a9367f31c4b362553a7ebef6959da357e8d765";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
+    delivery_module = {
+      url = "github:3esmit/logos-delivery-module?rev=97788dc83b4dbeabfc73eb2367d9830a6b117a6f";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
