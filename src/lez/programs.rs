@@ -63,12 +63,23 @@ pub(crate) fn program_id_base58_from_hex(program_id_hex: &str) -> Option<String>
 pub(crate) fn program_entries(programs: BTreeMap<String, ProgramId>) -> Vec<ProgramIdEntry> {
     programs
         .into_iter()
-        .map(|(label, program_id)| ProgramIdEntry {
-            label,
-            base58: program_id_base58(program_id),
-            hex: program_id_hex(program_id),
-        })
+        .map(|(label, program_id)| program_entry(label, program_id))
         .collect()
+}
+
+pub(crate) fn program_entries_from_ids(program_ids: Vec<ProgramId>) -> Vec<ProgramIdEntry> {
+    program_ids
+        .into_iter()
+        .map(|program_id| program_entry(String::new(), program_id))
+        .collect()
+}
+
+fn program_entry(label: String, program_id: ProgramId) -> ProgramIdEntry {
+    ProgramIdEntry {
+        label,
+        base58: program_id_base58(program_id),
+        hex: program_id_hex(program_id),
+    }
 }
 
 fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
