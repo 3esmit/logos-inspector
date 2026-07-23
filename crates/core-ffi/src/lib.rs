@@ -353,6 +353,8 @@ impl HostState {
                 }
                 Err(error) => return Err(std::io::Error::other(error).into()),
             };
+            let value = normalize_basecamp_module_reply(&module, &method, value)
+                .map_err(std::io::Error::other)?;
             Ok(ModuleCallReply::new(ModuleTransportKind::Module, value)
                 .with_bridge_callback(BridgeCallbackId::new(module_request_id.0)))
         })
@@ -1544,6 +1546,52 @@ fn host_result_bounded(
         })
         .unwrap_or(payload);
     Err(error)
+}
+
+fn normalize_basecamp_module_reply(
+    module: &str,
+    method: &str,
+    value: Value,
+) -> Result<Value, String> {
+    let Some(object) = value.as_object() else {
+        return Ok(value);
+    };
+    let Some(success) = object.get("success").and_then(Value::as_bool) else {
+        return Ok(value);
+    };
+    if object.len() != 3 || !object.contains_key("value") || !object.contains_key("error") {
+        return Ok(value);
+    }
+    if !success {
+        let error = object
+            .get("error")
+            .map(basecamp_module_error_text)
+            .filter(|error| !error.is_empty())
+            .unwrap_or_else(|| "module call failed".to_owned());
+        return Err(format!("{module}.{method} failed: {error}"));
+    }
+
+    let result = object.get("value").cloned().unwrap_or(Value::Null);
+    Ok(parse_basecamp_structured_json(result))
+}
+
+fn parse_basecamp_structured_json(value: Value) -> Value {
+    let Value::String(text) = value else {
+        return value;
+    };
+    let trimmed = text.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return Value::String(text);
+    }
+    serde_json::from_str(trimmed).unwrap_or(Value::String(text))
+}
+
+fn basecamp_module_error_text(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Null => String::new(),
+        value => value.to_string(),
+    }
 }
 
 fn invoke_core_reply(
@@ -2743,6 +2791,107 @@ mod tests {
         }
         drop(future);
         state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_host_dispatch_unwraps_canonical_module_result() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let call = ModuleCall::new(
+            ModuleTransportKind::Module,
+            "blockchain_module",
+            "get_blocks",
+            vec![serde_json::json!(40_u64), serde_json::json!(42_u64)],
+        )?;
+        let mut future = state.dispatch(call);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module future completed before its reply");
+        }
+        let request = host.wait_for_request()?;
+        host.complete(
+            request.id,
+            1,
+            r#"{"success":true,"value":"[{\"header\":{\"slot\":42}}]","error":null}"#,
+            false,
+        )?;
+        let reply = match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Ok(reply)) => reply,
+            std::task::Poll::Ready(Err(error)) => {
+                return err(&format!("host module future failed: {error:#}"));
+            }
+            std::task::Poll::Pending => {
+                return err("host module future remained pending after its reply");
+            }
+        };
+        if reply.into_value() != serde_json::json!([{ "header": { "slot": 42 } }]) {
+            return err("Basecamp canonical module result did not yield the block array");
+        }
+        drop(future);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_host_dispatch_rejects_failed_canonical_module_result() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let call = ModuleCall::new(
+            ModuleTransportKind::Module,
+            "blockchain_module",
+            "get_blocks",
+            vec![serde_json::json!(40_u64), serde_json::json!(42_u64)],
+        )?;
+        let mut future = state.dispatch(call);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module future completed before its reply");
+        }
+        let request = host.wait_for_request()?;
+        host.complete(
+            request.id,
+            1,
+            r#"{"success":false,"value":null,"error":"node is not running"}"#,
+            false,
+        )?;
+        let error = match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Err(error)) => error.to_string(),
+            std::task::Poll::Ready(Ok(_)) => {
+                return err("failed Basecamp module result was accepted");
+            }
+            std::task::Poll::Pending => {
+                return err("host module future remained pending after its reply");
+            }
+        };
+        if error != "blockchain_module.get_blocks failed: node is not running" {
+            return err(&format!(
+                "failed Basecamp module result lost its error: {error}"
+            ));
+        }
+        drop(future);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn noncanonical_basecamp_reply_remains_opaque() -> TestResult {
+        let raw = serde_json::json!({
+            "success": true,
+            "value": [{ "header": { "slot": 42 } }],
+        });
+        let normalized =
+            normalize_basecamp_module_reply("blockchain_module", "get_blocks", raw.clone())
+                .map_err(std::io::Error::other)?;
+        if normalized != raw {
+            return err("noncanonical Basecamp reply was unexpectedly unwrapped");
+        }
         Ok(())
     }
 
