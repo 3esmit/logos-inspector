@@ -13,7 +13,7 @@ function handleNewBlock(root, args) {
     }
     with (root) {
         const report = AppModelPages.normalizedLiveBlockReport(
-            trustedWatch ? trustedWatch.payload : ModuleEventUtils.firstEventValue(args),
+            trustedWatch ? trustedWatch.payload : newBlockEventPayload(args),
             trustedWatch ? "logoscore_cli_watch" : "module_event")
         const block = report.blocks.length > 0 ? report.blocks[0] : null
         if (!block) {
@@ -34,6 +34,28 @@ function handleNewBlock(root, args) {
         }
         return true
     }
+}
+
+function newBlockEventPayload(args) {
+    const values = ModuleEventUtils.eventValues(args)
+    let value = values.length === 1 ? values[0] : ModuleEventUtils.firstEventValue(args)
+    // The module contract is a flat QVariantList with one newBlock argument.
+    // Some Basecamp ingress paths preserve that argument vector once more,
+    // either as a list or a serialized JSON list. Normalize only this
+    // newBlock transport envelope; block payload arrays remain unsupported.
+    for (let depth = 0; depth < 2; ++depth) {
+        if (Array.isArray(value) && value.length === 1) {
+            value = value[0]
+            continue
+        }
+        const parsed = ModuleEventUtils.parsedPayload(value)
+        if (Array.isArray(parsed) && parsed.length === 1) {
+            value = parsed[0]
+            continue
+        }
+        break
+    }
+    return value
 }
 
 function trustedLogoscoreCliWatchEvent(root, args) {

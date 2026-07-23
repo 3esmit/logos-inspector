@@ -195,12 +195,6 @@ function livePayload(value) {
     if (value === undefined || value === null) {
         return null
     }
-    // Basecamp may preserve the module event argument list as one nested
-    // QVariantList. A newBlock event has exactly one payload argument, so
-    // unwrap only that shape before interpreting the block itself.
-    if (Array.isArray(value)) {
-        return value.length === 1 ? livePayload(value[0]) : null
-    }
     if (typeof value === "object") {
         return value
     }
@@ -209,7 +203,7 @@ function livePayload(value) {
         return null
     }
     const parsed = BridgeHelpers.parseJson(text)
-    return parsed.ok ? livePayload(parsed.value) : null
+    return parsed.ok ? parsed.value : null
 }
 
 function applyLiveBlockReport(root, report, options) {
