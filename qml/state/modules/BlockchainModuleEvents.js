@@ -44,18 +44,37 @@ function newBlockEventPayload(args) {
     // either as a list or a serialized JSON list. Normalize only this
     // newBlock transport envelope; block payload arrays remain unsupported.
     for (let depth = 0; depth < 2; ++depth) {
-        if (Array.isArray(value) && value.length === 1) {
-            value = value[0]
+        const nestedValue = singleNewBlockEnvelopeValue(value)
+        if (nestedValue !== undefined) {
+            value = nestedValue
             continue
         }
         const parsed = ModuleEventUtils.parsedPayload(value)
-        if (Array.isArray(parsed) && parsed.length === 1) {
-            value = parsed[0]
+        const nestedParsed = singleNewBlockEnvelopeValue(parsed)
+        if (nestedParsed !== undefined) {
+            value = nestedParsed
             continue
         }
         break
     }
     return value
+}
+
+function singleNewBlockEnvelopeValue(value) {
+    if (Array.isArray(value)) {
+        return value.length === 1 ? value[0] : undefined
+    }
+    // QVariantList crosses the Basecamp QML bridge as an indexed object, not
+    // a JavaScript Array. Only accept the one argument vector that the
+    // newBlock contract permits, so a block payload object is never unwrapped.
+    if (!value || typeof value !== "object") {
+        return undefined
+    }
+    const keys = Object.keys(value)
+    if (keys.length !== 1 || keys[0] !== "0" || value[0] === undefined) {
+        return undefined
+    }
+    return value[0]
 }
 
 function trustedLogoscoreCliWatchEvent(root, args) {

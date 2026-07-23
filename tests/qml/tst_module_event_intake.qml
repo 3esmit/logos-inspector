@@ -555,6 +555,30 @@ TestCase {
         compare(model.blocksLiveSource, "module_event")
     }
 
+    function test_basecamp_qvariant_list_argument_projects_blockchain_event() {
+        bridge.host = basecampHost
+        tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
+        useHostBlockchainModule()
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        const qvariantList = ({})
+        qvariantList[0] = JSON.stringify({
+            block: {
+                header: { slot: 31, id: "slot-31-basecamp-qvariant-list" },
+                transactions: []
+            }
+        })
+
+        basecampHost.moduleEventReceived(model.blockchainModule, "newBlock", qvariantList)
+
+        tryVerify(function() { return model.blockchainModuleEventRevision > 0 })
+        compare(model.blocksPageRows[0].header.id, "slot-31-basecamp-qvariant-list")
+        compare(model.blocksLiveSource, "module_event")
+    }
+
     function test_basecamp_serialized_json_argument_array_projects_blockchain_event() {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
