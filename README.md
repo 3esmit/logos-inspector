@@ -4,7 +4,7 @@ Native CLI and Qt/QML desktop inspector for Logos networks.
 
 Logos Inspector is aimed at developers and operators investigating Logos
 Blockchain and Logos Execution Zone state. It is currently versioned as
-`0.2.0-rc6` and licensed under MIT.
+`0.2.0-rc7` and licensed under MIT.
 
 ## What it provides
 
