@@ -5521,7 +5521,7 @@ TestCase {
         const history = model.runtimeOperationHistoryRows("execution")
         compare(history.length, 1)
         compare(history[0].label, "Program deploy")
-        compare(history[0].status, "completed")
+        compare(history[0].status, "submitted")
     }
 
     function test_preview_idl_instruction_uses_execution_adapter() {
@@ -5597,7 +5597,7 @@ TestCase {
         const history = model.runtimeOperationHistoryRows("execution")
         compare(history.length, 1)
         compare(history[0].label, "IDL instruction")
-        compare(history[0].status, "completed")
+        compare(history[0].status, "submitted")
     }
 
     function test_send_idl_instruction_requires_active_sequencer_zone() {

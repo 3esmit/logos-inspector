@@ -603,6 +603,8 @@ TestCase {
         compare(submitCall.args[3], "confirm-idl-instruction")
         verify(gateway.completeCall(submitCall, success(receiptValue())))
         compare(transactionSpy.count, 0)
+        verify(hasVisibleText(interaction, "was submitted to Sequencer source"))
+        verify(hasVisibleText(interaction, "Awaiting exact-source inclusion."))
         const receiptButton = findChild(interaction, "zoneProgramOpenReceiptButton")
         verify(receiptButton !== null)
         verify(receiptButton.enabled)
@@ -640,6 +642,7 @@ TestCase {
         const receiptButton = findChild(interaction, "zoneProgramOpenReceiptButton")
         verify(receiptButton !== null)
         verify(!receiptButton.enabled)
+        verify(hasVisibleText(interaction, "was submitted to Sequencer source"))
         verify(hasVisibleText(interaction, "active Zone or Sequencer changed"))
     }
 
@@ -870,7 +873,7 @@ TestCase {
         verify(!interaction.submitPending())
         verify(hasVisibleText(interaction, "Private sync pending"))
         verify(hasVisibleText(interaction,
-            "Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state."))
+            "Transaction was submitted and is awaiting inclusion. After inclusion, use Read incoming in Local Wallet to update local private account state."))
 
         verify(interaction.setFieldValue(
             "accounts", "sender", "Public/sender-account"))

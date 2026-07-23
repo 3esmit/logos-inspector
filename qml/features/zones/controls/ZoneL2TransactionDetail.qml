@@ -329,7 +329,7 @@ ColumnLayout {
             theme: root.theme
             tone: "warning"
             title: qsTr("Private sync pending")
-            message: qsTr("Transaction submission is complete. After inclusion, use Read incoming in Local Wallet to update local private account state.")
+            message: qsTr("Transaction was submitted and is awaiting inclusion. After inclusion, use Read incoming in Local Wallet to update local private account state.")
             Layout.fillWidth: true
         }
 
