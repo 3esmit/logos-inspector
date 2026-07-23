@@ -217,10 +217,6 @@ QtObject {
                 chainPageState.invalidateOperationCaller("dashboard.live", reason)
             }
 
-            function setDashboardResult(ok, text, value) {
-                appShellState.setResult(qsTr("Dashboard"), text, ok !== true, value)
-            }
-
             function refreshCapabilityRegistryIfLoaded() {
                 return root.refreshCapabilityRegistryIfLoaded()
             }
