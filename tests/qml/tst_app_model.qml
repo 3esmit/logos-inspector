@@ -2,6 +2,7 @@ import QtQuick
 import QtTest
 import "../../qml/services"
 import "../../qml/state"
+import "../../qml/state/chain/ChainPageQuery.js" as ChainPageQuery
 import "../../qml/state/source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../../qml/state/source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "../../qml/state/status/StatusFactsProjection.js" as StatusFactsProjection
@@ -5893,6 +5894,132 @@ TestCase {
         compare(model.blocksPageRows[0].header.slot, 30)
         compare(model.chainPages.blockStatus(model.blocksPageRows[0]), "pending")
         compare(model.chainPages.blockStatus(model.blocksPageRows[1]), "finalized")
+    }
+
+    function test_explorer_window_keeps_module_and_rpc_limits_distinct() {
+        compare(ChainPageQuery.explorerWindowForSource("module", 2000), 499)
+        compare(ChainPageQuery.explorerWindowForSource("logoscore_cli", 2000), 499)
+        compare(ChainPageQuery.explorerWindowForSource("rpc", 2000), 2000)
+        compare(ChainPageQuery.explorerWindowForSource("module", 25), 25)
+    }
+
+    function test_blocks_page_constrains_module_source_to_live_parent_window() {
+        const nodeResult = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        slot: 1000,
+                        lib_slot: 900
+                    }
+                }
+            }
+        }
+        const blocksResult = [
+            { header: { slot: 1000, id: "tip" }, transactions: [] }
+        ]
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: { connector_id: "blockchain_module", provenance: "test" }
+            }
+        })
+        model.blockchainSourceMode = "module"
+        model.blocksPageWindow = 2000
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: nodeResult,
+                blockchainBlocks: blocksResult
+            })
+        }
+
+        model.chainPages.refreshBlocksPage()
+
+        tryCompare(model, "blocksPageRows", blocksResult)
+        compare(fakeHost.lastArgs[0].method, "blockchainBlocks")
+        compare(fakeHost.lastArgs[0].args[0], "module")
+        compare(fakeHost.lastArgs[0].args[1], 501)
+        compare(fakeHost.lastArgs[0].args[2], 1000)
+    }
+
+    function test_newer_module_blocks_page_uses_constrained_window() {
+        const nodeResult = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        slot: 2000,
+                        lib_slot: 1900
+                    }
+                }
+            }
+        }
+        const blocksResult = [
+            { header: { slot: 1500, id: "newer" }, transactions: [] }
+        ]
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: { connector_id: "blockchain_module", provenance: "test" }
+            }
+        })
+        model.blockchainSourceMode = "module"
+        model.blocksPageWindow = 2000
+        model.blocksPageSlotFrom = 501
+        model.blocksPageSlotTo = 1000
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: nodeResult,
+                blockchainBlocks: blocksResult
+            })
+        }
+
+        model.chainPages.newerBlocksPage()
+
+        tryCompare(model, "blocksPageRows", blocksResult)
+        compare(fakeHost.lastArgs[0].method, "blockchainBlocks")
+        compare(fakeHost.lastArgs[0].args[1], 1001)
+        compare(fakeHost.lastArgs[0].args[2], 1500)
+    }
+
+    function test_live_blocks_constrains_module_source_to_live_parent_window() {
+        model.shell.currentView = "blocks"
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: { connector_id: "blockchain_module", provenance: "test" }
+            }
+        })
+        model.blockchainSourceMode = "module"
+        model.blocksPageWindow = 2000
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 5000,
+                                lib_slot: 4900
+                            }
+                        }
+                    }
+                },
+                blockchainLiveBlocks: {
+                    source: "module",
+                    blocks: [
+                        { header: { slot: 5000, id: "slot-5000" }, transactions: [] }
+                    ],
+                    unknown_events: []
+                }
+            })
+        }
+
+        model.chainPages.startBlocksLiveMode()
+
+        tryCompare(model, "blocksLiveSource", "module")
+        compare(fakeHost.lastArgs[0].method, "blockchainLiveBlocks")
+        compare(fakeHost.lastArgs[0].args[1], 4501)
+        compare(fakeHost.lastArgs[0].args[2], 5000)
     }
 
     function test_pending_block_status_advances_with_newer_lib() {

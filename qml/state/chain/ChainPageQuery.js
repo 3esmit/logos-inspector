@@ -13,6 +13,18 @@ function slotTip(nodeValue, preferLibSlot) {
         : Number(info.slot || info.lib_slot || 0)
 }
 
+function explorerWindowForSource(source, requestedWindow) {
+    const requested = Math.max(0, Number(requestedWindow || 0))
+    const mode = String(source || "").trim().toLowerCase()
+    if (mode === "module" || mode === "logoscore_cli") {
+        // Module get_blocks falls back to a live parent walk. Its fixed bound
+        // is 500 blocks, so the inclusive lower endpoint must be at most 499
+        // slots behind the tip.
+        return Math.min(requested, 499)
+    }
+    return requested
+}
+
 function slotWindow(anchorSlot, fallbackSlot, windowSize) {
     const fallback = Math.max(0, Number(fallbackSlot || 0))
     const anchor = Number(anchorSlot)

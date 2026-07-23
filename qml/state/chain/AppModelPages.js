@@ -2,6 +2,13 @@
 .import "ChainPageQuery.js" as ChainPageQuery
 .import "ChainPageQuerySession.js" as ChainPageQuerySession
 
+function blocksExplorerWindow(root) {
+    const sourceArgs = Array.isArray(root.operationSourceArgs)
+        ? root.operationSourceArgs : []
+    return ChainPageQuery.explorerWindowForSource(
+        sourceArgs[0], root.blocksPageWindow)
+}
+
 function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
     with (root) {
         if (root.operationPending("blocks.page.node")
@@ -23,7 +30,7 @@ function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
                     return false
                 }
                 const window = ChainPageQuery.slotWindow(anchorSlot,
-                    ChainPageQuery.slotTip(node.value, false), blocksPageWindow)
+                    ChainPageQuery.slotTip(node.value, false), blocksExplorerWindow(root))
                 const slotFrom = window.slotFrom
                 const slotTo = window.slotTo
                 const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
@@ -111,7 +118,8 @@ function refreshBlocksLivePage(root) {
                 }
                 dashboardNode = node.value
                 const window = ChainPageQuery.liveSlotWindow(
-                    ChainPageQuery.slotTip(node.value, false), blocksPageSlotTo, blocksPageWindow)
+                    ChainPageQuery.slotTip(node.value, false), blocksPageSlotTo,
+                    blocksExplorerWindow(root))
                 const slotTo = window.slotTo
                 if (slotTo <= 0) {
                     blocksLiveError = qsTr("No L1 tip available.")
@@ -318,7 +326,7 @@ function olderBlocksPage(root) {
 
 function newerBlocksPage(root) {
     with (root) {
-        refreshBlocksPage(blocksPageSlotTo + blocksPageWindow + 1)
+        refreshBlocksPage(blocksPageSlotTo + blocksExplorerWindow(root) + 1)
     }
 }
 
