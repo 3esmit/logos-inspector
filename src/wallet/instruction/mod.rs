@@ -3,17 +3,22 @@ mod model;
 mod plan;
 mod prepare;
 mod report;
+#[cfg(feature = "local-wallet-runtime")]
 mod submit;
 mod values;
 
+#[cfg(not(feature = "local-wallet-runtime"))]
+use anyhow::bail;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(feature = "local-wallet-runtime")]
 use super::profile::resolve_instruction_wallet_home;
 use plan::instruction_plan;
 use prepare::prepare_instruction;
 use report::report_from_prepared;
+#[cfg(feature = "local-wallet-runtime")]
 use submit::submit_instruction;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -117,23 +122,34 @@ async fn local_wallet_instruction_submit_inner(
     request: Value,
     sequencer_endpoint: Option<String>,
 ) -> Result<LocalWalletInstructionReport> {
-    let wallet_home = resolve_instruction_wallet_home(profile)?;
-    let request: LocalWalletInstructionRequest =
-        serde_json::from_value(request).context("failed to parse IDL instruction request")?;
-    let prepared = prepare_instruction(&request)?;
-    let (tx_hash, shared_secret_count) = submit_instruction(
-        wallet_home,
-        &request,
-        &prepared,
-        sequencer_endpoint.as_deref(),
-    )
-    .await?;
-    Ok(report_from_prepared(
-        prepared,
-        "submitted",
-        Some(tx_hash),
-        shared_secret_count,
-    ))
+    #[cfg(not(feature = "local-wallet-runtime"))]
+    {
+        let _ = (profile, request, sequencer_endpoint);
+        bail!(
+            "local wallet instruction submission is unavailable in this build; use a Basecamp wallet provider that supports typed instruction signing"
+        );
+    }
+
+    #[cfg(feature = "local-wallet-runtime")]
+    {
+        let wallet_home = resolve_instruction_wallet_home(profile)?;
+        let request: LocalWalletInstructionRequest =
+            serde_json::from_value(request).context("failed to parse IDL instruction request")?;
+        let prepared = prepare_instruction(&request)?;
+        let (tx_hash, shared_secret_count) = submit_instruction(
+            wallet_home,
+            &request,
+            &prepared,
+            sequencer_endpoint.as_deref(),
+        )
+        .await?;
+        Ok(report_from_prepared(
+            prepared,
+            "submitted",
+            Some(tx_hash),
+            shared_secret_count,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -754,6 +770,29 @@ mod tests {
             || report.inputs_complete
         {
             bail!("blank plan did not return selector bootstrap state");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(feature = "local-wallet-runtime")))]
+mod basecamp_build_tests {
+    use anyhow::{Context as _, Result, bail};
+    use serde_json::json;
+
+    use super::local_wallet_instruction_submit;
+
+    #[tokio::test]
+    async fn instruction_submission_does_not_fall_back_to_a_local_wallet_runtime() -> Result<()> {
+        let error = local_wallet_instruction_submit(json!({}), json!({}))
+            .await
+            .err()
+            .context("Basecamp build unexpectedly accepted local instruction submission")?;
+        if !error
+            .to_string()
+            .contains("use a Basecamp wallet provider that supports typed instruction signing")
+        {
+            bail!("unexpected Basecamp instruction submission error: {error:#}");
         }
         Ok(())
     }

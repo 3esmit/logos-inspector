@@ -15,6 +15,7 @@ use crate::{
 mod instruction;
 mod profile;
 mod runner;
+#[cfg(feature = "local-wallet-runtime")]
 mod testnet_v02;
 
 use crate::support::command_runner::CommandControl;

@@ -1,4 +1,5 @@
 use lee::AccountId;
+#[cfg(feature = "local-wallet-runtime")]
 use lee_core::program::ProgramId;
 
 use super::ResolvedInstructionArg;
@@ -6,6 +7,7 @@ use super::ResolvedInstructionArg;
 #[derive(Debug, Clone)]
 pub(super) struct PreparedInstruction {
     pub(super) instruction: String,
+    #[cfg(feature = "local-wallet-runtime")]
     pub(super) program_id: ProgramId,
     pub(super) program_id_hex: String,
     pub(super) program_binary: String,
