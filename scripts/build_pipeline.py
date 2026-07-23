@@ -67,6 +67,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
             tracked_build_inputs,
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
+            BuildStep("release workflow", (sys.executable, "scripts/check-release-workflow.py")),
             BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
             BuildStep(
@@ -86,6 +87,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
             tracked_build_inputs,
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
+            BuildStep("release workflow", (sys.executable, "scripts/check-release-workflow.py")),
             BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
             BuildStep("cargo check workspace", cargo_workspace, rust_env),
@@ -111,6 +113,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         ],
         "identity": [
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
+            BuildStep("release workflow", (sys.executable, "scripts/check-release-workflow.py")),
             BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
         ],
