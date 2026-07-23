@@ -71,9 +71,7 @@ TestCase {
 
         property var requests: []
         property int capabilityRefreshCount: 0
-        property int dashboardResultCount: 0
         property int dashboardStartCount: 0
-        property bool dashboardResultOk: false
         property int projectDashboardCount: 0
         property int invalidatedDashboardCount: 0
         property bool synchronouslyRejectDashboard: false
@@ -89,9 +87,7 @@ TestCase {
         function reset() {
             requests = []
             capabilityRefreshCount = 0
-            dashboardResultCount = 0
             dashboardStartCount = 0
-            dashboardResultOk = false
             projectDashboardCount = 0
             invalidatedDashboardCount = 0
             synchronouslyRejectDashboard = false
@@ -221,10 +217,6 @@ TestCase {
             testRoot.dashboardBlocks = []
         }
         function invalidateDashboardOperations(reason) { invalidatedDashboardCount += 1 }
-        function setDashboardResult(ok, text, value) {
-            dashboardResultCount += 1
-            dashboardResultOk = ok === true
-        }
         function refreshCapabilityRegistryIfLoaded() { capabilityRefreshCount += 1 }
         function dashboardGate(key) {
             return {
@@ -2268,8 +2260,6 @@ TestCase {
         compare(metrics.sourceReport("storage").marker, "storage-dashboard")
         compare(metrics.sourceReport("messaging").marker, "messaging-dashboard")
         compare(testRoot.dashboardL1BlocksSlotTo, 30)
-        compare(gateway.dashboardResultCount, 1)
-        verify(gateway.dashboardResultOk)
     }
 
     function test_failed_live_refresh_preserves_old_anchor_for_freshness_rejection() {
@@ -2307,7 +2297,6 @@ TestCase {
         gateway.completeRequest(0, success(sourceReport(true, "storage")))
         gateway.completeRequest(0, success(sourceReport(true, "messaging")))
         verify(!metrics.dashboardRefreshing)
-        verify(gateway.dashboardResultOk)
     }
 
     function test_invalidated_dashboard_does_not_start_live_blocks_from_stale_node_reply() {
@@ -2340,7 +2329,6 @@ TestCase {
 
         verify(metrics.dashboardRefreshing)
         compare(gateway.requests.length, 3)
-        compare(gateway.dashboardResultCount, 0)
 
         gateway.completeRequest(0, success({
             cryptarchia_info: {
@@ -2352,11 +2340,8 @@ TestCase {
         compare(gateway.dashboardStartCount, 1)
         gateway.completeRequest(0, success(sourceReport(true, "storage")))
         verify(metrics.dashboardRefreshing)
-        compare(gateway.dashboardResultCount, 0)
         gateway.completeRequest(0, success(sourceReport(true, "messaging")))
 
         verify(!metrics.dashboardRefreshing)
-        compare(gateway.dashboardResultCount, 1)
-        verify(gateway.dashboardResultOk)
     }
 }

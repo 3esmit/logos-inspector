@@ -1878,15 +1878,12 @@ QtObject {
         const liveBlocksSupported = sourceRouting.blockchainSupportsCapability(
             "l1.live_blocks.observe")
         let remaining = liveBlocksSupported ? 4 : 3
-        let successful = 0
         const errors = []
         const complete = function (response) {
             if (refreshId !== root.dashboardRefreshSerial) {
                 return
             }
-            if (response && response.ok === true) {
-                successful += 1
-            } else {
+            if (!response || response.ok !== true) {
                 errors.push(String(response && response.error
                     ? response.error : qsTr("Dashboard request failed.")))
             }
@@ -1897,19 +1894,6 @@ QtObject {
             gateway.projectZoneDashboard()
             root.dashboardRefreshing = false
             root.dashboardError = errors.join("\n")
-            const value = {
-                overview: root.dashboardOverview || null,
-                node: root.dashboardNode || null,
-                l1Blocks: root.dashboardL1Blocks || [],
-                blocks: root.dashboardBlocks || [],
-                storage: root.storageSourceReport || null,
-                messaging: root.messagingSourceReport || null
-            }
-            gateway.setDashboardResult(
-                successful > 0,
-                successful > 0 ? BridgeHelpers.formatValue(value) : root.dashboardError,
-                value
-            )
         }
 
         const once = function (callback) {

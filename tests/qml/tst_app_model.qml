@@ -7640,6 +7640,48 @@ TestCase {
         compare(callCountFor("lezBlockListReport"), 0)
     }
 
+    function test_dashboard_refresh_preserves_active_program_result() {
+        const eventResult = {
+            event: "LogEntry",
+            decoded: {
+                amount: "42",
+                memo: "ok"
+            }
+        }
+        model.shell.currentView = "programs"
+        model.shell.setResult(
+            "Event decode", "Decoded LogEntry event.", false, eventResult, "programs")
+        const resultGeneration = model.shell.resultGeneration
+
+        fakeHost.strictUnexpectedCalls = true
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: { slot: 30, lib_slot: 20 }
+                        }
+                    }
+                },
+                blockchainLiveBlocks: {
+                    blocks: [{ header: { slot: 30, id: "l1-tip" }, transactions: [] }]
+                }
+            }),
+            storageSourceReport: { ok: true, value: {}, text: "OK", error: "" },
+            deliverySourceReport: { ok: true, value: {}, text: "OK", error: "" }
+        }
+
+        verify(model.metrics.refreshDashboard())
+
+        tryCompare(model.metrics, "dashboardRefreshing", false)
+        compare(model.shell.resultGeneration, resultGeneration)
+        compare(model.shell.resultTitle, "Event decode")
+        compare(model.shell.resultText, "Decoded LogEntry event.")
+        compare(model.shell.resultValue, eventResult)
+        compare(model.shell.resultOwner, "programs")
+        verify(model.pageHasOutput("programs"))
+    }
+
     function test_zone_projection_preserves_periodic_bedrock_footer_observation() {
         const bedrockNode = {
             endpoint: "http://127.0.0.1:8080/",
