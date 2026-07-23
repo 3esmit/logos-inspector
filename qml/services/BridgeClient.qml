@@ -932,10 +932,6 @@ QtObject {
             return true
         }
         if (basecampSubscription) {
-            if (root.backendOwnsRuntimeModuleEvents()) {
-                root.rememberActiveModuleEventSubscription(key, null, null)
-                return true
-            }
             let globallyRegistered = false
             try {
                 if (subscriptionHost && subscriptionHost["onModuleEvent"]) {
@@ -961,6 +957,11 @@ QtObject {
                 root.moduleEventRegistrations = registrations
                 root.rememberActiveModuleEventSubscription(key, null, null)
                 return true
+            }
+            if (root.backendOwnsRuntimeModuleEvents()) {
+                // Native core ingress does not make QML page state observable.
+                // Do not report an unavailable projection as an active subscription.
+                return false
             }
         }
         const callbackLifecycle = {

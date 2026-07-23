@@ -55,6 +55,8 @@ TestCase {
     QtObject {
         id: basecampHost
 
+        signal moduleEventReceived(string moduleName, string eventName, var args)
+
         property var subscriptions: []
         property var calls: []
         property var asyncResponses: ({})
@@ -488,11 +490,15 @@ TestCase {
         verify(model.metrics.deliveryModuleEventStreamReason.indexOf("failed to start") >= 0)
     }
 
-    function test_basecamp_core_relay_makes_zero_traffic_coverage_explicit() {
+    function test_basecamp_native_owner_registers_projection_catalog() {
         bridge.host = basecampHost
 
         tryCompare(model.metrics, "deliveryModuleEventStreamStatus", "ready")
-        compare(basecampHost.subscriptions.length, 0)
+        tryVerify(function() { return basecampHost.subscriptions.length === 17 })
+        compare(basecampHost.subscriptions[0].moduleName, model.deliveryModule)
+        compare(basecampHost.subscriptions[0].eventName, "messageSent")
+        compare(basecampHost.subscriptions[16].moduleName, model.blockchainModule)
+        compare(basecampHost.subscriptions[16].eventName, "newBlock")
         verify(basecampHost.calls.some(function (call) {
             return call.moduleName === "logos_inspector"
                 && call.method === "logosInspectorOwnsRuntimeModuleEvents"
@@ -503,15 +509,100 @@ TestCase {
             "messaging.message_sent_events_recent").indexOf("continuous") >= 0)
     }
 
-    function test_basecamp_event_projects_without_second_runtime_ingress() {
+    function test_basecamp_global_event_projects_without_second_runtime_ingress() {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
+        tryVerify(function() { return basecampHost.subscriptions.length === 17 })
+        useHostBlockchainModule()
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
         basecampHost.calls = []
 
-        verify(intake.ingest(model.deliveryModule, "messageSent", ["request-2", "hash-2"]))
+        basecampHost.moduleEventReceived(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "slot-31-basecamp" }, transactions: [] })
+        ])
 
-        compare(model.deliveryModuleEventRows()[0].label, "messageSent")
+        tryVerify(function() { return model.blockchainModuleEventRevision > 0 })
+        compare(model.blocksPageRows[0].header.id, "slot-31-basecamp")
+        compare(model.blocksLiveSource, "module_event")
         compare(runtimeModuleEventCalls(basecampHost.calls), 0)
+    }
+
+    function test_basecamp_nested_json_argument_array_projects_blockchain_event() {
+        bridge.host = basecampHost
+        tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
+        useHostBlockchainModule()
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+
+        basecampHost.moduleEventReceived(model.blockchainModule, "newBlock", [[
+            JSON.stringify({
+                block: {
+                    header: { slot: 31, id: "slot-31-basecamp-nested" },
+                    transactions: []
+                }
+            })
+        ]])
+
+        tryVerify(function() { return model.blockchainModuleEventRevision > 0 })
+        compare(model.blocksPageRows[0].header.id, "slot-31-basecamp-nested")
+        compare(model.blocksLiveSource, "module_event")
+    }
+
+    function test_basecamp_qvariant_list_argument_projects_blockchain_event() {
+        bridge.host = basecampHost
+        tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
+        useHostBlockchainModule()
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        const qvariantList = ({})
+        qvariantList[0] = JSON.stringify({
+            block: {
+                header: { slot: 31, id: "slot-31-basecamp-qvariant-list" },
+                transactions: []
+            }
+        })
+
+        basecampHost.moduleEventReceived(model.blockchainModule, "newBlock", qvariantList)
+
+        tryVerify(function() { return model.blockchainModuleEventRevision > 0 })
+        compare(model.blocksPageRows[0].header.id, "slot-31-basecamp-qvariant-list")
+        compare(model.blocksLiveSource, "module_event")
+    }
+
+    function test_basecamp_serialized_json_argument_array_projects_blockchain_event() {
+        bridge.host = basecampHost
+        tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
+        useHostBlockchainModule()
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+
+        basecampHost.moduleEventReceived(model.blockchainModule, "newBlock", [
+            JSON.stringify([
+                JSON.stringify({
+                    block: {
+                        header: { slot: 31, id: "slot-31-basecamp-serialized" },
+                        transactions: []
+                    }
+                })
+            ])
+        ])
+
+        tryVerify(function() { return model.blockchainModuleEventRevision > 0 })
+        compare(model.blocksPageRows[0].header.id, "slot-31-basecamp-serialized")
+        compare(model.blocksLiveSource, "module_event")
     }
 
     function test_basecamp_without_native_event_owner_keeps_legacy_ingress() {

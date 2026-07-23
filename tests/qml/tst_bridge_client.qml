@@ -598,6 +598,22 @@ TestCase {
         verify(asyncResponse.value.schemaProbeFree)
     }
 
+    function test_basecamp_native_owner_registers_global_event_projection() {
+        client.host = basecampAsyncHost
+        let ownership = null
+
+        client.ensureRuntimeModuleEventOwnership(function(owned) {
+            ownership = owned
+        })
+
+        compare(ownership, true)
+        verify(client.backendOwnsRuntimeModuleEvents())
+        verify(client.subscribeModuleEvent("blockchain_module", "newBlock"))
+        compare(basecampAsyncHost.subscriptionCallCount, 1)
+        compare(basecampAsyncHost.subscribedModule, "blockchain_module")
+        compare(basecampAsyncHost.subscribedEvent, "newBlock")
+    }
+
     function test_basecamp_direct_values_do_not_collide_with_inspector_envelope() {
         client.host = basecampAsyncHost
 
@@ -1466,7 +1482,7 @@ TestCase {
         compare(basecampAsyncHost.syncCallCount, 0)
     }
 
-    function test_basecamp_core_event_owner_uses_received_signal() {
+    function test_basecamp_core_event_owner_registers_received_signal() {
         client.host = basecampAsyncHost
         let owned = false
         client.ensureRuntimeModuleEventOwnership(function (value) {
@@ -1477,7 +1493,7 @@ TestCase {
         verify(client.backendOwnsRuntimeModuleEvents())
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
-        compare(basecampAsyncHost.subscriptionCallCount, 0)
+        compare(basecampAsyncHost.subscriptionCallCount, 1)
 
         basecampAsyncHost.moduleEventReceived("storage_module", "storageUploadDone", [{ cid: "cid-1" }])
 
