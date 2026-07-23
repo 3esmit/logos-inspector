@@ -19,6 +19,8 @@
 
 namespace {
 constexpr std::string_view kOriginModule = "logos_inspector";
+constexpr std::string_view kBlockchainModule = "blockchain_module";
+constexpr std::string_view kNewBlockEvent = "newBlock";
 constexpr std::size_t kMaxIdentifierBytes = 256;
 constexpr char kFaultError[] =
     R"({"code":"transport_closed","message":"native module event ingress failed; host transport closed","origin":"logos_inspector"})";
@@ -61,8 +63,13 @@ constexpr std::array<EventSpec, 19> kEvents = { {
     { "storage_module", "storageDownloadDoneV2" },
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
-    { "blockchain_module", "newBlock" },
+    { kBlockchainModule, kNewBlockEvent },
 } };
+
+bool isLatestBlockEvent(std::string_view module, std::string_view event) noexcept
+{
+    return module == kBlockchainModule && event == kNewBlockEvent;
+}
 
 bool checkedAdd(std::size_t& total, std::size_t amount) noexcept
 {
@@ -1002,12 +1009,45 @@ private:
     {
         if (eventQueue_.size() >= limits_.maxQueuedEvents
             || event.retainedBytes > limits_.maxQueuedEventBytes - queuedEventBytes_) {
+            if (coalesceQueuedBlockBurstLocked(event)) {
+                return;
+            }
             requestFaultLocked();
             return;
         }
         queuedEventBytes_ += event.retainedBytes;
         eventQueue_.push_back(std::move(event));
         changed_.notify_all();
+    }
+
+    bool coalesceQueuedBlockBurstLocked(QueuedEvent& event)
+    {
+        if (!isLatestBlockEvent(event.module, event.event) || eventQueue_.empty()) {
+            return false;
+        }
+        if (queuedEventBytes_ > limits_.maxQueuedEventBytes) {
+            return false;
+        }
+        for (const QueuedEvent& queued : eventQueue_) {
+            if (!isLatestBlockEvent(queued.module, queued.event)) {
+                return false;
+            }
+        }
+
+        // `newBlock` is a current-state observation rather than a terminal
+        // operation result. Preserve the newest pending block while the Rust
+        // ingress catches up, but never compact a mixed event backlog.
+        eventQueue_.clear();
+        queuedEventBytes_ = 0;
+        try {
+            eventQueue_.push_back(std::move(event));
+        } catch (...) {
+            requestFaultLocked();
+            return true;
+        }
+        queuedEventBytes_ = eventQueue_.back().retainedBytes;
+        changed_.notify_all();
+        return true;
     }
 
     void requestFaultFromCallback() noexcept
@@ -1108,20 +1148,23 @@ private:
                     break;
                 }
 
-                QueuedEvent& event = eventQueue_.front();
                 int32_t status = LOGOS_INSPECTOR_EVENT_REJECTED;
-                try {
-                    status = ingest_(
-                        core_,
-                        event.module.c_str(),
-                        event.event.c_str(),
-                        event.argsJson.c_str());
-                } catch (...) {
-                    status = LOGOS_INSPECTOR_EVENT_REJECTED;
+                {
+                    const QueuedEvent& event = eventQueue_.front();
+                    try {
+                        status = ingest_(
+                            core_,
+                            event.module.c_str(),
+                            event.event.c_str(),
+                            event.argsJson.c_str());
+                    } catch (...) {
+                        status = LOGOS_INSPECTOR_EVENT_REJECTED;
+                    }
                 }
                 if (status == LOGOS_INSPECTOR_EVENT_ACCEPTED) {
-                    queuedEventBytes_ = event.retainedBytes <= queuedEventBytes_
-                        ? queuedEventBytes_ - event.retainedBytes
+                    const std::size_t retainedBytes = eventQueue_.front().retainedBytes;
+                    queuedEventBytes_ = retainedBytes <= queuedEventBytes_
+                        ? queuedEventBytes_ - retainedBytes
                         : 0;
                     eventQueue_.pop_front();
                     continue;
