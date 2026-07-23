@@ -46,7 +46,10 @@ struct LogosProtocolHostTransportLimits
     std::size_t maxRetainedRequestBytes = std::size_t { 8 } * 1024 * 1024;
     std::size_t maxSingleResultBytes = std::size_t { 16 } * 1024 * 1024;
     std::size_t maxQueuedEvents = 256;
-    std::size_t maxSingleEventBytes = std::size_t { 1024 } * 1024;
+    // `blockchain_module.newBlock` carries escaped full-block JSON inside the
+    // protocol argument array. A valid 2 MiB block can therefore exceed 4 MiB
+    // on the wire; retain a bounded envelope that accepts that representation.
+    std::size_t maxSingleEventBytes = std::size_t { 8 } * 1024 * 1024;
     std::size_t maxQueuedEventBytes = std::size_t { 8 } * 1024 * 1024;
     int invokeTimeoutMs = 20'000;
     std::chrono::milliseconds retryDelay = std::chrono::milliseconds(1);

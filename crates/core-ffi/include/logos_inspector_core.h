@@ -172,10 +172,13 @@ int32_t logos_inspector_core_call_module_async(
  * before its close callback returns.
  *
  * The core does not retry. On BACKPRESSURE, a native event owner must copy and
- * retry the event without blocking the host callback, or begin host shutdown;
- * dropping the event and continuing is forbidden because it could strand an
- * accepted Runtime Operation. A host must not advertise native event ownership
- * to QML until it implements that policy.
+ * retry the event without blocking the host callback, or begin host shutdown.
+ * It may compact an unaccepted homogeneous backlog of
+ * blockchain_module:newBlock events to its newest event; that event is a
+ * current-state observation, not a Runtime Operation completion. All other
+ * events must be retained because dropping one could strand an accepted Runtime
+ * Operation. A host must not advertise native event ownership to QML until it
+ * implements that policy.
  */
 int32_t logos_inspector_core_ingest_module_event(
     LogosInspectorCore* handle,

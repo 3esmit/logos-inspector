@@ -1,6 +1,9 @@
 #include "logos_protocol_host_transport.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QMetaObject>
 #include <QObject>
 
@@ -704,6 +707,12 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         return calls_;
+    }
+
+    std::size_t callCount() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return calls_.size();
     }
 
 private:
@@ -1570,6 +1579,133 @@ bool queueOverflowAndRejectedIngressFaultTransport()
     return true;
 }
 
+bool fullNewBlockEnvelopeAboveLegacyCapKeepsTransportAvailable()
+{
+    Fixture fixture;
+    REQUIRE(fixture.activate());
+
+    std::string payload = "[\"{\\\"block\\\":{\\\"inscription\\\":\\\"";
+    payload.append(std::size_t { 4 } * 1024 * 1024, 'a');
+    payload += "\\\"}}\"]";
+    REQUIRE(payload.size() > std::size_t { 1024 } * 1024);
+    const QJsonDocument envelope = QJsonDocument::fromJson(
+        QByteArray::fromStdString(payload));
+    REQUIRE(envelope.isArray());
+    REQUIRE(envelope.array().size() == 1);
+    const QJsonDocument block = QJsonDocument::fromJson(
+        envelope.array().at(0).toString().toUtf8());
+    REQUIRE(block.isObject());
+
+    REQUIRE(fixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        payload,
+        true));
+    REQUIRE(fixture.ingress.callCount() == 1);
+    const auto calls = fixture.ingress.calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].module == "blockchain_module");
+    REQUIRE(calls[0].event == "newBlock");
+    REQUIRE(calls[0].argsJson == payload);
+    REQUIRE(fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 1);
+    return true;
+}
+
+bool newBlockOverflowKeepsTransportAvailable()
+{
+    LogosProtocolHostTransportLimits limits;
+    limits.maxQueuedEvents = 2;
+    limits.retryDelay = 20ms;
+    Fixture fixture(limits);
+    fixture.ingress.setMode(FakeIngress::Mode::backpressure);
+    REQUIRE(fixture.activate());
+    REQUIRE(fixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        R"(["first"])"));
+    REQUIRE(waitUntil([&fixture] { return fixture.ingress.callCount() >= 2; }));
+    REQUIRE(fixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        R"(["middle"])"));
+    REQUIRE(fixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        R"(["latest"])"));
+
+    fixture.ingress.setMode(FakeIngress::Mode::accept);
+    REQUIRE(waitUntil([&fixture] {
+        const auto calls = fixture.ingress.calls();
+        return !calls.empty() && calls.back().event == "newBlock"
+            && calls.back().argsJson == R"(["latest"])";
+    }));
+    REQUIRE(fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 1);
+
+    ReplyCollector replies;
+    const LogosInspectorHostTransportV1 vtable = fixture.transport.vtable();
+    REQUIRE(vtable.dispatch(
+                vtable.context,
+                71,
+                "blockchain_module",
+                "get_cryptarchia_info",
+                "[]",
+                &ReplyCollector::callback,
+                &replies)
+        == 1);
+    REQUIRE(fixture.protocol.completeInvocation(0, 1, "{}", true));
+    REQUIRE(waitUntil([&replies] { return replies.replies().size() == 1; }));
+    const auto captured = replies.replies();
+    REQUIRE(captured[0].requestId == 71);
+    REQUIRE(captured[0].ok == 1);
+    REQUIRE(captured[0].payload == "{}");
+
+    LogosProtocolHostTransportLimits byteLimits;
+    byteLimits.maxQueuedEvents = 2;
+    byteLimits.maxSingleEventBytes = 40;
+    byteLimits.maxQueuedEventBytes = 60;
+    byteLimits.retryDelay = 20ms;
+    Fixture byteFixture(byteLimits);
+    byteFixture.ingress.setMode(FakeIngress::Mode::backpressure);
+    REQUIRE(byteFixture.activate());
+    REQUIRE(byteFixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        R"(["first"])"));
+    REQUIRE(byteFixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        R"(["latest"])"));
+    byteFixture.ingress.setMode(FakeIngress::Mode::accept);
+    REQUIRE(waitUntil([&byteFixture] {
+        const auto calls = byteFixture.ingress.calls();
+        return !calls.empty() && calls.back().event == "newBlock"
+            && calls.back().argsJson == R"(["latest"])";
+    }));
+    REQUIRE(byteFixture.transport.ownsRuntimeModuleEvents());
+
+    LogosProtocolHostTransportLimits mixedLimits;
+    mixedLimits.maxQueuedEvents = 1;
+    mixedLimits.retryDelay = 20ms;
+    Fixture mixedFixture(mixedLimits);
+    mixedFixture.ingress.setMode(FakeIngress::Mode::backpressure);
+    REQUIRE(mixedFixture.activate());
+    REQUIRE(mixedFixture.protocol.emitEvent(
+        "storage_module",
+        "storageDownloadProgress",
+        "[1]"));
+    REQUIRE(mixedFixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        R"(["latest"])"));
+    REQUIRE(waitUntil([&mixedFixture] {
+        return !mixedFixture.transport.ownsRuntimeModuleEvents();
+    }));
+    REQUIRE(mixedFixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 0);
+    return true;
+}
+
 bool independentHandlesDoNotShareProtocolState()
 {
     Fixture first;
@@ -1615,7 +1751,7 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 17> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 19> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
         { "missingOptionalSubscriptionKeepsDispatchOpen", missingOptionalSubscriptionKeepsDispatchOpen },
@@ -1632,6 +1768,8 @@ int main(int argc, char* argv[])
         { "ownerClosePumpsForeignTeardownAndDestructorStaysIdempotent", ownerClosePumpsForeignTeardownAndDestructorStaysIdempotent },
         { "backpressureRetriesInFifoOrderWithoutBlockingCallback", backpressureRetriesInFifoOrderWithoutBlockingCallback },
         { "queueOverflowAndRejectedIngressFaultTransport", queueOverflowAndRejectedIngressFaultTransport },
+        { "fullNewBlockEnvelopeAboveLegacyCapKeepsTransportAvailable", fullNewBlockEnvelopeAboveLegacyCapKeepsTransportAvailable },
+        { "newBlockOverflowKeepsTransportAvailable", newBlockOverflowKeepsTransportAvailable },
         { "independentHandlesDoNotShareProtocolState", independentHandlesDoNotShareProtocolState },
     } };
 
