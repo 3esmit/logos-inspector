@@ -1,6 +1,9 @@
 #include "logos_protocol_host_transport.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QMetaObject>
 #include <QObject>
 
@@ -1576,6 +1579,39 @@ bool queueOverflowAndRejectedIngressFaultTransport()
     return true;
 }
 
+bool fullNewBlockEnvelopeAboveLegacyCapKeepsTransportAvailable()
+{
+    Fixture fixture;
+    REQUIRE(fixture.activate());
+
+    std::string payload = "[\"{\\\"block\\\":{\\\"inscription\\\":\\\"";
+    payload.append(std::size_t { 4 } * 1024 * 1024, 'a');
+    payload += "\\\"}}\"]";
+    REQUIRE(payload.size() > std::size_t { 1024 } * 1024);
+    const QJsonDocument envelope = QJsonDocument::fromJson(
+        QByteArray::fromStdString(payload));
+    REQUIRE(envelope.isArray());
+    REQUIRE(envelope.array().size() == 1);
+    const QJsonDocument block = QJsonDocument::fromJson(
+        envelope.array().at(0).toString().toUtf8());
+    REQUIRE(block.isObject());
+
+    REQUIRE(fixture.protocol.emitEvent(
+        "blockchain_module",
+        "newBlock",
+        payload,
+        true));
+    REQUIRE(fixture.ingress.callCount() == 1);
+    const auto calls = fixture.ingress.calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].module == "blockchain_module");
+    REQUIRE(calls[0].event == "newBlock");
+    REQUIRE(calls[0].argsJson == payload);
+    REQUIRE(fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 1);
+    return true;
+}
+
 bool newBlockOverflowKeepsTransportAvailable()
 {
     LogosProtocolHostTransportLimits limits;
@@ -1715,7 +1751,7 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 18> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 19> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
         { "missingOptionalSubscriptionKeepsDispatchOpen", missingOptionalSubscriptionKeepsDispatchOpen },
@@ -1732,6 +1768,7 @@ int main(int argc, char* argv[])
         { "ownerClosePumpsForeignTeardownAndDestructorStaysIdempotent", ownerClosePumpsForeignTeardownAndDestructorStaysIdempotent },
         { "backpressureRetriesInFifoOrderWithoutBlockingCallback", backpressureRetriesInFifoOrderWithoutBlockingCallback },
         { "queueOverflowAndRejectedIngressFaultTransport", queueOverflowAndRejectedIngressFaultTransport },
+        { "fullNewBlockEnvelopeAboveLegacyCapKeepsTransportAvailable", fullNewBlockEnvelopeAboveLegacyCapKeepsTransportAvailable },
         { "newBlockOverflowKeepsTransportAvailable", newBlockOverflowKeepsTransportAvailable },
         { "independentHandlesDoNotShareProtocolState", independentHandlesDoNotShareProtocolState },
     } };
