@@ -4740,7 +4740,7 @@ dependencies = [
 
 [[package]]
 name = "logos-inspector"
-version = "0.2.0-rc6"
+version = "0.2.0-rc7"
 dependencies = [
  "anyhow",
  "base64",
@@ -4776,7 +4776,7 @@ dependencies = [
 
 [[package]]
 name = "logos-inspector-core-ffi"
-version = "0.2.0-rc6"
+version = "0.2.0-rc7"
 dependencies = [
  "logos-inspector",
  "serde_json",
@@ -4785,7 +4785,7 @@ dependencies = [
 
 [[package]]
 name = "logos-inspector-standalone-gui"
-version = "0.2.0-rc6"
+version = "0.2.0-rc7"
 dependencies = [
  "anyhow",
  "cxx",
