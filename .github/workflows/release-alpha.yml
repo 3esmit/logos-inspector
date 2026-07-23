@@ -4,10 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Publish the currently checked-out main version as an alpha prerelease.
+        description: Publish the current main version as a Core/UI LGX alpha prerelease.
         required: true
         type: boolean
         default: false
+      catalog_e2e_evidence_url:
+        description: URL for a successful fresh Basecamp catalog install/load check of this version.
+        required: true
+        type: string
 
 # Publishing is deliberately serialized per branch.  A release run is never
 # cancelled after it has started, because the publish job owns draft-release
@@ -31,10 +35,18 @@ jobs:
       - name: Require an explicit alpha release from main
         env:
           CONFIRM: ${{ inputs.confirm }}
+          CATALOG_E2E_EVIDENCE_URL: ${{ inputs.catalog_e2e_evidence_url }}
         run: |
           set -euo pipefail
           test "$CONFIRM" = true
           test "$GITHUB_REF" = refs/heads/main
+          case "$CATALOG_E2E_EVIDENCE_URL" in
+            https://*) ;;
+            *)
+              echo "catalog_e2e_evidence_url must be an HTTPS URL" >&2
+              exit 1
+              ;;
+          esac
       - name: Validate source and release workflow contracts
         run: |
           set -euo pipefail
@@ -102,12 +114,11 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      - name: Build the portable core, UI, and standalone packages
+      - name: Build the portable core and UI packages
         run: |
           set -euo pipefail
           nix build --no-write-lock-file --print-build-logs .#lgx-portable --out-link result-ui
           nix build --no-write-lock-file --print-build-logs .#core-lgx-portable --out-link result-core
-          nix build --no-write-lock-file --print-build-logs .#standalone --out-link result-standalone
       - name: Assemble and validate platform artifacts
         env:
           VERSION: ${{ needs.validate.outputs.version }}
@@ -117,7 +128,6 @@ jobs:
           python3 scripts/release_artifacts.py assemble \
             --ui-dir result-ui \
             --core-dir result-core \
-            --standalone-dir result-standalone \
             --output-dir release-artifact \
             --version "$VERSION" \
             --platform "$PLATFORM"
@@ -167,11 +177,16 @@ jobs:
 
           **Channel:** Alpha
 
-          This prerelease contains portable core and UI LGX packages plus
-          standalone package archives for Linux x86_64 and Apple silicon macOS.
-          It is not marked as the latest release. See CHANGELOG.md and
-          docs/release-process.md for compatibility, verification, and
-          promotion criteria.
+          This prerelease contains portable core and UI LGX packages for Linux
+          x86_64 and Apple silicon macOS. Install their direct module
+          dependencies from:
+
+          https://raw.githubusercontent.com/3esmit/logos-3esmit-release/main/logos-repo.json
+
+          A standalone downloadable artifact is not published until it has a
+          self-contained runtime contract. This release is not marked as the
+          latest release. See CHANGELOG.md and docs/release-process.md for
+          compatibility, verification, and promotion criteria.
           EOF
       - name: Publish only a complete verified release
         env:

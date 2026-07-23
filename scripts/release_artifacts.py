@@ -10,7 +10,6 @@ runner.
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import json
 import re
@@ -26,9 +25,11 @@ from typing import Any, Iterable
 
 CORE_MODULE_NAME = "logos_inspector"
 UI_MODULE_NAME = "logos_inspector_ui"
-STANDALONE_NAME = "logos-inspector-standalone"
-STANDALONE_PACKAGE_NAME = "logos-inspector-standalone-gui"
-STANDALONE_ENTRYPOINT = "bin/logos-inspector-standalone-gui"
+CORE_PROTOCOL_DEPENDENCIES = (
+    "blockchain_module",
+    "storage_module",
+    "delivery_module",
+)
 SUPPORTED_PLATFORMS = ("linux-amd64", "darwin-arm64")
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -44,7 +45,6 @@ class ReleaseError(ValueError):
 class ReleaseFiles:
     core: str
     ui: str
-    standalone: str
 
 
 def require(condition: bool, message: str) -> None:
@@ -70,7 +70,6 @@ def release_files(version: str, platform: str) -> ReleaseFiles:
     return ReleaseFiles(
         core=f"logos-inspector-core-{suffix}.lgx",
         ui=f"logos-inspector-ui-{suffix}.lgx",
-        standalone=f"logos-inspector-standalone-{suffix}.tar.gz",
     )
 
 
@@ -111,6 +110,10 @@ def validate_source(root: Path) -> str:
     require(core.get("name") == CORE_MODULE_NAME, "core metadata has an unexpected module name")
     require(ui.get("version") == version, "UI metadata version must match Cargo workspace version")
     require(core.get("version") == version, "core metadata version must match Cargo workspace version")
+    require(
+        core.get("dependencies") == list(CORE_PROTOCOL_DEPENDENCIES),
+        "core metadata must declare the direct protocol module dependencies",
+    )
     dependencies = ui.get("dependencies")
     require(isinstance(dependencies, list), "UI metadata dependencies must be an array")
     require(
@@ -187,6 +190,10 @@ def validate_lgx(
             f"{variant_prefix}{binary}" in entries,
             f"{path.name} core main binary is missing from its {platform} variant",
         )
+        require(
+            manifest.get("dependencies") == list(CORE_PROTOCOL_DEPENDENCIES),
+            f"{path.name} core manifest must declare the direct protocol module dependencies",
+        )
     elif expected_type == "ui_qml":
         dependencies = manifest.get("dependencies")
         require(isinstance(dependencies, list), f"{path.name} UI manifest dependencies must be an array")
@@ -196,85 +203,10 @@ def validate_lgx(
         )
 
 
-def normalized_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
-    info.uid = 0
-    info.gid = 0
-    info.uname = "root"
-    info.gname = "root"
-    info.mtime = 0
-    return info
-
-
-def create_standalone_archive(
-    source: Path,
-    destination: Path,
-    *,
-    version: str,
-    platform: str,
-) -> None:
-    require(source.is_dir(), f"standalone output is not a directory: {source}")
-    expected_package_name = f"{STANDALONE_PACKAGE_NAME}-{version}"
-    require(
-        source.name == expected_package_name,
-        "standalone package version does not match the release version",
-    )
-    with tempfile.TemporaryDirectory(prefix="logos-inspector-release-") as temporary:
-        staging = Path(temporary) / destination.name.removesuffix(".tar.gz")
-        shutil.copytree(source, staging, symlinks=True)
-        entrypoint = staging / STANDALONE_ENTRYPOINT
-        require(entrypoint.is_file(), "standalone package is missing its GUI entrypoint")
-        qml_entry = staging / "share" / "logos-inspector" / "qml" / "StandaloneMain.qml"
-        require(qml_entry.is_file(), "standalone package is missing its QML entrypoint")
-        release_manifest = {
-            "format": 1,
-            "name": STANDALONE_NAME,
-            "version": version,
-            "platform": platform,
-            "entrypoint": STANDALONE_ENTRYPOINT,
-            "source": "flake package standalone",
-        }
-        (staging / "release-manifest.json").write_text(
-            json.dumps(release_manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        with destination.open("wb") as raw:
-            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
-                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
-                    archive.add(staging, arcname=staging.name, filter=normalized_tarinfo)
-
-
-def validate_standalone_archive(path: Path, *, version: str, platform: str) -> None:
-    root = path.name.removesuffix(".tar.gz")
-    manifest_name = f"{root}/release-manifest.json"
-    entrypoint_name = f"{root}/{STANDALONE_ENTRYPOINT}"
-    qml_entry_name = f"{root}/share/logos-inspector/qml/StandaloneMain.qml"
-    try:
-        with tarfile.open(path, mode="r:gz") as archive:
-            names = {member.name for member in archive.getmembers()}
-            require(manifest_name in names, f"{path.name} is missing release-manifest.json")
-            require(entrypoint_name in names, f"{path.name} is missing its GUI entrypoint")
-            require(qml_entry_name in names, f"{path.name} is missing its QML entrypoint")
-            handle = archive.extractfile(manifest_name)
-            require(handle is not None, f"{path.name} release manifest cannot be read")
-            try:
-                manifest = json.load(handle)
-            except json.JSONDecodeError as error:
-                raise ReleaseError(f"{path.name} has invalid release manifest JSON: {error}") from error
-    except (OSError, tarfile.TarError) as error:
-        raise ReleaseError(f"{path.name} is not a readable gzip tar archive: {error}") from error
-    require(isinstance(manifest, dict), f"{path.name} release manifest must be a JSON object")
-    require(manifest.get("format") == 1, f"{path.name} has an unsupported release manifest format")
-    require(manifest.get("name") == STANDALONE_NAME, f"{path.name} has an unexpected standalone name")
-    require(manifest.get("version") == version, f"{path.name} version does not match {version}")
-    require(manifest.get("platform") == platform, f"{path.name} platform does not match {platform}")
-    require(manifest.get("entrypoint") == STANDALONE_ENTRYPOINT, f"{path.name} has an unexpected entrypoint")
-
-
 def assemble(
     *,
     ui_dir: Path,
     core_dir: Path,
-    standalone_dir: Path,
     output_dir: Path,
     version: str,
     platform: str,
@@ -288,12 +220,6 @@ def assemble(
     core_target = output_dir / files.core
     shutil.copy2(ui_source, ui_target)
     shutil.copy2(core_source, core_target)
-    create_standalone_archive(
-        standalone_dir,
-        output_dir / files.standalone,
-        version=version,
-        platform=platform,
-    )
     validate_lgx(
         ui_target,
         expected_name=UI_MODULE_NAME,
@@ -308,7 +234,6 @@ def assemble(
         version=version,
         platform=platform,
     )
-    validate_standalone_archive(output_dir / files.standalone, version=version, platform=platform)
     return files
 
 
@@ -316,7 +241,7 @@ def expected_files(version: str, platforms: Iterable[str]) -> list[str]:
     names: list[str] = []
     for platform in platforms:
         files = release_files(version, platform)
-        names.extend((files.core, files.ui, files.standalone))
+        names.extend((files.core, files.ui))
     return sorted(names)
 
 
@@ -389,7 +314,6 @@ def validate_release(
             version=version,
             platform=platform,
         )
-        validate_standalone_archive(directory / files.standalone, version=version, platform=platform)
 
     if write_checksum_file:
         write_checksums(directory, expected)
@@ -404,12 +328,20 @@ def create_test_lgx(
     module_type: str,
     version: str,
     platform: str,
+    dependencies: list[str] | None = None,
 ) -> None:
+    resolved_dependencies = dependencies
+    if resolved_dependencies is None:
+        resolved_dependencies = (
+            [CORE_MODULE_NAME]
+            if module_type == "ui_qml"
+            else list(CORE_PROTOCOL_DEPENDENCIES)
+        )
     manifest: dict[str, Any] = {
         "name": name,
         "type": module_type,
         "version": version,
-        "dependencies": [CORE_MODULE_NAME] if module_type == "ui_qml" else [],
+        "dependencies": resolved_dependencies,
         "hashes": {
             "root": "0" * 64,
             "variants": "1" * 64,
@@ -460,15 +392,8 @@ def self_test() -> None:
         root = Path(temporary)
         ui_dir = root / "ui"
         core_dir = root / "core"
-        standalone_dir = root / f"{STANDALONE_PACKAGE_NAME}-{version}"
         ui_dir.mkdir()
         core_dir.mkdir()
-        (standalone_dir / "bin").mkdir(parents=True)
-        (standalone_dir / "share" / "logos-inspector" / "qml").mkdir(parents=True)
-        (standalone_dir / STANDALONE_ENTRYPOINT).write_text("#!/bin/sh\n", encoding="utf-8")
-        (standalone_dir / "share" / "logos-inspector" / "qml" / "StandaloneMain.qml").write_text(
-            "import QtQuick\n", encoding="utf-8"
-        )
         create_test_lgx(
             ui_dir / "ui.lgx",
             name=UI_MODULE_NAME,
@@ -487,7 +412,6 @@ def self_test() -> None:
         assemble(
             ui_dir=ui_dir,
             core_dir=core_dir,
-            standalone_dir=standalone_dir,
             output_dir=output,
             version=version,
             platform=platform,
@@ -504,6 +428,27 @@ def self_test() -> None:
             platforms=(platform,),
             write_checksum_file=False,
         )
+        invalid_core = root / "invalid-core.lgx"
+        create_test_lgx(
+            invalid_core,
+            name=CORE_MODULE_NAME,
+            module_type="core",
+            version=version,
+            platform=platform,
+            dependencies=[],
+        )
+        try:
+            validate_lgx(
+                invalid_core,
+                expected_name=CORE_MODULE_NAME,
+                expected_type="core",
+                version=version,
+                platform=platform,
+            )
+        except ReleaseError:
+            pass
+        else:
+            raise ReleaseError("release artifact fixture accepted a core package without dependencies")
         checksums = output / "SHA256SUMS"
         content = checksums.read_text(encoding="utf-8")
         checksums.write_text("f" + content[1:], encoding="utf-8")
@@ -529,7 +474,6 @@ def parser() -> argparse.ArgumentParser:
     assemble_parser = commands.add_parser("assemble", help="stage one platform's release artifacts")
     assemble_parser.add_argument("--ui-dir", type=Path, required=True)
     assemble_parser.add_argument("--core-dir", type=Path, required=True)
-    assemble_parser.add_argument("--standalone-dir", type=Path, required=True)
     assemble_parser.add_argument("--output-dir", type=Path, required=True)
     assemble_parser.add_argument("--version", required=True)
     assemble_parser.add_argument("--platform", required=True, choices=SUPPORTED_PLATFORMS)
@@ -553,7 +497,6 @@ def main() -> int:
             assemble(
                 ui_dir=args.ui_dir.resolve(),
                 core_dir=args.core_dir.resolve(),
-                standalone_dir=args.standalone_dir.resolve(),
                 output_dir=args.output_dir.resolve(),
                 version=args.version,
                 platform=args.platform,

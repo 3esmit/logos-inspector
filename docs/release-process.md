@@ -26,20 +26,18 @@ Every release contains exactly these files for each supported platform:
 | --- | --- | --- |
 | Core package | `logos-inspector-core-<version>-linux-amd64.lgx` | `logos-inspector-core-<version>-darwin-arm64.lgx` |
 | UI package | `logos-inspector-ui-<version>-linux-amd64.lgx` | `logos-inspector-ui-<version>-darwin-arm64.lgx` |
-| Standalone package archive | `logos-inspector-standalone-<version>-linux-amd64.tar.gz` | `logos-inspector-standalone-<version>-darwin-arm64.tar.gz` |
 
-`SHA256SUMS` covers every artifact. The workflow builds the core LGX, UI LGX,
-and standalone flake package on their native target runners; checks each LGX
-manifest and target variant; archives the standalone package with its own
-release manifest; verifies all hashes; uploads a draft GitHub Release; downloads
-the assets again; and verifies them before publishing the draft. If any build,
-validation, upload, or post-upload verification fails, the workflow removes
-the draft release and tag instead of leaving a partial public release.
+`SHA256SUMS` covers every artifact. The workflow builds the core and UI LGX
+packages on their native target runners; checks each manifest, direct module
+dependencies, and target variant; verifies all hashes; uploads a draft GitHub
+Release; downloads the assets again; and verifies them before publishing the
+draft. If any build, validation, upload, or post-upload verification fails, the
+workflow removes the draft release and tag instead of leaving a partial public
+release.
 
-The standalone archives package the existing Nix standalone output. They are
-for Nix-enabled systems until a separate native macOS app-bundle and fully
-relocatable non-Nix distribution is implemented. Do not represent them as
-code-signed macOS applications or AppImages.
+No standalone downloadable artifact is published yet. The current Nix package
+is not a self-contained distribution; a closure-aware bundle or installer and
+a clean-environment launch check are required before standalone publication.
 
 ## Manual release checklist
 
@@ -47,13 +45,17 @@ code-signed macOS applications or AppImages.
    Update `CHANGELOG.md` with the source version and user-visible changes.
 2. Merge only after the relevant real end-to-end checks, source validation,
    package identity check, and release workflow static check pass.
-3. From `main`, run **Publish alpha release** with the confirmation input.
+3. Install the exact core/UI package pair into a fresh Basecamp profile using
+   the published catalog, resolve its three direct module dependencies, and
+   load the Inspector UI. Record the successful check at an HTTPS evidence URL.
+4. From `main`, run **Publish alpha release** with the confirmation input and
+   the evidence URL.
    The workflow refuses a non-main ref, an existing tag, an existing release,
    mismatched manifests, a missing platform variant, bad checksums, or an
    incomplete artifact set.
-4. Smoke-test the downloaded release artifacts on their native supported
+5. Smoke-test the downloaded release artifacts on their native supported
    platforms before using them for any wider testnet audience.
-5. Record the release tag, validation evidence, and any known limitations in
+6. Record the release tag, validation evidence, and any known limitations in
    the issue before closing it.
 
 ## Cadence and promotion
@@ -65,8 +67,9 @@ when there are validated changes. Do not publish empty cadence releases.
 Promotion from Alpha to Beta requires:
 
 - green, repeatable real Testnet coverage for the core Inspector user stories;
-- core/UI LGX and standalone artifact install and smoke checks on both release
-  platforms;
+- core/UI LGX artifact install and smoke checks on both release platforms;
+- a self-contained standalone artifact and clean-environment smoke checks on
+  both release platforms before standalone publication;
 - direct-host and LogosCore CLI connection paths exercised without a release
   blocker; and
 - no known data-loss, transaction-safety, or node-control release blocker.

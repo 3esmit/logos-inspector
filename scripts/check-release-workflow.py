@@ -46,6 +46,8 @@ def main() -> int:
             "gh release edit",
             "--prerelease",
             "--latest=false",
+            "catalog_e2e_evidence_url",
+            "https://raw.githubusercontent.com/3esmit/logos-3esmit-release/main/logos-repo.json",
             "release_artifacts.py",
             "check-build-pipeline.py identity",
         ),
@@ -53,6 +55,9 @@ def main() -> int:
     )
     if "push:" in workflow:
         errors.append("release workflow must remain manual while the project is in alpha")
+    for forbidden in ("result-standalone", "--standalone-dir"):
+        if forbidden in workflow:
+            errors.append(f"release workflow must not publish the current non-self-contained standalone package ({forbidden})")
 
     changelog = require_text(CHANGELOG, ("# Changelog", "## [Unreleased]"), errors)
     process = require_text(
