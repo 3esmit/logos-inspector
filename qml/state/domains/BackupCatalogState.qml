@@ -66,6 +66,32 @@ QtObject {
 
     function load() {
         const response = gateway.call("loadBackupCatalog", [], qsTr("Backup catalog"))
+        return applyCatalogResponse(response)
+    }
+
+    function loadAsync(callback) {
+        if (!gateway || typeof gateway.request !== "function") {
+            const response = {
+                ok: false,
+                value: null,
+                text: "",
+                error: qsTr("Backup catalog bridge does not support asynchronous calls.")
+            }
+            applyCatalogResponse(response)
+            if (typeof callback === "function") {
+                callback(response)
+            }
+            return -1
+        }
+        return gateway.request("loadBackupCatalog", [], "", false, function (response) {
+            applyCatalogResponse(response)
+            if (typeof callback === "function") {
+                callback(response)
+            }
+        })
+    }
+
+    function applyCatalogResponse(response) {
         if (response && response.ok === true && response.value && typeof response.value === "object") {
             entries = Array.isArray(response.value.entries) ? response.value.entries : []
             loaded = true

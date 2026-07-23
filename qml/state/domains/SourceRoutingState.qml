@@ -34,7 +34,34 @@ QtObject {
 
     function loadSourcePolicy() {
         const response = gateway.callInspector("sourcePolicy", [])
-        if (response.ok === true && response.value && typeof response.value === "object") {
+        return applySourcePolicyResponse(response)
+    }
+
+    function loadSourcePolicyAsync(callback) {
+        if (!gateway || typeof gateway.requestInspector !== "function") {
+            const response = {
+                ok: false,
+                value: null,
+                text: "",
+                error: qsTr("Source policy bridge does not support asynchronous calls.")
+            }
+            applySourcePolicyResponse(response)
+            if (typeof callback === "function") {
+                callback(response)
+            }
+            return -1
+        }
+        return gateway.requestInspector("sourcePolicy", [], function (response) {
+            applySourcePolicyResponse(response)
+            if (typeof callback === "function") {
+                callback(response)
+            }
+        })
+    }
+
+    function applySourcePolicyResponse(response) {
+        if (response && response.ok === true && response.value
+                && typeof response.value === "object") {
             sourcePolicy = response.value
             sourcePolicyLoaded = true
             return true

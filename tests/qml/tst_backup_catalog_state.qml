@@ -239,6 +239,36 @@ TestCase {
         compare(catalog.rows()[0].backup_catalog_id, "backup-1")
     }
 
+    function test_load_async_uses_nonblocking_gateway() {
+        gateway.requestResponses = ({
+            loadBackupCatalog: {
+                ok: true,
+                value: {
+                    version: 1,
+                    entries: [{ backup_catalog_id: "backup-async" }]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+        gateway.deferRequests = true
+        let callbackResponse = null
+
+        const requestId = catalog.loadAsync(function (response) {
+            callbackResponse = response
+        })
+
+        compare(requestId, 1)
+        compare(gateway.requestCount, 1)
+        compare(gateway.callCount, 0)
+        compare(gateway.lastMethod, "loadBackupCatalog")
+        compare(callbackResponse, null)
+        verify(gateway.completeRequestAt(0))
+        verify(callbackResponse !== null)
+        verify(catalog.loaded)
+        compare(catalog.rows()[0].backup_catalog_id, "backup-async")
+    }
+
     function test_create_local_upserts_entry() {
         gateway.callResponses = ({
             createLocalSettingsBackup: {

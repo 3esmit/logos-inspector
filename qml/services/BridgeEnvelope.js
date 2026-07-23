@@ -11,81 +11,9 @@ function hasAsyncCalls(host) {
             || (prefersBasecampModules(host) && host["callModuleAsync"])))
 }
 
-function probeBasecampInspectorAsyncBridge(host) {
-    if (!prefersBasecampModules(host) || !host["callModule"]) {
-        return {
-            status: "absent",
-            schema: "",
-            error: ""
-        }
-    }
-    try {
-        const raw = host["callModule"]("logos_inspector", "asyncBridgeSchema", [])
-        const response = parseBasecampDirectResponseJson(
-            raw,
-            "logos_inspector",
-            "asyncBridgeSchema"
-        )
-        if (response.ok === true && typeof response.value === "string") {
-            const schema = response.value
-            return {
-                status: schema.length ? "present" : "absent",
-                schema: schema,
-                error: ""
-            }
-        }
-        if (missingBasecampAsyncBridge(response)) {
-            return {
-                status: "absent",
-                schema: "",
-                error: ""
-            }
-        }
-        return {
-            status: "probe_failed",
-            schema: "",
-            error: response && response.error
-                ? String(response.error)
-                : "unknown capability response"
-        }
-    } catch (error) {
-        return {
-            status: "probe_failed",
-            schema: "",
-            error: BridgeHelpers.errorMessage(error)
-        }
-    }
-}
-
-function basecampInspectorOwnsRuntimeModuleEvents(host) {
-    if (!prefersBasecampModules(host) || !host["callModule"]) {
-        return false
-    }
-    try {
-        const compatibilityValue = host["logosInspectorOwnsRuntimeModuleEvents"]
-        if (typeof compatibilityValue !== "undefined") {
-            return compatibilityValue === true
-        }
-        const raw = host["callModule"](
-            "logos_inspector",
-            "logosInspectorOwnsRuntimeModuleEvents",
-            []
-        )
-        const response = parseBasecampDirectResponseJson(
-            raw,
-            "logos_inspector",
-            "logosInspectorOwnsRuntimeModuleEvents"
-        )
-        return response.ok === true && response.value === true
-    } catch (error) {
-        return false
-    }
-}
-
-function usesBasecampInspectorPolling(host, moduleName, method, expectedSchema, reportedSchema) {
+function usesBasecampInspectorPolling(host, moduleName, method) {
     return !!(prefersBasecampModules(host)
         && host["callModuleAsync"]
-        && String(reportedSchema || "") === String(expectedSchema || "")
         && moduleName === "logos_inspector"
         && method !== "moduleVersion")
 }
@@ -214,6 +142,41 @@ function releaseBasecampInspectorCall(host, token, timeoutMs, finish) {
     )
 }
 
+function probeBasecampInspectorRuntimeModuleEventOwnership(host, timeoutMs, finish) {
+    if (!prefersBasecampModules(host) || !host["callModuleAsync"]) {
+        return false
+    }
+    let completed = false
+    const complete = function (response) {
+        if (completed) {
+            return
+        }
+        completed = true
+        if (typeof finish === "function") {
+            finish(response)
+        }
+    }
+    try {
+        host["callModuleAsync"](
+            "logos_inspector",
+            "logosInspectorOwnsRuntimeModuleEvents",
+            [],
+            function (responseJson) {
+                complete(parseBasecampDirectResponseJson(
+                    responseJson,
+                    "logos_inspector",
+                    "logosInspectorOwnsRuntimeModuleEvents"
+                ))
+            },
+            Number(timeoutMs || 0)
+        )
+        return true
+    } catch (error) {
+        complete(callError(error))
+        return true
+    }
+}
+
 function dispatchBasecampControl(host, method, args, timeoutMs, finish) {
     if (!prefersBasecampModules(host) || !host["callModuleAsync"]) {
         return false
@@ -255,6 +218,14 @@ function retryableBasecampPollError(response) {
     return !!(response
         && response.ok !== true
         && String(response.error || "").toLowerCase().indexOf("timeout") >= 0)
+}
+
+function retryableBasecampStartError(response) {
+    if (retryableBasecampPollError(response)) {
+        return true
+    }
+    const error = String(response && response.error || "").toLowerCase()
+    return error.indexOf("module not connected") >= 0
 }
 
 function parseResponseJson(responseJson) {

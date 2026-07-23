@@ -49,6 +49,44 @@ TestCase {
         compare(gates.registryReport.build_mode, "basecamp")
     }
 
+    function test_load_registry_async_uses_nonblocking_gateway() {
+        gateway.requestResponses = ({
+            capabilityRegistryReport: {
+                ok: true,
+                value: {
+                    schema_version: 1,
+                    build_mode: "basecamp",
+                    capabilities: [{
+                        key: "delivery",
+                        label: "Delivery",
+                        status: "available"
+                    }]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+        gateway.deferRequests = true
+        let callbackResponse = null
+
+        const requestId = gates.loadRegistryAsync(true, { source: "test" },
+            function (response) {
+                callbackResponse = response
+            })
+
+        compare(requestId, 1)
+        compare(gateway.requestCount, 1)
+        compare(gateway.callCount, 0)
+        compare(gateway.lastMethod, "capabilityRegistryReport")
+        compare(gateway.lastArgs[0], true)
+        compare(gateway.lastArgs[1].source, "test")
+        compare(callbackResponse, null)
+        verify(gateway.completeRequestAt(0))
+        verify(callbackResponse !== null)
+        verify(gates.registryLoaded)
+        compare(gates.registryReport.build_mode, "basecamp")
+    }
+
     function test_all_of_reports_missing_dependencies_in_order() {
         gates.registryLoaded = true
         gates.registryReport = ({

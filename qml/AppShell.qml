@@ -71,36 +71,78 @@ Item {
         model: appModel
     }
 
+    function finishInitialNavigation(initialReference) {
+        if (initialReference.length === 0) {
+            return
+        }
+        Qt.callLater(function () {
+            appModel.entityNavigation.routeSearch(initialReference)
+        })
+    }
+
+    function finishBasecampStartup(initialReference) {
+        appModel.refreshLocalNodes(false)
+        appModel.startZoneInspection()
+        appModel.loadCapabilityRegistryAsync()
+        appModel.loadBackupCatalogAsync()
+        root.schedulePageLoaderUpdate()
+        if (appModel.shell.currentView === "overview"
+                && appModel.metrics.dashboardRefreshInterval() > 0
+                && appModel.bridgeSupportsAsync()) {
+            Qt.callLater(function () {
+                appModel.metrics.refreshDashboard()
+            })
+        }
+        Qt.callLater(function () {
+            appModel.loadIdlStateAsync(function () {
+                root.finishInitialNavigation(initialReference)
+            })
+            moduleEventIntake.install()
+        })
+    }
+
+    function startBasecampStartup(initialReference) {
+        appModel.sourceRouting.loadSourcePolicyAsync(function () {
+            appModel.loadSettingsStateAsync(function () {
+                root.finishBasecampStartup(initialReference)
+            })
+        })
+    }
+
+    function startStandaloneStartup(initialReference) {
+        appModel.sourceRouting.loadSourcePolicy()
+        appModel.loadSettingsState()
+        appModel.refreshLocalNodes(false)
+        appModel.startZoneInspection()
+        appModel.loadCapabilityRegistry()
+        appModel.loadBackupCatalog()
+        root.schedulePageLoaderUpdate()
+        if (appModel.shell.currentView === "overview"
+                && appModel.metrics.dashboardRefreshInterval() > 0
+                && appModel.bridgeSupportsAsync()) {
+            Qt.callLater(function () {
+                appModel.metrics.refreshDashboard()
+            })
+        }
+        Qt.callLater(function () {
+            appModel.loadIdlState()
+            appModel.loadWalletState()
+            appModel.checkLocalWalletProfile(false)
+            appModel.loadCapabilityRegistry()
+            moduleEventIntake.install()
+            root.finishInitialNavigation(initialReference)
+        })
+    }
+
     Component.onCompleted: {
         root.schedulePageLoaderUpdate()
         const initialReference = root.initialReferenceFromArguments()
         Qt.callLater(function () {
-            appModel.sourceRouting.loadSourcePolicy()
-            appModel.loadSettingsState()
-            appModel.refreshLocalNodes(false)
-            appModel.startZoneInspection()
-            appModel.loadCapabilityRegistry()
-            appModel.loadBackupCatalog()
-            root.schedulePageLoaderUpdate()
-            if (appModel.shell.currentView === "overview"
-                    && appModel.metrics.dashboardRefreshInterval() > 0
-                    && appModel.bridgeSupportsAsync()) {
-                Qt.callLater(function () {
-                    appModel.metrics.refreshDashboard()
-                })
+            if (appModel.prefersBasecampModules()) {
+                root.startBasecampStartup(initialReference)
+                return
             }
-            Qt.callLater(function () {
-                appModel.loadIdlState()
-                appModel.loadWalletState()
-                appModel.checkLocalWalletProfile(false)
-                appModel.loadCapabilityRegistry()
-                moduleEventIntake.install()
-                if (initialReference.length > 0) {
-                    Qt.callLater(function () {
-                        appModel.entityNavigation.routeSearch(initialReference)
-                    })
-                }
-            })
+            root.startStandaloneStartup(initialReference)
         })
     }
 
