@@ -194,17 +194,17 @@
         "nix-bundle-lgx": "nix-bundle-lgx"
       },
       "locked": {
-        "lastModified": 1784592869,
-        "narHash": "sha256-6w3uPhLlOEaq1/+6pUJgXxvUsJ6Vmc5dxLrOFa5AJSc=",
+        "lastModified": 1784874333,
+        "narHash": "sha256-r2cdmbx585c/YFUBdQW9SKDlGXGSS/Tv2hRBbexHm04=",
         "owner": "3esmit",
         "repo": "logos-delivery-module",
-        "rev": "97788dc83b4dbeabfc73eb2367d9830a6b117a6f",
+        "rev": "ca77bcb8b59f960fcc5040412dc4e3a755161631",
         "type": "github"
       },
       "original": {
         "owner": "3esmit",
         "repo": "logos-delivery-module",
-        "rev": "97788dc83b4dbeabfc73eb2367d9830a6b117a6f",
+        "rev": "ca77bcb8b59f960fcc5040412dc4e3a755161631",
         "type": "github"
       }
     },
