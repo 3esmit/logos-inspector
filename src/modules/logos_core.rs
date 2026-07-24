@@ -1450,7 +1450,7 @@ impl LogoscoreCliRuntime {
                     run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
                 })
                 .context("failed to list logoscore modules")?;
-            require_snapshot_module_loaded(runner, module, &modules.value)?;
+            require_listed_module_loaded(module, &modules.value)?;
             run_json_before_deadline(runner, ["module-info", module, "--json"], deadline)
         })
     }
@@ -1470,7 +1470,7 @@ impl LogoscoreCliRuntime {
                     run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
                 })
                 .context("failed to list logoscore modules")?;
-            require_snapshot_module_loaded(runner, module, &modules.value)?;
+            require_listed_module_loaded(module, &modules.value)?;
             run_json_with_controlled(runner, ["module-info", module, "--json"], control)
         })
     }
@@ -1492,7 +1492,7 @@ impl LogoscoreCliRuntime {
                     run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
                 })
                 .context("failed to list logoscore modules")?;
-            require_snapshot_module_loaded(runner, module, &modules.value)?;
+            require_listed_module_loaded(module, &modules.value)?;
             let module_info =
                 run_json_before_deadline(runner, ["module-info", module, "--json"], deadline)
                     .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
@@ -1629,7 +1629,7 @@ impl LogoscoreCliRuntime {
                     },
                 )
                 .context("failed to list logoscore modules")?;
-                require_snapshot_module_loaded(runner, module, &modules.value)?;
+                require_listed_module_loaded(module, &modules.value)?;
                 let module_info = run_json_with_controlled(
                     runner,
                     ["module-info", module, "--json"],
@@ -1743,7 +1743,7 @@ impl LogoscoreCliRuntime {
                     || run_json_before_deadline(runner, ["list-modules", "--json"], deadline),
                 )
                 .context("failed to list logoscore modules")?;
-                require_snapshot_module_loaded(runner, module, &modules.value)?;
+                require_listed_module_loaded(module, &modules.value)?;
                 run_json_before_deadline(runner, command_args, deadline)
             })?;
         normalize_call_value(&mut output.value);
@@ -1807,7 +1807,7 @@ impl LogoscoreCliRuntime {
                     run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
                 })
                 .context("failed to list logoscore modules")?;
-            require_snapshot_module_loaded(runner, module, &modules.value)?;
+            require_listed_module_loaded(module, &modules.value)?;
             run_json_with_controlled_with_output_limit(
                 runner,
                 command_args,
@@ -2372,13 +2372,31 @@ fn cached_logoscore_cli_snapshot(
             .lock()
             .map_err(|_| anyhow::anyhow!("logoscore CLI snapshot is poisoned"))?;
         if snapshot.generation == generation {
+            let observed_at = StdInstant::now();
+            let status_inventory = match (&kind, &cached_result) {
+                (LogoscoreCliSnapshotKind::Status, LogoscoreCliSnapshotResult::Output(output))
+                    if module_rows(&output.value).is_ok() =>
+                {
+                    Some(cached_result.clone())
+                }
+                _ => None,
+            };
             snapshot.set_entry(
                 kind,
                 LogoscoreCliSnapshotEntry {
-                    observed_at: StdInstant::now(),
+                    observed_at,
                     result: cached_result,
                 },
             );
+            if let Some(result) = status_inventory {
+                snapshot.set_entry(
+                    LogoscoreCliSnapshotKind::Modules,
+                    LogoscoreCliSnapshotEntry {
+                        observed_at,
+                        result,
+                    },
+                );
+            }
         }
     }
     result
@@ -2768,22 +2786,6 @@ fn require_listed_module_loaded(module: &str, modules_value: &Value) -> Result<(
         bail!("logoscore module `{module}` is not loaded (status `{status}`)");
     }
     Ok(())
-}
-
-fn require_snapshot_module_loaded(
-    runner: &LogosCoreRunner,
-    module: &str,
-    modules_value: &Value,
-) -> Result<()> {
-    match require_listed_module_loaded(module, modules_value) {
-        Ok(()) => Ok(()),
-        Err(error) => match invalidate_logoscore_cli_snapshot(runner) {
-            Ok(()) => Err(error),
-            Err(invalidation) => Err(error.context(format!(
-                "failed to invalidate stale LogosCore module inventory: {invalidation:#}"
-            ))),
-        },
-    }
 }
 
 pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutput> {
@@ -5371,7 +5373,7 @@ fi
 case "$1" in
     status)
         printf '%s\n' status >> "$config_dir/commands"
-        printf '%s\n' '{"daemon":{"status":"running"},"loaded_modules":["storage_module"]}'
+        printf '%s\n' '{"daemon":{"status":"running"},"modules":[{"name":"storage_module","status":"loaded"},{"name":"delivery_module","status":"not_loaded"}]}'
         ;;
     list-modules)
         printf '%s\n' list-modules >> "$config_dir/commands"
@@ -5418,6 +5420,19 @@ esac
 
         runtime.call("storage_module", "get", &[])?;
         runtime.call("storage_module", "get", &[])?;
+        let first_stopped = runtime
+            .call("delivery_module", "get", &[])
+            .err()
+            .context("stopped module unexpectedly accepted a call")?;
+        let second_stopped = runtime
+            .call("delivery_module", "get", &[])
+            .err()
+            .context("cached stopped module unexpectedly accepted a call")?;
+        anyhow::ensure!(
+            first_stopped.to_string().contains("not loaded")
+                && second_stopped.to_string().contains("not loaded"),
+            "cached stopped module lost its diagnostic"
+        );
 
         let commands = fs::read_to_string(directory.path().join("commands"))?;
         anyhow::ensure!(
@@ -5433,8 +5448,8 @@ esac
                 .lines()
                 .filter(|command| *command == "list-modules")
                 .count()
-                == 1,
-            "same-epoch module calls launched duplicate inventory commands: {commands}"
+                == 0,
+            "status inventory did not satisfy same-epoch module calls: {commands}"
         );
         anyhow::ensure!(
             commands
