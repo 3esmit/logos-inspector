@@ -369,12 +369,12 @@ async fn run_catalog_scan_with_pacer(
     let mut next_repair_at_unix = 0;
     let mut no_progress_round = 0_u32;
     let mut first_scan_cycle = true;
+    let mut snapshot = catalog_snapshot(catalog.clone(), context).await?;
     loop {
         context.ensure_current()?;
         let status = source.chain_status().await.map_err(map_source_error)?;
         context.ensure_current()?;
         let target = status.snapshot.lib;
-        let mut snapshot = catalog_snapshot(catalog.clone(), context).await?;
         let mut made_progress = false;
         let engine_context = engine_context(context, &snapshot)?;
         let prepared = if first_scan_cycle {
@@ -385,7 +385,7 @@ async fn run_catalog_scan_with_pacer(
         }
         .map_err(map_engine_error)?;
         if let Some(batch) = prepared {
-            snapshot = commit_catalog_batch(catalog.clone(), batch, context).await?;
+            snapshot = commit_catalog_batch(catalog.clone(), snapshot, batch, context).await?;
             made_progress = true;
             publish_verified(context, snapshot.clone());
         }
@@ -435,7 +435,7 @@ async fn run_catalog_scan_with_pacer(
             next_repair_at_unix = now.saturating_add(CATALOG_REPAIR_INTERVAL_SECONDS);
             if snapshot.metadata.catalog_revision != previous_revision {
                 made_progress = true;
-                publish_verified(context, snapshot);
+                publish_verified(context, snapshot.clone());
             }
         }
 
@@ -477,7 +477,7 @@ async fn apply_catalog_page(
                 batch,
                 remaining_events,
             } => {
-                snapshot = commit_catalog_batch(catalog.clone(), *batch, context).await?;
+                snapshot = commit_catalog_batch(catalog.clone(), snapshot, *batch, context).await?;
                 publish_verified(context, snapshot.clone());
                 if remaining_events.is_empty() {
                     return Ok(snapshot);
@@ -600,7 +600,7 @@ async fn repair_one_catalog_gap(
         else {
             return Ok(snapshot);
         };
-        return commit_catalog_batch(catalog, batch, context).await;
+        return commit_catalog_batch(catalog, snapshot, batch, context).await;
     }
 
     let Some(gap) = snapshot.gaps.first() else {
@@ -624,7 +624,7 @@ async fn repair_one_catalog_gap(
         engine_context(context, &snapshot)?,
     )
     .map_err(map_engine_error)?;
-    commit_catalog_batch(catalog, batch, context).await
+    commit_catalog_batch(catalog, snapshot, batch, context).await
 }
 
 async fn create_catalog(
@@ -734,11 +734,12 @@ async fn catalog_snapshot(
 
 async fn commit_catalog_batch(
     catalog: Arc<ZoneCatalog>,
+    snapshot: CatalogSnapshot,
     batch: super::CatalogBatch,
     context: &ZoneCatalogRunContext,
 ) -> ZoneCatalogServiceResult<CatalogSnapshot> {
     context
-        .run_blocking_catalog(move || catalog.commit_batch(batch))
+        .run_blocking_catalog(move || catalog.commit_batch_from_snapshot(snapshot, batch))
         .await
 }
 

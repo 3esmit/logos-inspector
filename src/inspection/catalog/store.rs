@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -130,6 +130,14 @@ impl ZoneCatalogStore {
         self.commit_batch_with_hook(batch, || Ok(()))
     }
 
+    pub(super) fn commit_batch_from_snapshot(
+        &self,
+        snapshot: CatalogSnapshot,
+        batch: CatalogBatch,
+    ) -> CatalogResult<CatalogSnapshot> {
+        self.commit_batch_with_snapshot_hook(Some(snapshot), batch, || Ok(()))
+    }
+
     pub(super) fn update_metadata<F>(
         &self,
         expected_catalog_revision: u64,
@@ -206,6 +214,18 @@ impl ZoneCatalogStore {
     where
         F: FnOnce() -> CatalogResult<()>,
     {
+        self.commit_batch_with_snapshot_hook(None, batch, before_commit)
+    }
+
+    fn commit_batch_with_snapshot_hook<F>(
+        &self,
+        snapshot: Option<CatalogSnapshot>,
+        batch: CatalogBatch,
+        before_commit: F,
+    ) -> CatalogResult<CatalogSnapshot>
+    where
+        F: FnOnce() -> CatalogResult<()>,
+    {
         validate_batch(&batch)?;
         let CatalogDatabase::Writable(database) = &self.database else {
             return Err(CatalogError::invalid_input(
@@ -253,11 +273,78 @@ impl ZoneCatalogStore {
             replace_optional_versioned(&mut table, TRAVERSAL_KEY, batch.traversal.as_ref())?;
         }
 
-        let snapshot = snapshot_from_write_transaction(&transaction).map_err(map_staged_error)?;
+        let snapshot = snapshot.map_or_else(
+            || snapshot_from_write_transaction(&transaction).map_err(map_staged_error),
+            |snapshot| apply_batch_to_snapshot(snapshot, metadata, batch),
+        )?;
         before_commit()?;
         transaction.commit().map_err(map_commit_error)?;
         Ok(snapshot)
     }
+}
+
+fn apply_batch_to_snapshot(
+    mut snapshot: CatalogSnapshot,
+    metadata: CatalogMetadata,
+    batch: CatalogBatch,
+) -> CatalogResult<CatalogSnapshot> {
+    if snapshot.metadata.catalog_revision != batch.expected_catalog_revision {
+        return Err(CatalogError::RevisionConflict {
+            expected: batch.expected_catalog_revision,
+            current: snapshot.metadata.catalog_revision,
+        });
+    }
+    snapshot.metadata = metadata;
+    apply_snapshot_records(
+        &mut snapshot.zones,
+        batch.upsert_zones,
+        batch.delete_zone_ids,
+        |record| record.channel_id.as_str(),
+    );
+    apply_snapshot_records(
+        &mut snapshot.evidence,
+        batch.upsert_evidence,
+        batch.delete_evidence_ids,
+        |reference| reference.evidence_id.as_str(),
+    );
+    apply_snapshot_records(
+        &mut snapshot.segments,
+        batch.upsert_segments,
+        batch.delete_segment_ids,
+        |segment| segment.segment_id.as_str(),
+    );
+    apply_snapshot_records(
+        &mut snapshot.gaps,
+        batch.upsert_gaps,
+        batch.delete_gap_ids,
+        |gap| gap.gap_id.as_str(),
+    );
+    snapshot.frontier = batch.frontier;
+    snapshot.traversal = batch.traversal;
+    validate_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+fn apply_snapshot_records<T>(
+    records: &mut Vec<T>,
+    upserts: Vec<T>,
+    deletes: Vec<String>,
+    key_of: impl Fn(&T) -> &str,
+) {
+    if upserts.is_empty() && deletes.is_empty() {
+        return;
+    }
+    let mut by_key = std::mem::take(records)
+        .into_iter()
+        .map(|record| (key_of(&record).to_owned(), record))
+        .collect::<BTreeMap<_, _>>();
+    for key in deletes {
+        by_key.remove(key.as_str());
+    }
+    for record in upserts {
+        by_key.insert(key_of(&record).to_owned(), record);
+    }
+    *records = by_key.into_values().collect();
 }
 
 fn create_empty_table(
@@ -953,6 +1040,22 @@ mod tests {
         ensure!(
             committed == reopened.snapshot()?,
             "durable snapshot changed after reopen"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn batch_commit_updates_held_snapshot_without_changing_persisted_result() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("catalog.redb");
+        let store = ZoneCatalogStore::create(&path, test_metadata()?)?;
+        let current = store.snapshot()?;
+
+        let committed = store.commit_batch_from_snapshot(current, test_batch())?;
+
+        ensure!(
+            committed == store.snapshot()?,
+            "held snapshot commit diverged from persisted catalog"
         );
         Ok(())
     }

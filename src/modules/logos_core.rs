@@ -45,6 +45,9 @@ const LOGOSCORE_EVENT_NAME_LIMIT: usize = 256;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
 const LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const LOGOSCORE_CLI_STATUS_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(20);
+const LOGOSCORE_CLI_MODULES_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(30);
+const LOGOSCORE_CLI_FAILURE_BACKOFF: Duration = Duration::from_secs(1);
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 3;
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -1391,26 +1394,50 @@ impl LogoscoreCliRuntime {
     }
 
     pub(crate) fn status(&self) -> Result<LogosCoreOutput> {
-        self.run_json(["status", "--json"], command_timeout())
+        self.cached_json(
+            LogoscoreCliSnapshotKind::Status,
+            ["status", "--json"],
+            command_timeout(),
+        )
     }
 
     pub(crate) fn status_with_timeout(&self, timeout: Duration) -> Result<LogosCoreOutput> {
+        self.cached_json(
+            LogoscoreCliSnapshotKind::Status,
+            ["status", "--json"],
+            timeout,
+        )
+    }
+
+    pub(crate) fn status_probe_with_timeout(&self, timeout: Duration) -> Result<LogosCoreOutput> {
         self.run_json(["status", "--json"], timeout)
     }
 
     pub(crate) fn status_controlled(&self, control: CommandControl) -> Result<LogosCoreOutput> {
-        self.run_json_controlled(["status", "--json"], control)
+        self.cached_json_controlled(
+            LogoscoreCliSnapshotKind::Status,
+            ["status", "--json"],
+            control,
+        )
     }
 
     pub(crate) fn list_modules(&self) -> Result<LogosCoreOutput> {
-        self.run_json(["list-modules", "--json"], command_timeout())
+        self.cached_json(
+            LogoscoreCliSnapshotKind::Modules,
+            ["list-modules", "--json"],
+            command_timeout(),
+        )
     }
 
     pub(crate) fn list_modules_controlled(
         &self,
         control: CommandControl,
     ) -> Result<LogosCoreOutput> {
-        self.run_json_controlled(["list-modules", "--json"], control)
+        self.cached_json_controlled(
+            LogoscoreCliSnapshotKind::Modules,
+            ["list-modules", "--json"],
+            control,
+        )
     }
 
     pub(crate) fn module_info(&self, module: &str) -> Result<LogosCoreOutput> {
@@ -1418,7 +1445,10 @@ impl LogoscoreCliRuntime {
             bail!("module name is required");
         }
         self.with_command_gate(compound_command_timeout(), |runner, deadline| {
-            let modules = run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+            let modules =
+                cached_logoscore_cli_snapshot(runner, LogoscoreCliSnapshotKind::Modules, || {
+                    run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+                })
                 .context("failed to list logoscore modules")?;
             require_listed_module_loaded(module, &modules.value)?;
             run_json_before_deadline(runner, ["module-info", module, "--json"], deadline)
@@ -1436,8 +1466,10 @@ impl LogoscoreCliRuntime {
         let gate_control = control.clone();
         self.with_controlled_command_gate(&gate_control, |runner| {
             let modules =
-                run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
-                    .context("failed to list logoscore modules")?;
+                cached_logoscore_cli_snapshot(runner, LogoscoreCliSnapshotKind::Modules, || {
+                    run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
+                })
+                .context("failed to list logoscore modules")?;
             require_listed_module_loaded(module, &modules.value)?;
             run_json_with_controlled(runner, ["module-info", module, "--json"], control)
         })
@@ -1455,7 +1487,10 @@ impl LogoscoreCliRuntime {
 
     fn discover_module(&self, module: &str) -> Result<LogoscoreModuleDiscovery> {
         self.with_command_gate(compound_command_timeout(), |runner, deadline| {
-            let modules = run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+            let modules =
+                cached_logoscore_cli_snapshot(runner, LogoscoreCliSnapshotKind::Modules, || {
+                    run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
+                })
                 .context("failed to list logoscore modules")?;
             require_listed_module_loaded(module, &modules.value)?;
             let module_info =
@@ -1582,10 +1617,16 @@ impl LogoscoreCliRuntime {
                 .unwrap_or(control.deadline());
             let attempt_control = control.with_deadline(attempt_deadline);
             let result = self.with_controlled_command_gate(&attempt_control, |runner| {
-                let modules = run_json_with_controlled(
+                let modules = cached_logoscore_cli_snapshot(
                     runner,
-                    ["list-modules", "--json"],
-                    attempt_control.clone(),
+                    LogoscoreCliSnapshotKind::Modules,
+                    || {
+                        run_json_with_controlled(
+                            runner,
+                            ["list-modules", "--json"],
+                            attempt_control.clone(),
+                        )
+                    },
                 )
                 .context("failed to list logoscore modules")?;
                 require_listed_module_loaded(module, &modules.value)?;
@@ -1629,8 +1670,11 @@ impl LogoscoreCliRuntime {
             return Ok(());
         }
 
-        self.run_json(["load-module", module, "--json"], command_timeout())
-            .with_context(|| format!("failed to load logoscore module `{module}`"))?;
+        let result = self
+            .run_json(["load-module", module, "--json"], command_timeout())
+            .with_context(|| format!("failed to load logoscore module `{module}`"));
+        self.invalidate_cli_snapshot()?;
+        result?;
         Ok(())
     }
 
@@ -1646,8 +1690,11 @@ impl LogoscoreCliRuntime {
             return Ok(());
         }
 
-        self.run_json_controlled(["load-module", module, "--json"], control)
-            .with_context(|| format!("failed to load logoscore module `{module}`"))?;
+        let result = self
+            .run_json_controlled(["load-module", module, "--json"], control)
+            .with_context(|| format!("failed to load logoscore module `{module}`"));
+        self.invalidate_cli_snapshot()?;
+        result?;
         Ok(())
     }
 
@@ -1655,7 +1702,9 @@ impl LogoscoreCliRuntime {
         if module.trim().is_empty() {
             bail!("module name is required");
         }
-        self.run_json(["unload-module", module, "--json"], command_timeout())
+        let result = self.run_json(["unload-module", module, "--json"], command_timeout());
+        self.invalidate_cli_snapshot()?;
+        result
     }
 
     pub(crate) fn unload_module_controlled(
@@ -1666,7 +1715,9 @@ impl LogoscoreCliRuntime {
         if module.trim().is_empty() {
             bail!("module name is required");
         }
-        self.run_json_controlled(["unload-module", module, "--json"], control)
+        let result = self.run_json_controlled(["unload-module", module, "--json"], control);
+        self.invalidate_cli_snapshot()?;
+        result
     }
 
     pub(crate) fn call(
@@ -1686,9 +1737,12 @@ impl LogoscoreCliRuntime {
     ) -> Result<LogosCoreOutput> {
         let mut output =
             self.with_command_gate(compound_command_timeout(), |runner, deadline| {
-                let modules =
-                    run_json_before_deadline(runner, ["list-modules", "--json"], deadline)
-                        .context("failed to list logoscore modules")?;
+                let modules = cached_logoscore_cli_snapshot(
+                    runner,
+                    LogoscoreCliSnapshotKind::Modules,
+                    || run_json_before_deadline(runner, ["list-modules", "--json"], deadline),
+                )
+                .context("failed to list logoscore modules")?;
                 require_listed_module_loaded(module, &modules.value)?;
                 run_json_before_deadline(runner, command_args, deadline)
             })?;
@@ -1749,8 +1803,10 @@ impl LogoscoreCliRuntime {
         let gate_control = control.clone();
         let mut output = self.with_controlled_command_gate(&gate_control, |runner| {
             let modules =
-                run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
-                    .context("failed to list logoscore modules")?;
+                cached_logoscore_cli_snapshot(runner, LogoscoreCliSnapshotKind::Modules, || {
+                    run_json_with_controlled(runner, ["list-modules", "--json"], control.clone())
+                })
+                .context("failed to list logoscore modules")?;
             require_listed_module_loaded(module, &modules.value)?;
             run_json_with_controlled_with_output_limit(
                 runner,
@@ -1982,11 +2038,15 @@ impl LogoscoreCliRuntime {
     }
 
     pub(crate) fn stop(&self) -> Result<LogosCoreOutput> {
-        self.run_json(["stop", "--json"], command_timeout())
+        let result = self.run_json(["stop", "--json"], command_timeout());
+        self.invalidate_cli_snapshot()?;
+        result
     }
 
     pub(crate) fn stop_controlled(&self, control: CommandControl) -> Result<LogosCoreOutput> {
-        self.run_json_controlled(["stop", "--json"], control)
+        let result = self.run_json_controlled(["stop", "--json"], control);
+        self.invalidate_cli_snapshot()?;
+        result
     }
 
     pub(crate) fn stage_shared_file(
@@ -2110,6 +2170,49 @@ impl LogoscoreCliRuntime {
         }
     }
 
+    fn cached_json<I, S>(
+        &self,
+        kind: LogoscoreCliSnapshotKind,
+        args: I,
+        timeout: Duration,
+    ) -> Result<LogosCoreOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.with_command_gate(timeout, move |runner, deadline| {
+            cached_logoscore_cli_snapshot(runner, kind, || {
+                run_json_before_deadline(runner, args, deadline)
+            })
+        })
+    }
+
+    fn cached_json_controlled<I, S>(
+        &self,
+        kind: LogoscoreCliSnapshotKind,
+        args: I,
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let gate_control = control.clone();
+        self.with_controlled_command_gate(&gate_control, move |runner| {
+            cached_logoscore_cli_snapshot(runner, kind, || {
+                run_json_with_controlled(runner, args, control)
+            })
+        })
+    }
+
+    fn invalidate_cli_snapshot(&self) -> Result<()> {
+        invalidate_logoscore_cli_snapshot(&self.runner)
+    }
+
+    pub(crate) fn invalidate_observation_snapshot(&self) -> Result<()> {
+        self.invalidate_cli_snapshot()
+    }
+
     fn run_json<I, S>(&self, args: I, timeout: Duration) -> Result<LogosCoreOutput>
     where
         I: IntoIterator<Item = S>,
@@ -2155,10 +2258,171 @@ impl LogoscoreCliRuntime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogoscoreCliSnapshotKind {
+    Status,
+    Modules,
+}
+
+#[derive(Debug, Clone)]
+enum LogoscoreCliSnapshotResult {
+    Output(LogosCoreOutput),
+    Error(String),
+}
+
+impl LogoscoreCliSnapshotResult {
+    fn into_result(self) -> Result<LogosCoreOutput> {
+        match self {
+            Self::Output(output) => Ok(output),
+            Self::Error(error) => Err(anyhow::anyhow!("{error}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LogoscoreCliSnapshotEntry {
+    observed_at: StdInstant,
+    result: LogoscoreCliSnapshotResult,
+}
+
+impl LogoscoreCliSnapshotEntry {
+    fn is_fresh(&self, kind: LogoscoreCliSnapshotKind, now: StdInstant) -> bool {
+        let freshness = match self.result {
+            LogoscoreCliSnapshotResult::Output(_) => match kind {
+                LogoscoreCliSnapshotKind::Status => LOGOSCORE_CLI_STATUS_SNAPSHOT_FRESHNESS,
+                LogoscoreCliSnapshotKind::Modules => LOGOSCORE_CLI_MODULES_SNAPSHOT_FRESHNESS,
+            },
+            LogoscoreCliSnapshotResult::Error(_) => LOGOSCORE_CLI_FAILURE_BACKOFF,
+        };
+        now.saturating_duration_since(self.observed_at) <= freshness
+    }
+}
+
+#[derive(Debug, Default)]
+struct LogoscoreCliSnapshot {
+    generation: u64,
+    status: Option<LogoscoreCliSnapshotEntry>,
+    modules: Option<LogoscoreCliSnapshotEntry>,
+}
+
+impl LogoscoreCliSnapshot {
+    fn entry(&self, kind: LogoscoreCliSnapshotKind) -> Option<&LogoscoreCliSnapshotEntry> {
+        match kind {
+            LogoscoreCliSnapshotKind::Status => self.status.as_ref(),
+            LogoscoreCliSnapshotKind::Modules => self.modules.as_ref(),
+        }
+    }
+
+    fn set_entry(&mut self, kind: LogoscoreCliSnapshotKind, entry: LogoscoreCliSnapshotEntry) {
+        match kind {
+            LogoscoreCliSnapshotKind::Status => self.status = Some(entry),
+            LogoscoreCliSnapshotKind::Modules => self.modules = Some(entry),
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.status = None;
+        self.modules = None;
+    }
+}
+
 #[derive(Debug, Default)]
 struct LogoscoreCliCommandGate {
     lock: Mutex<()>,
     controlled_waiters: AtomicUsize,
+    snapshot: Mutex<LogoscoreCliSnapshot>,
+}
+
+fn cached_logoscore_cli_snapshot(
+    runner: &LogosCoreRunner,
+    kind: LogoscoreCliSnapshotKind,
+    operation: impl FnOnce() -> Result<LogosCoreOutput>,
+) -> Result<LogosCoreOutput> {
+    let gate = logoscore_cli_command_gate(runner)?;
+    let (generation, cached) = {
+        let snapshot = gate
+            .snapshot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("logoscore CLI snapshot is poisoned"))?;
+        let cached = snapshot
+            .entry(kind)
+            .filter(|entry| entry.is_fresh(kind, StdInstant::now()))
+            .cloned();
+        (snapshot.generation, cached)
+    };
+    if let Some(cached) = cached {
+        return cached.result.into_result();
+    }
+
+    let result = operation();
+    let cached_result = match &result {
+        Ok(output) if cacheable_logoscore_cli_snapshot(kind, output) => {
+            Some(LogoscoreCliSnapshotResult::Output(output.clone()))
+        }
+        Ok(_) => None,
+        Err(error) if error.downcast_ref::<CommandTerminated>().is_none() => {
+            Some(LogoscoreCliSnapshotResult::Error(format!("{error:#}")))
+        }
+        Err(_) => None,
+    };
+    if let Some(cached_result) = cached_result {
+        let mut snapshot = gate
+            .snapshot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("logoscore CLI snapshot is poisoned"))?;
+        if snapshot.generation == generation {
+            let observed_at = StdInstant::now();
+            let status_inventory = match (&kind, &cached_result) {
+                (LogoscoreCliSnapshotKind::Status, LogoscoreCliSnapshotResult::Output(output))
+                    if module_rows(&output.value).is_ok() =>
+                {
+                    Some(cached_result.clone())
+                }
+                _ => None,
+            };
+            snapshot.set_entry(
+                kind,
+                LogoscoreCliSnapshotEntry {
+                    observed_at,
+                    result: cached_result,
+                },
+            );
+            if let Some(result) = status_inventory {
+                snapshot.set_entry(
+                    LogoscoreCliSnapshotKind::Modules,
+                    LogoscoreCliSnapshotEntry {
+                        observed_at,
+                        result,
+                    },
+                );
+            }
+        }
+    }
+    result
+}
+
+fn cacheable_logoscore_cli_snapshot(
+    kind: LogoscoreCliSnapshotKind,
+    output: &LogosCoreOutput,
+) -> bool {
+    kind != LogoscoreCliSnapshotKind::Status
+        || matches!(
+            output
+                .value
+                .pointer("/daemon/status")
+                .and_then(Value::as_str),
+            Some("running" | "stopped")
+        )
+}
+
+fn invalidate_logoscore_cli_snapshot(runner: &LogosCoreRunner) -> Result<()> {
+    let gate = logoscore_cli_command_gate(runner)?;
+    gate.snapshot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("logoscore CLI snapshot is poisoned"))?
+        .invalidate();
+    Ok(())
 }
 
 fn logoscore_cli_command_gate(runner: &LogosCoreRunner) -> Result<Arc<LogoscoreCliCommandGate>> {
@@ -5090,6 +5354,297 @@ esac
 
     #[cfg(unix)]
     #[test]
+    fn cli_snapshot_coalesces_concurrent_status_and_module_inventory_queries() -> Result<()> {
+        use std::{
+            os::unix::fs::PermissionsExt as _,
+            sync::{Arc, Barrier},
+        };
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-snapshot");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    status)
+        printf '%s\n' status >> "$config_dir/commands"
+        printf '%s\n' '{"daemon":{"status":"running"},"modules":[{"name":"storage_module","status":"loaded"},{"name":"delivery_module","status":"not_loaded"}]}'
+        ;;
+    list-modules)
+        printf '%s\n' list-modules >> "$config_dir/commands"
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    call)
+        printf '%s\n' call >> "$config_dir/commands"
+        printf '%s\n' '{"module":"storage_module","method":"get","result":{"value":"ok"},"status":"ok"}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let worker_runtime = runtime.clone();
+            let worker_barrier = Arc::clone(&barrier);
+            workers.push(thread::spawn(move || -> Result<LogosCoreOutput> {
+                worker_barrier.wait();
+                worker_runtime.status_with_timeout(Duration::from_secs(3))
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            let status = worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("snapshot worker panicked"))??;
+            anyhow::ensure!(
+                status
+                    .value
+                    .pointer("/daemon/status")
+                    .and_then(Value::as_str)
+                    == Some("running"),
+                "cached status returned the wrong payload"
+            );
+        }
+
+        runtime.call("storage_module", "get", &[])?;
+        runtime.call("storage_module", "get", &[])?;
+        let first_stopped = runtime
+            .call("delivery_module", "get", &[])
+            .err()
+            .context("stopped module unexpectedly accepted a call")?;
+        let second_stopped = runtime
+            .call("delivery_module", "get", &[])
+            .err()
+            .context("cached stopped module unexpectedly accepted a call")?;
+        anyhow::ensure!(
+            first_stopped.to_string().contains("not loaded")
+                && second_stopped.to_string().contains("not loaded"),
+            "cached stopped module lost its diagnostic"
+        );
+
+        let commands = fs::read_to_string(directory.path().join("commands"))?;
+        anyhow::ensure!(
+            commands
+                .lines()
+                .filter(|command| *command == "status")
+                .count()
+                == 1,
+            "concurrent status consumers launched duplicate commands: {commands}"
+        );
+        anyhow::ensure!(
+            commands
+                .lines()
+                .filter(|command| *command == "list-modules")
+                .count()
+                == 0,
+            "status inventory did not satisfy same-epoch module calls: {commands}"
+        );
+        anyhow::ensure!(
+            commands
+                .lines()
+                .filter(|command| *command == "call")
+                .count()
+                == 2,
+            "snapshot changed the requested module-call count: {commands}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cli_snapshot_uses_runtime_and_inventory_specific_freshness() -> Result<()> {
+        let now = StdInstant::now();
+        let status_within_poll_window = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(19))
+                .context("status test instant underflowed")?,
+            result: LogoscoreCliSnapshotResult::Output(LogosCoreOutput {
+                runner: "fixture".to_owned(),
+                value: json!({"daemon": {"status": "running"}}),
+                stderr: None,
+            }),
+        };
+        let status_beyond_poll_window = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(21))
+                .context("expired status test instant underflowed")?,
+            result: status_within_poll_window.result.clone(),
+        };
+        let inventory_beyond_status_window = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(21))
+                .context("inventory test instant underflowed")?,
+            result: LogoscoreCliSnapshotResult::Output(LogosCoreOutput {
+                runner: "fixture".to_owned(),
+                value: json!({"modules": []}),
+                stderr: None,
+            }),
+        };
+        let expired_inventory = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(31))
+                .context("expired inventory test instant underflowed")?,
+            result: inventory_beyond_status_window.result.clone(),
+        };
+
+        anyhow::ensure!(
+            status_within_poll_window.is_fresh(LogoscoreCliSnapshotKind::Status, now),
+            "status snapshot expired inside one polling window"
+        );
+        anyhow::ensure!(
+            !status_beyond_poll_window.is_fresh(LogoscoreCliSnapshotKind::Status, now),
+            "status snapshot remained fresh beyond its documented limit"
+        );
+        anyhow::ensure!(
+            inventory_beyond_status_window.is_fresh(LogoscoreCliSnapshotKind::Modules, now),
+            "module inventory did not survive one UI refresh epoch"
+        );
+        anyhow::ensure!(
+            !expired_inventory.is_fresh(LogoscoreCliSnapshotKind::Modules, now),
+            "module inventory remained fresh beyond its documented limit"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_snapshot_backs_off_failures_and_explicit_invalidation_retries() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-snapshot-failure");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" = "status" ]; then
+    printf '%s\n' status >> "$config_dir/commands"
+    printf '%s\n' '{"code":"RPC_FAILED","message":"daemon unavailable","status":"error"}'
+    exit 4
+fi
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+
+        let first = runtime
+            .status()
+            .err()
+            .context("failing status fixture unexpectedly succeeded")?;
+        let second = runtime
+            .status()
+            .err()
+            .context("cached status failure unexpectedly succeeded")?;
+        anyhow::ensure!(
+            format!("{first:#}").contains("daemon unavailable")
+                && format!("{second:#}").contains("daemon unavailable"),
+            "cached failure lost its diagnostic"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .count()
+                == 1,
+            "failure backoff relaunched LogosCore"
+        );
+
+        runtime.invalidate_cli_snapshot()?;
+        let _retry = runtime
+            .status()
+            .err()
+            .context("invalidated status failure unexpectedly succeeded")?;
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .count()
+                == 2,
+            "explicit invalidation did not retry LogosCore status"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_module_lifecycle_invalidates_cached_inventory() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-snapshot-lifecycle");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' list-modules >> "$config_dir/commands"
+        status="$(cat "$config_dir/module-status")"
+        printf '{"modules":[{"name":"storage_module","status":"%s"}]}\n' "$status"
+        ;;
+    unload-module)
+        printf '%s' not_loaded > "$config_dir/module-status"
+        printf '%s\n' '{"status":"ok"}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        fs::write(directory.path().join("module-status"), "loaded")?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+
+        let first = runtime.list_modules()?;
+        let cached = runtime.list_modules()?;
+        anyhow::ensure!(
+            listed_module_status("storage_module", &first.value)? == "loaded"
+                && listed_module_status("storage_module", &cached.value)? == "loaded",
+            "initial module inventory was not reused"
+        );
+        runtime.unload_module("storage_module")?;
+        let refreshed = runtime.list_modules()?;
+        anyhow::ensure!(
+            listed_module_status("storage_module", &refreshed.value)? == "not_loaded",
+            "module lifecycle invalidation served stale inventory"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .count()
+                == 2,
+            "module inventory did not refresh exactly once after lifecycle mutation"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn controlled_call_preserves_unready_metadata_error_without_invoking_mutation() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -5681,6 +6236,7 @@ esac
 
         fs::write(directory.path().join("sequence"), "")?;
         fs::write(directory.path().join("status"), "loading")?;
+        transport.runtime()?.invalidate_observation_snapshot()?;
         let control = ModuleCallControl::new(
             CancellationToken::new(),
             Instant::now() + Duration::from_secs(5),
@@ -5708,6 +6264,7 @@ esac
 
         fs::write(directory.path().join("sequence"), "")?;
         fs::write(directory.path().join("status"), "crashed")?;
+        transport.runtime()?.invalidate_observation_snapshot()?;
         let metadata_error = transport
             .module_info("lez_indexer_module".to_owned())
             .await
@@ -5730,6 +6287,7 @@ esac
 
         fs::write(directory.path().join("sequence"), "")?;
         fs::write(directory.path().join("status"), "loaded")?;
+        transport.runtime()?.invalidate_observation_snapshot()?;
         let loaded = transport.call(call).await?.into_value();
         anyhow::ensure!(
             loaded.get("state").and_then(Value::as_str) == Some("stopped"),

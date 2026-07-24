@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use classification::CatalogZoneClassifier;
 pub use classification::{
     CatalogZoneClassification, ZoneClassificationEvidence, ZoneFactGates, catalog_fact_gates,
     classify_catalog_zone, classify_zone,
@@ -39,6 +40,11 @@ struct ProjectedZone {
     summary: ZoneSummary,
     detail: ZoneDetail,
     sources: ZoneSourceProjection,
+}
+
+struct ProjectedCatalogZone {
+    summary: ZoneSummary,
+    classification_evidence: ZoneClassificationEvidence,
 }
 
 impl Default for ZoneProjectionSnapshot {
@@ -80,9 +86,10 @@ impl ZoneProjectionSnapshot {
             .iter()
             .map(|record| (record.channel_id.as_str(), record))
             .collect::<BTreeMap<_, _>>();
-        let zones = project_catalog_zones(catalog, &configs, verification)
+        let zones = project_catalog_zone_rows(catalog, &configs, verification)
             .into_iter()
-            .map(|mut summary| {
+            .map(|projected| {
+                let mut summary = projected.summary;
                 let channel_id = summary.channel_id.clone();
                 let config = configs_by_channel.get(channel_id.as_str()).copied();
                 let record = records_by_channel.get(channel_id.as_str()).copied();
@@ -92,8 +99,14 @@ impl ZoneProjectionSnapshot {
                     sources.apply_to_l2_zone(l2_zone);
                     summary.activity_detail.last_l2_block_id = l2_zone.latest_block_id;
                 }
-                let detail =
-                    project_joined_detail(catalog, summary.clone(), record, config, &sources, 0);
+                let detail = project_joined_detail(
+                    summary.clone(),
+                    record,
+                    config,
+                    &sources,
+                    projected.classification_evidence,
+                    0,
+                );
                 (
                     channel_id,
                     ProjectedZone {
@@ -169,6 +182,17 @@ pub fn project_catalog_zones(
     source_configs: &[ChannelSourceConfig],
     verification_state: CatalogVerificationState,
 ) -> Vec<ZoneSummary> {
+    project_catalog_zone_rows(snapshot, source_configs, verification_state)
+        .into_iter()
+        .map(|projected| projected.summary)
+        .collect()
+}
+
+fn project_catalog_zone_rows(
+    snapshot: &CatalogSnapshot,
+    source_configs: &[ChannelSourceConfig],
+    verification_state: CatalogVerificationState,
+) -> Vec<ProjectedCatalogZone> {
     let configs_by_channel: BTreeMap<&str, &ChannelSourceConfig> = source_configs
         .iter()
         .filter(|config| config.network_scope == snapshot.metadata.network_scope)
@@ -185,6 +209,7 @@ pub fn project_catalog_zones(
             .len()
             .saturating_add(configs_by_channel.len()),
     );
+    let classifier = CatalogZoneClassifier::new(snapshot);
 
     for record in &snapshot.zones {
         let config = configs_by_channel.get(record.channel_id.as_str()).copied();
@@ -193,18 +218,24 @@ pub fn project_catalog_zones(
             record,
             config,
             verification_state,
+            &classifier,
         ));
     }
     for (channel_id, config) in configs_by_channel {
         if !catalog_channel_ids.contains(channel_id) {
-            zones.push(project_configured_channel(
-                snapshot,
-                config,
-                verification_state,
-            ));
+            zones.push(ProjectedCatalogZone {
+                summary: project_configured_channel(snapshot, config, verification_state),
+                classification_evidence: ZoneClassificationEvidence {
+                    recognized_l2_evidence: false,
+                    configured_sequencer_link: !config.sequencer_sources.is_empty(),
+                    raw_inscription_evidence: false,
+                    l2_absence_is_covered: false,
+                    conflicting_evidence: false,
+                },
+            });
         }
     }
-    zones.sort_by(|left, right| left.channel_id.cmp(&right.channel_id));
+    zones.sort_by(|left, right| left.summary.channel_id.cmp(&right.summary.channel_id));
     zones
 }
 
@@ -245,34 +276,16 @@ pub fn project_catalog_zone_detail(
 }
 
 fn project_joined_detail(
-    snapshot: &CatalogSnapshot,
     summary: ZoneSummary,
     record: Option<&ZoneCatalogRecord>,
     config: Option<&ChannelSourceConfig>,
     source_projection: &ZoneSourceProjection,
+    classification_evidence: ZoneClassificationEvidence,
     detail_revision: u64,
 ) -> ZoneDetail {
     let l1_keys = summary
         .sequencer_committee()
         .map_or_else(Vec::new, |committee| committee.members.clone());
-    let classification_evidence = record.map_or(
-        ZoneClassificationEvidence {
-            recognized_l2_evidence: false,
-            configured_sequencer_link: config
-                .is_some_and(|config| !config.sequencer_sources.is_empty()),
-            raw_inscription_evidence: false,
-            l2_absence_is_covered: false,
-            conflicting_evidence: false,
-        },
-        |record| {
-            classify_catalog_zone(
-                snapshot,
-                record,
-                config.is_some_and(|config| !config.sequencer_sources.is_empty()),
-            )
-            .evidence
-        },
-    );
     ZoneDetail {
         l1_channel_snapshot: L1ChannelSnapshot {
             channel_tip: record.and_then(|record| record.l1_channel.tip_hash.clone()),
@@ -773,9 +786,9 @@ fn project_catalog_record(
     record: &ZoneCatalogRecord,
     config: Option<&ChannelSourceConfig>,
     verification_state: CatalogVerificationState,
-) -> ZoneSummary {
-    let classification = classify_catalog_zone(
-        snapshot,
+    classifier: &CatalogZoneClassifier<'_>,
+) -> ProjectedCatalogZone {
+    let classification = classifier.classify(
         record,
         config.is_some_and(|config| !config.sequencer_sources.is_empty()),
     );
@@ -790,7 +803,7 @@ fn project_catalog_record(
         },
         ZoneKind::Unknown => ZoneFacts::Unknown,
     };
-    ZoneSummary {
+    let summary = ZoneSummary {
         channel_id: record.channel_id.clone(),
         active_zone_context_fields: project_active_zone_context_fields(
             snapshot,
@@ -810,6 +823,10 @@ fn project_catalog_record(
         provenance: project_provenance(snapshot, verification_state, Some(record.updated_at_unix)),
         l1_channel,
         facts,
+    };
+    ProjectedCatalogZone {
+        summary,
+        classification_evidence: classification.evidence,
     }
 }
 

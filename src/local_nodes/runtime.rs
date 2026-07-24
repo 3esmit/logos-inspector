@@ -270,10 +270,11 @@ impl LogoscoreRuntimeProfile {
 
     fn wait_until_ready_with_timeout(&self, timeout: Duration) -> Result<()> {
         let cli = self.cli_runtime()?;
+        cli.invalidate_observation_snapshot()?;
         let deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < deadline {
-            match cli.status_with_timeout(PROBE_TIMEOUT) {
+            match cli.status_probe_with_timeout(PROBE_TIMEOUT) {
                 Ok(_) => return Ok(()),
                 Err(error) => last_error = Some(error),
             }
@@ -437,6 +438,7 @@ impl LogoscoreRuntimeProfile {
                 target.unit
             )
         })?;
+        self.cli_runtime()?.invalidate_observation_snapshot()?;
         Ok(display)
     }
 

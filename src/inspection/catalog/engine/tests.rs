@@ -110,6 +110,22 @@ fn connected_page_commits_complete_catalog_and_channel_evidence() -> Result<()> 
         prepare_catalog_catch_up(&committed, target, context(1, 103)?)?.is_none(),
         "same target produced a redundant batch"
     );
+    let advanced = prepare_catalog_catch_up(&committed, reference(11, 'b'), context(1, 104)?)?
+        .context("advanced target should produce a delta batch")?;
+    ensure!(
+        advanced.upsert_zones.len() == 1
+            && advanced.upsert_zones.first().is_some_and(|zone| {
+                zone.channel_id == channel_id && zone.l1_channel.lib_slot == Some(11)
+            }),
+        "advanced target did not update only the affected Zone"
+    );
+    ensure!(
+        advanced.upsert_evidence.is_empty()
+            && advanced.delete_evidence_ids.is_empty()
+            && advanced.upsert_gaps.is_empty()
+            && advanced.delete_gap_ids.is_empty(),
+        "advanced target rewrote unrelated catalog records"
+    );
     Ok(())
 }
 
@@ -540,6 +556,20 @@ fn unavailable_initial_parent_creates_partial_prefix_without_internal_gap() -> R
         .and_then(|frontier| frontier.checkpoint.clone())
         .context("prefix repair frontier missing")?;
     let confirmation = CatalogRepairConfirmation::new(target, None, Some(upper_frontier));
+    let no_progress = reduce_catalog_prefix_repair(
+        &committed,
+        CatalogAncestryRepairOutcome::Unresolved {
+            recovered_blocks: Vec::new(),
+            missing_block_id: request.upper_checkpoint.parent_id.clone(),
+            reason: CoverageGapReason::SourceUnavailable,
+        },
+        &confirmation,
+        context(1, 103)?,
+    )?;
+    ensure!(
+        no_progress.is_none(),
+        "empty unresolved prefix repair rewrote the catalog"
+    );
     let batch = reduce_catalog_prefix_repair(&committed, outcome, &confirmation, context(1, 103)?)?
         .context("prefix repair should produce a batch")?;
     let repaired = catalog.commit_batch(batch)?;
