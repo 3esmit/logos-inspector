@@ -45,7 +45,8 @@ const LOGOSCORE_EVENT_NAME_LIMIT: usize = 256;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
 const LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const LOGOSCORE_CLI_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(1);
+const LOGOSCORE_CLI_STATUS_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(5);
+const LOGOSCORE_CLI_MODULES_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(30);
 const LOGOSCORE_CLI_FAILURE_BACKOFF: Duration = Duration::from_secs(1);
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 3;
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2285,9 +2286,12 @@ struct LogoscoreCliSnapshotEntry {
 }
 
 impl LogoscoreCliSnapshotEntry {
-    fn is_fresh(&self, now: StdInstant) -> bool {
+    fn is_fresh(&self, kind: LogoscoreCliSnapshotKind, now: StdInstant) -> bool {
         let freshness = match self.result {
-            LogoscoreCliSnapshotResult::Output(_) => LOGOSCORE_CLI_SNAPSHOT_FRESHNESS,
+            LogoscoreCliSnapshotResult::Output(_) => match kind {
+                LogoscoreCliSnapshotKind::Status => LOGOSCORE_CLI_STATUS_SNAPSHOT_FRESHNESS,
+                LogoscoreCliSnapshotKind::Modules => LOGOSCORE_CLI_MODULES_SNAPSHOT_FRESHNESS,
+            },
             LogoscoreCliSnapshotResult::Error(_) => LOGOSCORE_CLI_FAILURE_BACKOFF,
         };
         now.saturating_duration_since(self.observed_at) <= freshness
@@ -2343,7 +2347,7 @@ fn cached_logoscore_cli_snapshot(
             .map_err(|_| anyhow::anyhow!("logoscore CLI snapshot is poisoned"))?;
         let cached = snapshot
             .entry(kind)
-            .filter(|entry| entry.is_fresh(StdInstant::now()))
+            .filter(|entry| entry.is_fresh(kind, StdInstant::now()))
             .cloned();
         (snapshot.generation, cached)
     };
@@ -5439,6 +5443,51 @@ esac
                 .count()
                 == 2,
             "snapshot changed the requested module-call count: {commands}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cli_snapshot_uses_runtime_and_inventory_specific_freshness() -> Result<()> {
+        let now = StdInstant::now();
+        let status_within_poll_window = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(4))
+                .context("status test instant underflowed")?,
+            result: LogoscoreCliSnapshotResult::Output(LogosCoreOutput {
+                runner: "fixture".to_owned(),
+                value: json!({"daemon": {"status": "running"}}),
+                stderr: None,
+            }),
+        };
+        let inventory_beyond_status_window = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(6))
+                .context("inventory test instant underflowed")?,
+            result: LogoscoreCliSnapshotResult::Output(LogosCoreOutput {
+                runner: "fixture".to_owned(),
+                value: json!({"modules": []}),
+                stderr: None,
+            }),
+        };
+        let expired_inventory = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(31))
+                .context("expired inventory test instant underflowed")?,
+            result: inventory_beyond_status_window.result.clone(),
+        };
+
+        anyhow::ensure!(
+            status_within_poll_window.is_fresh(LogoscoreCliSnapshotKind::Status, now),
+            "status snapshot expired inside one polling window"
+        );
+        anyhow::ensure!(
+            inventory_beyond_status_window.is_fresh(LogoscoreCliSnapshotKind::Modules, now),
+            "module inventory did not survive one UI refresh epoch"
+        );
+        anyhow::ensure!(
+            !expired_inventory.is_fresh(LogoscoreCliSnapshotKind::Modules, now),
+            "module inventory remained fresh beyond its documented limit"
         );
         Ok(())
     }

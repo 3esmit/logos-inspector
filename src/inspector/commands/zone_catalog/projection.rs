@@ -36,6 +36,8 @@ pub(super) struct ZoneProjectionLedger {
     projection_key: Option<ProjectionKey>,
     source_config_epoch: u64,
     projection: ZoneProjectionSnapshot,
+    #[cfg(test)]
+    projection_builds: usize,
     summary_revision: u64,
     delta_floor_revision: u64,
     detail_revisions: BTreeMap<String, u64>,
@@ -74,6 +76,13 @@ impl ZoneProjectionLedger {
             observation_revision: observations.observation_revision,
             verification: service.verification_state,
         };
+        if self.projection_key.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        {
+            self.projection_builds = self.projection_builds.saturating_add(1);
+        }
         let next_projection = ZoneProjectionSnapshot::project(
             service.catalog.as_deref(),
             configs,
@@ -81,10 +90,6 @@ impl ZoneProjectionLedger {
             service.verification_state,
         );
         let next_rows = next_projection.summary_map();
-        if self.projection_key.as_ref() == Some(&key) {
-            self.projection = next_projection;
-            return Ok(());
-        }
         let initial_empty = self.projection_key.is_none()
             && key.source_revision == 0
             && key.network_scope.is_none()
@@ -548,6 +553,31 @@ mod tests {
     use anyhow::{Result, bail};
 
     use super::*;
+
+    #[test]
+    fn unchanged_projection_inputs_skip_reclassification() -> Result<()> {
+        let mut ledger = ZoneProjectionLedger::default();
+        let service = ZoneCatalogServiceReport::default();
+
+        ledger.refresh(
+            &service,
+            Vec::new(),
+            ChannelSourceMonitorSnapshot::default(),
+        )?;
+        ledger.refresh(
+            &service,
+            Vec::new(),
+            ChannelSourceMonitorSnapshot::default(),
+        )?;
+
+        if ledger.projection_builds != 1 {
+            bail!(
+                "unchanged projection rebuilt {} times",
+                ledger.projection_builds
+            );
+        }
+        Ok(())
+    }
 
     fn key(source_revision: u64) -> ProjectionKey {
         ProjectionKey {
