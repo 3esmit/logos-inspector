@@ -1030,6 +1030,17 @@ TestCase {
         verify(!state.pendingAllowIdentityRotation)
     }
 
+    function test_basecamp_messaging_stop_preserves_context_and_identity() {
+        gateway.basecampModules = true
+        state.beginNodeAction("stop", "messaging")
+
+        compare(state.actionDraftTitle(), "Stop Messaging")
+        compare(
+            state.actionDraftMessage(),
+            "This stops Messaging inside Basecamp and keeps its module context, data, configuration, and peer identity. You can start it again without reinitializing.")
+        verify(!state.pendingAllowIdentityRotation)
+    }
+
     function test_network_action_draft_runs_pending_request() {
         state.networkProfile = "local"
         state.beginNetworkAction("load_network", "", "/tmp/local-devnet")
