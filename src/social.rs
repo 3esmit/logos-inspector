@@ -344,6 +344,52 @@ mod tests {
     }
 
     #[test]
+    fn store_messages_decode_delivery_module_byte_array_envelopes() {
+        let entity = zone_entity(ZoneL2EntityKind::Account, "account-1");
+        let scope = zone_scope(ZoneL2EntityKind::Account, "account-1");
+        let topic = zone_comment_topic(&entity).unwrap_or_default();
+        let payload = json!({
+            "kind": "comment",
+            "version": 2,
+            "identity": { "display_name": "Ada" },
+            "body": "hello from Delivery",
+            "created_at": "2026-07-24T23:43:11.978Z",
+            "conversation_id": topic,
+            "scope": scope
+        })
+        .to_string()
+        .into_bytes();
+        let store = json!({
+            "requestId": "delivery-store-request",
+            "statusCode": 200,
+            "statusDesc": "OK",
+            "messages": [{
+                "messageHash": "0x9b6842",
+                "message": {
+                    "payload": payload,
+                    "contentTopic": topic,
+                    "timestamp": 1_784_936_592_129_657_600_u64
+                },
+                "pubsubTopic": "/waku/2/rs/2/3"
+            }],
+            "paginationCursor": null
+        });
+
+        let messages = social_messages_from_store(&topic, &store, None);
+
+        assert_eq!(messages.len(), 1);
+        let Some(message) = messages.first() else {
+            return;
+        };
+        assert_eq!(message.cursor, "0x9b6842");
+        assert_eq!(message.topic, topic);
+        assert!(matches!(
+            &message.payload,
+            SocialPayload::Comment { body, .. } if body == "hello from Delivery"
+        ));
+    }
+
+    #[test]
     fn store_comment_page_projects_rows_and_cursor() {
         let entity = zone_entity(ZoneL2EntityKind::Account, "account-1");
         let scope = zone_scope(ZoneL2EntityKind::Account, "account-1");
