@@ -107,7 +107,7 @@ pub(super) fn managed_config(
 }
 
 pub(super) fn optional_u64(value: Value) -> ExecutionZoneReadResult<Option<u64>> {
-    if value.is_null() {
+    if value.is_null() || value.as_str().is_some_and(|text| text.trim().is_empty()) {
         return Ok(None);
     }
     value
