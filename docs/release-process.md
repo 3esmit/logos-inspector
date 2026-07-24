@@ -61,6 +61,13 @@ the download cannot fall back to build-host paths. The macOS smoke verifies
 the relocated app tree and launches the extracted app outside the Nix store.
 Any Nix path in non-compiled bundle content still fails verification.
 
+Linux GPU and display libraries remain host-provided because they must match
+the recipient hardware and driver stack. A supported Linux desktop must expose
+`libEGL.so.1`; Ubuntu provides it through `libegl1`. The headless release
+runner installs that package only after building the AppImage, then runs the
+same hidden-Nix-store smoke. GPU driver libraries from the build runner are
+never copied into the release artifact.
+
 The standalone workflow publishes a draft first, downloads and verifies every
 asset and checksum, then makes the prerelease visible. A failed post-upload
 check removes its draft and tag.
