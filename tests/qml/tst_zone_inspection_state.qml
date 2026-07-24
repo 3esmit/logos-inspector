@@ -1248,6 +1248,109 @@ TestCase {
         verify(!zoneState.summaryStale)
     }
 
+    function test_compatible_summary_refresh_keeps_verified_rows_usable() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+
+        verify(zoneState.summaryRowsUsable)
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            catalog_revision: 2,
+            observation_revision: 2,
+            summary_revision: 2
+        })))
+
+        verify(zoneState.summaryStale)
+        verify(zoneState.summaryInFlight)
+        verify(zoneState.summaryRowsUsable)
+
+        gateway.respondNext("zonesSummary", failed("summary unavailable"))
+        verify(zoneState.summaryStale)
+        verify(!zoneState.summaryInFlight)
+        verify(zoneState.summaryRowsUsable)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "source_behind",
+            coverage: { status: "rebuilding" },
+            ingestion: { worker_running: true },
+            catalog_revision: 2,
+            observation_revision: 2,
+            summary_revision: 2
+        })))
+        verify(!zoneState.summaryRowsUsable)
+    }
+
+    function test_source_config_change_does_not_retain_old_summary_rows() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            source_config_epoch: 2,
+            summary_revision: 2
+        })))
+
+        verify(zoneState.summaryStale)
+        verify(zoneState.summaryInFlight)
+        verify(!zoneState.summaryRowsUsable)
+    }
+
+    function test_compatible_detail_refresh_keeps_visible_detail_usable() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+        gateway.respondNext("zoneDetail", ok(detailReport(row)))
+
+        verify(zoneState.detailDisplayUsable)
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            catalog_revision: 2,
+            observation_revision: 2,
+            summary_revision: 2
+        })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(2, {
+            kind: "delta",
+            upserts: [row],
+            removed_zone_ids: []
+        }, null, {
+            catalog_revision: 2,
+            observation_revision: 2
+        })))
+
+        verify(zoneState.detailStale)
+        verify(zoneState.detailInFlight)
+        verify(zoneState.detailDisplayUsable)
+        gateway.respondNext("zoneDetail", failed("detail unavailable"))
+        verify(zoneState.detailStale)
+        verify(!zoneState.detailInFlight)
+        verify(zoneState.detailDisplayUsable)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            catalog_revision: 2,
+            source_config_epoch: 2,
+            observation_revision: 2,
+            summary_revision: 3
+        })))
+        verify(!zoneState.detailDisplayUsable)
+    }
+
     function test_network_change_clears_rows_context_and_stale_detail() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", null)

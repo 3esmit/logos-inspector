@@ -97,6 +97,13 @@ TestCase {
         model.zoneInspection.networkScopeKey = "genesis_id:"
             + ZoneFixtureData.networkScope().genesis_id
         model.zoneInspection.verification = "verified"
+        model.zoneInspection.sourceRevision = 1
+        model.zoneInspection.sourceConfigEpoch = 1
+        model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summarySourceRevision = 1
+        model.zoneInspection.summaryNetworkScopeKey
+            = model.zoneInspection.networkScopeKey
+        model.zoneInspection.summarySourceConfigEpoch = 1
         model.zoneInspection.summaryStale = false
         model.zoneInspection.summaryInFlight = false
         model.zoneInspection.summaryError = ""
@@ -902,13 +909,13 @@ TestCase {
         compare(fakeHost.lastArgs[0].method, "blockchainBlock")
     }
 
-    function test_stale_dashboard_zone_is_static_and_not_copyable() {
+    function test_incompatible_dashboard_zone_is_static_and_not_copyable() {
         const channelId = ZoneFixtureData.identity("1")
         const label = "Devnet Settlement / 11111111...111111"
         const row = findChild(page, "dashboardZoneRow_" + channelId)
         verify(row !== null)
 
-        model.zoneInspection.summaryStale = true
+        model.zoneInspection.sourceConfigEpoch += 1
         tryVerify(function () {
             return !row.cells[0].link
                 && findAccessibleByName(page, label) !== null
@@ -999,7 +1006,7 @@ TestCase {
                "Recent L1 Transactions must render below Recent L1 Blocks")
     }
 
-    function test_dashboard_zone_activation_opens_zones() {
+    function test_dashboard_zone_activation_survives_compatible_refresh() {
         const panel = findChild(page, "dashboardZonesPanel")
         const channelId = ZoneFixtureData.identity("8")
         verify(panel.openZone(channelId))
@@ -1007,8 +1014,14 @@ TestCase {
         compare(model.shell.currentView, "zones")
 
         model.zoneInspection.summaryStale = true
-        verify(!panel.openZone(ZoneFixtureData.identity("1")))
-        compare(model.zoneInspection.activeZoneId, channelId)
+        verify(!panel.stale)
+        verify(panel.openZone(ZoneFixtureData.identity("1")))
+        compare(model.zoneInspection.activeZoneId, ZoneFixtureData.identity("1"))
+
+        model.zoneInspection.sourceConfigEpoch = 2
+        verify(panel.stale)
+        verify(!panel.openZone(channelId))
+        compare(model.zoneInspection.activeZoneId, ZoneFixtureData.identity("1"))
     }
 
     function test_dashboard_configured_sequencer_opens_sequencer_dashboard() {

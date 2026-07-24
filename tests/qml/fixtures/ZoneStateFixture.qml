@@ -14,6 +14,7 @@ QtObject {
 
     property double sourceRevision: 3
     property double catalogRevision: 19
+    property double sourceConfigEpoch: 7
     property string requestedDetailTab: "overview"
     property string verification: "verified"
     property var coverage: ({
@@ -41,6 +42,7 @@ QtObject {
     property var sourceMutationWarning: null
     property bool controlInFlight: false
     property bool summaryInFlight: false
+    property bool summaryLoaded: true
     property bool detailInFlight: false
     property bool sourceMutationInFlight: false
     property bool managedIndexerRefreshInFlight: false
@@ -75,11 +77,23 @@ QtObject {
         detail: "Ready"
     })
     property bool summaryStale: false
+    property double summarySourceRevision: root.sourceRevision
+    property string summaryNetworkScopeKey: root.networkScopeKey
+    property double summarySourceConfigEpoch: root.sourceConfigEpoch
+    readonly property bool summaryRowsUsable: root.verification === "verified"
+        && root.summaryLoaded
+        && root.summarySourceRevision === root.sourceRevision
+        && root.summaryNetworkScopeKey === root.networkScopeKey
+        && root.summarySourceConfigEpoch === root.sourceConfigEpoch
     property bool detailStale: false
     property var zoneSummaries: FixtureData.zones()
     property string activeZoneId: FixtureData.identity("1")
     property var activeZoneContext: FixtureData.activeZoneContext(activeZoneId)
     property var zoneDetail: FixtureData.detailFor(activeZoneId)
+    readonly property bool detailDisplayUsable: root.summaryRowsUsable
+        && root.zoneDetail !== null
+        && root.activeZoneContext !== null
+        && root.activeZoneId.length > 0
     property var networkScope: FixtureData.networkScope()
     property string networkScopeKey: "genesis_id:" + FixtureData.identity("f")
     property var targetResolutionReport: null

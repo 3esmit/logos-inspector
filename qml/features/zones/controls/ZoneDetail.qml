@@ -26,6 +26,7 @@ ColumnLayout {
     readonly property var sourceEditorState: root.zoneState.sourceEditor
     readonly property var detail: root.zoneState.zoneDetail
     readonly property var zone: root.detail && root.detail.summary ? root.detail.summary : ({})
+    readonly property bool displayStale: root.zoneState.detailDisplayUsable !== true
     readonly property bool hasDirtyDraft: sourceLoader.section !== null
         && sourceLoader.section.hasDirtyDraft
 
@@ -86,19 +87,19 @@ ColumnLayout {
         ZoneKindChip {
             theme: root.theme
             label: Presentation.kindLabel(root.zone.kind)
-            tone: Presentation.stateTone(root.zone, root.zoneState.detailStale)
+            tone: Presentation.stateTone(root.zone, root.displayStale)
         }
     }
 
     ZoneCompactStatus {
         theme: root.theme
         zone: root.zone
-        stale: root.zoneState.detailStale
+        stale: root.displayStale
         Layout.fillWidth: true
     }
 
     Text {
-        visible: root.zoneState.detailStale
+        visible: root.displayStale
         text: qsTr("Detail is refreshing against current catalog facts")
         color: root.theme.warning
         textFormat: Text.PlainText

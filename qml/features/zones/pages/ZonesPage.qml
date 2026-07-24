@@ -22,10 +22,12 @@ ColumnLayout {
     property string pendingZoneId: ""
     property string pendingZoneView: ""
     property bool retainDetailForDraft: false
+    property real retainedZoneListContentY: 0
+    property bool zoneListScrollRestorePending: false
     readonly property var zoneState: root.model && root.model.zoneInspection
         ? root.model.zoneInspection : null
-    readonly property bool rowsStale: root.zoneState
-        && (root.zoneState.verification !== "verified" || root.zoneState.summaryStale)
+    readonly property bool rowsStale: !root.zoneState
+        || root.zoneState.summaryRowsUsable !== true
     readonly property var visibleZones: Presentation.filterRows(
         root.zoneState ? root.zoneState.zoneSummaries : [],
         root.filter,
@@ -56,6 +58,21 @@ ColumnLayout {
     objectName: "zonesPage"
     width: parent ? parent.width : 1180
     spacing: root.theme.gapLarge
+
+    Connections {
+        target: root.zoneState
+
+        function onSummaryInFlightChanged() {
+            if (!root.zoneState) {
+                return
+            }
+            if (root.zoneState.summaryInFlight) {
+                root.captureZoneListScroll()
+            } else {
+                root.scheduleZoneListScrollRestore()
+            }
+        }
+    }
 
     ListModel {
         id: zoneFilters
@@ -257,6 +274,11 @@ ColumnLayout {
                 implicitHeight: Math.max(120, Math.min(contentHeight, root.stacked ? 460 : 650))
                 Layout.fillWidth: true
                 Layout.preferredHeight: implicitHeight
+                onMovementEnded: {
+                    if (root.zoneState && root.zoneState.summaryInFlight) {
+                        root.captureZoneListScroll(true)
+                    }
+                }
 
                 delegate: ZoneListRow {
                     required property var modelData
@@ -386,6 +408,37 @@ ColumnLayout {
             return false
         }
         return zoneState.activateZone(channelId)
+    }
+
+    function captureZoneListScroll(replaceRetained) {
+        if (zoneListScrollRestorePending && replaceRetained !== true) {
+            return
+        }
+        retainedZoneListContentY = zonesList.contentY
+        zoneListScrollRestorePending = true
+    }
+
+    function scheduleZoneListScrollRestore() {
+        if (!zoneListScrollRestorePending) {
+            return
+        }
+        Qt.callLater(root.restoreZoneListScroll)
+    }
+
+    function restoreZoneListScroll() {
+        if (!zoneListScrollRestorePending) {
+            return
+        }
+        const minimum = Number(zonesList.originY || 0)
+        const maximum = Math.max(minimum,
+            minimum + Number(zonesList.contentHeight || 0)
+                - Number(zonesList.height || 0))
+        zonesList.contentY = Math.max(minimum,
+            Math.min(retainedZoneListContentY, maximum))
+        if (root.zoneState && root.zoneState.summaryInFlight) {
+            return
+        }
+        zoneListScrollRestorePending = false
     }
 
     function requestSequencerActivation(channelId) {

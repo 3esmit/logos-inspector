@@ -210,6 +210,15 @@ TestCase {
         zoneState.catalogSourceUnavailable = false
         zoneState.readiness = null
         zoneState.summaryStale = false
+        zoneState.summaryInFlight = false
+        zoneState.summaryLoaded = true
+        zoneState.sourceRevision = 3
+        zoneState.sourceConfigEpoch = 7
+        zoneState.networkScopeKey = "genesis_id:" + FixtureData.identity("f")
+        zoneState.summarySourceRevision = zoneState.sourceRevision
+        zoneState.summaryNetworkScopeKey = zoneState.networkScopeKey
+        zoneState.summarySourceConfigEpoch = zoneState.sourceConfigEpoch
+        zoneState.zoneSummaries = FixtureData.zones()
         zoneState.requestedDetailTab = "overview"
         zoneState.activeZoneId = FixtureData.identity("1")
         zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
@@ -577,6 +586,76 @@ TestCase {
         verify(!dataLink.link)
     }
 
+    function test_compatible_summary_refresh_keeps_catalog_rows_interactive() {
+        const channelId = FixtureData.identity("1")
+        const row = findChild(page, "zoneListRow_" + channelId)
+        const channelLink = findChild(page, "zoneChannelLink_" + channelId)
+        verify(row !== null)
+        verify(channelLink !== null)
+
+        zoneState.summaryStale = true
+        zoneState.summaryInFlight = true
+        wait(0)
+
+        verify(zoneState.summaryRowsUsable)
+        verify(!page.rowsStale)
+        verify(row.interactive)
+        verify(channelLink.link)
+
+        zoneState.summaryInFlight = false
+        wait(0)
+        verify(zoneState.summaryRowsUsable)
+        verify(!page.rowsStale)
+        verify(row.interactive)
+
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        zoneState.detailStale = true
+        wait(0)
+        verify(!detail.displayStale)
+
+        zoneState.sourceConfigEpoch += 1
+        wait(0)
+        verify(!zoneState.summaryRowsUsable)
+        verify(page.rowsStale)
+        verify(detail.displayStale)
+    }
+
+    function test_compatible_summary_refresh_preserves_catalog_scroll() {
+        const originalRows = zoneState.zoneSummaries
+        const rows = expandedZones(24)
+        const list = findChild(page, "zonesList")
+        verify(list !== null)
+        try {
+            zoneState.zoneSummaries = rows
+            wait(0)
+            tryVerify(function () {
+                return list.contentHeight > list.height + 100
+            })
+            const maximum = list.originY + list.contentHeight - list.height
+            list.contentY = Math.min(maximum, list.originY + 180)
+            wait(0)
+            const expected = list.contentY
+
+            zoneState.summaryInFlight = true
+            wait(0)
+            const updated = rows.slice()
+            updated[0] = Object.assign({}, updated[0], {
+                activity_state: "finalizing"
+            })
+            zoneState.zoneSummaries = updated
+            zoneState.summaryInFlight = false
+
+            tryVerify(function () {
+                return Math.abs(list.contentY - expected) <= 1
+            })
+        } finally {
+            zoneState.summaryInFlight = false
+            zoneState.zoneSummaries = originalRows
+            wait(0)
+        }
+    }
+
     function test_dirty_source_editor_guards_zone_change() {
         const detail = findChild(page, "zoneDetail")
         verify(detail !== null)
@@ -604,6 +683,28 @@ TestCase {
         mouseClick(confirmButton, confirmButton.width / 2, confirmButton.height / 2)
         tryCompare(guard, "opened", false)
         compare(zoneState.activeZoneId, FixtureData.identity("8"))
+    }
+
+    function expandedZones(count) {
+        const template = FixtureData.zones()[0]
+        const rows = []
+        for (let index = 0; index < count; ++index) {
+            const suffix = Number(index + 1).toString(16)
+            const channelId = "0".repeat(64 - suffix.length) + suffix
+            const row = JSON.parse(JSON.stringify(template))
+            row.channel_id = channelId
+            row.display = Object.assign({}, row.display, {
+                title: "Zone " + String(index + 1),
+                short_channel_id: channelId.slice(0, 4) + "…"
+                    + channelId.slice(-4)
+            })
+            row.active_zone_context_fields = Object.assign(
+                {}, row.active_zone_context_fields, {
+                    channel_id: channelId
+                })
+            rows.push(row)
+        }
+        return rows
     }
 
     function test_dirty_detail_component_survives_temporary_detail_reset() {
