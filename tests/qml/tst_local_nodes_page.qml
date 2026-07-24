@@ -111,6 +111,17 @@ Item {
             compare(page.actionRows()[0].key, "bedrock")
             compare(page.actionRows()[1].key, "storage")
             compare(page.actionRows()[2].key, "messaging")
+            state.observedNodes = ({
+                storage: {
+                    status: "unavailable",
+                    detail: "stale generic Storage probe"
+                }
+            })
+            const storage = page.nodeTableRows().filter(function (row) {
+                return row.key === "storage"
+            })[0]
+            compare(storage.cells[2].text, "Running")
+            compare(storage.cells[5].text, "Basecamp module is running")
             compare(gateway.calls.filter(function (call) {
                 return call.method === "localDevnetList"
             }).length, 0)
@@ -600,7 +611,8 @@ Item {
                     available_actions: ["stop", "destroy"],
                     install_state: "installed",
                     run_state: "running",
-                    ownership: "inspector_managed"
+                    ownership: "inspector_managed",
+                    detail: "Basecamp module is running"
                 }, {
                     key: "messaging",
                     kind: "messaging",

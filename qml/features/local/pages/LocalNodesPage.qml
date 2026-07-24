@@ -974,11 +974,15 @@ ColumnLayout {
         return nodes.map(function (node) {
             const nodeKey = String(node.key || node.kind || "")
             const controlState = root.model.controlState(node)
-            const runState = root.model.publicTestnetMode()
+            const runState = root.model.basecampHost
+                ? String(node.run_state || "unknown")
+                : root.model.publicTestnetMode()
                 ? root.model.observedRunState(nodeKey)
                 : String(node.run_state || "unknown")
             const observation = root.model.observedNode(nodeKey)
-            const observationDetail = String(observation && observation.detail || "")
+            const observationDetail = root.model.basecampHost
+                ? String(node.detail || "")
+                : String(observation && observation.detail || "")
             const channelIndexers = nodeKey === "indexer" && observation
                 && Array.isArray(observation.channels) ? observation.channels : []
             const multiChannelIndexer = channelIndexers.length > 0
