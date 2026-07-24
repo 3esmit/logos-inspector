@@ -160,8 +160,9 @@
         };
 
       linkLezArtifacts = lezSource: ''
-        rm -rf /build/cargo-vendor-dir/artifacts
-        ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
+        artifactsLink="$NIX_BUILD_TOP/cargo-vendor-dir/artifacts"
+        rm -rf "$artifactsLink"
+        ln -s ${lezSource}/artifacts "$artifactsLink"
       '';
 
       qtUnifiedQmakeSetup = pkgs: ''
