@@ -137,7 +137,7 @@ ColumnLayout {
             theme: root.theme
             tone: "info"
             title: qsTr("Register an IDL first")
-            message: qsTr("Registered IDLs define instruction names, account roles, and typed arguments. Known Programs does not replace an IDL.")
+            message: qsTr("Registered IDLs define instruction names, account roles, and typed arguments. A listed program does not replace an IDL.")
             Layout.fillWidth: true
         }
 
