@@ -25,10 +25,11 @@ from typing import Any, Iterable
 
 CORE_MODULE_NAME = "logos_inspector"
 UI_MODULE_NAME = "logos_inspector_ui"
-CORE_PROTOCOL_DEPENDENCIES = (
+CORE_RUNTIME_DEPENDENCIES = (
     "blockchain_module",
     "storage_module",
     "delivery_module",
+    "lez_core",
 )
 SUPPORTED_PLATFORMS = ("linux-amd64", "darwin-arm64")
 SEMVER = re.compile(
@@ -111,8 +112,8 @@ def validate_source(root: Path) -> str:
     require(ui.get("version") == version, "UI metadata version must match Cargo workspace version")
     require(core.get("version") == version, "core metadata version must match Cargo workspace version")
     require(
-        core.get("dependencies") == list(CORE_PROTOCOL_DEPENDENCIES),
-        "core metadata must declare the direct protocol module dependencies",
+        core.get("dependencies") == list(CORE_RUNTIME_DEPENDENCIES),
+        "core metadata must declare the required runtime module dependencies",
     )
     dependencies = ui.get("dependencies")
     require(isinstance(dependencies, list), "UI metadata dependencies must be an array")
@@ -191,8 +192,8 @@ def validate_lgx(
             f"{path.name} core main binary is missing from its {platform} variant",
         )
         require(
-            manifest.get("dependencies") == list(CORE_PROTOCOL_DEPENDENCIES),
-            f"{path.name} core manifest must declare the direct protocol module dependencies",
+            manifest.get("dependencies") == list(CORE_RUNTIME_DEPENDENCIES),
+            f"{path.name} core manifest must declare the required runtime module dependencies",
         )
     elif expected_type == "ui_qml":
         dependencies = manifest.get("dependencies")
@@ -335,7 +336,7 @@ def create_test_lgx(
         resolved_dependencies = (
             [CORE_MODULE_NAME]
             if module_type == "ui_qml"
-            else list(CORE_PROTOCOL_DEPENDENCIES)
+            else list(CORE_RUNTIME_DEPENDENCIES)
         )
     manifest: dict[str, Any] = {
         "name": name,
@@ -435,7 +436,7 @@ def self_test() -> None:
             module_type="core",
             version=version,
             platform=platform,
-            dependencies=[],
+            dependencies=list(CORE_RUNTIME_DEPENDENCIES[:-1]),
         )
         try:
             validate_lgx(
@@ -448,7 +449,7 @@ def self_test() -> None:
         except ReleaseError:
             pass
         else:
-            raise ReleaseError("release artifact fixture accepted a core package without dependencies")
+            raise ReleaseError("release artifact fixture accepted a core package without lez_core")
         checksums = output / "SHA256SUMS"
         content = checksums.read_text(encoding="utf-8")
         corrupted_prefix = "0" if content[0] != "0" else "1"
