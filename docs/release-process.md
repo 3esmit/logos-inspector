@@ -63,10 +63,15 @@ Any Nix path in non-compiled bundle content still fails verification.
 
 Linux GPU and display libraries remain host-provided because they must match
 the recipient hardware and driver stack. A supported Linux desktop must expose
-`libEGL.so.1`; Ubuntu provides it through `libegl1`. The headless release
-runner installs that package only after building the AppImage, then runs the
-same hidden-Nix-store smoke. GPU driver libraries from the build runner are
-never copied into the release artifact.
+the Vulkan, EGL, GLX, OpenGL, and GLVND dispatch interfaces used by Qt:
+`libvulkan.so.1`, `libEGL.so.1`, `libGLX.so.0`, `libOpenGL.so.0`, and
+`libGLdispatch.so.0`. Ubuntu provides them through `libvulkan1`, `libegl1`,
+`libglx0`, and `libopengl0` (with `libglvnd0` pulled transitively).
+
+The headless release runner installs those host packages only after building
+the AppImage. It then audits the extracted executable with `ldd`, rejects any
+unresolved library, and runs the same hidden-Nix-store smoke. GPU driver
+libraries from the build runner are never copied into the release artifact.
 
 The standalone workflow publishes a draft first, downloads and verifies every
 asset and checksum, then makes the prerelease visible. A failed post-upload
