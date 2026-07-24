@@ -526,6 +526,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn module_adapter_accepts_successful_empty_finalized_head() -> Result<()> {
+        let target = ChannelSourceTarget::Module {
+            module_id: MODULE_ID.to_owned(),
+        };
+        let (transport, calls) = recording_transport(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+            json!(""),
+        );
+        let Ok(adapter) =
+            IndexerAdapter::connect(&target, &transport, ModuleTransportKind::LogoscoreCli)
+        else {
+            bail!("Indexer module adapter did not connect");
+        };
+
+        let Ok(head) = adapter.reported_head_id().await else {
+            bail!("successful empty finalized head was treated as a source failure");
+        };
+        anyhow::ensure!(head.is_none());
+        let calls = calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("calls lock poisoned"))?;
+        let call = calls
+            .first()
+            .context("Indexer finalized-head call was not recorded")?;
+        anyhow::ensure!(call.method() == "getLastFinalizedBlockId");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn module_adapter_preserves_normalized_runtime_state() -> Result<()> {
         let target = ChannelSourceTarget::Module {
             module_id: MODULE_ID.to_owned(),
