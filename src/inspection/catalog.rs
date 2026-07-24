@@ -53,4 +53,12 @@ impl ZoneCatalog {
     pub fn commit_batch(&self, batch: CatalogBatch) -> CatalogResult<CatalogSnapshot> {
         self.store.commit_batch(batch)
     }
+
+    pub(crate) fn commit_batch_from_snapshot(
+        &self,
+        snapshot: CatalogSnapshot,
+        batch: CatalogBatch,
+    ) -> CatalogResult<CatalogSnapshot> {
+        self.store.commit_batch_from_snapshot(snapshot, batch)
+    }
 }
