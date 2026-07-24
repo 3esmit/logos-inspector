@@ -550,6 +550,7 @@ fn reconcile_observations(
             continue;
         };
         match observation.liveness {
+            Some(true) if config.lifecycle_state == NodeLifecycleState::Stopping => {}
             Some(true) => {
                 if !config.installed
                     || config.lifecycle_state != NodeLifecycleState::Running
@@ -968,6 +969,56 @@ mod tests {
             || report.primary_problem.is_some()
         {
             bail!("Basecamp report exposed standalone-only nodes or runtime problems: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_stop_remains_pending_while_module_is_still_live() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut state = store.load()?;
+        let messaging = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        messaging.installed = true;
+        messaging.lifecycle_state = NodeLifecycleState::Stopping;
+        messaging.pending_lifecycle_action = Some(NodeAction::Stop);
+        store.save(&state)?;
+
+        reconcile_observations(
+            &mut state,
+            "default",
+            &[HostNodeObservation {
+                kind: NodeKind::Messaging,
+                module_available: true,
+                contract_error: None,
+                liveness: Some(true),
+                liveness_error: None,
+            }],
+            &store,
+        )?;
+
+        let state = store.load()?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Stopping
+            || messaging.pending_lifecycle_action != Some(NodeAction::Stop)
+        {
+            bail!("live stop probe cleared the pending stop: {messaging:?}");
         }
         Ok(())
     }
