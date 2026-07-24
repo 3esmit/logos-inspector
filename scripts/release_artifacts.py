@@ -451,7 +451,8 @@ def self_test() -> None:
             raise ReleaseError("release artifact fixture accepted a core package without dependencies")
         checksums = output / "SHA256SUMS"
         content = checksums.read_text(encoding="utf-8")
-        checksums.write_text("f" + content[1:], encoding="utf-8")
+        corrupted_prefix = "0" if content[0] != "0" else "1"
+        checksums.write_text(corrupted_prefix + content[1:], encoding="utf-8")
         try:
             validate_release(
                 output,
