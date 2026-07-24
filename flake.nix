@@ -184,6 +184,15 @@
             for item in "$qtDir"/lib/*; do
               ln -sfn "$item" "$qtBuildRoot/lib/$(basename "$item")"
             done
+            # CXX-Qt emits module-prefixed includes such as
+            # <QtCore/QObject>. Darwin stores those headers in frameworks,
+            # so mirror each framework as a module in QT_INSTALL_HEADERS.
+            for framework in "$qtDir"/lib/*.framework; do
+              if [ -d "$framework/Headers" ]; then
+                module="$(basename "$framework" .framework)"
+                ln -sfn "$framework/Headers" "$qtBuildRoot/include/$module"
+              fi
+            done
           fi
           if [ -d "$qtDir/libexec" ]; then
             for item in "$qtDir"/libexec/*; do
