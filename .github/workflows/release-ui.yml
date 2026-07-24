@@ -1,0 +1,45 @@
+name: Publish Inspector UI LGX
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Publish the current main version as an Inspector UI alpha prerelease.
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-inspector-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Require an explicit release from main
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = true
+          test "$GITHUB_REF" = refs/heads/main
+          python3 scripts/check-release-workflow.py
+
+  publish:
+    needs: preflight
+    uses: 3esmit/logos-modules-release-action/.github/workflows/release.yml@7e09ddf90bf33ce29ef3505609332175a6cd06c9
+    with:
+      module_path: .
+      metadata_path: metadata.json
+      build_attr: lgx-portable
+      variants: linux-amd64,darwin-arm64
+      require_all_variants: true
+      dispatch_rebuild_index: false
+      prerelease: true
+      install_macos_metal_toolchain: false
+      signing_mode: none

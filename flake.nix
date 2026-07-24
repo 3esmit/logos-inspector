@@ -12,7 +12,7 @@
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {
-      url = "github:3esmit/logos-storage-module?rev=90a9367f31c4b362553a7ebef6959da357e8d765";
+      url = "github:3esmit/logos-storage-module?rev=cb1f934a13e35016553c670489af5fc1df8169e6";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     delivery_module = {
@@ -20,13 +20,34 @@
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     lez_core = {
-      url = "github:3esmit/logos-execution-zone-module?rev=c749def804bfba6c1104bf81e5bb500eb493a11c";
+      url = "github:3esmit/logos-execution-zone-module?rev=930262a80f7d934acd88244ba130ced786bff83b";
       inputs.logos-module-builder.follows = "logos-module-builder";
+    };
+    nix-bundle-dir = {
+      url = "github:logos-co/nix-bundle-dir?rev=4f72d7a64dd83979d771c17161f23ebc9dbedb40";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nix-bundle-appimage = {
+      url = "github:logos-co/nix-bundle-appimage?rev=8fcc56b5afcc313ca917cf3487be082ae2f0184c";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nix-bundle-dir.follows = "nix-bundle-dir";
+    };
+    nix-bundle-macos-app = {
+      url = "github:logos-co/nix-bundle-macos-app?rev=d6b0cc518e599ab7a52258bf3e1f8123c8a01d31";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nix-bundle-dir.follows = "nix-bundle-dir";
     };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = inputs@{ logos-module-builder, nixpkgs, ... }:
+  outputs = inputs@{
+    logos-module-builder,
+    nix-bundle-appimage,
+    nix-bundle-dir,
+    nix-bundle-macos-app,
+    nixpkgs,
+    ...
+  }:
     let
       lib = nixpkgs.lib;
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
@@ -43,6 +64,11 @@
       standaloneSystems = [
         "x86_64-linux"
         "aarch64-linux"
+        "aarch64-darwin"
+      ];
+
+      standaloneReleaseSystems = [
+        "x86_64-linux"
         "aarch64-darwin"
       ];
 
@@ -350,7 +376,6 @@ EOF
           buildInputs = qtInputs;
           env = circuitBuild.env // {
             QT_VERSION_MAJOR = "6";
-            LOGOS_INSPECTOR_TESTNET_V02_HELPER = "${testnetV02Helper}/bin/${testnetV02HelperBinaryName}";
           };
           doCheck = false;
           preBuild = ''
@@ -373,7 +398,7 @@ EOF
           meta.mainProgram = "logos-inspector-standalone-gui";
         };
 
-      mkStandalonePackage = pkgs: binary:
+      mkStandalonePackage = pkgs: binary: testnetV02Helper:
         pkgs.stdenvNoCC.mkDerivation {
           pname = "logos-inspector-standalone-gui";
           version = packageVersion;
@@ -385,27 +410,119 @@ EOF
             mkdir -p "$out/bin" "$out/${standaloneShareDir}"
             cp -r ${standaloneAssetSource}/qml "$out/${standaloneQmlSubdir}"
             cp -r ${standaloneAssetSource}/icons "$out/${standaloneIconsSubdir}"
+            mkdir -p "$out/libexec"
+            cp ${testnetV02Helper}/bin/${testnetV02HelperBinaryName} \
+              "$out/libexec/${testnetV02HelperBinaryName}"
 
             makeWrapper ${binary}/bin/logos-inspector-standalone-gui \
               "$out/bin/logos-inspector-standalone-gui" \
-              --set ${standaloneQmlEnvVar} "$out/${standaloneQmlSubdir}"
+              --set ${standaloneQmlEnvVar} "$out/${standaloneQmlSubdir}" \
+              --set LOGOS_INSPECTOR_TESTNET_V02_HELPER \
+                "$out/libexec/${testnetV02HelperBinaryName}"
 
             runHook postInstall
           '';
+          passthru = {
+            extraDirs = [ "libexec" "share" ];
+            extraClosurePaths = [ binary testnetV02Helper ];
+          };
+          meta.mainProgram = "logos-inspector-standalone-gui";
+        };
+
+      mkStandalonePortablePackage = pkgs: binary: testnetV02Helper:
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "logos-inspector-standalone-gui-portable-source";
+          version = packageVersion;
+          dontUnpack = true;
+          installPhase = ''
+            runHook preInstall
+
+            unwrapped="${binary}/bin/.logos-inspector-standalone-gui-wrapped"
+            if [ ! -x "$unwrapped" ]; then
+              echo "Qt build did not expose the unwrapped standalone executable" >&2
+              exit 1
+            fi
+
+            mkdir -p \
+              "$out/bin" \
+              "$out/libexec" \
+              "$out/${standaloneShareDir}"
+            cp "$unwrapped" "$out/bin/logos-inspector-standalone-gui"
+            cp ${testnetV02Helper}/bin/${testnetV02HelperBinaryName} \
+              "$out/libexec/${testnetV02HelperBinaryName}"
+            cp -r ${standaloneAssetSource}/qml "$out/${standaloneQmlSubdir}"
+            cp -r ${standaloneAssetSource}/icons "$out/${standaloneIconsSubdir}"
+
+            runHook postInstall
+          '';
+          passthru = {
+            extraDirs = [ "libexec" "share" ];
+            extraClosurePaths = [ binary testnetV02Helper ];
+          };
           meta.mainProgram = "logos-inspector-standalone-gui";
         };
 
       standalonePackages = forSystems standaloneSystems (pkgs:
-        mkStandalonePackage pkgs (mkStandaloneBinary pkgs {
-          buildType = "release";
-          staticRapidsnarkFeature = true;
-        }));
+        mkStandalonePackage
+          pkgs
+          (mkStandaloneBinary pkgs {
+            buildType = "release";
+            staticRapidsnarkFeature = true;
+          })
+          (mkTestnetV02HelperBinary pkgs));
 
       standaloneDevPackages = forSystems standaloneSystems (pkgs:
-        mkStandalonePackage pkgs (mkStandaloneBinary pkgs {
-          buildType = "debug";
-          staticRapidsnarkFeature = false;
-        }));
+        mkStandalonePackage
+          pkgs
+          (mkStandaloneBinary pkgs {
+            buildType = "debug";
+            staticRapidsnarkFeature = false;
+          })
+          (mkTestnetV02HelperBinary pkgs));
+
+      standalonePortablePackages = forSystems standaloneReleaseSystems (pkgs:
+        mkStandalonePortablePackage
+          pkgs
+          (mkStandaloneBinary pkgs {
+            buildType = "release";
+            staticRapidsnarkFeature = true;
+          })
+          (mkTestnetV02HelperBinary pkgs));
+
+      standaloneBundles = forSystems standaloneReleaseSystems (pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          standalone = standalonePortablePackages.${system};
+        in
+        # Qt and GLib contain inert build-prefix strings in compiled vendor
+        # binaries. qtApp preserves them as visible warnings while retaining
+        # strict dynamic-loader, shebang, and symlink portability checks.
+        nix-bundle-dir.bundlers.${system}.qtApp standalone);
+
+      standaloneAppImages = forSystems [ "x86_64-linux" ] (pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+        in
+        nix-bundle-appimage.lib.${system}.mkAppImage {
+          drv = standalonePackages.${system};
+          name = "logos-inspector-standalone";
+          bundle = standaloneBundles.${system};
+          desktopFile = ./packaging/logos-inspector.desktop;
+          icon = ./icons/inspector.svg;
+        });
+
+      standaloneMacApps = forSystems [ "aarch64-darwin" ] (pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+        in
+        nix-bundle-macos-app.lib.${system}.mkMacOSApp {
+          drv = standalonePackages.${system};
+          name = "LogosInspector";
+          bundle = standaloneBundles.${system};
+          icon = ./icons/inspector.svg;
+          infoPlist = ./packaging/Info.plist.in;
+          version = packageVersion;
+        });
 
       testnetV02HelperPackages = forSystems standaloneSystems mkTestnetV02HelperBinary;
 
@@ -452,6 +569,12 @@ EOF
             standalone-dev = standaloneDevPackages.${system};
           } // lib.optionalAttrs (builtins.hasAttr system testnetV02HelperPackages) {
             "testnet-v02-helper" = testnetV02HelperPackages.${system};
+          } // lib.optionalAttrs (builtins.hasAttr system standaloneBundles) {
+            standalone-bundle-dir = standaloneBundles.${system};
+          } // lib.optionalAttrs (builtins.hasAttr system standaloneAppImages) {
+            standalone-appimage = standaloneAppImages.${system};
+          } // lib.optionalAttrs (builtins.hasAttr system standaloneMacApps) {
+            standalone-macos-app = standaloneMacApps.${system};
           } // lib.optionalAttrs (builtins.elem system coreSystems) {
             core = coreModule.packages.${system}.default;
             core-ffi = coreFfiPackages.${system}.default;

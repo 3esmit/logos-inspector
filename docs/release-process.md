@@ -1,80 +1,94 @@
 # Inspector release process
 
-Logos Inspector releases are source-versioned: the Cargo workspace, core LGX
-manifest, and UI LGX manifest must carry the same version. The manual release
-workflow tags that exact source version as `v<version>` and publishes all
-artifacts to one GitHub Release.
+Logos Inspector owns every binary built from this repository. The release
+catalog indexes these source releases; it does not rebuild or rehost them.
+The Cargo workspace, Core manifest, and UI manifest must carry the same
+version before any release workflow can run.
 
 ## Current channel: Alpha
 
-The project remains in the Alpha channel. The full real-network end-to-end
-matrix, including direct-host lifecycle coverage, is still being completed.
-Each release is therefore a GitHub prerelease and is explicitly prevented from
-becoming the latest release.
+The project remains in Alpha while real-network end-to-end coverage is still
+being completed. Every workflow creates a GitHub prerelease and never marks it
+as the latest stable release. A version bump must update Cargo, Core metadata,
+UI metadata, and this changelog in one issue and pull request.
 
-The existing `0.2.0-rcN` build identity tracks the compatible protocol train;
-it does not by itself promote product readiness. Alpha status is determined by
-the acceptance criteria below. A coordinated version-bump issue and pull
-request must update every version authority before a new source version is
-released.
+## Independent release streams
 
-## Release artifacts
+Three manual workflows publish independent GitHub Releases:
 
-Every release contains exactly these files for each supported platform:
-
-| Artifact | Linux x86_64 | Apple silicon macOS |
+| Stream | Tag | Assets |
 | --- | --- | --- |
-| Core package | `logos-inspector-core-<version>-linux-amd64.lgx` | `logos-inspector-core-<version>-darwin-arm64.lgx` |
-| UI package | `logos-inspector-ui-<version>-linux-amd64.lgx` | `logos-inspector-ui-<version>-darwin-arm64.lgx` |
+| Inspector Core | `logos_inspector-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
+| Inspector UI | `logos_inspector_ui-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
+| Standalone app | `standalone-v<version>` | Linux AMD64 AppImage, Darwin ARM64 `.app` archive, and `SHA256SUMS` |
 
-`SHA256SUMS` covers every artifact. The workflow builds the core and UI LGX
-packages on their native target runners; checks each manifest, direct module
-dependencies, and target variant; verifies all hashes; uploads a draft GitHub
-Release; downloads the assets again; and verifies them before publishing the
-draft. If any build, validation, upload, or post-upload verification fails, the
-workflow removes the draft release and tag instead of leaving a partial public
-release.
+Core and UI use the immutable shared release workflow. Both request exactly
+the `linux-amd64` and `darwin-arm64` variants, require both builds, disable
+catalog dispatch, and publish separate prereleases in this repository. Core
+enables the host Metal toolchain because its proof dependency graph compiles
+Metal kernels. UI does not.
 
-No standalone downloadable artifact is published yet. The current Nix package
-is not a self-contained distribution; a closure-aware bundle or installer and
-a clean-environment launch check are required before standalone publication.
+Publication does not require a catalog URL or prior Basecamp install result.
+After source assets exist, the catalog can index their immutable URLs and run
+the fresh Basecamp dependency-closure test.
+
+## Standalone portability contract
+
+The Linux asset is an AppImage built from the official Logos directory and
+AppImage bundlers. The macOS asset is an unsigned Apple silicon app built from
+the official Logos directory and macOS app bundlers.
+
+The standalone package carries:
+
+- the compiled GUI;
+- QML and icon assets;
+- Qt runtime libraries, plugins, and QML imports selected by the bundler;
+- the Testnet v0.2 wallet helper under `libexec`; and
+- relative launchers and dynamic-library paths.
+
+The directory bundler fails on Nix paths in interpreters, RPATH/RUNPATH,
+NEEDED or Mach-O load commands, symlink targets, launchers, shebangs, QML, and
+plugin metadata. Qt and GLib can retain inert build-prefix strings in compiled
+vendor binaries, including source assertion paths and unused default data
+locations. A raw byte scan cannot distinguish those strings from executed
+paths, so the Qt bundler reports them as warnings. Each native job records a
+classified file and occurrence count in its job summary.
+
+Functional proof remains strict: each native job extracts its final
+distribution asset and starts the compiled GUI for ten seconds. The Linux
+smoke runs in a private mount namespace with `/nix/store` hidden, proving that
+the download cannot fall back to build-host paths. The macOS smoke verifies
+the relocated app tree and launches the extracted app outside the Nix store.
+Any Nix path in non-compiled bundle content still fails verification.
+
+The standalone workflow publishes a draft first, downloads and verifies every
+asset and checksum, then makes the prerelease visible. A failed post-upload
+check removes its draft and tag.
 
 ## Manual release checklist
 
-1. Open one issue and one pull request for the versioned release changes.
-   Update `CHANGELOG.md` with the source version and user-visible changes.
-2. Merge only after the relevant real end-to-end checks, source validation,
-   package identity check, and release workflow static check pass.
-3. Install the exact core/UI package pair into a fresh Basecamp profile using
-   the published catalog, resolve its three direct module dependencies, and
-   load the Inspector UI. Record the successful check at an HTTPS evidence URL.
-4. From `main`, run **Publish alpha release** with the confirmation input and
-   the evidence URL.
-   The workflow refuses a non-main ref, an existing tag, an existing release,
-   mismatched manifests, a missing platform variant, bad checksums, or an
-   incomplete artifact set.
-5. Smoke-test the downloaded release artifacts on their native supported
-   platforms before using them for any wider testnet audience.
-6. Record the release tag, validation evidence, and any known limitations in
-   the issue before closing it.
+1. Open one issue and pull request for release-contract or version changes.
+2. Run source identity, static workflow, Rust, native, QML, and available
+   native packaging checks.
+3. Merge only after CI and review pass.
+4. From `main`, dispatch Core, UI, or standalone independently with its
+   explicit confirmation input.
+5. Verify the published release tag, merged LGX variants or standalone
+   checksums, and target commit.
+6. Index source release URLs in the package catalog.
+7. Install the exact Inspector UI dependency closure into a fresh Basecamp
+   profile and load it. Record this downstream acceptance evidence with the
+   catalog change.
 
-## Cadence and promotion
+## Promotion
 
-Publish an Alpha prerelease after a cohesive batch of user-visible fixes has
-passed its focused real end-to-end checks, or at least once per active month
-when there are validated changes. Do not publish empty cadence releases.
+Promotion to Beta requires:
 
-Promotion from Alpha to Beta requires:
-
-- green, repeatable real Testnet coverage for the core Inspector user stories;
-- core/UI LGX artifact install and smoke checks on both release platforms;
-- a self-contained standalone artifact and clean-environment smoke checks on
-  both release platforms before standalone publication;
-- direct-host and LogosCore CLI connection paths exercised without a release
-  blocker; and
+- repeatable real Testnet coverage for core user stories;
+- Core and UI install/load checks on both supported platforms;
+- standalone extracted-GUI smoke evidence on both supported platforms;
+- direct-host and LogosCore CLI connection coverage; and
 - no known data-loss, transaction-safety, or node-control release blocker.
 
-Promotion from Beta to stable requires at least two successful Beta release
-cycles, release artifact smoke evidence for both platforms, and no unresolved
-release-blocking regression. Changing the channel or source version always
-goes through its own issue and pull request.
+Promotion to stable requires at least two successful Beta cycles, native
+artifact evidence for both platforms, and no unresolved release blocker.

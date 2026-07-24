@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Logos Inspector
+Comment=Inspect and operate Logos networks
+Exec=logos-inspector-standalone-gui
+Icon=logos-inspector
+Categories=Development;Network;
+Terminal=false
