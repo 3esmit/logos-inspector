@@ -202,8 +202,7 @@ fn prepare_catalog_catch_up_with_resume(
     validate_context(snapshot, context)?;
     validate_reference(&target_lib, "target LIB")?;
 
-    let mut working = WorkingCatalog::from_snapshot(snapshot);
-    let cursor = working
+    let cursor = snapshot
         .traversal
         .as_ref()
         .and_then(|traversal| traversal.ingestion_cursor.as_ref())
@@ -221,7 +220,7 @@ fn prepare_catalog_catch_up_with_resume(
             ));
         }
     }
-    if let Some(previous_target) = working
+    if let Some(previous_target) = snapshot
         .traversal
         .as_ref()
         .and_then(|traversal| traversal.target_lib.as_ref())
@@ -246,11 +245,11 @@ fn prepare_catalog_catch_up_with_resume(
         }
     }
 
-    working.traversal = Some(CatalogTraversal {
+    let traversal = Some(CatalogTraversal {
         target_lib: Some(target_lib.clone()),
         ingestion_cursor: cursor,
     });
-    let frontier = working.frontier.get_or_insert(CatalogFrontier {
+    let mut frontier = snapshot.frontier.clone().unwrap_or(CatalogFrontier {
         scanned_through_slot: None,
         checkpoint: None,
         observed_lib: None,
@@ -260,17 +259,69 @@ fn prepare_catalog_catch_up_with_resume(
     });
     frontier.observed_lib = Some(target_lib.clone());
 
-    for segment in working.segments.values_mut() {
-        segment.reaches_target_lib = segment.frontier == target_lib;
+    let upsert_segments = snapshot
+        .segments
+        .iter()
+        .filter_map(|segment| {
+            let reaches_target_lib = segment.frontier == target_lib;
+            (segment.reaches_target_lib != reaches_target_lib).then(|| {
+                let mut updated = segment.clone();
+                updated.reaches_target_lib = reaches_target_lib;
+                updated
+            })
+        })
+        .collect::<Vec<_>>();
+    let reaches_target = snapshot
+        .segments
+        .iter()
+        .any(|segment| segment.frontier == target_lib);
+    frontier.coverage_status = if reaches_target
+        && snapshot.gaps.is_empty()
+        && frontier.prefix_status == CoveragePrefixStatus::Complete
+        && frontier.coverage_floor == Some(0)
+    {
+        CatalogCoverageStatus::Complete
+    } else if reaches_target
+        || !snapshot.gaps.is_empty()
+        || frontier.prefix_status == CoveragePrefixStatus::Unavailable
+    {
+        CatalogCoverageStatus::Partial
+    } else {
+        CatalogCoverageStatus::Rebuilding
+    };
+    let upsert_zones = snapshot
+        .zones
+        .iter()
+        .filter(|zone| zone.l1_channel.lib_slot != Some(target_lib.slot))
+        .map(|zone| {
+            let mut updated = zone.clone();
+            updated.l1_channel.lib_slot = Some(target_lib.slot);
+            updated.updated_at_unix = context.updated_at_unix;
+            updated
+        })
+        .collect::<Vec<_>>();
+    let frontier = Some(frontier);
+    if upsert_segments.is_empty()
+        && upsert_zones.is_empty()
+        && frontier == snapshot.frontier
+        && traversal == snapshot.traversal
+    {
+        return Ok(None);
     }
-    for zone in working.zones.values_mut() {
-        if zone.l1_channel.lib_slot != Some(target_lib.slot) {
-            zone.l1_channel.lib_slot = Some(target_lib.slot);
-            zone.updated_at_unix = context.updated_at_unix;
-        }
-    }
-    recompute_coverage(&mut working)?;
-    working.into_batch(snapshot, context)
+    Ok(Some(CatalogBatch {
+        expected_catalog_revision: snapshot.metadata.catalog_revision,
+        updated_at_unix: context.updated_at_unix,
+        upsert_zones,
+        delete_zone_ids: Vec::new(),
+        upsert_evidence: Vec::new(),
+        delete_evidence_ids: Vec::new(),
+        upsert_segments,
+        delete_segment_ids: Vec::new(),
+        upsert_gaps: Vec::new(),
+        delete_gap_ids: Vec::new(),
+        frontier,
+        traversal,
+    }))
 }
 
 pub fn reduce_catalog_page(
@@ -623,6 +674,32 @@ pub fn reduce_catalog_prefix_repair(
     validate_context(snapshot, context)?;
     validate_repair_confirmation(snapshot, None, confirmation, true)?;
     let request = catalog_prefix_repair_request(snapshot, context)?;
+    let outcome = match outcome {
+        CatalogAncestryRepairOutcome::Connected { recovered_blocks } => {
+            validate_connected_repair(&request, &recovered_blocks)?;
+            CatalogAncestryRepairOutcome::Connected { recovered_blocks }
+        }
+        CatalogAncestryRepairOutcome::Unresolved {
+            recovered_blocks,
+            missing_block_id,
+            reason,
+        } => {
+            validate_unresolved_repair(
+                &request,
+                &recovered_blocks,
+                &missing_block_id,
+                &request.upper_checkpoint,
+            )?;
+            if recovered_blocks.is_empty() {
+                return Ok(None);
+            }
+            CatalogAncestryRepairOutcome::Unresolved {
+                recovered_blocks,
+                missing_block_id,
+                reason,
+            }
+        }
+    };
     let mut working = WorkingCatalog::from_snapshot(snapshot);
     let segment_id = working
         .segments
@@ -633,7 +710,6 @@ pub fn reduce_catalog_prefix_repair(
 
     match outcome {
         CatalogAncestryRepairOutcome::Connected { recovered_blocks } => {
-            validate_connected_repair(&request, &recovered_blocks)?;
             let oldest = recovered_blocks.first().ok_or_else(|| {
                 CatalogEngineError::InvalidState(
                     "connected prefix repair has no genesis block".to_owned(),
@@ -651,19 +727,13 @@ pub fn reduce_catalog_prefix_repair(
             frontier.prefix_status = CoveragePrefixStatus::Complete;
         }
         CatalogAncestryRepairOutcome::Unresolved {
-            recovered_blocks,
-            missing_block_id,
-            ..
+            recovered_blocks, ..
         } => {
-            validate_unresolved_repair(
-                &request,
-                &recovered_blocks,
-                &missing_block_id,
-                &request.upper_checkpoint,
-            )?;
-            let Some(oldest) = recovered_blocks.first() else {
-                return Ok(None);
-            };
+            let oldest = recovered_blocks.first().ok_or_else(|| {
+                CatalogEngineError::InvalidState(
+                    "validated prefix repair lost its recovered blocks".to_owned(),
+                )
+            })?;
             ingest_blocks(&mut working, &recovered_blocks, &segment_id, context)?;
             let segment = working.segments.get_mut(&segment_id).ok_or_else(|| {
                 CatalogEngineError::InvalidState("prefix segment is missing".to_owned())

@@ -369,12 +369,12 @@ async fn run_catalog_scan_with_pacer(
     let mut next_repair_at_unix = 0;
     let mut no_progress_round = 0_u32;
     let mut first_scan_cycle = true;
+    let mut snapshot = catalog_snapshot(catalog.clone(), context).await?;
     loop {
         context.ensure_current()?;
         let status = source.chain_status().await.map_err(map_source_error)?;
         context.ensure_current()?;
         let target = status.snapshot.lib;
-        let mut snapshot = catalog_snapshot(catalog.clone(), context).await?;
         let mut made_progress = false;
         let engine_context = engine_context(context, &snapshot)?;
         let prepared = if first_scan_cycle {
@@ -435,7 +435,7 @@ async fn run_catalog_scan_with_pacer(
             next_repair_at_unix = now.saturating_add(CATALOG_REPAIR_INTERVAL_SECONDS);
             if snapshot.metadata.catalog_revision != previous_revision {
                 made_progress = true;
-                publish_verified(context, snapshot);
+                publish_verified(context, snapshot.clone());
             }
         }
 
