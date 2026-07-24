@@ -32,8 +32,10 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        root.model.refresh(false, true);
-        root.model.refreshDevnets();
+        root.model.refresh(false, !root.model.basecampHost);
+        if (!root.model.basecampHost) {
+            root.model.refreshDevnets();
+        }
     }
 
     Connections {
@@ -80,7 +82,9 @@ ColumnLayout {
         breadcrumb: qsTr("Home / System / Local Nodes")
         title: qsTr("Local Nodes")
         layerLabel: qsTr("System")
-        subtitle: qsTr("Local Bedrock, Channel Indexer package, Delivery, and Storage connected to Logos Testnet.")
+        subtitle: root.model.basecampHost
+            ? qsTr("Bedrock, Delivery, and Storage modules running inside Basecamp.")
+            : qsTr("Local Bedrock, Channel Indexer package, Delivery, and Storage connected to Logos Testnet.")
         Layout.fillWidth: true
     }
 
@@ -173,7 +177,9 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.error.length === 0 && !root.model.localMode()
+        visible: root.model.error.length === 0
+            && !root.model.localMode()
+            && !root.model.basecampHost
         theme: root.theme
         tone: "info"
         title: qsTr("Logos Testnet topology")
@@ -183,6 +189,7 @@ ColumnLayout {
 
     Panel {
         objectName: "localDevnetConfiguration"
+        visible: !root.model.basecampHost
         theme: root.theme
         title: qsTr("Local Devnet")
 
@@ -292,6 +299,7 @@ ColumnLayout {
 
     Panel {
         objectName: "logoscoreRuntimeConfiguration"
+        visible: !root.model.basecampHost
         theme: root.theme
         title: qsTr("LogosCore Runtime")
 
@@ -357,6 +365,7 @@ ColumnLayout {
 
     Panel {
         objectName: "indexerPackageConfiguration"
+        visible: !root.model.basecampHost
         theme: root.theme
         title: qsTr("Indexer package")
 
@@ -529,7 +538,9 @@ ColumnLayout {
 
     Panel {
         theme: root.theme
-        title: qsTr("System and Channel Status")
+        title: root.model.basecampHost
+            ? qsTr("Basecamp Module Status")
+            : qsTr("System and Channel Status")
 
         DataTableFrame {
             theme: root.theme

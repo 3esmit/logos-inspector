@@ -8,6 +8,9 @@ QtObject {
     required property var gateway
     property string networkProfile: "default"
     property bool busy: false
+    readonly property bool basecampHost: gateway
+        && typeof gateway.prefersBasecampModules === "function"
+        && gateway.prefersBasecampModules() === true
 
     property var report: null
     property string error: ""

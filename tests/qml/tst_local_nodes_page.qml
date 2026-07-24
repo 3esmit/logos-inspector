@@ -94,6 +94,31 @@ Item {
             compare(catalogCalls[0].args[0], "/tmp/runtime-modules")
         }
 
+        function test_basecamp_uses_host_modules_without_standalone_controls() {
+            gateway.basecampModules = true
+            const page = createPage(basecampReport(), null)
+            const devnet = findChild(page, "localDevnetConfiguration")
+            const runtime = findChild(page, "logoscoreRuntimeConfiguration")
+            const packagePanel = findChild(page, "indexerPackageConfiguration")
+            verify(!!devnet, "Local Devnet panel exists")
+            verify(!!runtime, "LogosCore Runtime panel exists")
+            verify(!!packagePanel, "Indexer package panel exists")
+
+            compare(devnet.visible, false)
+            compare(runtime.visible, false)
+            compare(packagePanel.visible, false)
+            compare(page.actionRows().length, 3)
+            compare(page.actionRows()[0].key, "bedrock")
+            compare(page.actionRows()[1].key, "storage")
+            compare(page.actionRows()[2].key, "messaging")
+            compare(gateway.calls.filter(function (call) {
+                return call.method === "localDevnetList"
+            }).length, 0)
+            compare(gateway.calls.filter(function (call) {
+                return call.method === "localNodePackageCatalog"
+            }).length, 0)
+        }
+
         function test_install_confirmation_owns_exact_release_and_package_identity() {
             const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
             const versionSelector = findChild(page, "indexerPackageVersionSelector")
@@ -544,6 +569,54 @@ Item {
                 detail: "local LogosCore daemon is running under system service `logos-node.service`"
             }
             return report
+        }
+
+        function basecampReport() {
+            return {
+                profile: "default",
+                mode: "public_testnet",
+                available_network_actions: [],
+                available_runtime_actions: [],
+                active_devnet: "logos-testnet",
+                workspace_root: "/tmp/logos-testnet",
+                summary: {
+                    total: 3,
+                    installed: 3,
+                    running: 3,
+                    needs_configuration: 0
+                },
+                nodes: [{
+                    key: "bedrock",
+                    kind: "bedrock",
+                    label: "Bedrock",
+                    available_actions: ["stop"],
+                    install_state: "installed",
+                    run_state: "running",
+                    ownership: "inspector_managed"
+                }, {
+                    key: "storage",
+                    kind: "storage",
+                    label: "Storage",
+                    available_actions: ["stop", "destroy"],
+                    install_state: "installed",
+                    run_state: "running",
+                    ownership: "inspector_managed"
+                }, {
+                    key: "messaging",
+                    kind: "messaging",
+                    label: "Messaging",
+                    available_actions: ["stop"],
+                    install_state: "installed",
+                    run_state: "running",
+                    ownership: "inspector_managed"
+                }],
+                operations: [],
+                runtime: {
+                    ownership: "basecamp_host",
+                    run_state: "running",
+                    detail: "Basecamp owns module loading and process lifecycle."
+                }
+            }
         }
 
         function samplePackageCatalog(installed) {
