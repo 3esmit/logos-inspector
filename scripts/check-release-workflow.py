@@ -16,7 +16,7 @@ WORKFLOWS = {
     "ui": ROOT / ".github" / "workflows" / "release-ui.yml",
     "standalone": ROOT / ".github" / "workflows" / "release-standalone.yml",
 }
-RELEASE_ACTION_SHA = "7e09ddf90bf33ce29ef3505609332175a6cd06c9"
+RELEASE_ACTION_SHA = "81f506530c56e8757e6d99ee7f9d4c092e74411c"
 ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
 FORK_INPUTS = {
     "blockchain_module": (
