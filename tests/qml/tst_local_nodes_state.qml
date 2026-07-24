@@ -161,6 +161,14 @@ TestCase {
         }
     }
 
+    function test_basecamp_host_tracks_gateway_transport() {
+        verify(!state.basecampHost)
+        gateway.basecampModules = true
+        tryCompare(state, "basecampHost", true)
+        gateway.basecampModules = false
+        tryCompare(state, "basecampHost", false)
+    }
+
     function managedTestnetReport() {
         const report = testnetReport()
         report.available_runtime_actions = ["stop_runtime"]

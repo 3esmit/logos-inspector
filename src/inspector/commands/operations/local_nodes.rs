@@ -8,8 +8,10 @@ use crate::{
     LocalNodeActionRequest,
     local_nodes::{
         ChannelIndexerActionRequest, INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit,
-        channel_indexer_action_controlled, local_nodes_action_controlled,
+        basecamp_local_nodes_action, channel_indexer_action_controlled,
+        local_nodes_action_controlled,
     },
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::{args::Args, command_runner::CommandControl},
 };
 
@@ -53,9 +55,12 @@ pub(super) async fn execute(
     command: LocalNodesCommand,
     request: &RuntimeOperationRequest,
     control: &OperationControl,
+    module_transport: SharedModuleTransport,
 ) -> Result<Value> {
     match command {
-        LocalNodesCommand::Action => execute_local_nodes_action(request, control).await,
+        LocalNodesCommand::Action => {
+            execute_local_nodes_action(request, control, module_transport).await
+        }
         LocalNodesCommand::ChannelIndexerAction => {
             execute_channel_indexer_action(request, control).await
         }
@@ -98,6 +103,7 @@ async fn execute_channel_indexer_action(
 pub(super) async fn execute_local_nodes_action(
     request: &RuntimeOperationRequest,
     control: &OperationControl,
+    module_transport: SharedModuleTransport,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let action_request = serde_json::from_value::<LocalNodeActionRequest>(
@@ -108,6 +114,17 @@ pub(super) async fn execute_local_nodes_action(
     .context("failed to parse local node action request")?;
     let profile = args.optional_string(0).unwrap_or("default").to_owned();
     let confirmation = args.optional_string(2).map(ToOwned::to_owned);
+    if module_transport.kind() == ModuleTransportKind::Module {
+        return to_value(
+            basecamp_local_nodes_action(
+                &profile,
+                action_request,
+                confirmation.as_deref(),
+                &module_transport,
+            )
+            .await?,
+        );
+    }
     let command_control = command_control(control);
     let package_commit = package_install_commit(control, &command_control);
     let worker_guard = control.blocking_worker_guard()?;

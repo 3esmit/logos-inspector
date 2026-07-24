@@ -816,6 +816,10 @@ QtObject {
                 return root.invalidateAttachedRuntimeObservations()
             }
 
+            function prefersBasecampModules() {
+                return root.prefersBasecampModules()
+            }
+
             function activateLocalProfile() {
                 root.localNodesEnabled = true
                 root.localDevnetEnabled = true
