@@ -252,6 +252,10 @@ jobs:
           - Linux x86_64 AppImage
           - unsigned Apple silicon macOS app archive
 
+          Linux requires a working host graphics stack that exposes
+          \`libEGL.so.1\` (Ubuntu package: \`libegl1\`). Graphics and GPU driver
+          libraries stay host-provided so they match recipient hardware.
+
           Each artifact is built and smoke-tested on its native platform after
           extraction. The Linux smoke runs with the build host's Nix store
           hidden. See SHA256SUMS and docs/release-process.md.

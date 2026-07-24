@@ -147,6 +147,7 @@ def main() -> int:
             "mount -t tmpfs tmpfs /nix/store",
             "Install Linux graphics runtime for smoke",
             "apt-get install --yes --no-install-recommends libegl1",
+            "Ubuntu package: \\`libegl1\\`",
             "verify-tree",
             "audit-binary-refs",
             "standalone_release.py verify",
