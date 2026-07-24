@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{CoveragePrefixStatus, ZoneKind};
 use crate::inspection::catalog::{
-    CatalogEvidenceUse, CatalogSnapshot, CatalogSnapshotOrigin, ZoneCatalogRecord,
-    ZoneEvidenceKind, ZoneEvidenceReference,
+    CatalogBlockReference, CatalogEvidenceUse, CatalogSnapshot, CatalogSnapshotOrigin,
+    CoverageSegment, ZoneCatalogRecord, ZoneEvidenceKind, ZoneEvidenceReference,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,155 @@ pub struct CatalogZoneClassification {
     pub fact_gates: ZoneFactGates,
 }
 
+pub(super) struct CatalogZoneClassifier<'a> {
+    evidence_by_channel: BTreeMap<&'a str, Vec<&'a ZoneEvidenceReference>>,
+    segments_by_id: BTreeMap<&'a str, &'a CoverageSegment>,
+    current_target: Option<&'a CatalogBlockReference>,
+    connected_genesis_prefix: bool,
+}
+
+impl<'a> CatalogZoneClassifier<'a> {
+    pub(super) fn new(snapshot: &'a CatalogSnapshot) -> Self {
+        let mut evidence_by_channel = BTreeMap::<_, Vec<_>>::new();
+        for reference in &snapshot.evidence {
+            evidence_by_channel
+                .entry(reference.channel_id.as_str())
+                .or_default()
+                .push(reference);
+        }
+        let segments_by_id = snapshot
+            .segments
+            .iter()
+            .map(|segment| (segment.segment_id.as_str(), segment))
+            .collect();
+        let connected_genesis_prefix = snapshot.frontier.as_ref().is_some_and(|frontier| {
+            frontier.prefix_status == CoveragePrefixStatus::Complete
+                && frontier.coverage_floor == Some(0)
+                && snapshot.gaps.is_empty()
+                && snapshot.segments.len() == 1
+        });
+        Self {
+            evidence_by_channel,
+            segments_by_id,
+            current_target: current_catalog_target(snapshot),
+            connected_genesis_prefix,
+        }
+    }
+
+    pub(super) fn classify(
+        &self,
+        record: &ZoneCatalogRecord,
+        configured_sequencer_link: bool,
+    ) -> CatalogZoneClassification {
+        let channel_evidence = self.channel_evidence(record);
+        let fact_gates = self.fact_gates(record, channel_evidence);
+        let recognized_l2_reference = channel_evidence.iter().any(|reference| {
+            reference.evidence_kind == ZoneEvidenceKind::SequencerBlock
+                && self.evidence_has_valid_segment(reference)
+        });
+        let authoritative_committee = record
+            .sequencer_committee
+            .as_ref()
+            .is_some_and(|committee| !committee.members.is_empty())
+            && (fact_gates.point_snapshot_facts || fact_gates.replay_facts);
+        let raw_inscription_reference = channel_evidence.iter().any(|reference| {
+            reference.evidence_kind == ZoneEvidenceKind::RawInscription
+                && self.evidence_has_valid_segment(reference)
+        });
+        let evidence = ZoneClassificationEvidence {
+            recognized_l2_evidence: (record.classification.recognized_l2_blocks > 0
+                && recognized_l2_reference)
+                || authoritative_committee,
+            configured_sequencer_link,
+            raw_inscription_evidence: record.classification.raw_inscriptions > 0
+                && raw_inscription_reference,
+            l2_absence_is_covered: fact_gates.absence_facts,
+            conflicting_evidence: record.classification.conflicting_evidence,
+        };
+        CatalogZoneClassification {
+            kind: classify_zone(evidence),
+            evidence,
+            fact_gates,
+        }
+    }
+
+    fn fact_gates(
+        &self,
+        record: &ZoneCatalogRecord,
+        channel_evidence: &[&ZoneEvidenceReference],
+    ) -> ZoneFactGates {
+        let presence_facts = channel_evidence
+            .iter()
+            .any(|reference| self.evidence_has_valid_segment(reference));
+        let Some(snapshot_segment) = self
+            .segments_by_id
+            .get(record.snapshot_provenance.coverage_segment_id.as_str())
+            .copied()
+        else {
+            return ZoneFactGates {
+                presence_facts,
+                point_snapshot_facts: false,
+                replay_facts: false,
+                absence_facts: false,
+            };
+        };
+
+        let point_snapshot_facts = matches!(
+            record.snapshot_provenance.origin,
+            CatalogSnapshotOrigin::PointSnapshot | CatalogSnapshotOrigin::FullConfiguration
+        ) && channel_evidence.iter().any(|reference| {
+            reference.coverage_segment_id == snapshot_segment.segment_id
+                && reference.evidence_use == CatalogEvidenceUse::PointSnapshot
+                && self.evidence_has_valid_segment(reference)
+        });
+        let all_lifecycle_evidence_is_connected = channel_evidence.iter().all(|reference| {
+            reference.coverage_segment_id == snapshot_segment.segment_id
+                && reference.l1_slot <= record.snapshot_provenance.observed_slot
+                && self.evidence_has_valid_segment(reference)
+        });
+        let creation_is_covered = (self.connected_genesis_prefix
+            && snapshot_segment.floor.slot == 0)
+            || channel_evidence.iter().any(|reference| {
+                reference.coverage_segment_id == snapshot_segment.segment_id
+                    && reference.evidence_kind == ZoneEvidenceKind::ChannelCreated
+                    && reference.l1_slot <= record.first_seen_slot
+                    && self.evidence_has_valid_segment(reference)
+            });
+        let snapshot_is_in_segment = record.first_seen_slot >= snapshot_segment.floor.slot
+            && record.first_seen_slot <= record.snapshot_provenance.observed_slot
+            && record.last_seen_slot <= record.snapshot_provenance.observed_slot
+            && record.snapshot_provenance.observed_slot <= snapshot_segment.frontier.slot;
+        let lifecycle_reaches_target = self.current_target.is_some_and(|target| {
+            snapshot_segment.reaches_target_lib && &snapshot_segment.frontier == target
+        });
+        let lifecycle_history_is_connected =
+            snapshot_is_in_segment && all_lifecycle_evidence_is_connected && creation_is_covered;
+
+        ZoneFactGates {
+            presence_facts,
+            point_snapshot_facts,
+            replay_facts: record.snapshot_provenance.origin == CatalogSnapshotOrigin::ReplayDerived
+                && lifecycle_history_is_connected,
+            absence_facts: lifecycle_history_is_connected && lifecycle_reaches_target,
+        }
+    }
+
+    fn channel_evidence(&self, record: &ZoneCatalogRecord) -> &[&'a ZoneEvidenceReference] {
+        self.evidence_by_channel
+            .get(record.channel_id.as_str())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    fn evidence_has_valid_segment(&self, reference: &ZoneEvidenceReference) -> bool {
+        self.segments_by_id
+            .get(reference.coverage_segment_id.as_str())
+            .is_some_and(|segment| {
+                reference.l1_slot >= segment.floor.slot
+                    && reference.l1_slot <= segment.frontier.slot
+            })
+    }
+}
+
 #[must_use]
 pub fn classify_zone(evidence: ZoneClassificationEvidence) -> ZoneKind {
     if evidence.conflicting_evidence {
@@ -50,125 +201,14 @@ pub fn classify_catalog_zone(
     record: &ZoneCatalogRecord,
     configured_sequencer_link: bool,
 ) -> CatalogZoneClassification {
-    let fact_gates = catalog_fact_gates(snapshot, record);
-    let recognized_l2_reference = channel_evidence(snapshot, record).any(|reference| {
-        reference.evidence_kind == ZoneEvidenceKind::SequencerBlock
-            && evidence_has_valid_segment(snapshot, reference)
-    });
-    let authoritative_committee = record
-        .sequencer_committee
-        .as_ref()
-        .is_some_and(|committee| !committee.members.is_empty())
-        && (fact_gates.point_snapshot_facts || fact_gates.replay_facts);
-    let raw_inscription_reference = channel_evidence(snapshot, record).any(|reference| {
-        reference.evidence_kind == ZoneEvidenceKind::RawInscription
-            && evidence_has_valid_segment(snapshot, reference)
-    });
-    let evidence = ZoneClassificationEvidence {
-        recognized_l2_evidence: (record.classification.recognized_l2_blocks > 0
-            && recognized_l2_reference)
-            || authoritative_committee,
-        configured_sequencer_link,
-        raw_inscription_evidence: record.classification.raw_inscriptions > 0
-            && raw_inscription_reference,
-        l2_absence_is_covered: fact_gates.absence_facts,
-        conflicting_evidence: record.classification.conflicting_evidence,
-    };
-    CatalogZoneClassification {
-        kind: classify_zone(evidence),
-        evidence,
-        fact_gates,
-    }
+    CatalogZoneClassifier::new(snapshot).classify(record, configured_sequencer_link)
 }
 
 #[must_use]
 pub fn catalog_fact_gates(snapshot: &CatalogSnapshot, record: &ZoneCatalogRecord) -> ZoneFactGates {
-    let presence_facts = channel_evidence(snapshot, record)
-        .any(|reference| evidence_has_valid_segment(snapshot, reference));
-    let Some(snapshot_segment) = snapshot
-        .segments
-        .iter()
-        .find(|segment| segment.segment_id == record.snapshot_provenance.coverage_segment_id)
-    else {
-        return ZoneFactGates {
-            presence_facts,
-            point_snapshot_facts: false,
-            replay_facts: false,
-            absence_facts: false,
-        };
-    };
-
-    let point_snapshot_facts = matches!(
-        record.snapshot_provenance.origin,
-        CatalogSnapshotOrigin::PointSnapshot | CatalogSnapshotOrigin::FullConfiguration
-    ) && channel_evidence(snapshot, record).any(|reference| {
-        reference.coverage_segment_id == snapshot_segment.segment_id
-            && reference.evidence_use == CatalogEvidenceUse::PointSnapshot
-            && evidence_has_valid_segment(snapshot, reference)
-    });
-    let all_lifecycle_evidence_is_connected = channel_evidence(snapshot, record).all(|reference| {
-        reference.coverage_segment_id == snapshot_segment.segment_id
-            && reference.l1_slot <= record.snapshot_provenance.observed_slot
-            && evidence_has_valid_segment(snapshot, reference)
-    });
-    let creation_is_covered = catalog_has_connected_genesis_prefix(snapshot, snapshot_segment)
-        || channel_evidence(snapshot, record).any(|reference| {
-            reference.coverage_segment_id == snapshot_segment.segment_id
-                && reference.evidence_kind == ZoneEvidenceKind::ChannelCreated
-                && reference.l1_slot <= record.first_seen_slot
-                && evidence_has_valid_segment(snapshot, reference)
-        });
-    let snapshot_is_in_segment = record.first_seen_slot >= snapshot_segment.floor.slot
-        && record.first_seen_slot <= record.snapshot_provenance.observed_slot
-        && record.last_seen_slot <= record.snapshot_provenance.observed_slot
-        && record.snapshot_provenance.observed_slot <= snapshot_segment.frontier.slot;
-    let lifecycle_reaches_target = current_catalog_target(snapshot).is_some_and(|target| {
-        snapshot_segment.reaches_target_lib && &snapshot_segment.frontier == target
-    });
-    let lifecycle_history_is_connected =
-        snapshot_is_in_segment && all_lifecycle_evidence_is_connected && creation_is_covered;
-
-    ZoneFactGates {
-        presence_facts,
-        point_snapshot_facts,
-        replay_facts: record.snapshot_provenance.origin == CatalogSnapshotOrigin::ReplayDerived
-            && lifecycle_history_is_connected,
-        absence_facts: lifecycle_history_is_connected && lifecycle_reaches_target,
-    }
-}
-
-fn channel_evidence<'a>(
-    snapshot: &'a CatalogSnapshot,
-    record: &'a ZoneCatalogRecord,
-) -> impl Iterator<Item = &'a ZoneEvidenceReference> {
-    snapshot
-        .evidence
-        .iter()
-        .filter(|reference| reference.channel_id == record.channel_id)
-}
-
-fn evidence_has_valid_segment(
-    snapshot: &CatalogSnapshot,
-    reference: &ZoneEvidenceReference,
-) -> bool {
-    snapshot.segments.iter().any(|segment| {
-        segment.segment_id == reference.coverage_segment_id
-            && reference.l1_slot >= segment.floor.slot
-            && reference.l1_slot <= segment.frontier.slot
-    })
-}
-
-fn catalog_has_connected_genesis_prefix(
-    snapshot: &CatalogSnapshot,
-    snapshot_segment: &crate::inspection::catalog::CoverageSegment,
-) -> bool {
-    snapshot.frontier.as_ref().is_some_and(|frontier| {
-        frontier.prefix_status == CoveragePrefixStatus::Complete
-            && frontier.coverage_floor == Some(0)
-            && snapshot.gaps.is_empty()
-            && snapshot.segments.len() == 1
-            && snapshot_segment.floor.slot == 0
-    })
+    let classifier = CatalogZoneClassifier::new(snapshot);
+    let channel_evidence = classifier.channel_evidence(record);
+    classifier.fact_gates(record, channel_evidence)
 }
 
 fn current_catalog_target(
