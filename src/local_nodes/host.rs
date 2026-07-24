@@ -1,4 +1,9 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
@@ -28,12 +33,16 @@ use super::{
 };
 
 const HOST_NODE_KINDS: [NodeKind; 3] = [NodeKind::Bedrock, NodeKind::Storage, NodeKind::Messaging];
+const SERVICE_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+const SERVICE_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVICE_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 struct HostNodeObservation {
     kind: NodeKind,
     module_available: bool,
     contract_error: Option<String>,
+    context_initialized: Option<bool>,
     liveness: Option<bool>,
     liveness_error: Option<String>,
 }
@@ -44,6 +53,7 @@ impl HostNodeObservation {
             kind,
             module_available: false,
             contract_error: Some(error.to_string()),
+            context_initialized: None,
             liveness: None,
             liveness_error: None,
         }
@@ -89,15 +99,21 @@ async fn status_with_store(
     module_transport: &SharedModuleTransport,
     store: &LocalNodeStore,
 ) -> Result<LocalNodeReport> {
-    {
+    let configs = {
         let _state_lock = acquire_state_lock()?;
-        let _state = store.load()?;
-    }
+        let state = store.load()?;
+        HOST_NODE_KINDS.map(|kind| {
+            state
+                .active_topology(profile)
+                .and_then(|record| record.nodes.iter().find(|node| node.kind == kind))
+                .cloned()
+        })
+    };
 
     let (bedrock, storage, messaging) = tokio::join!(
-        observe_node(NodeKind::Bedrock, module_transport),
-        observe_node(NodeKind::Storage, module_transport),
-        observe_node(NodeKind::Messaging, module_transport),
+        observe_node(NodeKind::Bedrock, configs[0].as_ref(), module_transport),
+        observe_node(NodeKind::Storage, configs[1].as_ref(), module_transport),
+        observe_node(NodeKind::Messaging, configs[2].as_ref(), module_transport),
     );
     let observations = [bedrock, storage, messaging];
 
@@ -145,6 +161,7 @@ fn ensure_host_transport(module_transport: &SharedModuleTransport) -> Result<()>
 
 async fn observe_node(
     kind: NodeKind,
+    config: Option<&LocalNodeConfigRecord>,
     module_transport: &SharedModuleTransport,
 ) -> HostNodeObservation {
     let Some(contract) = adapter_for(kind).managed_contract() else {
@@ -163,6 +180,7 @@ async fn observe_node(
             kind,
             module_available: true,
             contract_error,
+            context_initialized: None,
             liveness: None,
             liveness_error: None,
         };
@@ -173,6 +191,7 @@ async fn observe_node(
             kind,
             module_available: true,
             contract_error: None,
+            context_initialized: None,
             liveness: None,
             liveness_error: None,
         };
@@ -182,6 +201,7 @@ async fn observe_node(
             kind,
             module_available: true,
             contract_error: None,
+            context_initialized: None,
             liveness: None,
             liveness_error: Some(error.to_string()),
         };
@@ -193,27 +213,117 @@ async fn observe_node(
                 kind,
                 module_available: true,
                 contract_error: None,
+                context_initialized: None,
                 liveness: None,
                 liveness_error: Some(error.to_string()),
             };
         }
     };
     match dispatch_module_call(module_transport.as_ref(), call).await {
-        Ok(_) => HostNodeObservation {
-            kind,
-            module_available: true,
-            contract_error: None,
-            liveness: Some(true),
-            liveness_error: None,
+        Ok(_) => match service_liveness(kind, config).await {
+            Ok(Some(liveness)) => HostNodeObservation {
+                kind,
+                module_available: true,
+                contract_error: None,
+                context_initialized: Some(true),
+                liveness: Some(liveness),
+                liveness_error: None,
+            },
+            Ok(None) => HostNodeObservation {
+                kind,
+                module_available: true,
+                contract_error: None,
+                context_initialized: Some(true),
+                liveness: Some(true),
+                liveness_error: None,
+            },
+            Err(error) => HostNodeObservation {
+                kind,
+                module_available: true,
+                contract_error: None,
+                context_initialized: Some(true),
+                liveness: None,
+                liveness_error: Some(error.to_string()),
+            },
         },
-        Err(error) => HostNodeObservation {
-            kind,
-            module_available: true,
-            contract_error: None,
-            liveness: Some(false),
-            liveness_error: Some(error.to_string()),
-        },
+        Err(error) => {
+            let context_missing = is_context_not_initialized(&error);
+            HostNodeObservation {
+                kind,
+                module_available: true,
+                contract_error: None,
+                context_initialized: context_missing.then_some(false),
+                liveness: (kind == NodeKind::Bedrock || context_missing).then_some(false),
+                liveness_error: Some(error.to_string()),
+            }
+        }
     }
+}
+
+fn is_context_not_initialized(error: &anyhow::Error) -> bool {
+    format!("{error:#}")
+        .to_ascii_lowercase()
+        .contains("context not initialized")
+}
+
+async fn service_liveness(
+    kind: NodeKind,
+    config: Option<&LocalNodeConfigRecord>,
+) -> Result<Option<bool>> {
+    if !matches!(kind, NodeKind::Storage | NodeKind::Messaging) {
+        return Ok(None);
+    }
+    let config = config.context("Basecamp node config is unavailable")?;
+    let address = service_address(kind, &config.config_path)?;
+    let desired = match config.pending_lifecycle_action {
+        Some(NodeAction::Start) => Some(true),
+        Some(NodeAction::Stop) => Some(false),
+        _ => None,
+    };
+    let deadline = Instant::now() + SERVICE_TRANSITION_TIMEOUT;
+    loop {
+        let reachable = tokio::task::spawn_blocking(move || {
+            TcpStream::connect_timeout(&address, SERVICE_PROBE_TIMEOUT).is_ok()
+        })
+        .await
+        .context("Basecamp service liveness worker failed")?;
+        if desired.is_none_or(|expected| expected == reachable) || Instant::now() >= deadline {
+            return Ok(Some(reachable));
+        }
+        tokio::time::sleep(SERVICE_TRANSITION_POLL_INTERVAL).await;
+    }
+}
+
+fn service_address(kind: NodeKind, config_path: &str) -> Result<SocketAddr> {
+    let config_text = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read Basecamp node config `{config_path}`"))?;
+    let config = serde_json::from_str::<Value>(&config_text)
+        .with_context(|| format!("failed to parse Basecamp node config `{config_path}`"))?;
+    let (host_key, port_key) = match kind {
+        NodeKind::Storage => ("listen-ip", "listen-port"),
+        NodeKind::Messaging => ("restAddress", "restPort"),
+        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer => {
+            bail!("{} has no local service liveness target", kind.as_str())
+        }
+    };
+    let host = config
+        .get(host_key)
+        .and_then(Value::as_str)
+        .with_context(|| format!("Basecamp node config has no `{host_key}`"))?;
+    let port = config
+        .get(port_key)
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .with_context(|| format!("Basecamp node config has no valid `{port_key}`"))?;
+    let ip = host
+        .parse::<IpAddr>()
+        .with_context(|| format!("Basecamp node config has invalid `{host_key}`"))?;
+    let ip = match ip {
+        IpAddr::V4(address) if address.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(address) if address.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        address => address,
+    };
+    Ok(SocketAddr::new(ip, port))
 }
 
 fn validate_lifecycle_contract(kind: NodeKind, metadata: &Value) -> Result<()> {
@@ -413,9 +523,25 @@ async fn execute_host_action(
         plan.call.method,
         plan.args.clone(),
     )?;
-    Ok(dispatch_module_call(module_transport.as_ref(), call)
+    let value = dispatch_module_call(module_transport.as_ref(), call)
         .await?
-        .into_value())
+        .into_value();
+    validate_host_action_result(plan, &value)?;
+    Ok(value)
+}
+
+fn validate_host_action_result(plan: &PreparedHostAction, value: &Value) -> Result<()> {
+    if plan.kind == NodeKind::Storage
+        && matches!(plan.action, NodeAction::Initialize | NodeAction::Start)
+        && value.as_bool() != Some(true)
+    {
+        bail!(
+            "{}.{} did not accept the lifecycle action",
+            plan.module,
+            plan.call.method
+        );
+    }
+    Ok(())
 }
 
 fn is_transport_interruption(error: &anyhow::Error) -> bool {
@@ -538,6 +664,7 @@ fn reconcile_observations(
         return Ok(());
     };
     let mut changed = false;
+    let mut cleared_contexts = Vec::new();
     for observation in observations {
         if !observation.contract_ready() {
             continue;
@@ -549,11 +676,32 @@ fn reconcile_observations(
         else {
             continue;
         };
+        if matches!(observation.kind, NodeKind::Storage | NodeKind::Messaging)
+            && observation.context_initialized == Some(false)
+            && config.installed
+        {
+            clear_module_context(config);
+            cleared_contexts.push(observation.kind);
+            changed = true;
+            continue;
+        }
+        if observation.context_initialized == Some(true) && !config.installed {
+            config.installed = true;
+            config.package_path = adapter_for(observation.kind)
+                .managed_contract()
+                .map(|contract| contract.module_id().to_owned());
+            config.lifecycle_state = if observation.liveness == Some(true) {
+                NodeLifecycleState::Running
+            } else {
+                NodeLifecycleState::Stopped
+            };
+            config.pending_lifecycle_action = None;
+            changed = true;
+        }
         match observation.liveness {
             Some(true) if config.lifecycle_state == NodeLifecycleState::Stopping => {}
             Some(true) => {
-                if !config.installed
-                    || config.lifecycle_state != NodeLifecycleState::Running
+                if config.lifecycle_state != NodeLifecycleState::Running
                     || config.pending_lifecycle_action.is_some()
                 {
                     config.installed = true;
@@ -587,11 +735,13 @@ fn reconcile_observations(
     }
     record.updated_at = now_millis();
     write_devnet_manifest(record)?;
+    for kind in cleared_contexts {
+        state.clear_module_context_topology(kind);
+    }
     if let Some(topology_id) = topology_id {
-        for observation in observations
-            .iter()
-            .filter(|observation| observation.liveness == Some(true))
-        {
+        for observation in observations.iter().filter(|observation| {
+            observation.context_initialized == Some(true) || observation.liveness == Some(true)
+        }) {
             state
                 .module_context_topology_by_kind
                 .insert(observation.kind, topology_id.clone());
@@ -799,7 +949,11 @@ fn clear_module_context(config: &mut LocalNodeConfigRecord) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        fs,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::{Arc, Mutex},
+    };
 
     use anyhow::{Result, bail};
 
@@ -812,12 +966,21 @@ mod tests {
     #[derive(Debug, Clone)]
     struct RecordingHostTransport {
         calls: Arc<Mutex<Vec<ModuleCall>>>,
+        reject_storage_initialize: bool,
     }
 
     impl RecordingHostTransport {
         fn new() -> Self {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
+                reject_storage_initialize: false,
+            }
+        }
+
+        fn rejecting_storage_initialize() -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                reject_storage_initialize: true,
             }
         }
 
@@ -835,6 +998,7 @@ mod tests {
         }
 
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let reject_storage_initialize = self.reject_storage_initialize;
             let result = self
                 .calls
                 .lock()
@@ -842,10 +1006,47 @@ mod tests {
                 .map(|mut calls| {
                     calls.push(call.clone());
                     match (call.module(), call.method()) {
+                        ("storage_module", "init") if reject_storage_initialize => Ok(
+                            ModuleCallReply::new(ModuleTransportKind::Module, json!(false)),
+                        ),
+                        ("blockchain_module", "get_cryptarchia_info")
+                            if calls.iter().any(|candidate| {
+                                candidate.module() == "blockchain_module"
+                                    && candidate.method() == "start"
+                            }) =>
+                        {
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!({"tip": 1}),
+                            ))
+                        }
+                        ("storage_module", "space")
+                            if !reject_storage_initialize
+                                && calls.iter().any(|candidate| {
+                                    candidate.module() == "storage_module"
+                                        && candidate.method() == "init"
+                                }) =>
+                        {
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!({"total": 1, "used": 0}),
+                            ))
+                        }
+                        ("delivery_module", "getNodeInfo")
+                            if calls.iter().any(|candidate| {
+                                candidate.module() == "delivery_module"
+                                    && candidate.method() == "createNode"
+                            }) =>
+                        {
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!("peer-id"),
+                            ))
+                        }
                         ("blockchain_module", "get_cryptarchia_info")
                         | ("storage_module", "space")
                         | ("delivery_module", "getNodeInfo") => {
-                            bail!("node context is not running")
+                            bail!("node context is not initialized")
                         }
                         _ => Ok(ModuleCallReply::new(
                             ModuleTransportKind::Module,
@@ -904,12 +1105,34 @@ mod tests {
         }
     }
 
+    fn set_node_config_port(
+        store: &LocalNodeStore,
+        kind: NodeKind,
+        key: &str,
+        port: u16,
+    ) -> Result<()> {
+        let state = store.load()?;
+        let path = state
+            .active_topology("default")
+            .and_then(|topology| topology.nodes.iter().find(|node| node.kind == kind))
+            .map(|node| node.config_path.clone())
+            .context("default topology omitted node config")?;
+        let mut config = serde_json::from_str::<Value>(&fs::read_to_string(&path)?)?;
+        config
+            .as_object_mut()
+            .context("default node config is not a JSON object")?
+            .insert(key.to_owned(), json!(port));
+        fs::write(path, serde_json::to_vec_pretty(&config)?)?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn basecamp_initialize_dispatches_config_contents_through_host_module() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
         let transport_impl = RecordingHostTransport::new();
         let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        set_node_config_port(&store, NodeKind::Messaging, "restPort", 0)?;
 
         let report = action_with_store(
             "default",
@@ -944,6 +1167,75 @@ mod tests {
             || !report.available_runtime_actions.is_empty()
         {
             bail!("Basecamp action returned standalone Local Nodes state: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejected_storage_initialize_is_recorded_without_installing_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport: SharedModuleTransport =
+            Arc::new(RecordingHostTransport::rejecting_storage_initialize());
+
+        let report = action_with_store(
+            "default",
+            initialize_request(NodeKind::Storage),
+            &transport,
+            &store,
+        )
+        .await?;
+        let storage = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage")?;
+        if storage.install_state != "needs_configuration"
+            || storage.run_state != "not_initialized"
+            || report
+                .operations
+                .last()
+                .is_none_or(|operation| operation.status != "failed")
+        {
+            bail!("rejected Storage initialize mutated lifecycle state: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn service_addresses_use_loopback_for_unspecified_bind_addresses() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let storage_path = directory.path().join("storage.json");
+        fs::write(
+            &storage_path,
+            serde_json::to_vec(&json!({"listen-ip":"0.0.0.0","listen-port":8091}))?,
+        )?;
+        let messaging_path = directory.path().join("messaging.json");
+        fs::write(
+            &messaging_path,
+            serde_json::to_vec(&json!({"restAddress":"127.0.0.1","restPort":8645}))?,
+        )?;
+
+        if service_address(NodeKind::Storage, storage_path.to_str().unwrap_or_default())?
+            != SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8091)
+            || service_address(
+                NodeKind::Messaging,
+                messaging_path.to_str().unwrap_or_default(),
+            )? != SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8645)
+        {
+            bail!("Basecamp service address did not normalize to loopback");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn only_explicit_context_errors_clear_host_bindings() -> Result<()> {
+        if !is_context_not_initialized(&anyhow::Error::msg(
+            "storage_module.space failed: Storage context not initialized.",
+        )) || is_context_not_initialized(&anyhow::Error::msg(
+            "storage_module.space failed: request timed out",
+        )) {
+            bail!("Basecamp context error classification was not conservative");
         }
         Ok(())
     }
@@ -999,6 +1291,7 @@ mod tests {
                 kind: NodeKind::Messaging,
                 module_available: true,
                 contract_error: None,
+                context_initialized: Some(true),
                 liveness: Some(true),
                 liveness_error: None,
             }],
@@ -1019,6 +1312,67 @@ mod tests {
             || messaging.pending_lifecycle_action != Some(NodeAction::Stop)
         {
             bail!("live stop probe cleared the pending stop: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_host_context_clears_stale_persisted_binding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut state = store.load()?;
+        let topology_id = state
+            .active_topology("default")
+            .map(|topology| topology.id.clone())
+            .context("default topology is unavailable")?;
+        let messaging = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        messaging.installed = true;
+        messaging.package_path = Some("delivery_module".to_owned());
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        state
+            .module_context_topology_by_kind
+            .insert(NodeKind::Messaging, topology_id);
+        store.save(&state)?;
+
+        reconcile_observations(
+            &mut state,
+            "default",
+            &[HostNodeObservation {
+                kind: NodeKind::Messaging,
+                module_available: true,
+                contract_error: None,
+                context_initialized: Some(false),
+                liveness: Some(false),
+                liveness_error: Some("Context not initialized".to_owned()),
+            }],
+            &store,
+        )?;
+
+        let state = store.load()?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.installed
+            || messaging.lifecycle_state != NodeLifecycleState::NotInitialized
+            || state
+                .module_context_topology_id(NodeKind::Messaging)
+                .is_some()
+        {
+            bail!("missing Basecamp context retained stale state: {messaging:?}");
         }
         Ok(())
     }
