@@ -19,6 +19,10 @@
       url = "github:3esmit/logos-delivery-module?rev=97788dc83b4dbeabfc73eb2367d9830a6b117a6f";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
+    lez_core = {
+      url = "github:3esmit/logos-execution-zone-module?rev=c749def804bfba6c1104bf81e5bb500eb493a11c";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 

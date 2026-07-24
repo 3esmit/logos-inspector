@@ -11,7 +11,8 @@
   "dependencies": [
     "blockchain_module",
     "storage_module",
-    "delivery_module"
+    "delivery_module",
+    "lez_core"
   ],
   "include": [],
   "capabilities": [],
