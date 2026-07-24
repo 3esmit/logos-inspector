@@ -588,6 +588,7 @@ fn system_service_target(_process_id: u32) -> Option<LogoscoreServiceTarget> {
     None
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn system_service_target_from_cgroup(line: &str) -> Option<LogoscoreServiceTarget> {
     let (_, path) = line.rsplit_once(':')?;
     let unit = path.rsplit('/').next()?.trim();
