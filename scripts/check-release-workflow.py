@@ -145,9 +145,16 @@ def main() -> int:
             ".#standalone-macos-app",
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
-            "Install Linux graphics runtime for smoke",
-            "apt-get install --yes --no-install-recommends libegl1",
-            "Ubuntu package: \\`libegl1\\`",
+            "Install Linux host graphics runtime for smoke",
+            (
+                "apt-get install --yes --no-install-recommends "
+                "libegl1 libglx0 libopengl0 libvulkan1"
+            ),
+            "for library in libEGL.so.1 libGLX.so.0 libOpenGL.so.0 "
+            "libGLdispatch.so.0 libvulkan.so.1",
+            'ldd "$native"',
+            "standalone-linux-dynamic-dependencies.txt",
+            "Ubuntu packages: \\`libvulkan1 libegl1 libglx0 libopengl0\\`",
             "verify-tree",
             "audit-binary-refs",
             "standalone_release.py verify",
@@ -161,7 +168,9 @@ def main() -> int:
         errors,
     )
     linux_build = standalone.find("- name: Build AppImage")
-    linux_graphics = standalone.find("- name: Install Linux graphics runtime for smoke")
+    linux_graphics = standalone.find(
+        "- name: Install Linux host graphics runtime for smoke"
+    )
     linux_smoke = standalone.find(
         "- name: Smoke extracted AppImage without the Nix store"
     )
@@ -281,6 +290,11 @@ def main() -> int:
             "Apple silicon",
             "with `/nix/store` hidden",
             "`libEGL.so.1`",
+            "`libGLX.so.0`",
+            "`libOpenGL.so.0`",
+            "`libGLdispatch.so.0`",
+            "`libvulkan.so.1`",
+            "`ldd`",
         ),
         "release process",
         errors,
