@@ -7,7 +7,7 @@ use crate::{
     local_devnet_list as local_devnet_list_report,
     local_nodes::local_node_package_catalog as local_node_package_catalog_report,
     local_nodes::{
-        ChannelIndexerConfigRequest, NodeKind,
+        ChannelIndexerConfigRequest, NodeKind, basecamp_local_nodes_status,
         channel_indexer_config as channel_indexer_config_report,
         channel_indexer_status as channel_indexer_status_report,
         local_node_config as local_node_config_report,
@@ -17,6 +17,7 @@ use crate::{
         validate_local_node_config as validate_local_node_config_report,
     },
     local_nodes_status as local_nodes_status_report,
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::args::Args,
 };
 
@@ -24,7 +25,7 @@ use super::super::value::to_value;
 use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::sync("localNodesStatus", local_nodes_status),
+    RuntimeMethodEntry::with_module_transport("localNodesStatus", local_nodes_status),
     RuntimeMethodEntry::sync("localNodeConfig", local_node_config),
     RuntimeMethodEntry::sync("localNodeConfigValidate", local_node_config_validate),
     RuntimeMethodEntry::sync("localNodeConfigSave", local_node_config_save),
@@ -39,11 +40,19 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::with_runtime("localNodePackageCatalog", local_node_package_catalog),
 ];
 
-pub(super) fn local_nodes_status(args: Value) -> Result<Value> {
+pub(super) fn local_nodes_status(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(local_nodes_status_report(
-        args.optional_string(0).unwrap_or("default"),
-    )?)
+    let profile = args.optional_string(0).unwrap_or("default");
+    if module_transport.kind() == ModuleTransportKind::Module {
+        return to_value(
+            runtime.block_on(basecamp_local_nodes_status(profile, &module_transport))?,
+        );
+    }
+    to_value(local_nodes_status_report(profile)?)
 }
 
 pub(super) fn local_node_config(args: Value) -> Result<Value> {

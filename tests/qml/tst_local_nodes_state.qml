@@ -161,6 +161,14 @@ TestCase {
         }
     }
 
+    function test_basecamp_host_tracks_gateway_transport() {
+        verify(!state.basecampHost)
+        gateway.basecampModules = true
+        tryCompare(state, "basecampHost", true)
+        gateway.basecampModules = false
+        tryCompare(state, "basecampHost", false)
+    }
+
     function managedTestnetReport() {
         const report = testnetReport()
         report.available_runtime_actions = ["stop_runtime"]
@@ -1019,6 +1027,17 @@ TestCase {
         compare(gateway.calls[0].args[1].action, "stop")
         compare(gateway.calls[0].args[1].node, "messaging")
         verify(gateway.calls[0].args[1].allow_identity_rotation)
+        verify(!state.pendingAllowIdentityRotation)
+    }
+
+    function test_basecamp_messaging_stop_preserves_context_and_identity() {
+        gateway.basecampModules = true
+        state.beginNodeAction("stop", "messaging")
+
+        compare(state.actionDraftTitle(), "Stop Messaging")
+        compare(
+            state.actionDraftMessage(),
+            "This stops Messaging inside Basecamp and keeps its module context, data, configuration, and peer identity. You can start it again without reinitializing.")
         verify(!state.pendingAllowIdentityRotation)
     }
 

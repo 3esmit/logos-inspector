@@ -247,6 +247,9 @@ mod tests {
         );
         assert!(lookup("rawRpc").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(lookup("modules").is_some_and(|entry| !entry.allows_host_synchronous_call()));
+        assert!(
+            lookup("localNodesStatus").is_some_and(|entry| !entry.allows_host_synchronous_call())
+        );
         assert!(lookup("storageExists").is_some_and(|entry| !entry.allows_host_synchronous_call()));
         assert!(
             lookup("acceptedSharedIdlEntriesFromStoreWithStorage")

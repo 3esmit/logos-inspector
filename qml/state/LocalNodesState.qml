@@ -8,6 +8,9 @@ QtObject {
     required property var gateway
     property string networkProfile: "default"
     property bool busy: false
+    readonly property bool basecampHost: gateway
+        && typeof gateway.prefersBasecampModules === "function"
+        && gateway.prefersBasecampModules() === true
 
     property var report: null
     property string error: ""
@@ -556,7 +559,9 @@ QtObject {
         pendingRuntimeBinaryPath = "";
         pendingPackageVersion = String(packageVersion || "").trim();
         pendingPackageRootHash = String(packageRootHash || "").trim();
-        pendingAllowIdentityRotation = pendingAction === "stop" && pendingNode === "messaging";
+        pendingAllowIdentityRotation = !basecampHost
+            && pendingAction === "stop"
+            && pendingNode === "messaging";
     }
 
     function beginNetworkAction(action, networkId, workspacePath) {
@@ -692,6 +697,9 @@ QtObject {
             return qsTr("This starts %1 using config %2.").arg(nodeLabel(pendingNode)).arg(String(node.config_path || "-"));
         }
         if (action === "stop" && pendingNode === "messaging") {
+            if (basecampHost) {
+                return qsTr("This stops Messaging inside Basecamp and keeps its module context, data, configuration, and peer identity. You can start it again without reinitializing.");
+            }
             return qsTr("This stops Messaging by unloading its Delivery context. Inspector first verifies a persisted peer identity. A legacy node without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity. Its data and config remain, but you must initialize Messaging before starting it again.");
         }
         if (action === "stop") {
