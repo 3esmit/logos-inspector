@@ -222,6 +222,14 @@ def main() -> int:
         "flake standalone package",
         errors,
     )
+    require(
+        flake,
+        ('artifactsLink="$NIX_BUILD_TOP/cargo-vendor-dir/artifacts"',),
+        "flake program artifact linker",
+        errors,
+    )
+    if "/build/cargo-vendor-dir" in flake:
+        errors.append("flake program artifact linker assumes `/build` is the build root")
 
     try:
         ui_metadata = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))
