@@ -114,9 +114,11 @@ pub(super) async fn execute_runtime_operation(
                 .await
                 .map(Into::into)
         }
-        OperationCommand::LocalNodes(command) => local_nodes::execute(command, &request, control)
-            .await
-            .map(RuntimeOperationOutcome::Completed),
+        OperationCommand::LocalNodes(command) => {
+            local_nodes::execute(command, &request, control, module_transport)
+                .await
+                .map(RuntimeOperationOutcome::Completed)
+        }
         OperationCommand::Wallet(command) => wallet::execute(command, &request, control)
             .await
             .map(RuntimeOperationOutcome::Completed),

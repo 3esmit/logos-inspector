@@ -7,6 +7,7 @@ QtObject {
     property int rejectedResponseCount: 0
     property bool deferRequests: false
     property bool asyncSupported: true
+    property bool basecampModules: false
     property string lastMethod: ""
     property var lastArgs: []
     property string lastLabel: ""
@@ -54,6 +55,7 @@ QtObject {
         rejectedResponseCount = 0
         deferRequests = false
         asyncSupported = true
+        basecampModules = false
         lastMethod = ""
         lastArgs = []
         lastLabel = ""
@@ -160,6 +162,10 @@ QtObject {
 
     function supportsAsync() {
         return asyncSupported
+    }
+
+    function prefersBasecampModules() {
+        return basecampModules
     }
 
     function completeRequestAt(index, response) {

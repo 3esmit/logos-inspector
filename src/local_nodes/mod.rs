@@ -11,6 +11,7 @@ mod adapters;
 mod channel_indexer;
 mod commands;
 mod config;
+mod host;
 mod lifecycle;
 mod messaging_identity;
 mod model;
@@ -208,6 +209,22 @@ pub(crate) fn local_nodes_action_controlled(
         control,
         package_commit,
     )
+}
+
+pub(crate) async fn basecamp_local_nodes_status(
+    profile: &str,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    host::status(profile, module_transport).await
+}
+
+pub(crate) async fn basecamp_local_nodes_action(
+    profile: &str,
+    request: LocalNodeActionRequest,
+    confirmation: Option<&str>,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    host::action(profile, request, confirmation, module_transport).await
 }
 
 pub(crate) fn channel_indexer_action_controlled(

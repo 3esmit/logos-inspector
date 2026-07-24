@@ -3131,6 +3131,7 @@ mod tests {
 
         for (method, args) in [
             ("rawRpc", "[]"),
+            ("localNodesStatus", "[\"default\"]"),
             ("runtimeOperationStatus", "[]"),
             ("blockchainNode", "[\"module\"]"),
             (
