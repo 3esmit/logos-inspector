@@ -21,6 +21,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   evidence before publishing source-owned packages. Catalog indexing and
   Basecamp installation remain downstream acceptance checks.
 - The Basecamp package label is now the human-facing `Logos Inspector`.
+- Linux standalone smoke now provisions the host EGL runtime after building
+  the AppImage, preserving the host graphics-driver ABI while still testing
+  with the Nix store hidden.
 
 ## [0.2.0-rc7] - 2026-07-23
 

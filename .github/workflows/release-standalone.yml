@@ -80,6 +80,12 @@ jobs:
           cp "$source" \
             "release-artifact/logos-inspector-standalone-${{ needs.validate.outputs.version }}-linux-amd64.AppImage"
           chmod +x release-artifact/*.AppImage
+      - name: Install Linux graphics runtime for smoke
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
+          ldconfig -p | grep -F 'libEGL.so.1'
       - name: Smoke extracted AppImage without the Nix store
         run: |
           set -euo pipefail

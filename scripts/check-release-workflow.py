@@ -145,6 +145,8 @@ def main() -> int:
             ".#standalone-macos-app",
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
+            "Install Linux graphics runtime for smoke",
+            "apt-get install --yes --no-install-recommends libegl1",
             "verify-tree",
             "audit-binary-refs",
             "standalone_release.py verify",
@@ -157,6 +159,16 @@ def main() -> int:
         "standalone release workflow",
         errors,
     )
+    linux_build = standalone.find("- name: Build AppImage")
+    linux_graphics = standalone.find("- name: Install Linux graphics runtime for smoke")
+    linux_smoke = standalone.find(
+        "- name: Smoke extracted AppImage without the Nix store"
+    )
+    if not 0 <= linux_build < linux_graphics < linux_smoke:
+        errors.append(
+            "standalone release workflow must install the host graphics runtime "
+            "after building and before smoking the Linux AppImage"
+        )
     for name, text in texts.items():
         label = f"{name} release workflow"
         for forbidden in (
@@ -267,6 +279,7 @@ def main() -> int:
             "AppImage",
             "Apple silicon",
             "with `/nix/store` hidden",
+            "`libEGL.so.1`",
         ),
         "release process",
         errors,
