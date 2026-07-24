@@ -45,7 +45,7 @@ const LOGOSCORE_EVENT_NAME_LIMIT: usize = 256;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
 const LOGOSCORE_CLI_COMMAND_GATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const LOGOSCORE_CLI_STATUS_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(5);
+const LOGOSCORE_CLI_STATUS_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(20);
 const LOGOSCORE_CLI_MODULES_SNAPSHOT_FRESHNESS: Duration = Duration::from_secs(30);
 const LOGOSCORE_CLI_FAILURE_BACKOFF: Duration = Duration::from_secs(1);
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 3;
@@ -5467,7 +5467,7 @@ esac
         let now = StdInstant::now();
         let status_within_poll_window = LogoscoreCliSnapshotEntry {
             observed_at: now
-                .checked_sub(Duration::from_secs(4))
+                .checked_sub(Duration::from_secs(19))
                 .context("status test instant underflowed")?,
             result: LogoscoreCliSnapshotResult::Output(LogosCoreOutput {
                 runner: "fixture".to_owned(),
@@ -5475,9 +5475,15 @@ esac
                 stderr: None,
             }),
         };
+        let status_beyond_poll_window = LogoscoreCliSnapshotEntry {
+            observed_at: now
+                .checked_sub(Duration::from_secs(21))
+                .context("expired status test instant underflowed")?,
+            result: status_within_poll_window.result.clone(),
+        };
         let inventory_beyond_status_window = LogoscoreCliSnapshotEntry {
             observed_at: now
-                .checked_sub(Duration::from_secs(6))
+                .checked_sub(Duration::from_secs(21))
                 .context("inventory test instant underflowed")?,
             result: LogoscoreCliSnapshotResult::Output(LogosCoreOutput {
                 runner: "fixture".to_owned(),
@@ -5495,6 +5501,10 @@ esac
         anyhow::ensure!(
             status_within_poll_window.is_fresh(LogoscoreCliSnapshotKind::Status, now),
             "status snapshot expired inside one polling window"
+        );
+        anyhow::ensure!(
+            !status_beyond_poll_window.is_fresh(LogoscoreCliSnapshotKind::Status, now),
+            "status snapshot remained fresh beyond its documented limit"
         );
         anyhow::ensure!(
             inventory_beyond_status_window.is_fresh(LogoscoreCliSnapshotKind::Modules, now),
