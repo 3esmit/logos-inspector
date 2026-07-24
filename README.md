@@ -33,6 +33,11 @@ nix run .#standalone
 The flake provides the standalone app for x86_64 Linux, AArch64 Linux, and
 AArch64 macOS.
 
+Source-owned Alpha releases provide a Linux x86_64 AppImage, an unsigned Apple
+silicon macOS app archive, and separate merged Core/UI LGX packages. See the
+[release process](docs/release-process.md) for artifact names and verification
+requirements.
+
 For the CLI, Rust `1.94` is required:
 
 ```bash
@@ -124,11 +129,15 @@ requests and pushes to `main`.
 | `flake.nix` | Nix builds for the standalone application and deployable modules. |
 
 The Nix flake exposes `standalone` for the desktop application, `lgx` for the
-QML module, and `core-lgx` for the core module:
+QML module, and `core-lgx` for the core module. Native release bundles are
+available as `standalone-appimage` on Linux x86_64 and
+`standalone-macos-app` on Apple silicon:
 
 ```bash
 nix build .#lgx
 nix build .#core-lgx
+nix build .#standalone-appimage       # Linux x86_64
+nix build .#standalone-macos-app      # Apple silicon macOS
 ```
 
 ## Security

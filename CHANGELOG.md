@@ -8,8 +8,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Manual, fail-closed GitHub Release automation for portable Inspector core
-  and UI LGX packages on Linux x86_64 and Apple silicon macOS.
+- Source-owned, fail-closed GitHub Release automation for separate merged
+  Inspector Core and UI LGX packages on Linux x86_64 and Apple silicon macOS.
+- Self-contained Linux AppImage and unsigned Apple silicon macOS standalone
+  bundles, with native extracted-GUI smoke tests before publication. Release
+  jobs classify inert vendor build-prefix strings and reject executable
+  build-host paths; Linux smoke hides the Nix store entirely.
+
+### Changed
+
+- Inspector release automation no longer requires catalog installation
+  evidence before publishing source-owned packages. Catalog indexing and
+  Basecamp installation remain downstream acceptance checks.
+- The Basecamp package label is now the human-facing `Logos Inspector`.
 
 ## [0.2.0-rc7] - 2026-07-23
 

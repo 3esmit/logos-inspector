@@ -1,4 +1,5 @@
 use std::{
+    env,
     ffi::OsString,
     io::Write as _,
     path::{Path, PathBuf},
@@ -18,6 +19,9 @@ use super::{LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT};
 use crate::support::command_runner::{
     CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, output_text, run_command,
 };
+
+const PACKAGED_HELPER_ENV: &str = "LOGOS_INSPECTOR_TESTNET_V02_HELPER";
+const PACKAGED_HELPER_NAME: &str = "logos-inspector-testnet-v02-helper";
 
 #[cfg(all(debug_assertions, feature = "development-testnet-v02-helper"))]
 const DEVELOPMENT_HELPER_MANIFEST: &str = concat!(
@@ -118,13 +122,39 @@ struct HelperCommand {
 }
 
 fn resolve_helper_command() -> Result<HelperCommand> {
-    if let Some(path) = option_env!("LOGOS_INSPECTOR_TESTNET_V02_HELPER").map(PathBuf::from) {
+    if let Some(path) = env::var_os(PACKAGED_HELPER_ENV).map(PathBuf::from) {
         if path.is_file() {
             return Ok(HelperCommand {
                 program: path,
                 args: Vec::new(),
             });
         }
+        bail!("configured private Testnet helper is unavailable");
+    }
+
+    let compiled_helper = option_env!("LOGOS_INSPECTOR_TESTNET_V02_HELPER").map(PathBuf::from);
+    if let Some(path) = compiled_helper.as_ref()
+        && path.is_file()
+    {
+        return Ok(HelperCommand {
+            program: path.clone(),
+            args: Vec::new(),
+        });
+    }
+
+    if let Some(path) = env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(installed_helper_path)
+        .filter(|path| path.is_file())
+    {
+        return Ok(HelperCommand {
+            program: path,
+            args: Vec::new(),
+        });
+    }
+
+    if compiled_helper.is_some() {
         bail!("packaged private Testnet helper is unavailable");
     }
 
@@ -136,6 +166,16 @@ fn resolve_helper_command() -> Result<HelperCommand> {
     bail!(
         "private instruction targets a different circuit profile, but no source-attested Testnet helper is installed"
     );
+}
+
+fn installed_helper_path(current_exe: &Path) -> Option<PathBuf> {
+    let bin_dir = current_exe.parent()?;
+    let prefix = bin_dir.parent()?;
+    Some(
+        prefix
+            .join("libexec")
+            .join(format!("{PACKAGED_HELPER_NAME}{}", env::consts::EXE_SUFFIX)),
+    )
 }
 
 #[cfg(all(debug_assertions, feature = "development-testnet-v02-helper"))]
@@ -228,6 +268,21 @@ mod tests {
             || !matches!(account.privacy, HelperAccountPrivacy::Private)
         {
             bail!("private account bytes changed across helper protocol");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn packaged_helper_uses_installed_layout() -> Result<()> {
+        let current_exe = Path::new("/opt/logos-inspector/bin/logos-inspector-standalone-gui");
+        let Some(helper) = installed_helper_path(current_exe) else {
+            bail!("installed helper path did not resolve");
+        };
+        if helper
+            != Path::new("/opt/logos-inspector/libexec")
+                .join(format!("{PACKAGED_HELPER_NAME}{}", env::consts::EXE_SUFFIX))
+        {
+            bail!("unexpected installed helper path: {}", helper.display());
         }
         Ok(())
     }
