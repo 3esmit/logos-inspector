@@ -154,6 +154,7 @@ def main() -> int:
             "libGLdispatch.so.0 libvulkan.so.1",
             'ldd "$native"',
             "standalone-linux-dynamic-dependencies.txt",
+            "grep -F 'not found'",
             "Ubuntu packages: \\`libvulkan1 libegl1 libglx0 libopengl0\\`",
             "verify-tree",
             "audit-binary-refs",
@@ -178,6 +179,18 @@ def main() -> int:
         errors.append(
             "standalone release workflow must install the host graphics runtime "
             "after building and before smoking the Linux AppImage"
+        )
+    linux_extract = standalone.find("--appimage-extract", linux_smoke)
+    linux_ldd = standalone.find('ldd "$native"', linux_smoke)
+    linux_verify = standalone.find(
+        "standalone_release.py verify-tree",
+        linux_smoke,
+    )
+    linux_unshare = standalone.find("unshare --mount", linux_smoke)
+    if not 0 <= linux_extract < linux_ldd < linux_verify < linux_unshare:
+        errors.append(
+            "standalone release workflow must extract, audit dynamic "
+            "dependencies, verify the tree, then smoke with the Nix store hidden"
         )
     for name, text in texts.items():
         label = f"{name} release workflow"
