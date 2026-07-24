@@ -20,8 +20,7 @@ Frame {
         ? root.zoneState.zoneSummaries : []
     readonly property var zones: root.allZones.slice(0, 8)
     readonly property bool stale: !root.zoneState
-        || String(root.zoneState.verification || "") !== "verified"
-        || root.zoneState.summaryStale
+        || root.zoneState.summaryRowsUsable !== true
     readonly property int sequencerCount: root.countKind("sequencer_zone")
     readonly property int dataCount: root.countKind("data_channel")
 

@@ -47,6 +47,8 @@ TestCase {
         model.zoneInspection.verification = "empty"
         model.zoneInspection.networkScopeKey = ""
         model.zoneInspection.summaryStale = false
+        model.zoneInspection.summaryInFlight = false
+        model.zoneInspection.summaryLoaded = false
         model.zoneInspection.zoneSummaries = []
         model.zoneInspection.activeZoneContext = null
     }
@@ -117,9 +119,8 @@ TestCase {
         }))
 
         const channelId = "22".repeat(32)
-        model.zoneInspection.verification = "verified"
-        model.zoneInspection.networkScopeKey = "genesis_id:" + "11".repeat(32)
-        model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
+        setVerifiedZoneSummaries([configuredZone(channelId)],
+            "genesis_id:" + "11".repeat(32))
         wait(0)
 
         verify(!model.shell.navRows().some(function (row) {
@@ -166,10 +167,45 @@ TestCase {
         }))
     }
 
+    function test_zones_group_survives_compatible_summary_refresh() {
+        const channelId = "22".repeat(32)
+        setVerifiedZoneSummaries([configuredZone(channelId)],
+            "genesis_id:" + "11".repeat(32))
+        wait(0)
+
+        const groups = model.zoneMenuGroups()
+        compare(groups.length, 1)
+        const menuKey = String(groups[0].fields[0].key || "")
+        verify(model.setZoneMenuEnabled(menuKey, true))
+
+        model.zoneInspection.summaryStale = true
+        model.zoneInspection.summaryInFlight = true
+        wait(0)
+
+        verify(model.zoneInspection.summaryRowsUsable)
+        verify(model.shell.navRows().some(function (row) {
+            return String(row.channelId || "") === channelId
+        }))
+
+        model.zoneInspection.summaryInFlight = false
+        wait(0)
+        verify(model.zoneInspection.summaryRowsUsable)
+        verify(model.shell.navRows().some(function (row) {
+            return String(row.channelId || "") === channelId
+        }))
+
+        model.zoneInspection.sourceConfigEpoch = 2
+        wait(0)
+        verify(!model.zoneInspection.summaryRowsUsable)
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.channelId || "") === channelId
+        }))
+    }
+
     function test_zones_group_hides_unverified_configured_dashboards() {
         const channelId = "22".repeat(32)
-        model.zoneInspection.networkScopeKey = "genesis_id:" + "11".repeat(32)
-        model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
+        setVerifiedZoneSummaries([configuredZone(channelId)],
+            "genesis_id:" + "11".repeat(32))
         model.zoneInspection.verification = "checking"
         wait(0)
 
@@ -180,9 +216,8 @@ TestCase {
 
     function test_zones_menu_selection_is_scoped_to_the_verified_network() {
         const channelId = "22".repeat(32)
-        model.zoneInspection.verification = "verified"
-        model.zoneInspection.networkScopeKey = "genesis_id:" + "11".repeat(32)
-        model.zoneInspection.zoneSummaries = [configuredZone(channelId)]
+        setVerifiedZoneSummaries([configuredZone(channelId)],
+            "genesis_id:" + "11".repeat(32))
         wait(0)
 
         const firstGroups = model.zoneMenuGroups()
@@ -196,6 +231,14 @@ TestCase {
         model.zoneInspection.networkScopeKey = "genesis_id:" + "33".repeat(32)
         wait(0)
 
+        compare(model.zoneMenuGroups().length, 0)
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.channelId || "") === channelId
+        }))
+
+        model.zoneInspection.summaryNetworkScopeKey
+            = model.zoneInspection.networkScopeKey
+        wait(0)
         const secondGroups = model.zoneMenuGroups()
         compare(secondGroups.length, 1)
         const secondKey = String(secondGroups[0].fields[0].key || "")
@@ -204,6 +247,19 @@ TestCase {
         verify(!model.shell.navRows().some(function (row) {
             return String(row.channelId || "") === channelId
         }))
+    }
+
+    function setVerifiedZoneSummaries(rows, scopeKey) {
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.sourceRevision = 1
+        model.zoneInspection.networkScopeKey = String(scopeKey || "")
+        model.zoneInspection.sourceConfigEpoch = 1
+        model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summarySourceRevision = 1
+        model.zoneInspection.summaryNetworkScopeKey
+            = model.zoneInspection.networkScopeKey
+        model.zoneInspection.summarySourceConfigEpoch = 1
+        model.zoneInspection.zoneSummaries = rows
     }
 
     function configuredZone(channelId) {

@@ -31,6 +31,13 @@ QtObject {
     property var zoneSummaries: []
     property bool summaryLoaded: false
     property bool summaryStale: false
+    readonly property bool summaryRowsUsable: verification === "verified"
+        && summaryLoaded
+        && sourceRevision > 0
+        && networkScopeKey.length > 0
+        && summarySourceRevision === sourceRevision
+        && summaryNetworkScopeKey === networkScopeKey
+        && summarySourceConfigEpoch === sourceConfigEpoch
 
     property var activeZoneContext: null
     property var sourceEditorResetContext: null
@@ -48,6 +55,17 @@ QtObject {
     property var zoneDetailReport: null
     property var zoneDetail: null
     property bool detailStale: false
+    readonly property bool detailDisplayUsable: verification === "verified"
+        && sourceRevision > 0
+        && networkScopeKey.length > 0
+        && zoneDetailReport !== null
+        && zoneDetail !== null
+        && activeZoneContext !== null
+        && numericRevision(zoneDetailReport.source_revision) === sourceRevision
+        && scopeKey(zoneDetailReport.network_scope) === networkScopeKey
+        && numericRevision(zoneDetailReport.source_config_epoch) === sourceConfigEpoch
+        && String(zoneDetail.summary && zoneDetail.summary.channel_id || "")
+            === activeZoneId
     property bool configureInFlight: false
     property bool statusInFlight: false
     property bool summaryInFlight: false

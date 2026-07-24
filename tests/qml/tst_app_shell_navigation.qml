@@ -74,6 +74,7 @@ TestCase {
         if (model !== null) {
             model.shell.clearResult()
             model.zoneInspection.zoneSummaries = []
+            model.zoneInspection.summaryLoaded = false
         }
     }
 
@@ -413,6 +414,13 @@ TestCase {
         model.zoneInspection.summaryStale = false
         model.zoneInspection.networkScope = scope
         model.zoneInspection.networkScopeKey = "genesis_id:" + scope.genesis_id
+        model.zoneInspection.sourceRevision = 1
+        model.zoneInspection.sourceConfigEpoch = 1
+        model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summarySourceRevision = 1
+        model.zoneInspection.summaryNetworkScopeKey
+            = model.zoneInspection.networkScopeKey
+        model.zoneInspection.summarySourceConfigEpoch = 1
         model.zoneInspection.zoneSummaries = [configuredZone]
         model.zoneInspection.activeZoneContext = null
         model.shell.navExpanded = ({ l1: true, zones: true, network: true,
