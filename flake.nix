@@ -16,7 +16,7 @@
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     delivery_module = {
-      url = "github:3esmit/logos-delivery-module?rev=97788dc83b4dbeabfc73eb2367d9830a6b117a6f";
+      url = "github:3esmit/logos-delivery-module?rev=ca77bcb8b59f960fcc5040412dc4e3a755161631";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     lez_core = {
