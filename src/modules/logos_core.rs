@@ -6226,6 +6226,7 @@ esac
 
         fs::write(directory.path().join("sequence"), "")?;
         fs::write(directory.path().join("status"), "loading")?;
+        transport.runtime()?.invalidate_observation_snapshot()?;
         let control = ModuleCallControl::new(
             CancellationToken::new(),
             Instant::now() + Duration::from_secs(5),
@@ -6253,6 +6254,7 @@ esac
 
         fs::write(directory.path().join("sequence"), "")?;
         fs::write(directory.path().join("status"), "crashed")?;
+        transport.runtime()?.invalidate_observation_snapshot()?;
         let metadata_error = transport
             .module_info("lez_indexer_module".to_owned())
             .await
@@ -6275,6 +6277,7 @@ esac
 
         fs::write(directory.path().join("sequence"), "")?;
         fs::write(directory.path().join("status"), "loaded")?;
+        transport.runtime()?.invalidate_observation_snapshot()?;
         let loaded = transport.call(call).await?.into_value();
         anyhow::ensure!(
             loaded.get("state").and_then(Value::as_str) == Some("stopped"),
