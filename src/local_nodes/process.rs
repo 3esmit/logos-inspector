@@ -32,6 +32,9 @@ pub(super) fn find_command(command: &str) -> Option<String> {
 }
 
 pub(super) fn process_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    let exists = unix_process_exists(pid, false);
+    #[cfg(not(unix))]
     let exists = Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
@@ -50,16 +53,34 @@ pub(super) fn process_is_alive(pid: u32) -> bool {
 
 pub(super) fn process_group_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
-    let target = format!("-{pid}");
+    {
+        unix_process_exists(pid, true)
+    }
     #[cfg(not(unix))]
-    let target = pid.to_string();
-    Command::new("kill")
-        .arg("-0")
-        .arg("--")
-        .arg(target)
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    {
+        Command::new("kill")
+            .arg("-0")
+            .arg("--")
+            .arg(pid.to_string())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+}
+
+#[cfg(unix)]
+fn unix_process_exists(pid: u32, process_group: bool) -> bool {
+    use nix::{errno::Errno, sys::signal, unistd::Pid};
+
+    let Ok(raw_pid) = i32::try_from(pid) else {
+        return false;
+    };
+    let result = if process_group {
+        signal::killpg(Pid::from_raw(raw_pid), None)
+    } else {
+        signal::kill(Pid::from_raw(raw_pid), None)
+    };
+    matches!(result, Ok(()) | Err(Errno::EPERM))
 }
 
 pub(super) fn process_group_has_live_members(pid: u32) -> bool {
@@ -412,6 +433,45 @@ mod tests {
     use std::{net::TcpListener, time::Duration};
 
     use super::*;
+
+    #[cfg(unix)]
+    const PROCESS_PROBE_PATH_WORKER_ENV: &str = "LOGOS_INSPECTOR_PROCESS_PROBE_PATH_WORKER";
+
+    #[cfg(unix)]
+    #[test]
+    fn process_liveness_does_not_depend_on_path() -> Result<()> {
+        if env::var_os(PROCESS_PROBE_PATH_WORKER_ENV).is_some() {
+            if !process_is_alive(std::process::id()) {
+                bail!("current process was not detected with an empty PATH");
+            }
+            if !process_group_is_alive(std::process::id()) {
+                bail!("current process group was not detected with an empty PATH");
+            }
+            return Ok(());
+        }
+
+        use std::os::unix::process::CommandExt as _;
+
+        let current_exe = env::current_exe().context("failed to locate test executable")?;
+        let output = Command::new(current_exe)
+            .arg("--exact")
+            .arg("local_nodes::process::tests::process_liveness_does_not_depend_on_path")
+            .arg("--nocapture")
+            .env(PROCESS_PROBE_PATH_WORKER_ENV, "1")
+            .env("PATH", "")
+            .process_group(0)
+            .output()
+            .context("failed to launch empty-PATH liveness worker")?;
+        if !output.status.success() {
+            bail!(
+                "empty-PATH liveness worker failed: status={}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn rpc_readiness_accepts_successful_unit_result() -> Result<()> {
