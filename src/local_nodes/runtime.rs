@@ -1929,11 +1929,15 @@ exit 9
             "unavailable attached runtime returned the wrong error: {error:#}"
         );
 
+        // Replace via a new inode. Rewriting an executable that was just
+        // spawned can fail with ETXTBSY under concurrent test load.
+        let replacement = directory.path().join("logoscore.next");
         fs::write(
-            &binary,
+            &replacement,
             "#!/bin/sh\nprintf '%s\\n' '{\"daemon\":{\"status\":\"stopped\"}}'\n",
         )?;
-        fs::set_permissions(&binary, permissions)?;
+        fs::set_permissions(&replacement, permissions)?;
+        fs::rename(&replacement, &binary)?;
         profile.validate_attached_module_install_target(&modules_dir)?;
         Ok(())
     }
