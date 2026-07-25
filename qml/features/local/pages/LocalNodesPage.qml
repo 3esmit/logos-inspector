@@ -1281,9 +1281,9 @@ ColumnLayout {
     function modulePackageOptions() {
         const repository = root.selectedModuleRepository || {}
         return root.model.modulePackages(repository.name, repository.url).map(function (packageValue) {
-            const package = packageValue || {}
-            const name = String(package.name || "")
-            const category = String(package.category || qsTr("uncategorized"))
+            const packageInfo = packageValue || {}
+            const name = String(packageInfo.name || "")
+            const category = String(packageInfo.category || qsTr("uncategorized"))
             return {
                 name: name,
                 label: name + " · " + category
