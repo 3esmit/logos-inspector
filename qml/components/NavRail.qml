@@ -14,12 +14,21 @@ Pane {
     required property Theme theme
     required property AppModel model
     property bool compact: false
+    readonly property var requestedNavigationRows: root.model
+        ? root.model.navRows() : []
     signal navigationRequested(string view, string channelId)
+
+    onRequestedNavigationRowsChanged: synchronizeNavigationRows()
 
     padding: 18
 
     background: Rectangle {
         color: root.theme.sidebar
+    }
+
+    ListModel {
+        id: navigationRowsModel
+        dynamicRoles: true
     }
 
     contentItem: ColumnLayout {
@@ -80,17 +89,17 @@ Pane {
                 spacing: 3
 
                 Repeater {
-                    model: root.model.navRows()
+                    model: navigationRowsModel
 
                     delegate: Component {
                         RowLayout {
                             id: navRow
 
                             required property int index
-                            required property var modelData
+                            required property var row
 
-                            readonly property bool isGroup: String(modelData.type || "") === "group"
-                            readonly property int depth: Number(modelData.depth || 0)
+                            readonly property bool isGroup: String(row.type || "") === "group"
+                            readonly property int depth: Number(row.depth || 0)
 
                             Layout.fillWidth: true
                             spacing: 4
@@ -111,7 +120,7 @@ Pane {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: root.compact ? 38 : 30
                                 onClicked: {
-                                    const key = String(navRow.modelData.key || "")
+                                    const key = String(navRow.row.key || "")
                                     Qt.callLater(function () {
                                         root.model.toggleNavGroup(key)
                                     })
@@ -122,8 +131,8 @@ Pane {
 
                                     Text {
                                         visible: !root.compact
-                                        text: navRow.modelData.expanded === true ? "v" : ">"
-                                        color: navRow.modelData.active === true ? root.theme.accent : root.theme.textDim
+                                        text: navRow.row.expanded === true ? "v" : ">"
+                                        color: navRow.row.active === true ? root.theme.accent : root.theme.textDim
                                         textFormat: Text.PlainText
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
@@ -135,8 +144,8 @@ Pane {
                                     }
 
                                     Text {
-                                        text: root.groupText(navRow.modelData)
-                                        color: navRow.modelData.active === true ? root.theme.text : root.theme.textMuted
+                                        text: root.groupText(navRow.row)
+                                        color: navRow.row.active === true ? root.theme.text : root.theme.textMuted
                                         textFormat: Text.PlainText
                                         elide: Text.ElideRight
                                         verticalAlignment: Text.AlignVCenter
@@ -159,32 +168,32 @@ Pane {
                                 }
 
                                 ToolTip.visible: (groupButton.hovered || groupButton.activeFocus) && root.compact
-                                ToolTip.text: String(navRow.modelData.label || "")
+                                ToolTip.text: String(navRow.row.label || "")
                                 Accessible.role: Accessible.Button
-                                Accessible.name: qsTr("%1 navigation group").arg(String(navRow.modelData.label || ""))
+                                Accessible.name: qsTr("%1 navigation group").arg(String(navRow.row.label || ""))
                             }
 
                             ActionButton {
                                 id: navButton
 
-                                objectName: "navButton_" + (String(navRow.modelData.channelId || "").length > 0
-                                    ? "zone_" + String(navRow.modelData.channelId || "")
-                                    : String(navRow.modelData.view || ""))
+                                objectName: "navButton_" + (String(navRow.row.channelId || "").length > 0
+                                    ? "zone_" + String(navRow.row.channelId || "")
+                                    : String(navRow.row.view || ""))
                                 visible: !navRow.isGroup
                                 theme: root.theme
-                                text: root.navText(navRow.modelData)
-                                accessibleName: String(navRow.modelData.accessibleName
-                                    || navRow.modelData.label || "")
-                                selected: navRow.modelData.active === true
-                                enabled: navRow.modelData.enabled !== false
+                                text: root.navText(navRow.row)
+                                accessibleName: String(navRow.row.accessibleName
+                                    || navRow.row.label || "")
+                                selected: navRow.row.active === true
+                                enabled: navRow.row.enabled !== false
                                 Layout.fillWidth: true
                                 onClicked: {
-                                    const view = String(navRow.modelData.view || "")
+                                    const view = String(navRow.row.view || "")
                                     root.navigationRequested(view,
-                                        String(navRow.modelData.channelId || ""))
+                                        String(navRow.row.channelId || ""))
                                 }
                                 ToolTip.visible: (hovered || activeFocus) && root.compact
-                                ToolTip.text: String(navRow.modelData.label || "")
+                                ToolTip.text: String(navRow.row.label || "")
                             }
                         }
                     }
@@ -217,4 +226,66 @@ Pane {
         }
         return String(row.label || "")
     }
+
+    function synchronizeNavigationRows() {
+        const rows = Array.isArray(root.requestedNavigationRows)
+            ? root.requestedNavigationRows : []
+        const nextKeys = ({})
+        for (let index = 0; index < rows.length; ++index) {
+            const key = navigationRowKey(rows[index])
+            if (key.length > 0) {
+                nextKeys[key] = true
+            }
+        }
+
+        for (let index = navigationRowsModel.count - 1; index >= 0; --index) {
+            const key = String(navigationRowsModel.get(index).rowKey || "")
+            if (nextKeys[key] !== true) {
+                navigationRowsModel.remove(index)
+            }
+        }
+
+        for (let index = 0; index < rows.length; ++index) {
+            const row = rows[index] || ({})
+            const key = navigationRowKey(row)
+            if (key.length === 0) {
+                continue
+            }
+            let currentIndex = navigationRowIndex(key)
+            if (currentIndex < 0) {
+                navigationRowsModel.insert(index, {
+                    rowKey: key,
+                    row: row
+                })
+                continue
+            }
+            if (currentIndex !== index) {
+                navigationRowsModel.move(currentIndex, index, 1)
+                currentIndex = index
+            }
+            if (navigationRowsModel.get(currentIndex).row !== row) {
+                navigationRowsModel.setProperty(currentIndex, "row", row)
+            }
+        }
+    }
+
+    function navigationRowKey(row) {
+        const value = row || ({})
+        const type = String(value.type || "item")
+        const key = String(value.key || "")
+        const channelId = String(value.channelId || "")
+        return key.length > 0 ? type + ":" + key + ":" + channelId : ""
+    }
+
+    function navigationRowIndex(key) {
+        const target = String(key || "")
+        for (let index = 0; index < navigationRowsModel.count; ++index) {
+            if (String(navigationRowsModel.get(index).rowKey || "") === target) {
+                return index
+            }
+        }
+        return -1
+    }
+
+    Component.onCompleted: synchronizeNavigationRows()
 }

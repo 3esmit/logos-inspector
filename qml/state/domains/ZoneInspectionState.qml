@@ -618,10 +618,12 @@ QtObject {
                 || assembly.source_generation !== sourceGeneration) {
             return
         }
-        let rows = []
+        const summaryRowsChanged = assembly.kind === "reset"
+            || assembly.upserts.length > 0 || assembly.removed_zone_ids.length > 0
+        let rows = zoneSummaries
         if (assembly.kind === "reset") {
             rows = rowsFromMap(rowsByChannel(assembly.rows))
-        } else {
+        } else if (summaryRowsChanged) {
             if (assembly.base_summary_revision !== summaryRevision
                     || summarySourceRevision !== assembly.source_revision
                     || summaryNetworkScopeKey !== assembly.network_scope_key) {
@@ -640,7 +642,7 @@ QtObject {
         }
 
         const report = assembly.report
-        if (activeZoneId.length > 0) {
+        if (summaryRowsChanged && activeZoneId.length > 0) {
             startupAutoSelectionPending = false
             const nextActiveRow = rowFromRows(rows, activeZoneId)
             if (!nextActiveRow) {
@@ -665,10 +667,12 @@ QtObject {
         summarySourceConfigEpoch = numericRevision(report.source_config_epoch)
         summaryObservationRevision = numericRevision(report.observation_revision)
         summaryRevision = numericRevision(report.summary_revision)
-        summaryInFlight = false
         summaryAssembly = null
         summaryError = ""
-        zoneSummaries = rows
+        if (summaryRowsChanged) {
+            zoneSummaries = rows
+        }
+        summaryInFlight = false
 
         summaryStale = !summaryMatchesStatus()
         if (summaryStale) {

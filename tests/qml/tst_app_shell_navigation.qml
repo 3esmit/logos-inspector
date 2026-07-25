@@ -455,6 +455,22 @@ TestCase {
             return loader.item !== null
                 && String(loader.item.objectName || "") === "sequencerDashboardPage"
         })
+
+        const dashboardPage = loader.item
+        const originalButton = button
+        const refreshedZone = Object.assign({}, configuredZone, {
+            activity_state: "finalizing"
+        })
+        model.zoneInspection.zoneSummaries = [refreshedZone]
+        model.shell.navRevision += 1
+        wait(0)
+
+        const refreshedButton = findChild(shell, "navButton_zone_" + channelId)
+        compare(refreshedButton, originalButton)
+        verify(refreshedButton.visible)
+        compare(model.zoneInspection.activeZoneId, channelId)
+        compare(model.shell.currentView, "sequencerDashboard")
+        compare(loader.item, dashboardPage)
     }
 
     function verifyButtonNavigation(model, loader, view) {

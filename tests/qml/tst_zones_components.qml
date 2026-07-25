@@ -265,6 +265,10 @@ TestCase {
         page.filter = "all"
         page.query = ""
         page.initialDetailTab = "overview"
+        const zoneList = findChild(page, "zonesList")
+        if (zoneList) {
+            zoneList.contentY = zoneList.originY
+        }
         const detail = findChild(page, "zoneDetail")
         if (detail) {
             detail.discardSourceDraft()
@@ -619,6 +623,50 @@ TestCase {
         verify(!zoneState.summaryRowsUsable)
         verify(page.rowsStale)
         verify(detail.displayStale)
+    }
+
+    function test_live_summary_update_keeps_catalog_delegate_mounted() {
+        const channelId = FixtureData.identity("1")
+        const list = findChild(page, "zonesList")
+        const initialRow = findChild(page, "zoneListRow_" + channelId)
+        const originalRows = zoneState.zoneSummaries
+        verify(list !== null)
+        verify(initialRow !== null)
+        verify(initialRow.interactive)
+
+        try {
+            const updatedRows = originalRows.map(function (row) {
+                if (String(row.channel_id || "") !== channelId) {
+                    return row
+                }
+                return Object.assign({}, row, {
+                    activity_state: "finalizing"
+                })
+            })
+            zoneState.summaryInFlight = true
+            wait(0)
+            zoneState.zoneSummaries = updatedRows
+            wait(0)
+
+            const updatedRow = findChild(page, "zoneListRow_" + channelId)
+            compare(updatedRow, initialRow)
+            compare(updatedRow.zone.activity_state, "finalizing")
+            compare(list.count, updatedRows.length)
+            verify(updatedRow.visible)
+            verify(updatedRow.interactive)
+
+            zoneState.verification = "source_behind"
+            wait(0)
+            const cachedRow = findChild(page, "zoneListRow_" + channelId)
+            compare(cachedRow, initialRow)
+            verify(cachedRow.visible)
+            verify(!cachedRow.interactive)
+        } finally {
+            zoneState.verification = "verified"
+            zoneState.summaryInFlight = false
+            zoneState.zoneSummaries = originalRows
+            wait(0)
+        }
     }
 
     function test_compatible_summary_refresh_preserves_catalog_scroll() {
