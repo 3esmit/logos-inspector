@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     release = args.version or circuits_release(catalog)
     target = current_target(catalog)
     artifact = circuit_artifact_name(release, target)
-    expected_hash = str(target["hash"])
+    expected_archive_hash = str(target["archiveHash"])
     url = circuit_artifact_url(catalog, release, target)
     install_dir = Path(
         args.install_dir_option or args.install_dir or str(DEFAULT_CACHE_ROOT / "install")
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         release=release,
         target=target,
         artifact=artifact,
-        expected_hash=expected_hash,
+        expected_archive_hash=expected_archive_hash,
         url=url,
         install_dir=install_dir,
         cache_dir=cache_dir,
@@ -80,7 +80,7 @@ def setup_circuits(
     release: str,
     target: dict[str, str],
     artifact: str,
-    expected_hash: str,
+    expected_archive_hash: str,
     url: str,
     install_dir: Path,
     cache_dir: Path,
@@ -89,12 +89,12 @@ def setup_circuits(
     cache_dir = cache_dir.expanduser()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_digest = decode_sri_sha256(expected_hash)
+    expected_digest = decode_sri_sha256(expected_archive_hash)
     marker = marker_payload(
         release=release,
         target=target,
         artifact=artifact,
-        expected_hash=expected_hash,
+        archive_hash=expected_archive_hash,
     )
     if installation_matches(install_dir, marker):
         print(f"circuits already verified at {install_dir.resolve()}")
@@ -114,7 +114,7 @@ def setup_circuits(
     if actual != expected_digest:
         raise RuntimeError(
             f"circuit archive digest mismatch for {artifact}: "
-            f"expected {expected_hash}, got sha256-{base64.b64encode(actual).decode('ascii')}"
+            f"expected {expected_archive_hash}, got sha256-{base64.b64encode(actual).decode('ascii')}"
         )
 
     with tempfile.TemporaryDirectory(prefix="logos-circuits-extract-") as tmp:
@@ -177,7 +177,7 @@ def marker_payload(
     release: str,
     target: dict[str, str],
     artifact: str,
-    expected_hash: str,
+    archive_hash: str,
 ) -> dict[str, Any]:
     return {
         "release": release,
@@ -186,7 +186,7 @@ def marker_payload(
             "arch": target["arch"],
         },
         "artifact": artifact,
-        "hash": expected_hash,
+        "archiveHash": archive_hash,
     }
 
 

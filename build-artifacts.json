@@ -6,17 +6,20 @@
       "x86_64-linux": {
         "os": "linux",
         "arch": "x86_64",
-        "hash": "sha256-25129Q81NqwRIGfyCD2K7z+rgCTR7y96JZs3SQvDXqw="
+        "archiveHash": "sha256-25129Q81NqwRIGfyCD2K7z+rgCTR7y96JZs3SQvDXqw=",
+        "sourceHash": "sha256-2/Fw6ko+MCO2Paiw4zUQ1eacjvtPGP2n53RL39Ibntc="
       },
       "aarch64-linux": {
         "os": "linux",
         "arch": "aarch64",
-        "hash": "sha256-Sy/zH4d45c0orABTEC/GUdpTgf7NditgYaqPITQx+ao="
+        "archiveHash": "sha256-Sy/zH4d45c0orABTEC/GUdpTgf7NditgYaqPITQx+ao=",
+        "sourceHash": "sha256-5779U71gejCEOmWToziHLyh3n/DVTyEemsbMG+HbJJM="
       },
       "aarch64-darwin": {
         "os": "macos",
         "arch": "aarch64",
-        "hash": "sha256-1k0UbE+qS/V4pTXxaQnMhnBfOTWgORJ8WHbzEWlIgnE="
+        "archiveHash": "sha256-1k0UbE+qS/V4pTXxaQnMhnBfOTWgORJ8WHbzEWlIgnE=",
+        "sourceHash": "sha256-WFKsOEx93MIT/+l8gVQpTMoAwMjMTIHD1FzL/+AFcXA="
       }
     }
   },
