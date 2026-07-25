@@ -47,6 +47,8 @@ ColumnLayout {
     readonly property bool catalogSourceUnavailable: root.zoneState
         && root.zoneState.catalogSourceUnavailable === true
 
+    onVisibleZonesChanged: synchronizeVisibleZoneRows()
+
     onHasDirtyDraftChanged: {
         if (hasDirtyDraft) {
             retainDetailForDraft = true
@@ -81,6 +83,11 @@ ColumnLayout {
         ListElement { value: "sequencer"; label: "Sequencer" }
         ListElement { value: "data"; label: "Data" }
         ListElement { value: "attention"; label: "Needs attention" }
+    }
+
+    ListModel {
+        id: visibleZoneModel
+        dynamicRoles: true
     }
 
     PageHeader {
@@ -231,7 +238,7 @@ ColumnLayout {
 
                 Text {
                     text: qsTr("%1 visible / %2 total")
-                        .arg(Presentation.numberText(root.visibleZones.length))
+                        .arg(Presentation.numberText(visibleZoneModel.count))
                         .arg(Presentation.numberText(root.zoneState
                             && root.zoneState.zoneSummaries.length))
                     color: root.theme.textDim
@@ -250,7 +257,7 @@ ColumnLayout {
             }
 
             Text {
-                visible: root.visibleZones.length === 0 && !root.zoneState.summaryInFlight
+                visible: visibleZoneModel.count === 0 && !root.zoneState.summaryInFlight
                 text: root.zoneState.summaryError.length > 0
                     ? root.zoneState.summaryError : qsTr("No Zone facts match current filter")
                 color: root.zoneState.summaryError.length > 0
@@ -265,8 +272,8 @@ ColumnLayout {
                 id: zonesList
 
                 objectName: "zonesList"
-                visible: root.visibleZones.length > 0
-                model: root.visibleZones
+                visible: visibleZoneModel.count > 0
+                model: visibleZoneModel
                 spacing: root.theme.gapSmall
                 clip: true
                 reuseItems: true
@@ -281,18 +288,17 @@ ColumnLayout {
                 }
 
                 delegate: ZoneListRow {
-                    required property var modelData
+                    required property string channelId
 
                     width: zonesList.width
                     theme: root.theme
-                    zone: modelData
-                    selected: root.zoneState.activeZoneId === String(modelData.channel_id || "")
-                    stale: root.rowsStale || String(modelData.provenance
-                        && modelData.provenance.verification_state || "verified") !== "verified"
+                    selected: root.zoneState.activeZoneId === channelId
+                    stale: root.rowsStale || String(zone.provenance
+                        && zone.provenance.verification_state || "verified") !== "verified"
                     interactive: !stale
-                    onActivated: root.requestZoneActivation(String(modelData.channel_id || ""))
+                    onActivated: root.requestZoneActivation(channelId)
                     onChannelActivated: root.requestSequencerActivation(
-                        String(modelData.channel_id || ""))
+                        channelId)
                 }
 
                 ScrollBar.vertical: ScrollBar {}
@@ -410,12 +416,75 @@ ColumnLayout {
         return zoneState.activateZone(channelId)
     }
 
+    function synchronizeVisibleZoneRows() {
+        const rows = Array.isArray(root.visibleZones) ? root.visibleZones : []
+        const nextChannelIds = ({})
+        for (let index = 0; index < rows.length; ++index) {
+            const channelId = String(rows[index] && rows[index].channel_id || "")
+            if (channelId.length > 0) {
+                nextChannelIds[channelId] = true
+            }
+        }
+
+        for (let index = visibleZoneModel.count - 1; index >= 0; --index) {
+            const channelId = String(visibleZoneModel.get(index).channelId || "")
+            if (nextChannelIds[channelId] !== true) {
+                visibleZoneModel.remove(index)
+            }
+        }
+
+        for (let index = 0; index < rows.length; ++index) {
+            const zone = rows[index] || ({})
+            const channelId = String(zone.channel_id || "")
+            if (channelId.length === 0) {
+                continue
+            }
+            let currentIndex = visibleZoneIndex(channelId)
+            if (currentIndex < 0) {
+                visibleZoneModel.insert(index, {
+                    channelId: channelId,
+                    zone: zone
+                })
+                continue
+            }
+            if (currentIndex !== index) {
+                visibleZoneModel.move(currentIndex, index, 1)
+                currentIndex = index
+            }
+            if (visibleZoneModel.get(currentIndex).zone !== zone) {
+                visibleZoneModel.setProperty(currentIndex, "zone", zone)
+            }
+        }
+        Qt.callLater(root.clampZoneListScroll)
+    }
+
+    function visibleZoneIndex(channelId) {
+        const target = String(channelId || "")
+        for (let index = 0; index < visibleZoneModel.count; ++index) {
+            if (String(visibleZoneModel.get(index).channelId || "") === target) {
+                return index
+            }
+        }
+        return -1
+    }
+
     function captureZoneListScroll(replaceRetained) {
         if (zoneListScrollRestorePending && replaceRetained !== true) {
             return
         }
         retainedZoneListContentY = zonesList.contentY
         zoneListScrollRestorePending = true
+    }
+
+    function clampZoneListScroll() {
+        const minimum = Number(zonesList.originY || 0)
+        const maximum = Math.max(minimum,
+            minimum + Number(zonesList.contentHeight || 0)
+                - Number(zonesList.height || 0))
+        if (zonesList.contentY < minimum || zonesList.contentY > maximum) {
+            zonesList.contentY = Math.max(minimum,
+                Math.min(zonesList.contentY, maximum))
+        }
     }
 
     function scheduleZoneListScrollRestore() {
@@ -580,4 +649,6 @@ ColumnLayout {
             .arg(Presentation.numberText(zoneState.sourceRevision))
             .arg(Presentation.numberText(zoneState.catalogRevision))
     }
+
+    Component.onCompleted: synchronizeVisibleZoneRows()
 }

@@ -1400,6 +1400,108 @@ TestCase {
         verify(!zoneState.detailDisplayUsable)
     }
 
+    function test_live_summary_delta_commits_rows_before_completion_without_context_reset() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+        gateway.respondNext("zoneDetail", ok(detailReport(row)))
+        l2BlockState.l2BlockRows = [{ block_id: 99, source_id: "src-a" }]
+        l2BlockState.l2BlocksLoaded = true
+
+        const initialContextRevision = zoneState.contextRevision
+        let activeContextChanges = 0
+        let rowsPublishedWhileInFlight = false
+        function onActiveContextChanged() {
+            activeContextChanges += 1
+        }
+        function onRowsChanged() {
+            rowsPublishedWhileInFlight = zoneState.summaryInFlight === true
+        }
+        zoneState.activeZoneContextChanged.connect(onActiveContextChanged)
+        zoneState.zoneSummariesChanged.connect(onRowsChanged)
+        try {
+            const updatedRow = Object.assign({}, row, {
+                activity_state: "finalizing"
+            })
+            verify(zoneState.pollStatus())
+            gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+                verification: "verified",
+                coverage: { status: "complete" },
+                ingestion: { worker_running: false },
+                catalog_revision: 2,
+                observation_revision: 2,
+                summary_revision: 2
+            })))
+            gateway.respondNext("zonesSummary", ok(summaryReport(2, {
+                kind: "delta",
+                upserts: [updatedRow],
+                removed_zone_ids: []
+            }, null, {
+                catalog_revision: 2,
+                observation_revision: 2
+            })))
+
+            verify(rowsPublishedWhileInFlight)
+            compare(zoneState.zoneSummaries.length, 1)
+            compare(zoneState.zoneSummaries[0].activity_state, "finalizing")
+            compare(zoneState.activeZoneId, "zone-a")
+            compare(zoneState.contextRevision, initialContextRevision)
+            compare(activeContextChanges, 0)
+            compare(l2BlockState.l2BlockRows[0].block_id, 99)
+            verify(l2BlockState.l2BlocksLoaded)
+            verify(zoneState.detailDisplayUsable)
+
+            gateway.respondNext("zoneDetail", ok(detailReport(updatedRow, null, {
+                catalog_revision: 2,
+                observation_revision: 2,
+                summary_revision: 2
+            })))
+        } finally {
+            zoneState.activeZoneContextChanged.disconnect(onActiveContextChanged)
+            zoneState.zoneSummariesChanged.disconnect(onRowsChanged)
+        }
+    }
+
+    function test_empty_live_summary_delta_updates_metadata_without_replacing_rows() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        let summaryChanges = 0
+        function onRowsChanged() {
+            summaryChanges += 1
+        }
+        zoneState.zoneSummariesChanged.connect(onRowsChanged)
+        try {
+            verify(zoneState.pollStatus())
+            gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+                verification: "verified",
+                coverage: { status: "complete" },
+                ingestion: { worker_running: false },
+                catalog_revision: 2,
+                observation_revision: 2,
+                summary_revision: 2
+            })))
+            gateway.respondNext("zonesSummary", ok(summaryReport(2, {
+                kind: "delta",
+                upserts: [],
+                removed_zone_ids: []
+            }, null, {
+                catalog_revision: 2,
+                observation_revision: 2
+            })))
+
+            compare(summaryChanges, 0)
+            compare(zoneState.zoneSummaries.length, 1)
+            compare(zoneState.summaryRevision, 2)
+            compare(zoneState.summaryCatalogRevision, 2)
+            compare(zoneState.summaryObservationRevision, 2)
+            verify(!zoneState.summaryStale)
+        } finally {
+            zoneState.zoneSummariesChanged.disconnect(onRowsChanged)
+        }
+    }
+
     function test_network_change_clears_rows_context_and_stale_detail() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", null)
