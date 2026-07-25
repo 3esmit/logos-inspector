@@ -983,39 +983,34 @@ fn read_lgx_manifest(path: &Path) -> Result<RawLgxManifest> {
         .with_context(|| format!("failed to open local module package `{}`", path.display()))?;
     let decoder = GzDecoder::new(BufReader::new(file));
     let mut archive = Archive::new(decoder.take(MAX_LGX_UNCOMPRESSED_INSPECTION_SIZE));
-    let mut manifest = None;
-    for entry in archive
+    let mut entries = archive
         .entries()
-        .context("local module package is not a readable LGX archive")?
-    {
-        let mut entry = entry.context("local module package contains an unreadable LGX entry")?;
-        let entry_path = entry
-            .path()
-            .context("local module package contains an invalid LGX entry path")?;
-        if entry_path.as_ref() != Path::new("manifest.json") {
-            continue;
-        }
-        if manifest.is_some() {
-            bail!("local module package contains more than one manifest.json entry");
-        }
-        if !entry.header().entry_type().is_file() {
-            bail!("local module package manifest.json is not a regular file");
-        }
-        if entry.size() > MAX_PACKAGE_MANIFEST_SIZE {
-            bail!("local module package manifest.json exceeds the inspection size limit");
-        }
-        let mut bytes = Vec::with_capacity(
-            usize::try_from(entry.size()).context("local module package manifest is too large")?,
-        );
-        entry
-            .read_to_end(&mut bytes)
-            .context("failed to read local module package manifest.json")?;
-        manifest = Some(parse_json::<RawLgxManifest>(
-            &bytes,
-            "local module package manifest",
-        )?);
+        .context("local module package is not a readable LGX archive")?;
+    let Some(entry) = entries.next() else {
+        bail!("local module package does not contain manifest.json");
+    };
+    let mut entry = entry.context("local module package contains an unreadable LGX entry")?;
+    let entry_path = entry
+        .path()
+        .context("local module package contains an invalid LGX entry path")?;
+    if entry_path.as_ref() != Path::new("manifest.json") {
+        bail!("local module package manifest.json must be its first archive entry");
     }
-    manifest.context("local module package does not contain manifest.json")
+    if !entry.header().entry_type().is_file() {
+        bail!("local module package manifest.json is not a regular file");
+    }
+    if entry.size() > MAX_PACKAGE_MANIFEST_SIZE {
+        bail!("local module package manifest.json exceeds the inspection size limit");
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(entry.size()).context("local module package manifest is too large")?,
+    );
+    entry
+        .read_to_end(&mut bytes)
+        .context("failed to read local module package manifest.json")?;
+    // Multi-platform LGX files can contain large variant payloads after the
+    // canonical manifest. `lgpm` validates the full archive before it writes.
+    parse_json::<RawLgxManifest>(&bytes, "local module package manifest")
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -1745,6 +1740,48 @@ mod tests {
         )?;
         if validated != fs::canonicalize(&package_path)? {
             bail!("local core package path was not canonicalized");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_module_file_reads_manifest_before_large_variant_payload() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let package_path = directory.path().join("openmetrics-1.0.0.lgx");
+        let file = fs::File::create(&package_path)?;
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let manifest = serde_json::to_vec(&json!({
+            "name": "openmetrics",
+            "type": INDEXER_PACKAGE_TYPE,
+            "version": "1.0.0"
+        }))?;
+        let mut manifest_header = tar::Header::new_gnu();
+        manifest_header.set_size(manifest.len() as u64);
+        manifest_header.set_mode(0o644);
+        manifest_header.set_cksum();
+        archive.append_data(&mut manifest_header, "manifest.json", manifest.as_slice())?;
+
+        let large_payload = vec![0_u8; usize::try_from(MAX_LGX_UNCOMPRESSED_INSPECTION_SIZE)? + 1];
+        let mut payload_header = tar::Header::new_gnu();
+        payload_header.set_size(large_payload.len() as u64);
+        payload_header.set_mode(0o644);
+        payload_header.set_cksum();
+        archive.append_data(
+            &mut payload_header,
+            "variants/linux-amd64/openmetrics_plugin.so",
+            large_payload.as_slice(),
+        )?;
+        let encoder = archive.into_inner()?;
+        encoder.finish()?;
+
+        let validated = validate_local_package_file(
+            package_path
+                .to_str()
+                .context("temporary package path is not UTF-8")?,
+        )?;
+        if validated != fs::canonicalize(&package_path)? {
+            bail!("large local core package path was not canonicalized");
         }
         Ok(())
     }
