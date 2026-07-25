@@ -2180,8 +2180,10 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        if let Some(snapshot) = fresh_logoscore_cli_snapshot(&self.runner, kind)? {
-            return Ok(snapshot);
+        if kind == LogoscoreCliSnapshotKind::Status {
+            if let Some(snapshot) = fresh_logoscore_cli_snapshot(&self.runner, kind)? {
+                return Ok(snapshot);
+            }
         }
         self.with_command_gate(timeout, move |runner, deadline| {
             cached_logoscore_cli_snapshot(runner, kind, || {
@@ -5531,6 +5533,64 @@ fi
                 .lines()
                 .eq(["status"]),
             "fresh status snapshot executed another command while the gate was held"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_module_inventory_waits_for_the_command_gate_even_when_cached() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-module-gate");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" = "list-modules" ]; then
+    printf '%s\n' list-modules >> "$config_dir/commands"
+    printf '%s\n' '{"modules":[]}'
+fi
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+
+        runtime.list_modules()?;
+        let gate = logoscore_cli_command_gate(&runtime.runner)?;
+        let held = gate
+            .lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("test command gate is poisoned"))?;
+        let error = runtime
+            .cached_json(
+                LogoscoreCliSnapshotKind::Modules,
+                ["list-modules", "--json"],
+                Duration::from_millis(20),
+            )
+            .err()
+            .context("cached module inventory bypassed the command gate")?;
+        drop(held);
+
+        anyhow::ensure!(
+            format!("{error:#}").contains("timed out waiting for another request"),
+            "module inventory returned the wrong gate error: {error:#}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .eq(["list-modules"]),
+            "blocked module inventory executed another command"
         );
         Ok(())
     }
