@@ -1485,11 +1485,7 @@ mod tests {
             true,
             SUPERVISOR_TEST_TIMEOUT,
         ))?;
-        runtime.block_on(wait_for_path_state(
-            &staged,
-            false,
-            SUPERVISOR_TEST_TIMEOUT,
-        ))?;
+        runtime.block_on(wait_for_path_state(&staged, false, SUPERVISOR_TEST_TIMEOUT))?;
         runtime.block_on(wait_for_cancel_attempts(
             &fixture,
             1,
@@ -1570,11 +1566,7 @@ mod tests {
             true,
             SUPERVISOR_TEST_TIMEOUT,
         ))?;
-        runtime.block_on(wait_for_path_state(
-            &staged,
-            false,
-            SUPERVISOR_TEST_TIMEOUT,
-        ))?;
+        runtime.block_on(wait_for_path_state(&staged, false, SUPERVISOR_TEST_TIMEOUT))?;
         runtime.block_on(wait_for_cancel_attempts(
             &fixture,
             1,
