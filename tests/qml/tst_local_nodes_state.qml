@@ -41,6 +41,8 @@ TestCase {
         state.moduleCatalog = null
         state.moduleCatalogError = ""
         state.modulePackageInstallError = ""
+        state.attachedRuntimeModulesDir = ""
+        state.attachedRuntimeServiceUnit = ""
         state.moduleCatalogLoading = false
         state.moduleCatalogGeneration = 0
         state.nodeConfigSnapshot = null
@@ -1594,5 +1596,24 @@ TestCase {
 
         verify(state.actionDraftMessage().indexOf("continues to use /opt/logos-node/modules") >= 0)
         verify(state.actionDraftMessage().indexOf("verifies that this target is distinct") >= 0)
+    }
+
+    function test_attached_runtime_retains_observed_modules_dir_after_stop() {
+        const running = attachedRuntimeReport("running")
+        running.runtime.modules_dir = "/srv/logos/modules"
+        state.updateAttachedRuntimeModulesDir(running)
+        state.report = running
+        compare(state.runtimeModulesDir(), "/srv/logos/modules")
+
+        const stopped = attachedRuntimeReport("stopped")
+        state.updateAttachedRuntimeModulesDir(stopped)
+        state.report = stopped
+        compare(state.runtimeModulesDir(), "/srv/logos/modules")
+
+        const changedService = attachedRuntimeReport("stopped")
+        changedService.runtime.service_unit = "other-logos.service"
+        state.updateAttachedRuntimeModulesDir(changedService)
+        state.report = changedService
+        compare(state.runtimeModulesDir(), "")
     }
 }

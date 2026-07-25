@@ -29,6 +29,8 @@ QtObject {
     property var moduleCatalog: null
     property string moduleCatalogError: ""
     property string modulePackageInstallError: ""
+    property string attachedRuntimeModulesDir: ""
+    property string attachedRuntimeServiceUnit: ""
     property bool moduleCatalogLoading: false
     property int moduleCatalogGeneration: 0
     property var nodeConfigSnapshot: null
@@ -77,6 +79,8 @@ QtObject {
         moduleCatalog = null
         moduleCatalogError = ""
         modulePackageInstallError = ""
+        attachedRuntimeModulesDir = ""
+        attachedRuntimeServiceUnit = ""
         moduleCatalogLoading = false
         moduleCatalogGeneration += 1
         clearActionDraft()
@@ -109,7 +113,9 @@ QtObject {
             }
             statusLoading = false;
             if (response.ok) {
-                report = response.value || null;
+                const nextReport = response.value || null;
+                updateAttachedRuntimeModulesDir(nextReport);
+                report = nextReport;
                 operations = response.value && Array.isArray(response.value.operations) ? response.value.operations : [];
                 error = "";
                 revision += 1;
@@ -431,6 +437,7 @@ QtObject {
                         && typeof gateway.invalidateAttachedRuntimeObservations === "function") {
                     gateway.invalidateAttachedRuntimeObservations();
                 }
+                updateAttachedRuntimeModulesDir(nextReport);
                 report = nextReport;
                 operations = nextOperations;
                 error = "";
@@ -1035,7 +1042,39 @@ QtObject {
     function runtimeModulesDir() {
         const runtime = runtimeInfo();
         const configured = String(runtime && runtime.modules_dir ? runtime.modules_dir : "").trim();
-        return configured.length ? configured : defaultRuntimeModulesDir;
+        if (configured.length) {
+            return configured;
+        }
+        if (localAttachedRuntime()) {
+            return attachedRuntimeModulesDir;
+        }
+        return defaultRuntimeModulesDir;
+    }
+
+    function updateAttachedRuntimeModulesDir(nextReport) {
+        const runtime = nextReport && nextReport.runtime ? nextReport.runtime : null;
+        if (String(runtime && runtime.ownership ? runtime.ownership : "") !== "local_attached") {
+            clearAttachedRuntimeModulesDir();
+            return;
+        }
+        const serviceUnit = String(runtime && runtime.service_unit ? runtime.service_unit : "").trim();
+        if (serviceUnit.length
+                && attachedRuntimeServiceUnit.length
+                && serviceUnit !== attachedRuntimeServiceUnit) {
+            attachedRuntimeModulesDir = "";
+        }
+        if (serviceUnit.length) {
+            attachedRuntimeServiceUnit = serviceUnit;
+        }
+        const observedModulesDir = String(runtime && runtime.modules_dir ? runtime.modules_dir : "").trim();
+        if (observedModulesDir.length) {
+            attachedRuntimeModulesDir = observedModulesDir;
+        }
+    }
+
+    function clearAttachedRuntimeModulesDir() {
+        attachedRuntimeModulesDir = "";
+        attachedRuntimeServiceUnit = "";
     }
 
     function packageCatalogModulesDir() {
