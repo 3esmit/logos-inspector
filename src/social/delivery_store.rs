@@ -7,6 +7,9 @@ use super::{
     social_topic_is_valid,
 };
 
+const MAX_SOCIAL_STORE_PAYLOAD_BYTES: usize = 256 * 1024;
+const MAX_SOCIAL_STORE_BASE64_BYTES: usize = MAX_SOCIAL_STORE_PAYLOAD_BYTES.div_ceil(3) * 4;
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SocialMessage {
     pub topic: String,
@@ -55,16 +58,15 @@ fn social_message_from_store_object(
     {
         return None;
     }
-    let payload = message_payload(message)?;
-    let bytes = BASE64_STANDARD.decode(payload).ok()?;
+    let bytes = message_payload_bytes(message)?;
     let text = String::from_utf8(bytes).ok()?;
     let parsed = parse_social_payload_for_topic(&text, expected_account_id, topic).ok()?;
     Some(SocialMessage {
         topic: message_topic.unwrap_or(topic).to_owned(),
-        cursor: first_string(message, &["cursor", "messageHash", "message_hash", "hash"])
+        cursor: first_message_string(message, &["cursor", "messageHash", "message_hash", "hash"])
             .unwrap_or_default()
             .to_owned(),
-        timestamp: first_string(
+        timestamp: first_message_string(
             message,
             &["timestamp", "timestampNs", "createdAt", "created_at"],
         )
@@ -77,7 +79,7 @@ fn social_message_from_store_object(
 fn collect_store_message_objects<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
     match value {
         Value::Object(object) => {
-            if message_payload(value).is_some() {
+            if message_payload_value(value).is_some() {
                 out.push(value);
                 return;
             }
@@ -95,14 +97,45 @@ fn collect_store_message_objects<'a>(value: &'a Value, out: &mut Vec<&'a Value>)
 }
 
 fn message_content_topic(message: &Value) -> Option<&str> {
-    first_string(
+    first_message_string(
         message,
         &["contentTopic", "content_topic", "content-topic", "topic"],
     )
 }
 
-fn message_payload(message: &Value) -> Option<&str> {
-    first_string(message, &["payload", "data"])
+fn message_payload_bytes(message: &Value) -> Option<Vec<u8>> {
+    match message_payload_value(message)? {
+        Value::String(encoded) if encoded.len() <= MAX_SOCIAL_STORE_BASE64_BYTES => BASE64_STANDARD
+            .decode(encoded)
+            .ok()
+            .filter(|bytes| bytes.len() <= MAX_SOCIAL_STORE_PAYLOAD_BYTES),
+        Value::Array(bytes) if bytes.len() <= MAX_SOCIAL_STORE_PAYLOAD_BYTES => bytes
+            .iter()
+            .map(|value| value.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+            .collect(),
+        _ => None,
+    }
+}
+
+fn message_payload_value(message: &Value) -> Option<&Value> {
+    first_value(message, &["payload", "data"]).or_else(|| {
+        message
+            .get("message")
+            .and_then(|nested| first_value(nested, &["payload", "data"]))
+    })
+}
+
+fn first_message_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    first_string(value, keys).or_else(|| {
+        value
+            .get("message")
+            .and_then(|nested| first_string(nested, keys))
+    })
+}
+
+fn first_value<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    let object = value.as_object()?;
+    keys.iter().find_map(|key| object.get(*key))
 }
 
 fn first_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -145,5 +178,39 @@ fn non_empty(value: &str) -> Option<&str> {
         None
     } else {
         Some(trimmed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn delivery_store_byte_arrays_are_bounded_and_require_bytes() {
+        assert_eq!(
+            message_payload_bytes(&json!({ "payload": [0, 127, 255] })),
+            Some(vec![0, 127, 255])
+        );
+        for malformed in [
+            json!({ "payload": [-1] }),
+            json!({ "payload": [256] }),
+            json!({ "payload": [1.5] }),
+            json!({ "payload": ["1"] }),
+        ] {
+            assert!(
+                message_payload_bytes(&malformed).is_none(),
+                "malformed byte array was accepted: {malformed}"
+            );
+        }
+
+        let oversized_array = json!({ "payload": vec![0_u8; MAX_SOCIAL_STORE_PAYLOAD_BYTES + 1] });
+        assert!(message_payload_bytes(&oversized_array).is_none());
+
+        let oversized_base64 = json!({
+            "payload": "A".repeat(MAX_SOCIAL_STORE_BASE64_BYTES + 1)
+        });
+        assert!(message_payload_bytes(&oversized_base64).is_none());
     }
 }
