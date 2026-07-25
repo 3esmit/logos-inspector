@@ -3246,6 +3246,30 @@ TestCase {
         compare(inputs.local_devnet_enabled, false)
     }
 
+    function test_logoscore_home_and_modules_dir_round_trip_settings_state() {
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    logoscore_home: "/custom/logoscore/home",
+                    logoscore_modules_dir: "/custom/logoscore/modules",
+                    favorites: []
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        compare(model.logoscoreHome, "/custom/logoscore/home")
+        compare(model.logoscoreModulesDir, "/custom/logoscore/modules")
+
+        let payload = model.settingsStatePayload()
+        compare(payload.logoscore_home, "/custom/logoscore/home")
+        compare(payload.logoscore_modules_dir, "/custom/logoscore/modules")
+    }
+
     function test_legacy_settings_backup_cid_is_ignored_without_resave() {
         fakeHost.responses = {
             loadSettingsState: {

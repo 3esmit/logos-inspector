@@ -44,7 +44,9 @@ QtObject {
     property string nodeConfigValidationText: ""
     property var nodeConfigValidation: null
     property var observedNodes: ({})
-    readonly property string defaultRuntimeModulesDir: "/opt/logos-node/modules"
+    readonly property string defaultRuntimeModulesDir: root.appModel && root.appModel.logoscoreModulesDir
+        ? root.appModel.logoscoreModulesDir
+        : "/opt/logos-node/modules"
     property string pendingOperation: ""
     property string pendingAction: ""
     property string pendingNode: ""
