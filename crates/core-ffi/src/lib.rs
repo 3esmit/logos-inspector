@@ -4540,6 +4540,9 @@ mod tests {
         };
         let request = host.wait_for_request()?;
         host.complete(request.id, 1, "\"request-before-close\"", true)?;
+        // Polling may consume many bridge IDs starting at 2_500. The gated
+        // status observation below must use an ID outside that range so a
+        // multi-poll wait cannot leave 2_501 reserved under parallel load.
         let awaiting =
             wait_for_operation_status(handle.as_ptr(), &operation_id, "awaiting_external", 2_500)?;
         if awaiting.pointer("/value/status").and_then(Value::as_str) != Some("awaiting_external") {
@@ -4562,7 +4565,7 @@ mod tests {
         let status_args = serde_json::json!([operation_id]).to_string();
         if enqueue_test_call(
             handle.as_ptr(),
-            2_501,
+            26_000,
             "logos_inspector",
             "runtimeOperationStatus",
             &status_args,
