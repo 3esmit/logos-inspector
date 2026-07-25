@@ -1010,6 +1010,9 @@ mod tests {
             "localNodePackageCatalog"
         ));
         assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "localModuleCatalog"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
             "callModule"
         ));
         assert!(!InspectorCommandSurface::allows_host_synchronous_call(

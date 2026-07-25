@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import "../../../components"
 import "../../../components/common"
@@ -21,6 +22,10 @@ ColumnLayout {
     property string runtimeModulesDir: root.model.runtimeModulesDir()
     property string runtimeBinaryPath: ""
     property var selectedIndexerPackage: root.model.defaultPackageSelection()
+    property var selectedModuleRepository: root.model.defaultModuleRepositorySelection()
+    property string selectedModulePackageName: ""
+    property var selectedModuleRelease: ({ version: "", root_hash: "" })
+    property string localModulePackagePath: ""
     property bool confirmationAccepted: false
     property int confirmationGeneration: 0
     property var pageScroller: null
@@ -49,6 +54,10 @@ ColumnLayout {
             root.syncIndexerPackageVersionIndex()
         }
 
+        function onModuleCatalogChanged() {
+            root.syncModuleSelections()
+        }
+
         function onNodeConfigSnapshotChanged() {
             root.markConfigurationResponseReady()
         }
@@ -74,6 +83,20 @@ ColumnLayout {
 
         function onContentHeightChanged() {
             root.revealNodeConfiguration()
+        }
+    }
+
+    FileDialog {
+        id: localModulePackageDialog
+
+        title: qsTr("Select Logos module package")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Logos module packages (*.lgx)"), qsTr("All files (*)")]
+        onAccepted: {
+            const path = root.localPathFromFileUrl(selectedFile)
+            if (path.length > 0) {
+                root.localModulePackagePath = path
+            }
         }
     }
 
@@ -359,6 +382,224 @@ ColumnLayout {
                     Layout.preferredWidth: Math.max(96, implicitWidth)
                     onClicked: root.openRuntimeConfirm("stop_runtime")
                 }
+            }
+        }
+    }
+
+    Panel {
+        objectName: "modulePackageConfiguration"
+        visible: !root.model.basecampHost
+        theme: root.theme
+        title: qsTr("Core module packages")
+
+        ColumnLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            StatusMessage {
+                objectName: "modulePackageStatus"
+                theme: root.theme
+                tone: root.moduleCatalogTone()
+                title: root.moduleCatalogTitle()
+                message: root.moduleCatalogMessage()
+                Layout.fillWidth: true
+            }
+
+            GridLayout {
+                columns: root.width < 840 ? 1 : 3
+                columnSpacing: root.theme.gapSmall
+                rowSpacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                ColumnLayout {
+                    spacing: 6
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Repository")
+                        color: root.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: root.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    ModulePackageSelector {
+                        id: moduleRepositorySelector
+
+                        objectName: "moduleRepositorySelector"
+                        options: root.moduleRepositoryOptions()
+                        emptyText: qsTr("No repositories")
+                        accessibleLabel: qsTr("Module package repository")
+                        enabled: !root.model.moduleCatalogLoading && count > 0 && !root.model.busy
+                        Layout.fillWidth: true
+                        onOptionSelected: option => root.selectModuleRepository(option)
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 6
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Core module")
+                        color: root.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: root.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    ModulePackageSelector {
+                        id: modulePackageSelector
+
+                        objectName: "modulePackageSelector"
+                        options: root.modulePackageOptions()
+                        emptyText: qsTr("No core modules")
+                        accessibleLabel: qsTr("Core module package")
+                        enabled: !root.model.moduleCatalogLoading && count > 0 && !root.model.busy
+                        Layout.fillWidth: true
+                        onOptionSelected: option => root.selectModulePackage(option)
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 6
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Exact release")
+                        color: root.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: root.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    ModulePackageSelector {
+                        id: moduleReleaseSelector
+
+                        objectName: "modulePackageReleaseSelector"
+                        options: root.moduleReleaseOptions()
+                        emptyText: qsTr("No releases")
+                        accessibleLabel: qsTr("Core module exact release")
+                        enabled: !root.model.moduleCatalogLoading && count > 0 && !root.model.busy
+                        monospace: true
+                        Layout.fillWidth: true
+                        onOptionSelected: option => root.selectModuleRelease(option)
+                    }
+                }
+            }
+
+            RowLayout {
+                spacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                ActionButton {
+                    objectName: "modulePackageReloadButton"
+                    theme: root.theme
+                    text: qsTr("Reload catalog")
+                    accessibleName: qsTr("Reload module package catalog")
+                    enabled: !root.model.moduleCatalogLoading && !root.model.busy
+                    Layout.preferredWidth: 144
+                    onClicked: root.reloadModuleCatalog()
+                }
+
+                ActionButton {
+                    objectName: "modulePackageInstallButton"
+                    theme: root.theme
+                    text: qsTr("Install release")
+                    accessibleName: qsTr("Install selected core module release")
+                    primary: true
+                    enabled: root.moduleRepositoryInstallReady()
+                    Layout.preferredWidth: 132
+                    onClicked: root.openModuleRepositoryConfirm()
+                }
+
+                Text {
+                    text: root.selectedModuleReleaseDetail()
+                    color: root.theme.textDim
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                    font.pixelSize: root.theme.dataText
+                    Layout.fillWidth: true
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
+                }
+            }
+
+            Rectangle {
+                color: root.theme.outlineMuted
+                Layout.preferredHeight: 1
+                Layout.fillWidth: true
+            }
+
+            GridLayout {
+                columns: root.width < 840 ? 1 : 3
+                columnSpacing: root.theme.gapSmall
+                rowSpacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                FieldRow {
+                    objectName: "modulePackageFilePath"
+                    theme: root.theme
+                    label: qsTr("Local .lgx package")
+                    sourceText: root.localModulePackagePath
+                    syncSourceText: true
+                    placeholderText: qsTr("/path/to/module.lgx")
+                    Layout.columnSpan: root.width < 840 ? 1 : 2
+                    Layout.fillWidth: true
+                    onTextEdited: text => root.localModulePackagePath = text
+                }
+
+                RowLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ActionButton {
+                        objectName: "modulePackageBrowseButton"
+                        theme: root.theme
+                        text: qsTr("Browse")
+                        enabled: !root.model.busy
+                        Layout.preferredWidth: 96
+                        onClicked: localModulePackageDialog.open()
+                    }
+
+                    ActionButton {
+                        objectName: "modulePackageInstallFileButton"
+                        theme: root.theme
+                        text: qsTr("Install local")
+                        primary: true
+                        enabled: root.moduleFileInstallReady()
+                        Layout.preferredWidth: 124
+                        onClicked: root.openModuleFileConfirm()
+                    }
+                }
+            }
+
+            Text {
+                text: root.moduleTargetDetail()
+                color: root.theme.textDim
+                textFormat: Text.PlainText
+                wrapMode: Text.WrapAnywhere
+                font.pixelSize: root.theme.dataText
+                Layout.fillWidth: true
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+            }
+
+            DataTableFrame {
+                objectName: "installedModulePackages"
+                theme: root.theme
+                headerCells: [
+                    { text: qsTr("Installed core module"), width: 190 },
+                    { text: qsTr("Version"), width: 120 },
+                    { text: qsTr("Category"), width: 130 },
+                    { text: qsTr("Root hash"), width: 180 },
+                    { text: qsTr("Location"), width: 260, fill: true }
+                ]
+                rows: root.installedModuleRows()
+                Layout.fillWidth: true
             }
         }
     }
@@ -720,8 +961,8 @@ ColumnLayout {
         theme: root.theme
         title: root.confirmTitle()
         message: root.confirmMessage()
-        confirmText: root.model.actionLabel(root.model.pendingAction)
-        confirmEnabled: !root.model.busy && root.model.pendingAction.length > 0
+        confirmText: root.confirmActionText()
+        confirmEnabled: !root.model.busy && root.model.pendingOperation.length > 0
         onAccepted: {
             root.confirmationAccepted = true
             root.acceptPendingAction()
@@ -860,6 +1101,7 @@ ColumnLayout {
         const release = root.selectedPackageRelease()
         return !root.model.packageCatalogLoading
             && root.packageInstallRuntimeReady()
+            && root.indexerPackageTargetProblem().length === 0
             && release !== null
             && String(release.version || "").length > 0
             && String(release.root_hash || "").length > 0
@@ -871,9 +1113,58 @@ ColumnLayout {
         return state !== "running" && state !== "starting" && state !== "stopping"
     }
 
+    function configuredRuntimeModulesDir() {
+        const runtime = root.model.runtimeInfo()
+        return String(runtime && runtime.modules_dir || "").trim()
+    }
+
+    function runtimeModulesTargetProblem() {
+        const target = root.runtimeModulesDir.trim()
+        if (!target.length) {
+            return qsTr("Modules directory is required.")
+        }
+        const configured = root.configuredRuntimeModulesDir()
+        if (configured.length && target !== configured) {
+            return qsTr("The configured LogosCore Runtime uses %1. Reconfigure the runtime before installing packages into %2.")
+                .arg(configured)
+                .arg(target)
+        }
+        return ""
+    }
+
+    function packageCatalogTargetProblem(catalogModulesDir, catalogLabel) {
+        const runtimeProblem = root.runtimeModulesTargetProblem()
+        if (runtimeProblem.length) {
+            return runtimeProblem
+        }
+        const catalogTarget = String(catalogModulesDir || "").trim()
+        const target = root.runtimeModulesDir.trim()
+        if (catalogTarget.length && catalogTarget !== target) {
+            return qsTr("Reload %1 for %2 before installing.")
+                .arg(catalogLabel)
+                .arg(target)
+        }
+        return ""
+    }
+
+    function indexerPackageTargetProblem() {
+        return root.packageCatalogTargetProblem(
+            root.model.packageCatalogModulesDir(),
+            qsTr("the Indexer package catalog"))
+    }
+
+    function modulePackageTargetProblem() {
+        return root.packageCatalogTargetProblem(
+            root.model.moduleCatalogModulesDir(),
+            qsTr("the module package catalog"))
+    }
+
     function packageStatusTone() {
         if (root.model.packageCatalogError.length > 0) {
             return "error"
+        }
+        if (root.indexerPackageTargetProblem().length > 0) {
+            return "warning"
         }
         if (root.model.packageCatalogLoading) {
             return "info"
@@ -892,6 +1183,9 @@ ColumnLayout {
         if (root.model.packageCatalogError.length > 0) {
             return qsTr("Indexer package catalog unavailable")
         }
+        if (root.indexerPackageTargetProblem().length > 0) {
+            return qsTr("Indexer package target needs attention")
+        }
         const installed = root.model.installedPackage()
         if (installed) {
             return qsTr("%1 installed").arg(root.model.packageName())
@@ -905,6 +1199,10 @@ ColumnLayout {
         }
         if (root.model.packageCatalogError.length > 0) {
             return root.model.packageCatalogError
+        }
+        const targetProblem = root.indexerPackageTargetProblem()
+        if (targetProblem.length > 0) {
+            return targetProblem
         }
         const installed = root.model.installedPackage()
         if (installed) {
@@ -932,6 +1230,341 @@ ColumnLayout {
             String(release.root_hash || ""),
             root.runtimeModulesDir.trim())
         root.showConfirmation()
+    }
+
+    function moduleRepositoryOptions() {
+        return root.model.moduleRepositories().map(function (repositoryValue) {
+            const repository = repositoryValue || {}
+            const name = String(repository.name || "")
+            const url = String(repository.url || "")
+            const displayName = String(repository.display_name || name)
+            return {
+                name: name,
+                url: url,
+                label: displayName + " · " + name
+            }
+        }).filter(function (option) {
+            return option.name.length > 0 && option.url.length > 0
+        })
+    }
+
+    function modulePackageOptions() {
+        const repository = root.selectedModuleRepository || {}
+        return root.model.modulePackages(repository.name, repository.url).map(function (packageValue) {
+            const package = packageValue || {}
+            const name = String(package.name || "")
+            const category = String(package.category || qsTr("uncategorized"))
+            return {
+                name: name,
+                label: name + " · " + category
+            }
+        }).filter(function (option) {
+            return option.name.length > 0
+        })
+    }
+
+    function moduleReleaseOptions() {
+        const repository = root.selectedModuleRepository || {}
+        return root.model.moduleReleases(
+            repository.name,
+            repository.url,
+            root.selectedModulePackageName).map(function (release) {
+            const value = release || {}
+            return {
+                version: String(value.version || ""),
+                root_hash: String(value.root_hash || ""),
+                label: root.packageReleaseLabel(value)
+            }
+        }).filter(function (option) {
+            return option.version.length > 0 && option.root_hash.length > 0
+        })
+    }
+
+    function moduleRepositoryIndex(selection) {
+        const selected = selection || {}
+        const name = String(selected.name || "")
+        const url = String(selected.url || "")
+        const options = root.moduleRepositoryOptions()
+        for (let index = 0; index < options.length; ++index) {
+            if (options[index].name === name && options[index].url === url) {
+                return index
+            }
+        }
+        return -1
+    }
+
+    function modulePackageIndex(name) {
+        const selectedName = String(name || "")
+        const options = root.modulePackageOptions()
+        for (let index = 0; index < options.length; ++index) {
+            if (options[index].name === selectedName) {
+                return index
+            }
+        }
+        return -1
+    }
+
+    function moduleReleaseIndex(selection) {
+        const selected = selection || {}
+        const version = String(selected.version || "")
+        const rootHash = String(selected.root_hash || "")
+        const options = root.moduleReleaseOptions()
+        for (let index = 0; index < options.length; ++index) {
+            if (options[index].version === version && options[index].root_hash === rootHash) {
+                return index
+            }
+        }
+        return -1
+    }
+
+    function syncModuleSelections() {
+        const repositoryOptions = root.moduleRepositoryOptions()
+        let repositoryIndex = root.moduleRepositoryIndex(root.selectedModuleRepository)
+        if (repositoryIndex < 0 && repositoryOptions.length > 0) {
+            root.selectedModuleRepository = {
+                name: repositoryOptions[0].name,
+                url: repositoryOptions[0].url
+            }
+            repositoryIndex = 0
+        } else if (repositoryIndex < 0) {
+            root.selectedModuleRepository = { name: "", url: "" }
+        }
+        if (moduleRepositorySelector.currentIndex !== repositoryIndex) {
+            moduleRepositorySelector.currentIndex = repositoryIndex
+        }
+
+        const packageOptions = root.modulePackageOptions()
+        let packageIndex = root.modulePackageIndex(root.selectedModulePackageName)
+        if (packageIndex < 0 && packageOptions.length > 0) {
+            root.selectedModulePackageName = packageOptions[0].name
+            packageIndex = 0
+        } else if (packageIndex < 0) {
+            root.selectedModulePackageName = ""
+        }
+        if (modulePackageSelector.currentIndex !== packageIndex) {
+            modulePackageSelector.currentIndex = packageIndex
+        }
+
+        const releaseOptions = root.moduleReleaseOptions()
+        let releaseIndex = root.moduleReleaseIndex(root.selectedModuleRelease)
+        if (releaseIndex < 0 && releaseOptions.length > 0) {
+            root.selectedModuleRelease = {
+                version: releaseOptions[0].version,
+                root_hash: releaseOptions[0].root_hash
+            }
+            releaseIndex = 0
+        } else if (releaseIndex < 0) {
+            root.selectedModuleRelease = ({ version: "", root_hash: "" })
+        }
+        if (moduleReleaseSelector.currentIndex !== releaseIndex) {
+            moduleReleaseSelector.currentIndex = releaseIndex
+        }
+    }
+
+    function selectModuleRepository(option) {
+        const value = option || {}
+        const name = String(value.name || "")
+        const url = String(value.url || "")
+        if (!name.length || !url.length) {
+            return
+        }
+        root.selectedModuleRepository = { name: name, url: url }
+        root.selectedModulePackageName = ""
+        root.selectedModuleRelease = ({ version: "", root_hash: "" })
+        root.syncModuleSelections()
+    }
+
+    function selectModulePackage(option) {
+        const name = String(option && option.name || "")
+        if (!name.length) {
+            return
+        }
+        root.selectedModulePackageName = name
+        root.selectedModuleRelease = ({ version: "", root_hash: "" })
+        root.syncModuleSelections()
+    }
+
+    function selectModuleRelease(option) {
+        const value = option || {}
+        const repository = root.selectedModuleRepository || {}
+        const release = root.model.moduleRelease(
+            repository.name,
+            repository.url,
+            root.selectedModulePackageName,
+            value.version,
+            value.root_hash)
+        if (!release) {
+            return
+        }
+        root.selectedModuleRelease = {
+            version: String(release.version || ""),
+            root_hash: String(release.root_hash || "")
+        }
+        root.syncModuleSelections()
+    }
+
+    function selectedModuleReleaseValue() {
+        const repository = root.selectedModuleRepository || {}
+        const selected = root.selectedModuleRelease || {}
+        return root.model.moduleRelease(
+            repository.name,
+            repository.url,
+            root.selectedModulePackageName,
+            selected.version,
+            selected.root_hash)
+    }
+
+    function selectedModuleReleaseDetail() {
+        const release = root.selectedModuleReleaseValue()
+        if (!release) {
+            return root.model.moduleCatalogLoading
+                ? qsTr("Loading exact releases…") : qsTr("No exact release selected.")
+        }
+        return qsTr("Released %1. Root hash %2.")
+            .arg(String(release.released_at || qsTr("date unavailable")))
+            .arg(String(release.root_hash || qsTr("root hash unavailable")))
+    }
+
+    function moduleCatalogTone() {
+        if (root.model.moduleCatalogError.length > 0) {
+            return "error"
+        }
+        if (root.modulePackageTargetProblem().length > 0) {
+            return "warning"
+        }
+        if (root.model.moduleCatalogLoading) {
+            return "info"
+        }
+        const repository = root.selectedModuleRepository || {}
+        return root.model.modulePackages(
+            repository.name,
+            repository.url).length > 0 ? "info" : "warning"
+    }
+
+    function moduleCatalogTitle() {
+        if (root.model.moduleCatalogLoading) {
+            return qsTr("Loading configured module repositories")
+        }
+        if (root.model.moduleCatalogError.length > 0) {
+            return qsTr("Module package catalog unavailable")
+        }
+        if (root.modulePackageTargetProblem().length > 0) {
+            return qsTr("Module package target needs attention")
+        }
+        return qsTr("Configured core module packages")
+    }
+
+    function moduleCatalogMessage() {
+        if (root.model.moduleCatalogLoading) {
+            return qsTr("Querying configured repositories and installed core modules for %1.")
+                .arg(root.runtimeModulesDir)
+        }
+        if (root.model.moduleCatalogError.length > 0) {
+            return root.model.moduleCatalogError
+        }
+        const targetProblem = root.modulePackageTargetProblem()
+        if (targetProblem.length > 0) {
+            return targetProblem
+        }
+        const message = qsTr("Select a configured repository, core module, and exact release. Channel Indexer uses its dedicated package panel below. UI plugins belong to their UI host and are not installed into LogosCore's core-module directory.")
+        const warnings = root.model.moduleCatalogWarnings()
+        return warnings.length ? message + " " + warnings.join(" ") : message
+    }
+
+    function moduleRepositoryInstallReady() {
+        const repository = root.selectedModuleRepository || {}
+        const release = root.selectedModuleReleaseValue()
+        return !root.model.moduleCatalogLoading
+            && root.packageInstallRuntimeReady()
+            && !root.model.busy
+            && root.modulePackageTargetProblem().length === 0
+            && String(repository.name || "").length > 0
+            && String(repository.url || "").length > 0
+            && root.selectedModulePackageName.length > 0
+            && release !== null
+            && String(release.version || "").length > 0
+            && String(release.root_hash || "").length > 0
+    }
+
+    function moduleFileInstallReady() {
+        return root.packageInstallRuntimeReady()
+            && !root.model.busy
+            && root.localModulePackagePath.trim().length > 0
+            && root.runtimeModulesTargetProblem().length === 0
+    }
+
+    function moduleTargetDetail() {
+        return qsTr("Target core-module directory: %1. Stop LogosCore Runtime before installation, then start it to load newly installed core modules.")
+            .arg(root.runtimeModulesDir)
+    }
+
+    function reloadModuleCatalog() {
+        root.model.refreshModuleCatalog(root.runtimeModulesDir.trim())
+    }
+
+    function openModuleRepositoryConfirm() {
+        const repository = root.selectedModuleRepository || {}
+        const release = root.selectedModuleReleaseValue()
+        if (!release) {
+            return
+        }
+        root.model.beginModuleRepositoryInstall(
+            String(repository.name || ""),
+            String(repository.url || ""),
+            root.selectedModulePackageName,
+            String(release.version || ""),
+            String(release.root_hash || ""),
+            root.runtimeModulesDir.trim())
+        root.showConfirmation()
+    }
+
+    function openModuleFileConfirm() {
+        const path = root.localModulePackagePath.trim()
+        if (!path.length) {
+            return
+        }
+        root.model.beginModuleFileInstall(path, root.runtimeModulesDir.trim())
+        root.showConfirmation()
+    }
+
+    function installedModuleRows() {
+        const modules = root.model.installedModules()
+        if (!modules.length) {
+            return [{
+                cells: [{ text: qsTr("No installed core modules"), width: 190, monospace: false },
+                    { text: "-", width: 120 }, { text: "-", width: 130 },
+                    { text: "-", width: 180 }, { text: "-", width: 260, fill: true }]
+            }]
+        }
+        return modules.map(function (moduleValue) {
+            const module = moduleValue || {}
+            const rootHash = String(module.root_hash || "")
+            const location = String(module.install_dir || "")
+            return {
+                cells: [
+                    { text: String(module.name || "-"), width: 190, monospace: false },
+                    { text: String(module.version || "-"), width: 120 },
+                    { text: String(module.category || "-"), width: 130, monospace: false },
+                    { text: root.shortPackageRootHash(rootHash), width: 180, copyText: rootHash },
+                    { text: root.shortText(location, 46), width: 260, fill: true, copyText: location }
+                ]
+            }
+        })
+    }
+
+    function localPathFromFileUrl(fileUrl) {
+        const text = String(fileUrl || "")
+        if (!text.length) {
+            return ""
+        }
+        if (text.indexOf("file://") === 0) {
+            let path = decodeURIComponent(text.slice(7))
+            if (/^\/[A-Za-z]:\//.test(path)) {
+                path = path.slice(1)
+            }
+            return path
+        }
+        return text
     }
 
     function nodeTableRows() {
@@ -1200,6 +1833,14 @@ ColumnLayout {
         return root.model.actionDraftMessage();
     }
 
+    function confirmActionText() {
+        if (root.model.pendingOperation === "module_repository"
+                || root.model.pendingOperation === "module_file") {
+            return qsTr("Install");
+        }
+        return root.model.actionLabel(root.model.pendingAction);
+    }
+
     function stateLabel(value) {
         const text = String(value || "unknown").replace(/_/g, " ");
         return text.length ? text[0].toUpperCase() + text.slice(1) : qsTr("Unknown");
@@ -1242,6 +1883,111 @@ ColumnLayout {
             minimum: 8,
             tailLength: 6
         });
+    }
+
+    component ModulePackageSelector: ComboBox {
+        id: selector
+
+        property var options: []
+        property string emptyText: qsTr("No options")
+        property string accessibleLabel: ""
+        property bool monospace: false
+
+        signal optionSelected(var option)
+
+        model: selector.options
+        textRole: "label"
+        currentIndex: -1
+        displayText: currentIndex >= 0 && currentIndex < count
+            ? String(selector.options[currentIndex].label || "") : emptyText
+        hoverEnabled: true
+        Layout.preferredHeight: root.theme.controlHeight
+        onActivated: index => {
+            if (index >= 0 && index < selector.options.length) {
+                selector.optionSelected(selector.options[index])
+            }
+        }
+
+        delegate: ItemDelegate {
+            id: optionDelegate
+
+            required property int index
+            required property var modelData
+
+            width: selector.width
+            text: String(modelData && modelData.label || "")
+            hoverEnabled: true
+            highlighted: selector.highlightedIndex === index
+
+            contentItem: Text {
+                text: optionDelegate.text
+                color: optionDelegate.highlighted ? root.theme.selectedText : root.theme.text
+                textFormat: Text.PlainText
+                verticalAlignment: Text.AlignVCenter
+                font.family: selector.monospace ? "monospace" : ""
+                font.pixelSize: root.theme.secondaryText
+            }
+
+            background: Rectangle {
+                color: optionDelegate.highlighted
+                    ? root.theme.accent
+                    : (optionDelegate.hovered ? root.theme.hover : root.theme.surfaceRaised)
+            }
+        }
+
+        contentItem: Text {
+            text: selector.displayText
+            color: selector.enabled ? root.theme.text : root.theme.textDim
+            textFormat: Text.PlainText
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: 12
+            rightPadding: 36
+            font.family: selector.monospace ? "monospace" : ""
+            font.pixelSize: root.theme.primaryText
+            font.weight: Font.Medium
+        }
+
+        indicator: Text {
+            x: selector.width - width - 14
+            y: (selector.height - height) / 2
+            text: "\u25be"
+            color: selector.enabled ? root.theme.textMuted : root.theme.textDim
+            textFormat: Text.PlainText
+            font.pixelSize: root.theme.secondaryText
+        }
+
+        background: Rectangle {
+            radius: root.theme.radius
+            color: selector.hovered || selector.activeFocus
+                ? root.theme.surfaceRaised : root.theme.field
+            border.width: selector.activeFocus ? 2 : 1
+            border.color: selector.activeFocus
+                ? root.theme.accent : root.theme.outlineMuted
+        }
+
+        popup: Popup {
+            y: selector.height + root.theme.gapTiny
+            width: selector.width
+            implicitHeight: Math.min(contentItem.implicitHeight + 2, 260)
+            padding: 1
+
+            contentItem: ListView {
+                clip: true
+                implicitHeight: contentHeight
+                model: selector.popup.visible ? selector.delegateModel : null
+                currentIndex: selector.highlightedIndex
+            }
+
+            background: Rectangle {
+                radius: root.theme.radius
+                color: root.theme.surfaceRaised
+                border.width: 1
+                border.color: root.theme.outline
+            }
+        }
+
+        Accessible.role: Accessible.ComboBox
+        Accessible.name: selector.accessibleLabel
     }
 
     component OperationRow: Item {

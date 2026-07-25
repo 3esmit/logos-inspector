@@ -9,7 +9,7 @@ use crate::{
     local_nodes::{
         ChannelIndexerActionRequest, INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit,
         basecamp_local_nodes_action, channel_indexer_action_controlled,
-        local_nodes_action_controlled,
+        local_module_install_controlled, local_nodes_action_controlled,
     },
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::{args::Args, command_runner::CommandControl},
@@ -25,6 +25,7 @@ use super::supervisor::{OperationControl, TerminationEvidence};
 pub(super) enum LocalNodesCommand {
     Action,
     ChannelIndexerAction,
+    ModulePackageInstall,
 }
 
 impl LocalNodesCommand {
@@ -32,6 +33,7 @@ impl LocalNodesCommand {
         match self {
             Self::Action => OperationMethod::LocalNodesAction,
             Self::ChannelIndexerAction => OperationMethod::ChannelIndexerAction,
+            Self::ModulePackageInstall => OperationMethod::LocalModulePackageInstall,
         }
     }
 }
@@ -49,6 +51,12 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "Channel Indexer action",
         OperationClass::Lifecycle,
     ),
+    OperationDefinition::new(
+        OperationCommand::LocalNodes(LocalNodesCommand::ModulePackageInstall),
+        "localModulePackageInstall",
+        "Install module package",
+        OperationClass::Mutating,
+    ),
 ];
 
 pub(super) async fn execute(
@@ -64,7 +72,47 @@ pub(super) async fn execute(
         LocalNodesCommand::ChannelIndexerAction => {
             execute_channel_indexer_action(request, control).await
         }
+        LocalNodesCommand::ModulePackageInstall => {
+            execute_module_package_install(request, control, module_transport).await
+        }
     }
+}
+
+async fn execute_module_package_install(
+    request: &RuntimeOperationRequest,
+    control: &OperationControl,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
+    if module_transport.kind() == ModuleTransportKind::Module {
+        anyhow::bail!("local module package management is unavailable inside Basecamp");
+    }
+    let args = Args::new(request.args.clone())?;
+    let install_request = serde_json::from_value::<crate::local_nodes::LocalModuleInstallRequest>(
+        args.value(0)
+            .cloned()
+            .context("local module package install request is required")?,
+    )
+    .context("failed to parse local module package install request")?;
+    let confirmation = args.optional_string(1).map(ToOwned::to_owned);
+    let command_control = command_control(control);
+    let mut package_commit = package_install_commit(control, &command_control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("local module package install", move || {
+        let _worker_guard = worker_guard;
+        to_value(local_module_install_controlled(
+            install_request,
+            confirmation.as_deref(),
+            command_control,
+            &mut package_commit,
+        )?)
+    })
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::LocalOnly,
+    )
 }
 
 async fn execute_channel_indexer_action(
@@ -190,7 +238,7 @@ mod tests {
     use crate::inspector::commands::operations::supervisor::test_operation_control;
 
     #[test]
-    fn indexer_package_commit_ignores_outer_cancellation_and_holds_lease() -> Result<()> {
+    fn module_package_commit_ignores_outer_cancellation_and_holds_lease() -> Result<()> {
         let control = test_operation_control(std::time::Duration::from_secs(30));
         let outer_command = control.command_control();
         let mut package_commit = package_install_commit(&control, &outer_command);

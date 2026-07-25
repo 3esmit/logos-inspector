@@ -38,6 +38,10 @@ TestCase {
         state.packageCatalogError = ""
         state.packageCatalogLoading = false
         state.packageCatalogGeneration = 0
+        state.moduleCatalog = null
+        state.moduleCatalogError = ""
+        state.moduleCatalogLoading = false
+        state.moduleCatalogGeneration = 0
         state.nodeConfigSnapshot = null
         state.nodeConfigError = ""
         state.nodeConfigNode = ""
@@ -72,6 +76,53 @@ TestCase {
                 }]
             },
             installed: installed === undefined ? null : installed
+        }
+    }
+
+    function sampleModuleCatalog(installed) {
+        return {
+            modules_dir: "/tmp/modules",
+            repositories: [{
+                name: "logos-modules-official",
+                display_name: "Logos Official",
+                description: "Official modules",
+                url: "https://example.test/logos-repo.json",
+                enabled: true,
+                is_default: true,
+                resolve_error: ""
+            }],
+            packages: [{
+                name: "openmetrics",
+                description: "Metrics module",
+                package_type: "core",
+                category: "metrics",
+                repository_name: "logos-modules-official",
+                repository_display_name: "Logos Official",
+                repository_url: "https://example.test/logos-repo.json",
+                versions: [{
+                    version: "1.0.0",
+                    released_at: "2026-07-17T12:00:00Z",
+                    root_hash: "root-hash-1.0.0-a"
+                }, {
+                    version: "1.0.0",
+                    released_at: "2026-07-16T12:00:00Z",
+                    root_hash: "root-hash-1.0.0-b"
+                }]
+            }, {
+                name: "wallet-ui",
+                description: "UI plugin",
+                package_type: "ui_qml",
+                category: "wallet",
+                repository_name: "logos-modules-official",
+                repository_display_name: "Logos Official",
+                repository_url: "https://example.test/logos-repo.json",
+                versions: [{
+                    version: "1.0.0",
+                    released_at: "2026-07-17T12:00:00Z",
+                    root_hash: "root-hash-ui"
+                }]
+            }],
+            installed: installed === undefined ? [] : installed
         }
     }
 
@@ -1379,5 +1430,136 @@ TestCase {
         compare(gateway.calls[2].args[0], "/tmp/modules")
         compare(state.installedPackage().version, "1.0.0")
         compare(state.installedPackage().root_hash, "root-hash-1.0.0-repack")
+    }
+
+    function test_module_catalog_filters_core_packages_and_rejects_stale_responses() {
+        gateway.deferRequests = true
+        const stale = sampleModuleCatalog([])
+        stale.modules_dir = "/tmp/stale-modules"
+        const current = sampleModuleCatalog([{
+            name: "openmetrics",
+            version: "1.0.0",
+            category: "metrics",
+            root_hash: "root-hash-1.0.0-a",
+            install_dir: "/tmp/current-modules/openmetrics"
+        }])
+        current.modules_dir = "/tmp/current-modules"
+        current.warnings = ["Ignored invalid installed core module `stale_module`: main file is unavailable"]
+
+        state.refreshModuleCatalog("/tmp/stale-modules")
+        state.refreshModuleCatalog("/tmp/current-modules")
+
+        compare(gateway.calls.length, 2)
+        compare(gateway.calls[0].method, "localModuleCatalog")
+        compare(gateway.calls[0].args[0], "/tmp/stale-modules")
+        compare(gateway.calls[1].args[0], "/tmp/current-modules")
+        verify(gateway.completeRequestAt(0, {
+            ok: true,
+            value: stale,
+            text: "OK",
+            error: ""
+        }))
+        compare(state.moduleCatalog, null)
+        verify(state.moduleCatalogLoading)
+        verify(gateway.completeRequestAt(0, {
+            ok: true,
+            value: current,
+            text: "OK",
+            error: ""
+        }))
+
+        compare(state.moduleCatalogModulesDir(), "/tmp/current-modules")
+        compare(state.moduleRepositories().length, 1)
+        compare(state.defaultModuleRepositorySelection().name, "logos-modules-official")
+        compare(state.modulePackages(
+                    "logos-modules-official",
+                    "https://example.test/logos-repo.json").length, 1)
+        compare(state.moduleReleases(
+                    "logos-modules-official",
+                    "https://example.test/logos-repo.json",
+                    "openmetrics").length, 2)
+        compare(state.installedModules().length, 1)
+        compare(state.moduleCatalogWarnings().length, 1)
+        verify(state.moduleCatalogWarnings()[0].indexOf("stale_module") >= 0)
+        verify(!state.moduleCatalogLoading)
+    }
+
+    function test_module_catalog_failure_clears_stale_state_and_basecamp_does_not_request_it() {
+        state.moduleCatalog = sampleModuleCatalog([])
+        gateway.responses = ({
+            localModuleCatalog: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "catalog unavailable"
+            }
+        })
+
+        state.refreshModuleCatalog("/tmp/modules")
+
+        compare(state.moduleCatalog, null)
+        compare(state.moduleCatalogError, "catalog unavailable")
+        verify(!state.moduleCatalogLoading)
+
+        gateway.reset()
+        gateway.basecampModules = true
+        state.refreshModuleCatalog("/tmp/modules")
+        compare(gateway.calls.length, 0)
+    }
+
+    function test_module_install_drafts_send_exact_repository_or_file_sources() {
+        state.beginModuleRepositoryInstall(
+            "logos-modules-official",
+            "https://example.test/logos-repo.json",
+            "openmetrics",
+            "1.0.0",
+            "root-hash-1.0.0-b",
+            "/tmp/modules")
+
+        compare(state.actionDraftTitle(), "Install openmetrics 1.0.0")
+        verify(state.actionDraftMessage().indexOf("root-hash-1.0.0-b") >= 0)
+        gateway.responses = ({
+            localModulePackageInstall: {
+                ok: true,
+                value: {
+                    modules_dir: "/tmp/modules",
+                    installed: [{
+                        name: "openmetrics",
+                        version: "1.0.0",
+                        root_hash: "root-hash-1.0.0-b"
+                    }],
+                    warnings: ["Package manager accepted an unsigned package under its current signature policy."]
+                },
+                text: "OK",
+                error: ""
+            },
+            localModuleCatalog: {
+                ok: true,
+                value: sampleModuleCatalog([]),
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runPendingAction()
+
+        compare(gateway.calls[0].method, "localModulePackageInstall")
+        compare(gateway.calls[0].args[0].modules_dir, "/tmp/modules")
+        compare(gateway.calls[0].args[0].source.kind, "repository")
+        compare(gateway.calls[0].args[0].source.repository_name, "logos-modules-official")
+        compare(gateway.calls[0].args[0].source.package_name, "openmetrics")
+        compare(gateway.calls[0].args[0].source.version, "1.0.0")
+        compare(gateway.calls[0].args[0].source.root_hash, "root-hash-1.0.0-b")
+        compare(gateway.calls[1].method, "localModuleCatalog")
+        compare(state.operations[state.operations.length - 1].detail,
+                "Installed openmetrics 1.0.0. Package manager accepted an unsigned package under its current signature policy.")
+
+        state.beginModuleFileInstall("/tmp/openmetrics-1.0.0.lgx", "/tmp/modules")
+        compare(state.actionDraftTitle(), "Install local module package")
+        compare(state.pendingOperation, "module_file")
+        state.clearActionDraft()
+        compare(state.pendingOperation, "")
+        compare(state.pendingModuleFilePath, "")
+        compare(state.pendingModuleRepositoryName, "")
     }
 }

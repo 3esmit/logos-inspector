@@ -57,6 +57,10 @@ Item {
             state.packageCatalogError = ""
             state.packageCatalogLoading = false
             state.packageCatalogGeneration = 0
+            state.moduleCatalog = null
+            state.moduleCatalogError = ""
+            state.moduleCatalogLoading = false
+            state.moduleCatalogGeneration = 0
             state.clearActionDraft()
             state.clearNodeConfig()
         }
@@ -99,13 +103,16 @@ Item {
             const page = createPage(basecampReport(), null)
             const devnet = findChild(page, "localDevnetConfiguration")
             const runtime = findChild(page, "logoscoreRuntimeConfiguration")
+            const modulePanel = findChild(page, "modulePackageConfiguration")
             const packagePanel = findChild(page, "indexerPackageConfiguration")
             verify(!!devnet, "Local Devnet panel exists")
             verify(!!runtime, "LogosCore Runtime panel exists")
+            verify(!!modulePanel, "Core module panel exists")
             verify(!!packagePanel, "Indexer package panel exists")
 
             compare(devnet.visible, false)
             compare(runtime.visible, false)
+            compare(modulePanel.visible, false)
             compare(packagePanel.visible, false)
             compare(page.actionRows().length, 3)
             compare(page.actionRows()[0].key, "bedrock")
@@ -128,6 +135,161 @@ Item {
             compare(gateway.calls.filter(function (call) {
                 return call.method === "localNodePackageCatalog"
             }).length, 0)
+            compare(gateway.calls.filter(function (call) {
+                return call.method === "localModuleCatalog"
+            }).length, 0)
+        }
+
+        function test_module_package_panel_selects_exact_release_and_confirms_source() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null), sampleModuleCatalog([]))
+            const repositorySelector = findChild(page, "moduleRepositorySelector")
+            const packageSelector = findChild(page, "modulePackageSelector")
+            const releaseSelector = findChild(page, "modulePackageReleaseSelector")
+            const installButton = findChild(page, "modulePackageInstallButton")
+            const popup = findChild(page, "localNodesConfirmPopup")
+            verify(!!repositorySelector, "Repository selector exists")
+            verify(!!packageSelector, "Package selector exists")
+            verify(!!releaseSelector, "Release selector exists")
+            verify(!!installButton, "Install release button exists")
+            verify(!!popup, "Confirmation exists")
+
+            compare(repositorySelector.count, 1)
+            compare(packageSelector.count, 1)
+            compare(releaseSelector.count, 2)
+            compare(page.selectedModuleRepository.name, "logos-modules-official")
+            compare(page.selectedModulePackageName, "openmetrics")
+            compare(page.selectedModuleRelease.root_hash, "root-hash-1.0.0-a")
+
+            page.selectModuleRelease(releaseSelector.model[1])
+            compare(page.selectedModuleRelease.version, "1.0.0")
+            compare(page.selectedModuleRelease.root_hash, "root-hash-1.0.0-b")
+            verify(installButton.enabled)
+
+            page.openModuleRepositoryConfirm()
+
+            compare(state.pendingOperation, "module_repository")
+            compare(state.pendingModuleRepositoryName, "logos-modules-official")
+            compare(state.pendingModulePackageName, "openmetrics")
+            compare(state.pendingPackageVersion, "1.0.0")
+            compare(state.pendingPackageRootHash, "root-hash-1.0.0-b")
+            tryCompare(popup, "opened", true)
+            compare(popup.confirmText, "Install")
+            verify(popup.message.indexOf("openmetrics") >= 0)
+            verify(popup.message.indexOf("root-hash-1.0.0-b") >= 0)
+            popup.close()
+
+            page.runtimeModulesDir = ""
+            verify(!installButton.enabled)
+        }
+
+        function test_module_package_popup_mouse_selects_nondefault_core_module() {
+            const catalog = sampleModuleCatalog([])
+            catalog.packages.unshift({
+                name: "blockchain_module",
+                description: "Blockchain module",
+                package_type: "core",
+                category: "blockchain",
+                repository_name: "logos-modules-official",
+                repository_display_name: "Logos Official",
+                repository_url: "https://example.test/logos-repo.json",
+                versions: [{
+                    version: "2.0.0",
+                    released_at: "2026-07-18T12:00:00Z",
+                    root_hash: "root-hash-blockchain"
+                }]
+            })
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null), catalog)
+            const packageSelector = findChild(page, "modulePackageSelector")
+            verify(!!packageSelector, "Package selector exists")
+            compare(packageSelector.count, 2)
+            compare(page.selectedModulePackageName, "blockchain_module")
+
+            mouseClick(packageSelector,
+                       packageSelector.width / 2,
+                       packageSelector.height / 2)
+            tryVerify(function () { return packageSelector.popup.visible })
+
+            let openmetricsOption = null
+            tryVerify(function () {
+                openmetricsOption = packageSelector.popup.contentItem.itemAtIndex(1)
+                return openmetricsOption !== null
+            })
+            mouseClick(openmetricsOption,
+                       openmetricsOption.width / 2,
+                       openmetricsOption.height / 2)
+            tryVerify(function () { return !packageSelector.popup.visible })
+
+            compare(page.selectedModulePackageName, "openmetrics")
+            compare(page.selectedModuleRelease.root_hash, "root-hash-1.0.0-a")
+        }
+
+        function test_module_local_file_confirmation_and_runtime_gate() {
+            const stoppedPage = createPage(sampleReport("stopped"), samplePackageCatalog(null), sampleModuleCatalog([]))
+            const stoppedInstall = findChild(stoppedPage, "modulePackageInstallFileButton")
+            const stoppedPopup = findChild(stoppedPage, "localNodesConfirmPopup")
+            verify(!!stoppedInstall, "Local install button exists")
+            verify(!!stoppedPopup, "Confirmation exists")
+            compare(stoppedPage.localPathFromFileUrl("file:///tmp/openmetrics%201.0.0.lgx"),
+                    "/tmp/openmetrics 1.0.0.lgx")
+
+            stoppedPage.localModulePackagePath = "/tmp/openmetrics-1.0.0.lgx"
+            verify(stoppedInstall.enabled)
+            stoppedPage.openModuleFileConfirm()
+            compare(state.pendingOperation, "module_file")
+            compare(state.pendingModuleFilePath, "/tmp/openmetrics-1.0.0.lgx")
+            tryCompare(stoppedPopup, "opened", true)
+            verify(stoppedPopup.message.indexOf("/tmp/openmetrics-1.0.0.lgx") >= 0)
+            stoppedPopup.close()
+
+            state.clearActionDraft()
+            const runningPage = createPage(sampleReport("running"), samplePackageCatalog(null), sampleModuleCatalog([]))
+            const runningInstall = findChild(runningPage, "modulePackageInstallButton")
+            const runningFileInstall = findChild(runningPage, "modulePackageInstallFileButton")
+            verify(!!runningInstall, "Release install button exists")
+            verify(!!runningFileInstall, "Local install button exists")
+            runningPage.localModulePackagePath = "/tmp/openmetrics-1.0.0.lgx"
+            verify(!runningInstall.enabled)
+            verify(!runningFileInstall.enabled)
+        }
+
+        function test_package_target_must_match_configured_runtime_and_catalog() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null), sampleModuleCatalog([]))
+            const indexerInstall = findChild(page, "indexerPackageInstallButton")
+            const moduleInstall = findChild(page, "modulePackageInstallButton")
+            const moduleFileInstall = findChild(page, "modulePackageInstallFileButton")
+            verify(!!indexerInstall, "Indexer install exists")
+            verify(!!moduleInstall, "Module repository install exists")
+            verify(!!moduleFileInstall, "Module file install exists")
+
+            page.localModulePackagePath = "/tmp/openmetrics-1.0.0.lgx"
+            verify(indexerInstall.enabled)
+            verify(moduleInstall.enabled)
+            verify(moduleFileInstall.enabled)
+
+            page.runtimeModulesDir = "/tmp/other-modules"
+
+            verify(!indexerInstall.enabled)
+            verify(!moduleInstall.enabled)
+            verify(!moduleFileInstall.enabled)
+            verify(page.runtimeModulesTargetProblem().indexOf("/tmp/runtime-modules") >= 0)
+            verify(page.packageStatusMessage().indexOf("configured LogosCore Runtime") >= 0)
+            verify(page.moduleCatalogMessage().indexOf("configured LogosCore Runtime") >= 0)
+
+            const unconfigured = sampleReport("stopped")
+            unconfigured.runtime = {
+                ownership: "external",
+                run_state: "not_configured",
+                detail: "No configured runtime"
+            }
+            state.report = unconfigured
+            state.revision += 1
+            page.runtimeModulesDir = "/tmp/runtime-modules"
+
+            verify(page.indexerPackageTargetProblem().length === 0)
+            verify(page.modulePackageTargetProblem().length === 0)
+            verify(indexerInstall.enabled)
+            verify(moduleInstall.enabled)
+            verify(moduleFileInstall.enabled)
         }
 
         function test_install_confirmation_owns_exact_release_and_package_identity() {
@@ -478,7 +640,7 @@ Item {
             verify(panel.visible)
         }
 
-        function createPage(report, catalog) {
+        function createPage(report, catalog, moduleCatalog) {
             gateway.responses = ({
                 localNodesStatus: {
                     ok: true,
@@ -495,6 +657,12 @@ Item {
                 localNodePackageCatalog: {
                     ok: true,
                     value: catalog,
+                    text: "OK",
+                    error: ""
+                },
+                localModuleCatalog: {
+                    ok: true,
+                    value: moduleCatalog === undefined ? sampleModuleCatalog([]) : moduleCatalog,
                     text: "OK",
                     error: ""
                 },
@@ -650,6 +818,53 @@ Item {
                         root_hash: "root-hash-1.0.0"
                     }]
                 },
+                installed: installed
+            }
+        }
+
+        function sampleModuleCatalog(installed) {
+            return {
+                modules_dir: "/tmp/runtime-modules",
+                repositories: [{
+                    name: "logos-modules-official",
+                    display_name: "Logos Official",
+                    description: "Official modules",
+                    url: "https://example.test/logos-repo.json",
+                    enabled: true,
+                    is_default: true,
+                    resolve_error: ""
+                }],
+                packages: [{
+                    name: "openmetrics",
+                    description: "Metrics module",
+                    package_type: "core",
+                    category: "metrics",
+                    repository_name: "logos-modules-official",
+                    repository_display_name: "Logos Official",
+                    repository_url: "https://example.test/logos-repo.json",
+                    versions: [{
+                        version: "1.0.0",
+                        released_at: "2026-07-17T12:00:00Z",
+                        root_hash: "root-hash-1.0.0-a"
+                    }, {
+                        version: "1.0.0",
+                        released_at: "2026-07-16T12:00:00Z",
+                        root_hash: "root-hash-1.0.0-b"
+                    }]
+                }, {
+                    name: "wallet-ui",
+                    description: "UI plugin",
+                    package_type: "ui_qml",
+                    category: "wallet",
+                    repository_name: "logos-modules-official",
+                    repository_display_name: "Logos Official",
+                    repository_url: "https://example.test/logos-repo.json",
+                    versions: [{
+                        version: "1.0.0",
+                        released_at: "2026-07-17T12:00:00Z",
+                        root_hash: "root-hash-ui"
+                    }]
+                }],
                 installed: installed
             }
         }

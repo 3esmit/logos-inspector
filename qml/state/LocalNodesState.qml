@@ -26,6 +26,10 @@ QtObject {
     property string packageCatalogError: ""
     property bool packageCatalogLoading: false
     property int packageCatalogGeneration: 0
+    property var moduleCatalog: null
+    property string moduleCatalogError: ""
+    property bool moduleCatalogLoading: false
+    property int moduleCatalogGeneration: 0
     property var nodeConfigSnapshot: null
     property string nodeConfigError: ""
     property string nodeConfigNode: ""
@@ -38,6 +42,7 @@ QtObject {
     property var nodeConfigValidation: null
     property var observedNodes: ({})
     readonly property string defaultRuntimeModulesDir: "/opt/logos-node/modules"
+    property string pendingOperation: ""
     property string pendingAction: ""
     property string pendingNode: ""
     property string pendingNetworkId: ""
@@ -46,6 +51,10 @@ QtObject {
     property string pendingRuntimeBinaryPath: ""
     property string pendingPackageVersion: ""
     property string pendingPackageRootHash: ""
+    property string pendingModuleRepositoryName: ""
+    property string pendingModuleRepositoryUrl: ""
+    property string pendingModulePackageName: ""
+    property string pendingModuleFilePath: ""
     property bool pendingAttachedRuntime: false
     property string pendingRuntimeServiceUnit: ""
     property bool pendingAllowIdentityRotation: false
@@ -64,6 +73,10 @@ QtObject {
         report = null
         error = ""
         operations = []
+        moduleCatalog = null
+        moduleCatalogError = ""
+        moduleCatalogLoading = false
+        moduleCatalogGeneration += 1
         clearActionDraft()
         clearNodeConfig()
         revision += 1
@@ -105,6 +118,7 @@ QtObject {
             }
             if (includePackageCatalog === true) {
                 refreshPackageCatalog(root.runtimeModulesDir());
+                refreshModuleCatalog(root.runtimeModulesDir());
             }
             runDeferredStatusRefresh();
         });
@@ -319,6 +333,36 @@ QtObject {
         });
     }
 
+    function refreshModuleCatalog(modulesDir) {
+        if (basecampHost) {
+            return null;
+        }
+        const requestedModulesDir = String(modulesDir || "").trim();
+        const targetModulesDir = requestedModulesDir.length
+            ? requestedModulesDir : runtimeModulesDir();
+        const generation = moduleCatalogGeneration + 1;
+        moduleCatalogGeneration = generation;
+        moduleCatalogLoading = true;
+        moduleCatalogError = "";
+        return gateway.request("localModuleCatalog", [targetModulesDir], qsTr("Module package catalog"), false, function (response) {
+            if (generation !== moduleCatalogGeneration) {
+                return;
+            }
+            moduleCatalogLoading = false;
+            const value = response && response.ok ? response.value || null : null;
+            if (value && Array.isArray(value.packages)
+                    && Array.isArray(value.repositories)
+                    && Array.isArray(value.installed)) {
+                moduleCatalog = value;
+                moduleCatalogError = "";
+                return;
+            }
+            moduleCatalog = null;
+            moduleCatalogError = response && response.error
+                ? response.error : qsTr("Module package catalog failed.");
+        });
+    }
+
     function activateLocalProfile() {
         if (!gateway.activateLocalProfile()) {
             error = qsTr("Local network profile is not available.")
@@ -419,6 +463,71 @@ QtObject {
         });
     }
 
+    function runModulePackageInstall(request, label) {
+        if (busy) {
+            gateway.setResult(qsTr("Module packages"), qsTr("Another operation is already running."), true, null);
+            return null;
+        }
+        const payload = request || {};
+        const targetModulesDir = String(payload.modules_dir || "").trim();
+        if (!targetModulesDir.length) {
+            gateway.setResult(qsTr("Module packages"), qsTr("Modules directory is required."), true, null);
+            return null;
+        }
+        const operationLabel = String(label || qsTr("Install module package"));
+        invalidateStatusRefresh();
+        gateway.setBusy(true, operationLabel);
+        return gateway.request("localModulePackageInstall", [
+            payload,
+            ConfirmationPolicy.token("local-node-action")
+        ], operationLabel, true, function (response) {
+            if (response.ok) {
+                const result = response.value || {};
+                const detail = moduleInstallDetail(result);
+                appendOperationRecord(
+                    "install",
+                    "",
+                    "installed",
+                    detail,
+                    operationLabel,
+                    "localModulePackageInstall");
+                moduleCatalog = null;
+                refreshModuleCatalog(targetModulesDir);
+            } else {
+                const detail = response.error || qsTr("Module package installation failed.");
+                appendOperationRecord(
+                    "install",
+                    "",
+                    "failed",
+                    detail,
+                    operationLabel,
+                    "localModulePackageInstall");
+            }
+            gateway.setBusy(false, "");
+        });
+    }
+
+    function moduleInstallDetail(result) {
+        const value = result || {};
+        const installed = Array.isArray(value.installed) ? value.installed : [];
+        const installedText = installed.map(function (packageValue) {
+            const package = packageValue || {};
+            const name = String(package.name || qsTr("module"));
+            const version = String(package.version || qsTr("unknown version"));
+            return name + " " + version;
+        }).join(", ");
+        const warnings = Array.isArray(value.warnings) ? value.warnings : [];
+        const warningText = warnings.map(function (warning) {
+            return String(warning || "").trim();
+        }).filter(function (warning) {
+            return warning.length > 0;
+        }).join(" ");
+        const base = installedText.length
+            ? qsTr("Installed %1.").arg(installedText)
+            : qsTr("Package manager completed without changing an installed module identity.");
+        return warningText.length ? base + " " + warningText : base;
+    }
+
     function isAttachedRuntimeTransition(action) {
         const actionKey = String(action || "");
         return localAttachedRuntime()
@@ -445,7 +554,7 @@ QtObject {
         return appendOperationRecord(action, node, status, detail, actionLabel(action));
     }
 
-    function appendOperationRecord(action, node, status, detail, label) {
+    function appendOperationRecord(action, node, status, detail, label, method) {
         const actionKey = String(action || "");
         const nodeKey = String(node || "");
         const labelText = String(label || qsTr("Local nodes"));
@@ -463,7 +572,7 @@ QtObject {
         revision += 1;
         gateway.appendOperationHistory({
             domain: "localNodes",
-            method: "localNodesAction",
+            method: String(method || "localNodesAction"),
             status: OperationHistoryVocabulary.syntheticHistoryStatus(statusText),
             label: labelText,
             result: {
@@ -551,6 +660,8 @@ QtObject {
     }
 
     function beginNodeAction(action, node, packageVersion, packageRootHash, modulesDir) {
+        clearActionDraft();
+        pendingOperation = "node";
         pendingAction = String(action || "");
         pendingNode = String(node || "");
         pendingNetworkId = "";
@@ -565,6 +676,8 @@ QtObject {
     }
 
     function beginNetworkAction(action, networkId, workspacePath) {
+        clearActionDraft();
+        pendingOperation = "node";
         pendingAction = String(action || "");
         pendingNode = "";
         pendingNetworkId = String(networkId || "").trim();
@@ -577,6 +690,8 @@ QtObject {
     }
 
     function beginRuntimeAction(action, modulesDir, binaryPath) {
+        clearActionDraft();
+        pendingOperation = "node";
         pendingAction = String(action || "");
         pendingNode = "";
         pendingNetworkId = "";
@@ -601,7 +716,26 @@ QtObject {
             || pendingAction === "stop_runtime";
     }
 
+    function beginModuleRepositoryInstall(repositoryName, repositoryUrl, packageName, version, rootHash, modulesDir) {
+        clearActionDraft();
+        pendingOperation = "module_repository";
+        pendingRuntimeModulesDir = String(modulesDir || "").trim();
+        pendingModuleRepositoryName = String(repositoryName || "").trim();
+        pendingModuleRepositoryUrl = String(repositoryUrl || "").trim();
+        pendingModulePackageName = String(packageName || "").trim();
+        pendingPackageVersion = String(version || "").trim();
+        pendingPackageRootHash = String(rootHash || "").trim();
+    }
+
+    function beginModuleFileInstall(filePath, modulesDir) {
+        clearActionDraft();
+        pendingOperation = "module_file";
+        pendingRuntimeModulesDir = String(modulesDir || "").trim();
+        pendingModuleFilePath = String(filePath || "").trim();
+    }
+
     function clearActionDraft() {
+        pendingOperation = "";
         pendingAction = "";
         pendingNode = "";
         pendingNetworkId = "";
@@ -610,12 +744,45 @@ QtObject {
         pendingRuntimeBinaryPath = "";
         pendingPackageVersion = "";
         pendingPackageRootHash = "";
+        pendingModuleRepositoryName = "";
+        pendingModuleRepositoryUrl = "";
+        pendingModulePackageName = "";
+        pendingModuleFilePath = "";
         pendingAttachedRuntime = false;
         pendingRuntimeServiceUnit = "";
         pendingAllowIdentityRotation = false;
     }
 
     function runPendingAction() {
+        const operation = pendingOperation;
+        if (operation === "module_repository") {
+            const request = {
+                modules_dir: pendingRuntimeModulesDir,
+                source: {
+                    kind: "repository",
+                    repository_name: pendingModuleRepositoryName,
+                    repository_url: pendingModuleRepositoryUrl,
+                    package_name: pendingModulePackageName,
+                    version: pendingPackageVersion,
+                    root_hash: pendingPackageRootHash
+                }
+            };
+            const label = actionDraftTitle();
+            clearActionDraft();
+            return runModulePackageInstall(request, label);
+        }
+        if (operation === "module_file") {
+            const request = {
+                modules_dir: pendingRuntimeModulesDir,
+                source: {
+                    kind: "local_file",
+                    file_path: pendingModuleFilePath
+                }
+            };
+            const label = actionDraftTitle();
+            clearActionDraft();
+            return runModulePackageInstall(request, label);
+        }
         if (!pendingAction.length) {
             return null;
         }
@@ -634,6 +801,12 @@ QtObject {
     }
 
     function actionDraftTitle() {
+        if (pendingOperation === "module_repository") {
+            return qsTr("Install %1 %2").arg(pendingModulePackageName).arg(pendingPackageVersion);
+        }
+        if (pendingOperation === "module_file") {
+            return qsTr("Install local module package");
+        }
         if (!pendingAction.length) {
             return qsTr("Confirm");
         }
@@ -654,6 +827,19 @@ QtObject {
     }
 
     function actionDraftMessage() {
+        if (pendingOperation === "module_repository") {
+            return qsTr("This downloads %1 %2 from %3, verifies its exact catalog root hash %4 and package checksum, then installs it into %5. LogosCore Runtime must be stopped. The package manager applies its signature policy and reports any unsigned-package warning after installation.")
+                .arg(pendingModulePackageName)
+                .arg(pendingPackageVersion)
+                .arg(pendingModuleRepositoryName)
+                .arg(pendingPackageRootHash)
+                .arg(pendingRuntimeModulesDir);
+        }
+        if (pendingOperation === "module_file") {
+            return qsTr("This asks the package manager to validate and install local package %1 into %2. LogosCore Runtime must be stopped. The package manager applies its signature policy and reports any unsigned-package warning after installation.")
+                .arg(pendingModuleFilePath)
+                .arg(pendingRuntimeModulesDir);
+        }
         const action = pendingAction;
         if (action === "delete_network") {
             return qsTr("This stops all local nodes in Local Devnet %1 and removes the managed workspace plus node data.").arg(pendingNetworkId.length ? pendingNetworkId : activeNetworkId());
@@ -870,6 +1056,98 @@ QtObject {
     function installedPackage() {
         const value = packageCatalog || null;
         return value && value.installed ? value.installed : null;
+    }
+
+    function moduleCatalogModulesDir() {
+        const value = moduleCatalog || null;
+        const configured = String(value && value.modules_dir ? value.modules_dir : "").trim();
+        return configured.length ? configured : runtimeModulesDir();
+    }
+
+    function moduleRepositories() {
+        const value = moduleCatalog || null;
+        const repositories = value && Array.isArray(value.repositories) ? value.repositories : [];
+        return repositories.filter(function (repositoryValue) {
+            const repository = repositoryValue || {};
+            return repository.enabled === true
+                && String(repository.resolve_error || "").trim().length === 0
+                && String(repository.name || "").trim().length > 0
+                && String(repository.url || "").trim().length > 0;
+        });
+    }
+
+    function modulePackages(repositoryName, repositoryUrl) {
+        const value = moduleCatalog || null;
+        const packages = value && Array.isArray(value.packages) ? value.packages : [];
+        const name = String(repositoryName || "");
+        const url = String(repositoryUrl || "");
+        return packages.filter(function (packageValue) {
+            const package = packageValue || {};
+            return String(package.package_type || "") === "core"
+                && String(package.name || "") !== "lez_indexer_module"
+                && String(package.repository_name || "") === name
+                && String(package.repository_url || "") === url;
+        });
+    }
+
+    function modulePackage(repositoryName, repositoryUrl, packageName) {
+        const packages = modulePackages(repositoryName, repositoryUrl);
+        const name = String(packageName || "");
+        for (let index = 0; index < packages.length; ++index) {
+            if (String(packages[index] && packages[index].name || "") === name) {
+                return packages[index];
+            }
+        }
+        return null;
+    }
+
+    function moduleReleases(repositoryName, repositoryUrl, packageName) {
+        const package = modulePackage(repositoryName, repositoryUrl, packageName);
+        return package && Array.isArray(package.versions) ? package.versions : [];
+    }
+
+    function moduleRelease(repositoryName, repositoryUrl, packageName, version, rootHash) {
+        const releases = moduleReleases(repositoryName, repositoryUrl, packageName);
+        const selectedVersion = String(version || "");
+        const selectedRootHash = String(rootHash || "");
+        for (let index = 0; index < releases.length; ++index) {
+            const release = releases[index] || {};
+            if (String(release.version || "") === selectedVersion
+                    && String(release.root_hash || "") === selectedRootHash) {
+                return release;
+            }
+        }
+        return null;
+    }
+
+    function installedModules() {
+        const value = moduleCatalog || null;
+        return value && Array.isArray(value.installed) ? value.installed : [];
+    }
+
+    function moduleCatalogWarnings() {
+        const value = moduleCatalog || null;
+        const warnings = value && Array.isArray(value.warnings) ? value.warnings : [];
+        return warnings.map(function (warning) {
+            return String(warning || "").trim();
+        }).filter(function (warning) {
+            return warning.length > 0;
+        });
+    }
+
+    function defaultModuleRepositorySelection() {
+        const repositories = moduleRepositories();
+        if (!repositories.length) {
+            return {
+                name: "",
+                url: ""
+            };
+        }
+        const repository = repositories[0] || {};
+        return {
+            name: String(repository.name || ""),
+            url: String(repository.url || "")
+        };
     }
 
     function defaultPackageSelection() {
