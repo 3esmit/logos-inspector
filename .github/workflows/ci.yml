@@ -6,16 +6,84 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install Rust
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Activate Rust toolchain
         run: rustup show
-      - name: Install Qt 6 development files
+
+      - name: Cache circuit artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/logos-blockchain-circuits
+            ${{ runner.temp }}/logos-blockchain-circuits
+          key: circuits-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-artifacts.json') }}
+          restore-keys: |
+            circuits-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Cargo registry and git
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install minimal Qt 6 development packages
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes qt6-base-dev
-      - name: Verify build pipeline
-        run: python3 scripts/check-build-pipeline.py ci
+          sudo apt-get install --yes --no-install-recommends \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-tools-dev-tools \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript \
+            qml6-module-qttest \
+            libgl1-mesa-dev
+
+      - name: Policy checks
+        run: python3 scripts/check-build-pipeline.py ci-policy
+
+      - name: Generated sources and circuits
+        run: python3 scripts/check-build-pipeline.py ci-generated
+
+      - name: Rust workspace Clippy and tests
+        run: python3 scripts/check-build-pipeline.py ci-rust
+
+      - name: Native CMake/CTest suite
+        run: python3 scripts/check-build-pipeline.py ci-native
+
+      - name: Web UI checks
+        run: python3 scripts/check-build-pipeline.py ci-web
+
+      - name: QML static and unit checks
+        run: python3 scripts/check-build-pipeline.py ci-qml-static
+
+      - name: QML visual suite
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/check-build-pipeline.py ci-qml-visual

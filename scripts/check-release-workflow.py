@@ -67,14 +67,46 @@ def require(text: str, needles: tuple[str, ...], label: str, errors: list[str]) 
             errors.append(f"{label} is missing `{needle}`")
 
 
+# Match both mapping-form and list-item-form `uses:` keys.
+USES_LINE = re.compile(r"^\s*-?\s*uses:\s*(.+?)\s*(?:#.*)?$")
+
+
+def iter_action_definition_files(root: Path = ROOT) -> list[Path]:
+    paths: list[Path] = []
+    workflows = root / ".github" / "workflows"
+    actions = root / ".github" / "actions"
+    if workflows.is_dir():
+        paths.extend(sorted(workflows.glob("*.yml")))
+        paths.extend(sorted(workflows.glob("*.yaml")))
+    if actions.is_dir():
+        paths.extend(sorted(actions.glob("**/action.yml")))
+        paths.extend(sorted(actions.glob("**/action.yaml")))
+    return paths
+
+
 def check_pinned_actions(text: str, label: str, errors: list[str]) -> None:
     for line in text.splitlines():
-        match = re.search(r"\buses:\s*[^@\s]+@([^\s#]+)", line)
+        match = USES_LINE.match(line)
         if match is None:
             continue
-        reference = match.group(1)
-        if not ACTION_SHA.fullmatch(reference):
-            errors.append(f"{label} uses mutable action reference `{reference}`")
+        reference = match.group(1).strip().strip("\"'")
+        if not reference:
+            continue
+        if reference.startswith("./") or reference.startswith(".\\"):
+            # Local reusable workflows and composite actions are repository-relative.
+            continue
+        if reference.startswith("docker://"):
+            if "@sha256:" not in reference:
+                errors.append(
+                    f"{label} uses mutable Docker action reference `{reference}`"
+                )
+            continue
+        if "@" not in reference:
+            errors.append(f"{label} uses unpinned action reference `{reference}`")
+            continue
+        pin = reference.rsplit("@", 1)[1]
+        if not ACTION_SHA.fullmatch(pin):
+            errors.append(f"{label} uses mutable action reference `{pin}`")
 
 
 def flake_input(text: str, name: str) -> tuple[str, str] | None:
@@ -225,10 +257,11 @@ def main() -> int:
                 errors.append(f"{label} retains catalog-coupled input `{forbidden}`")
         if "\npush:" in text:
             errors.append(f"{label} must remain manual during alpha")
-    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+    for path in iter_action_definition_files(ROOT):
+        relative = path.relative_to(ROOT)
         check_pinned_actions(
             read(path, errors),
-            f"{path.name} workflow",
+            str(relative),
             errors,
         )
 
