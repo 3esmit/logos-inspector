@@ -13,6 +13,9 @@ ColumnLayout {
     property string initialView: "blocks"
     property string currentView: initialView
     property string exactSourceId: ""
+    readonly property bool l2DataDisplayEnabled: root.zoneState
+        && (root.zoneState.l2DisplayEnabled === true
+            || root.zoneState.l2ReadEnabled === true)
 
     signal configureSourcesRequested()
     signal viewRequested(string view)
@@ -55,7 +58,8 @@ ColumnLayout {
     }
 
     ZoneL2Blocks {
-        visible: root.zoneState.l2ReadEnabled && root.currentView === "blocks"
+        visible: root.l2DataDisplayEnabled && root.currentView === "blocks"
+        enabled: root.zoneState.l2ReadEnabled
         theme: root.theme
         zoneState: root.zoneState
         exactSourceId: root.exactSourceId
@@ -72,7 +76,8 @@ ColumnLayout {
     }
 
     ZoneL2BlockDetail {
-        visible: root.zoneState.l2ReadEnabled && root.currentView === "block"
+        visible: root.l2DataDisplayEnabled && root.currentView === "block"
+        enabled: root.zoneState.l2ReadEnabled
         theme: root.theme
         zoneState: root.zoneState
         Layout.fillWidth: true
@@ -88,7 +93,8 @@ ColumnLayout {
     }
 
     ZoneL2TransactionDetail {
-        visible: root.zoneState.l2ReadEnabled && root.currentView === "transaction"
+        visible: root.l2DataDisplayEnabled && root.currentView === "transaction"
+        enabled: root.zoneState.l2ReadEnabled
         theme: root.theme
         zoneState: root.zoneState
         Layout.fillWidth: true

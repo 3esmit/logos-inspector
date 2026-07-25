@@ -13,6 +13,9 @@ ColumnLayout {
     required property var zoneState
     property string transactionQuery: ""
     property string exactSourceId: ""
+    readonly property bool l2DataDisplayEnabled: root.zoneState
+        && (root.zoneState.l2DisplayEnabled === true
+            || root.zoneState.l2ReadEnabled === true)
 
     signal blockRequested(var summary, string exactSourceId)
     signal transactionRequested(string transactionId, string exactSourceId)
@@ -99,7 +102,7 @@ ColumnLayout {
     }
 
     RowLayout {
-        visible: root.zoneState.l2ReadEnabled
+        visible: root.l2DataDisplayEnabled
         spacing: root.theme.gapSmall
         Layout.fillWidth: true
 
@@ -132,7 +135,7 @@ ColumnLayout {
 
     PagedInspectionTable {
         objectName: "zoneL2BlocksTable"
-        visible: root.zoneState.l2ReadEnabled
+        visible: root.l2DataDisplayEnabled
         theme: root.theme
         loadCount: root.zoneState.l2BlocksLimit
         loadOptions: [10, 25, 50]
@@ -162,7 +165,7 @@ ColumnLayout {
     }
 
     Text {
-        visible: root.zoneState.l2ReadEnabled && root.zoneState.l2BlocksLoaded
+        visible: root.l2DataDisplayEnabled && root.zoneState.l2BlocksLoaded
             && root.zoneState.l2BlockRows.length === 0
             && root.zoneState.l2BlocksError.length === 0
         text: qsTr("No L2 blocks returned for this Zone")

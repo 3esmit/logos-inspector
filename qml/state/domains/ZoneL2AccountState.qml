@@ -6,6 +6,8 @@ QtObject {
     required property var l2Context
     readonly property bool l2Applicable: l2Context.l2Applicable
     readonly property bool l2SourceConfigured: l2Context.l2SourceConfigured
+    readonly property bool l2DisplayEnabled: l2Context.l2DisplayEnabled
+    readonly property bool l2SequencerDisplayEnabled: l2Context.l2SequencerDisplayEnabled
     readonly property bool l2ReadEnabled: l2Context.l2ReadEnabled
     readonly property bool l2IndexerReadEnabled: l2Context.l2IndexerReadEnabled
     readonly property bool l2SequencerReadEnabled: l2Context.l2SequencerReadEnabled

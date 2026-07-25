@@ -545,6 +545,26 @@ TestCase {
         return row
     }
 
+    function test_l2_facades_retain_display_capability_during_catalog_recovery() {
+        loadConfiguredL2Zone()
+
+        verify(l2BlockState.l2DisplayEnabled)
+        verify(l2AccountState.l2SequencerDisplayEnabled)
+        verify(l2ToolState.l2SequencerDisplayEnabled)
+        verify(l2BlockState.l2ReadEnabled)
+        verify(l2AccountState.l2SequencerReadEnabled)
+        verify(l2ToolState.l2SequencerReadEnabled)
+
+        zoneState.verification = "source_behind"
+
+        verify(l2BlockState.l2DisplayEnabled)
+        verify(l2AccountState.l2SequencerDisplayEnabled)
+        verify(l2ToolState.l2SequencerDisplayEnabled)
+        verify(!l2BlockState.l2ReadEnabled)
+        verify(!l2AccountState.l2SequencerReadEnabled)
+        verify(!l2ToolState.l2SequencerReadEnabled)
+    }
+
     function test_pending_selected_sequencer_waits_for_runtime_attestation() {
         zoneState.verification = "verified"
         zoneState.activeZoneContext = {
@@ -941,7 +961,8 @@ TestCase {
             ingestion: { worker_running: false, discovered_zone_count: 0 },
             current_error: "Bedrock unavailable"
         })))
-        compare(zoneState.activeZoneId, "")
+        compare(zoneState.activeZoneId, "zone-a")
+        verify(zoneState.summaryRowsRetainable)
         verify(zoneState.automaticRetryPending)
 
         verify(zoneState.pollStatus())
@@ -961,7 +982,8 @@ TestCase {
             ingestion: { worker_running: true, discovered_zone_count: 0 },
             current_error: "Bedrock unavailable"
         })))
-        compare(zoneState.activeZoneId, "")
+        compare(zoneState.activeZoneId, "zone-a")
+        verify(zoneState.summaryRowsRetainable)
 
         verify(zoneState.pollStatus())
         gateway.respondNext("zoneCatalogStatus", ok(statusReport({
@@ -1014,7 +1036,9 @@ TestCase {
             current_error: "temporary source failure",
             summary_revision: 1
         })))
-        compare(zoneState.activeZoneId, "")
+        compare(zoneState.activeZoneId, "zone-a")
+        verify(zoneState.summaryRowsRetainable)
+        verify(!l2State.l2ReadEnabled)
 
         verify(zoneState.pollStatus())
         gateway.respondNext("zoneCatalogStatus", ok(statusReport({
@@ -1283,6 +1307,9 @@ TestCase {
             summary_revision: 2
         })))
         verify(!zoneState.summaryRowsUsable)
+        verify(zoneState.summaryRowsRetainable)
+        compare(zoneState.activeZoneId, "zone-a")
+        verify(!l2State.l2ReadEnabled)
     }
 
     function test_source_config_change_does_not_retain_old_summary_rows() {
@@ -1299,9 +1326,31 @@ TestCase {
             summary_revision: 2
         })))
 
-        verify(zoneState.summaryStale)
+        verify(!zoneState.summaryRowsRetainable)
         verify(zoneState.summaryInFlight)
         verify(!zoneState.summaryRowsUsable)
+        compare(zoneState.zoneSummaries.length, 0)
+        compare(zoneState.activeZoneId, "")
+    }
+
+    function test_network_scope_change_clears_cached_rows_and_context() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        compare(zoneState.activeZoneId, "zone-a")
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "source_behind",
+            network_scope: scope("network-b"),
+            coverage: { status: "partial" },
+            ingestion: { worker_running: true }
+        })))
+
+        verify(!zoneState.summaryRowsRetainable)
+        compare(zoneState.zoneSummaries.length, 0)
+        compare(zoneState.activeZoneId, "")
+        verify(!l2State.l2ReadEnabled)
     }
 
     function test_compatible_detail_refresh_keeps_visible_detail_usable() {
@@ -1401,6 +1450,10 @@ TestCase {
             ingestion: { worker_running: false },
             summary_revision: 1
         })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(1, {
+            kind: "reset",
+            rows: [row]
+        }, null)))
         verify(zoneState.activateZone("zone-a"))
 
         verify(zoneState.pollStatus())

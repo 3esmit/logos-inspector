@@ -176,6 +176,7 @@ Pane {
                                 accessibleName: String(navRow.modelData.accessibleName
                                     || navRow.modelData.label || "")
                                 selected: navRow.modelData.active === true
+                                enabled: navRow.modelData.enabled !== false
                                 Layout.fillWidth: true
                                 onClicked: {
                                     const view = String(navRow.modelData.view || "")

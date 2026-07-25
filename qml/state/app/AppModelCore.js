@@ -80,6 +80,7 @@ function appendNavRows(root, rows, items, depth, parentKey) {
             token: item.token,
             layer: item.layer,
             parentKey: parentKey,
+            enabled: item.enabled !== false,
             active: isGroup
                 ? PageRegistry.navItemContainsView(item, root.shell.currentView,
                     root.zoneInspection && root.zoneInspection.activeZoneId)

@@ -88,7 +88,7 @@ function configuredZoneNavigationItems(root) {
 
 function configuredZoneMenuCandidates(root) {
     const state = root && root.zoneInspection ? root.zoneInspection : null
-    if (!state || state.summaryRowsUsable !== true) {
+    if (!state || state.summaryRowsRetainable !== true) {
         return []
     }
     const rows = Array.isArray(state.zoneSummaries) ? state.zoneSummaries : []
@@ -116,6 +116,8 @@ function configuredZoneMenuCandidates(root) {
             view: sequencerSourceId.length > 0 ? "sequencerDashboard" : "zones",
             channelId: channelId,
             menuKey: menuKey,
+            enabled: state.summaryRowsUsable === true
+                || String(state.activeZoneId || "") === channelId,
             label: label,
             token: "ZON",
             layer: "l2",
@@ -130,7 +132,8 @@ function configuredZoneMenuCandidates(root) {
 }
 
 function configuredZoneMenuKey(state, channelId) {
-    const scope = String(state && state.networkScopeKey || "")
+    const scope = String(state && (state.retainedNetworkScopeKey
+        || state.networkScopeKey) || "")
     const channel = String(channelId || "").toLowerCase()
     return scope.length > 0 && /^[0-9a-f]{64}$/.test(channel)
         ? "zone:" + scope + ":" + channel : ""
