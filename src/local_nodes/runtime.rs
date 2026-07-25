@@ -188,13 +188,16 @@ impl LogoscoreRuntimeProfile {
         let Some(config_dir) = local_client_config_dir() else {
             return Ok(None);
         };
-        if !local_client_transport_is_proven(Path::new(&config_dir)) {
+        let transport_proven = local_client_transport_is_proven(Path::new(&config_dir));
+        let stopped_service = discover_stopped_system_service_target();
+        if !transport_proven && stopped_service.is_none() {
             return Ok(None);
         }
-        Ok(Some(Self::discover_proven_local_transport(
-            binary_path,
-            config_dir,
-        )?))
+        let mut profile = Self::discover_proven_local_transport(binary_path, config_dir)?;
+        if profile.service_target.is_none() {
+            profile.service_target = stopped_service;
+        }
+        Ok(Some(profile))
     }
 
     fn discover_proven_local_transport(binary_path: String, config_dir: String) -> Result<Self> {
@@ -229,11 +232,15 @@ impl LogoscoreRuntimeProfile {
         self.observation = LogoscoreRuntimeObservation::Verified;
         let Ok(output) = output else {
             self.observation = LogoscoreRuntimeObservation::Unavailable;
+            self.service_target = discover_stopped_system_service_target();
             return;
         };
         if let Some(process_id) = running_daemon_process_id(&output.value) {
             self.daemon_process_id = Some(process_id);
             self.service_target = system_service_target(process_id);
+        }
+        if self.service_target.is_none() {
+            self.service_target = discover_stopped_system_service_target();
         }
     }
 
@@ -743,6 +750,44 @@ fn system_service_target(process_id: u32) -> Option<LogoscoreServiceTarget> {
 #[cfg(not(target_os = "linux"))]
 fn system_service_target(_process_id: u32) -> Option<LogoscoreServiceTarget> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn discover_stopped_system_service_target() -> Option<LogoscoreServiceTarget> {
+    const CANDIDATES: &[&str] = &["logos-node.service", "logoscore.service"];
+    for &unit in CANDIDATES {
+        if is_systemd_unit_loaded(LogoscoreServiceScope::System, unit) {
+            return Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: unit.to_owned(),
+            });
+        }
+        if is_systemd_unit_loaded(LogoscoreServiceScope::User, unit) {
+            return Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::User,
+                unit: unit.to_owned(),
+            });
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn discover_stopped_system_service_target() -> Option<LogoscoreServiceTarget> {
+    None
+}
+
+fn is_systemd_unit_loaded(scope: LogoscoreServiceScope, unit: &str) -> bool {
+    let mut command = Command::new("systemctl");
+    if scope == LogoscoreServiceScope::User {
+        command.arg("--user");
+    }
+    command.args(["show", "-p", "LoadState", "--value", unit]);
+    let Ok(output) = command.output() else {
+        return false;
+    };
+    let value = String::from_utf8_lossy(&output.stdout);
+    value.trim() == "loaded"
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1720,6 +1765,26 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         }));
         assert!(!profile.is_unavailable());
         assert_eq!(profile.daemon_process_id, None);
+    }
+
+    #[test]
+    fn stopped_local_status_probe_discovers_installed_service_target() {
+        let mut profile = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
+        );
+        profile.apply_local_status_probe(Ok(LogosCoreOutput {
+            runner: "fixture".to_owned(),
+            value: json!({"daemon": {"status": "stopped"}}),
+            stderr: None,
+        }));
+        assert_eq!(profile.daemon_process_id, None);
+        assert!(!profile.is_running());
+        assert!(profile.is_attached());
+        if let Some(target) = profile.service_target() {
+            assert!(valid_systemd_unit(&target.unit));
+            assert!(profile.is_controllable());
+        }
     }
 
     #[cfg(unix)]
