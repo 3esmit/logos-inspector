@@ -514,7 +514,7 @@ impl LogoscoreRuntimeProfile {
             .service_target()
             .context("local LogosCore daemon has no verified service lifecycle backend")?;
         let (command, display) = service_action_command(target, action);
-        let policy = CommandRunPolicy {
+        let make_policy = || CommandRunPolicy {
             label: "local LogosCore service control",
             timeout: LIFECYCLE_TIMEOUT,
             poll_interval: Duration::from_millis(25),
@@ -522,19 +522,41 @@ impl LogoscoreRuntimeProfile {
             output_limit: 4096,
             capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
         };
-        match control {
-            Some(control) => run_command_controlled(command, policy, control.clone()),
-            None => run_command(command, policy),
-        }
-        .with_context(|| {
-            format!(
-                "failed to {} local LogosCore service `{}`",
-                action.as_str(),
-                target.unit
-            )
-        })?;
+        let primary_result = match control {
+            Some(control) => run_command_controlled(command, make_policy(), control.clone()),
+            None => run_command(command, make_policy()),
+        };
+        let command_display = match primary_result {
+            Ok(_) => display,
+            Err(primary_err) => {
+                if let Some((fallback_cmd, fallback_disp)) =
+                    service_action_fallback_command(target, action)
+                {
+                    match control {
+                        Some(control) => run_command_controlled(fallback_cmd, make_policy(), control.clone()),
+                        None => run_command(fallback_cmd, make_policy()),
+                    }
+                    .with_context(|| {
+                        format!(
+                            "failed to {} local LogosCore service `{}` (primary error: {primary_err})",
+                            action.as_str(),
+                            target.unit
+                        )
+                    })?;
+                    fallback_disp
+                } else {
+                    return Err(primary_err).with_context(|| {
+                        format!(
+                            "failed to {} local LogosCore service `{}`",
+                            action.as_str(),
+                            target.unit
+                        )
+                    });
+                }
+            }
+        };
         self.cli_runtime()?.invalidate_observation_snapshot()?;
-        Ok(display)
+        Ok(command_display)
     }
 
     pub(super) fn attached_service_stop_outcome(
@@ -989,6 +1011,28 @@ fn service_action_command(
     display.push_str(&target.unit);
     command.arg(action.as_str()).arg(&target.unit);
     (command, display)
+}
+
+fn service_action_fallback_command(
+    target: &LogoscoreServiceTarget,
+    action: LogoscoreServiceAction,
+) -> Option<(Command, String)> {
+    if target.scope != LogoscoreServiceScope::System {
+        return None;
+    }
+    let pkexec_path = find_command("pkexec")?;
+    let mut display = String::new();
+    display.push_str("pkexec systemctl ");
+    display.push_str(action.as_str());
+    display.push(' ');
+    display.push_str(&target.unit);
+
+    let mut command = Command::new(pkexec_path);
+    command
+        .arg("systemctl")
+        .arg(action.as_str())
+        .arg(&target.unit);
+    Some((command, display))
 }
 
 fn controlled_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
@@ -1603,6 +1647,26 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
             ["--user", "start", "logos-node.service"]
         );
         assert_eq!(display, "systemctl --user start logos-node.service");
+    }
+
+    #[test]
+    fn system_service_fallback_command_uses_pkexec_when_available() {
+        let system = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        if let Some((command, display)) =
+            service_action_fallback_command(&system, LogoscoreServiceAction::Start)
+        {
+            assert!(command.get_program().to_string_lossy().contains("pkexec"));
+            assert_eq!(display, "pkexec systemctl start logos-node.service");
+        }
+
+        let user = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::User,
+            unit: "logos-node.service".to_owned(),
+        };
+        assert!(service_action_fallback_command(&user, LogoscoreServiceAction::Start).is_none());
     }
 
     #[test]
