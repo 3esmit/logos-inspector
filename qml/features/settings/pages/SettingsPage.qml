@@ -304,6 +304,50 @@ ColumnLayout {
 
             Panel {
                 theme: settingsRoot.theme
+                title: qsTr("LogosCore Runtime")
+
+                ColumnLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Configure global LogosCore daemon home and core module directory paths. Standalone runtime and local node management default to these settings.")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        Layout.fillWidth: true
+                    }
+
+                    GridLayout {
+                        columns: settingsRoot.width < 600 ? 1 : 2
+                        columnSpacing: settingsRoot.theme.gapSmall
+                        rowSpacing: settingsRoot.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        FieldRow {
+                            theme: settingsRoot.theme
+                            label: qsTr("LogosCore Home")
+                            sourceText: settingsRoot.model.logoscoreHome
+                            syncSourceText: true
+                            placeholderText: qsTr("/opt/logos-node")
+                            onTextEdited: text => settingsRoot.model.logoscoreHome = String(text || "").trim()
+                        }
+
+                        FieldRow {
+                            theme: settingsRoot.theme
+                            label: qsTr("Core Modules Directory")
+                            sourceText: settingsRoot.model.logoscoreModulesDir
+                            syncSourceText: true
+                            placeholderText: qsTr("/opt/logos-node/modules")
+                            onTextEdited: text => settingsRoot.model.logoscoreModulesDir = String(text || "").trim()
+                        }
+                    }
+                }
+            }
+
+            Panel {
+                theme: settingsRoot.theme
                 title: qsTr("Backups")
 
                 RowLayout {

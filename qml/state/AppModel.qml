@@ -402,6 +402,8 @@ QtObject {
     readonly property bool storageMutatingDiagnosticsEnabled: true
     property bool localNodesEnabled: true
     property bool localDevnetEnabled: false
+    property string logoscoreHome: "/opt/logos-node"
+    property string logoscoreModulesDir: "/opt/logos-node/modules"
     property Domains.OperationHistoryState operationHistory: Domains.OperationHistoryState {
         id: operationHistoryState
     }

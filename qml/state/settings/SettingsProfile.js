@@ -55,6 +55,8 @@ function applySettingsState(root, value) {
         storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
         storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
+        logoscoreHome = root.stringSetting(value, "logoscore_home", logoscoreHome || "/opt/logos-node")
+        logoscoreModulesDir = root.stringSetting(value, "logoscore_modules_dir", logoscoreModulesDir || "/opt/logos-node/modules")
         localNodesEnabled = root.boolSetting(value, "local_nodes_enabled", localNodesEnabled)
         localDevnetEnabled = localNodesEnabled && root.boolSetting(value, "local_devnet_enabled", localDevnetEnabled)
         settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
@@ -136,6 +138,8 @@ function settingsStatePayload(root) {
             storage_rolling_window: Number(storageRollingWindow || 0),
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
             storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
+            logoscore_home: String(logoscoreHome || "/opt/logos-node"),
+            logoscore_modules_dir: String(logoscoreModulesDir || "/opt/logos-node/modules"),
             local_nodes_enabled: localNodesEnabled === true,
             local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
             settings_backup_encrypted: settingsBackupEncrypted === true,
