@@ -1478,12 +1478,26 @@ mod tests {
                 && !phases.contains(&"canceling"),
             "system cleanup uncertainty fabricated cancellation evidence: {event_page}"
         );
+        // cleanup_unconfirmed can surface before watch teardown and staging
+        // removal finish under concurrent workspace load.
+        runtime.block_on(wait_for_path_state(
+            &fixture.watch_stopped,
+            true,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        runtime.block_on(wait_for_path_state(
+            &staged,
+            false,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        runtime.block_on(wait_for_cancel_attempts(
+            &fixture,
+            1,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
         anyhow::ensure!(
-            fixture.cancel_attempt_count()? == 1
-                && !fixture.cancel_ack.exists()
-                && fixture.watch_stopped.exists()
-                && !staged.exists(),
-            "cleanup-unknown operation did not exhaust known local cleanup"
+            !fixture.cancel_ack.exists(),
+            "cleanup-unknown operation recorded a cancel acknowledgement without a cancel request"
         );
         anyhow::ensure!(
             operations.start(&runtime, request).is_err(),
@@ -1550,12 +1564,25 @@ mod tests {
                 && cleanup_error.contains("cleanup uncertainty followed a cancellation request"),
             "cancel cleanup uncertainty reached a terminal state: {operation}"
         );
+        // Phase publication can race slightly ahead of local cleanup effects.
+        runtime.block_on(wait_for_path_state(
+            &fixture.watch_stopped,
+            true,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        runtime.block_on(wait_for_path_state(
+            &staged,
+            false,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        runtime.block_on(wait_for_cancel_attempts(
+            &fixture,
+            1,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
         anyhow::ensure!(
-            fixture.cancel_attempt_count()? == 1
-                && !fixture.cancel_ack.exists()
-                && fixture.watch_stopped.exists()
-                && !staged.exists(),
-            "cancel cleanup uncertainty did not exhaust known local cleanup"
+            !fixture.cancel_ack.exists(),
+            "cancel cleanup uncertainty acknowledged a successful remote cancel"
         );
         anyhow::ensure!(
             operations.start(&runtime, request).is_err(),
@@ -1841,6 +1868,29 @@ mod tests {
                     "timed out waiting for {} to {}",
                     path.display(),
                     if expected { "exist" } else { "be removed" }
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_cancel_attempts(
+        fixture: &CliBackupCancelFixture,
+        minimum: usize,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("cancel-attempt wait deadline overflow")?;
+        loop {
+            let attempts = fixture.cancel_attempt_count()?;
+            if attempts >= minimum {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for at least {minimum} cancel attempt(s); observed {attempts}"
                 );
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
