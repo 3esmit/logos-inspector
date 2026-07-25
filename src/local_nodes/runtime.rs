@@ -736,6 +736,7 @@ fn running_daemon_modules_dir(_process_id: u32) -> Option<PathBuf> {
     None
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn modules_dir_from_daemon_arguments(arguments: Vec<&str>) -> Option<PathBuf> {
     let mut next_is_modules_dir = false;
     let mut modules_dir = None;
@@ -799,6 +800,7 @@ fn discover_stopped_system_service_target() -> Option<LogoscoreServiceTarget> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn is_systemd_unit_loaded(scope: LogoscoreServiceScope, unit: &str) -> bool {
     let mut command = Command::new("systemctl");
     if scope == LogoscoreServiceScope::User {
