@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 20
     env:
       QT_QPA_PLATFORM: offscreen
+      QT_VERSION_MAJOR: "6"
+      QMAKE: /usr/bin/qmake6
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout
@@ -53,7 +55,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # qmake6 is required for cxx-qt discovery of the Qt installation.
+          # declarative packages support the standalone GUI and QML static suite.
           sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            qmake6 \
             qt6-base-dev \
             qt6-declarative-dev \
             qt6-tools-dev-tools \
@@ -65,6 +71,9 @@ jobs:
             qml6-module-qtqml-workerscript \
             qml6-module-qttest \
             libgl1-mesa-dev
+          test -x /usr/bin/qmake6
+          /usr/bin/qmake6 -query QT_VERSION
+          /usr/bin/qmake6 -query QT_INSTALL_LIBS
 
       - name: Policy checks
         run: python3 scripts/check-build-pipeline.py ci-policy
