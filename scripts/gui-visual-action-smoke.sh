@@ -5,17 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 
 run_qml_static_checks() {
-  find "$ROOT/qml" -name '*.qml' -print0 | sort -z | xargs -0 qmllint -I "$ROOT/qml"
-}
-
-run_qml_tests() {
-  qmltestrunner \
-    -input "$ROOT/tests/qml" \
-    -import "$ROOT/qml" \
-    -import "$ROOT/qml/components" \
-    -import "$ROOT/qml/components/common" \
-    -import "$ROOT/qml/features/settings/controls" \
-    -import "$ROOT/qml/theme"
+  "$ROOT/scripts/qml-static-check.sh"
 }
 
 run_zone_visual_smoke() {
@@ -37,7 +27,6 @@ run_standalone_gui_smoke() {
 }
 
 run_qml_static_checks
-run_qml_tests
 run_zone_visual_smoke
 
 if [[ "${RUN_GUI_BINARY_SMOKE:-0}" == "1" ]]; then

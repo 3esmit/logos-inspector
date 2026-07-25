@@ -60,7 +60,7 @@ def source_policy(root: Path) -> dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("RISC0_SKIP_BUILD", "1")
     completed = subprocess.run(
-        ("cargo", "run", "--quiet", "--", "cli", "source-policy"),
+        ("cargo", "run", "--locked", "--quiet", "--", "cli", "source-policy"),
         cwd=root,
         env=env,
         check=True,
