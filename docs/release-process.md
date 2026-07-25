@@ -12,42 +12,56 @@ being completed. Every workflow creates a GitHub prerelease and never marks it
 as the latest stable release. A version bump must update Cargo, Core metadata,
 UI metadata, and this changelog in one issue and pull request.
 
-## Independent release streams
+## Complete release entry point
 
-Three manual workflows publish independent GitHub Releases:
+One confirmed dispatch from `main` publishes every Inspector-owned product
+artifact for the current source version:
 
-| Stream | Tag | Assets |
+| Product | Tag | Assets |
 | --- | --- | --- |
-| Inspector Core | `logos_inspector-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
-| Inspector UI | `logos_inspector_ui-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
+| Basecamp Core module | `logos_inspector-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
+| Basecamp UI module | `logos_inspector_ui-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
 | Standalone app | `standalone-v<version>` | Linux AMD64 AppImage, Darwin ARM64 `.app` archive, and `SHA256SUMS` |
+
+Use the complete release workflow for normal publication:
+
+```bash
+gh workflow run release.yml -f confirm=true --ref main
+```
+
+`release.yml` validates source identity and release contracts, refuses any
+existing Core/UI/standalone tag or release for the current version, then
+publishes all three streams in parallel. A final job downloads every published
+asset and verifies the complete set before the run succeeds.
+
+Catalog tags remain independent so Basecamp can resolve each package by its
+source-owned release URL. The catalog indexes those immutable URLs after the
+source assets exist; publication does not require a catalog URL or prior
+Basecamp install result.
+
+## Independent stream republish
+
+Each stream also keeps a dedicated workflow for isolated republish after a
+partial failure or for targeted recovery:
+
+| Stream | Workflow |
+| --- | --- |
+| Inspector Core | `release-core.yml` |
+| Inspector UI | `release-ui.yml` |
+| Standalone app | `release-standalone.yml` |
+
+```bash
+gh workflow run release-core.yml -f confirm=true --ref main
+gh workflow run release-ui.yml -f confirm=true --ref main
+gh workflow run release-standalone.yml -f confirm=true --ref main
+```
 
 Core and UI use the immutable shared release workflow. Both request exactly
 the `linux-amd64` and `darwin-arm64` variants, require both builds, disable
 catalog dispatch, and publish separate prereleases in this repository. Core
 enables the host Metal toolchain because its proof dependency graph compiles
-Metal kernels. UI does not.
-
-Publication does not require a catalog URL or prior Basecamp install result.
-After source assets exist, the catalog can index their immutable URLs and run
-the fresh Basecamp dependency-closure test.
-
-## Automated Release via GitHub Actions (CI)
-
-Releases are triggered through GitHub Actions CI using `workflow_dispatch` on `main`:
-
-```bash
-# Trigger standalone AppImage/macOS release build in CI
-gh workflow run release-standalone.yml -f confirm=true --ref main
-
-# Trigger Inspector Core LGX release build in CI
-gh workflow run release-core.yml -f confirmation=logos-3esmit-release --ref main
-
-# Trigger Inspector UI LGX release build in CI
-gh workflow run release-ui.yml -f confirmation=logos-3esmit-release --ref main
-```
-
-Each CI release job enforces contract validation (`python3 scripts/check-release-workflow.py`), performs automated matrix builds for Linux AMD64 and Darwin ARM64, executes host graphics smoke tests without Nix store access, and creates verified GitHub prereleases.
+Metal kernels. UI does not. Standalone builds and smokes native packages on
+Linux and macOS, including a Linux GUI smoke with `/nix/store` hidden.
 
 ## Standalone portability contract
 
@@ -100,9 +114,10 @@ check removes its draft and tag.
 2. Run source identity, static workflow, Rust, native, QML, and available
    native packaging checks.
 3. Merge only after CI and review pass.
-4. From `main`, dispatch Core, UI, or standalone independently with its
-   explicit confirmation input.
-5. Verify the published release tag, merged LGX variants or standalone
+4. From `main`, dispatch the complete release workflow with
+   `confirm=true`. Use a stream-specific workflow only for isolated
+   republish after a partial failure.
+5. Verify all three published release tags, merged LGX variants, standalone
    checksums, and target commit.
 6. Index source release URLs in the package catalog.
 7. Install the exact Inspector UI dependency closure into a fresh Basecamp

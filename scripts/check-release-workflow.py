@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = {
+    "complete": ROOT / ".github" / "workflows" / "release.yml",
     "core": ROOT / ".github" / "workflows" / "release-core.yml",
     "ui": ROOT / ".github" / "workflows" / "release-ui.yml",
     "standalone": ROOT / ".github" / "workflows" / "release-standalone.yml",
@@ -98,6 +99,7 @@ def run_check(command: list[str], label: str, errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     texts = {name: read(path, errors) for name, path in WORKFLOWS.items()}
+    complete = texts["complete"]
     core = texts["core"]
     ui = texts["ui"]
     standalone = texts["standalone"]
@@ -108,6 +110,7 @@ def main() -> int:
 
     common_lgx = (
         "workflow_dispatch:",
+        "workflow_call:",
         release_action,
         "variants: linux-amd64,darwin-arm64",
         "require_all_variants: true",
@@ -141,6 +144,7 @@ def main() -> int:
         standalone,
         (
             "workflow_dispatch:",
+            "workflow_call:",
             ".#standalone-appimage",
             ".#standalone-macos-app",
             "unshare --mount",
@@ -166,6 +170,24 @@ def main() -> int:
             "--draft=false",
         ),
         "standalone release workflow",
+        errors,
+    )
+    require(
+        complete,
+        (
+            "workflow_dispatch:",
+            "uses: ./.github/workflows/release-core.yml",
+            "uses: ./.github/workflows/release-ui.yml",
+            "uses: ./.github/workflows/release-standalone.yml",
+            "confirm: true",
+            "logos_inspector-v",
+            "logos_inspector_ui-v",
+            "standalone-v",
+            "standalone_release.py verify",
+            'test -f "published/core/logos_inspector-$VERSION.lgx"',
+            'test -f "published/ui/logos_inspector_ui-$VERSION.lgx"',
+        ),
+        "complete release workflow",
         errors,
     )
     linux_build = standalone.find("- name: Build AppImage")
@@ -299,6 +321,8 @@ def main() -> int:
             "logos_inspector-v<version>",
             "logos_inspector_ui-v<version>",
             "standalone-v<version>",
+            "release.yml",
+            "gh workflow run release.yml -f confirm=true --ref main",
             "AppImage",
             "Apple silicon",
             "with `/nix/store` hidden",
