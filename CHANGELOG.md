@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0-rc8] - 2026-07-25
+
 ### Added
 
 - Source-owned, fail-closed GitHub Release automation for separate merged
@@ -14,6 +16,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bundles, with native extracted-GUI smoke tests before publication. Release
   jobs classify inert vendor build-prefix strings and reject executable
   build-host paths; Linux smoke hides the Nix store entirely.
+- Complete release entry point that publishes Core LGX, UI LGX, and standalone
+  artifacts from one confirmed `main` dispatch, then verifies the full asset
+  set.
 
 ### Changed
 
