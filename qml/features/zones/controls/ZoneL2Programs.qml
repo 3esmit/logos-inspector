@@ -16,6 +16,9 @@ ColumnLayout {
     property var zoneDetail: null
     property string currentTool: "programs"
     property string commitmentQuery: ""
+    readonly property bool sequencerDataDisplayEnabled: root.zoneState
+        && (root.zoneState.l2SequencerDisplayEnabled === true
+            || root.zoneState.l2SequencerReadEnabled === true)
 
     signal configureSourcesRequested()
     signal configureIdlsRequested()
@@ -73,7 +76,7 @@ ColumnLayout {
         }
 
         ZoneKindChip {
-            visible: root.zoneState.l2SequencerReadEnabled
+            visible: root.sequencerDataDisplayEnabled
             theme: root.theme
             label: qsTr("Selected Sequencer")
             tone: "info"
@@ -86,9 +89,7 @@ ColumnLayout {
         tone: root.zoneState.l2Applicable ? "warning" : "info"
         title: root.zoneState.l2Applicable
             ? qsTr("Sequencer source required") : qsTr("L2 not applicable")
-        message: root.zoneState.l2Applicable
-            ? qsTr("Select a Sequencer source for this Zone.")
-            : root.zoneState.l2AvailabilityMessage()
+        message: root.zoneState.l2AvailabilityMessage()
         Layout.fillWidth: true
     }
 
@@ -96,12 +97,14 @@ ColumnLayout {
         visible: root.zoneState.l2Applicable && !root.zoneState.l2SequencerReadEnabled
         theme: root.theme
         text: qsTr("Open Sources")
+        enabled: root.zoneState.l2SequencerReadEnabled
         Layout.preferredWidth: 150
         onClicked: root.configureSourcesRequested()
     }
 
     TabSwitch {
-        visible: root.zoneState.l2SequencerReadEnabled
+        visible: root.sequencerDataDisplayEnabled
+        enabled: root.zoneState.l2SequencerReadEnabled
         theme: root.theme
         options: tools
         current: root.currentTool
@@ -116,9 +119,10 @@ ColumnLayout {
     Loader {
         id: interactionLoader
 
-        active: root.zoneState.l2SequencerReadEnabled
+        active: root.sequencerDataDisplayEnabled
             && root.currentTool === "interact"
         visible: active
+        enabled: root.zoneState.l2SequencerReadEnabled
         Layout.fillWidth: true
 
         sourceComponent: ZoneL2ProgramInteraction {
@@ -135,8 +139,9 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: root.zoneState.l2SequencerReadEnabled
+        visible: root.sequencerDataDisplayEnabled
             && root.currentTool === "programs"
+        enabled: root.zoneState.l2SequencerReadEnabled
         spacing: root.theme.gapSmall
         Layout.fillWidth: true
 
@@ -215,8 +220,9 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: root.zoneState.l2SequencerReadEnabled
+        visible: root.sequencerDataDisplayEnabled
             && root.currentTool === "proof"
+        enabled: root.zoneState.l2SequencerReadEnabled
         spacing: root.theme.gapLarge
         Layout.fillWidth: true
 
@@ -304,8 +310,9 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: root.zoneState.l2SequencerReadEnabled
+        visible: root.sequencerDataDisplayEnabled
             && root.currentTool === "nonces"
+        enabled: root.zoneState.l2SequencerReadEnabled
         spacing: root.theme.gapLarge
         Layout.fillWidth: true
 

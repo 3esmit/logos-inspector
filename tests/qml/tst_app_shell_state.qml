@@ -202,16 +202,45 @@ TestCase {
         }))
     }
 
-    function test_zones_group_hides_unverified_configured_dashboards() {
+    function test_zones_group_retains_cached_dashboards_during_verification() {
         const channelId = "22".repeat(32)
         setVerifiedZoneSummaries([configuredZone(channelId)],
             "genesis_id:" + "11".repeat(32))
+        const menuKey = String(model.zoneMenuGroups()[0].fields[0].key || "")
+        verify(model.setZoneMenuEnabled(menuKey, true))
         model.zoneInspection.verification = "checking"
         wait(0)
 
-        verify(!model.shell.navRows().some(function (row) {
-            return String(row.view || "") === "sequencerDashboard"
-        }))
+        const cachedRows = model.shell.navRows().filter(function (row) {
+            return String(row.channelId || "") === channelId
+        })
+        compare(cachedRows.length, 1)
+        verify(cachedRows[0].enabled === false)
+    }
+
+    function test_active_cached_zone_dashboard_remains_openable_read_only() {
+        const channelId = "44".repeat(32)
+        const zone = configuredZone(channelId)
+        setVerifiedZoneSummaries([zone], "genesis_id:" + "11".repeat(32))
+        const menuKey = String(model.zoneMenuGroups()[0].fields[0].key || "")
+        verify(model.setZoneMenuEnabled(menuKey, true))
+
+        model.zoneInspection.activeZoneContext = Object.assign({},
+            zone.active_zone_context_fields, { context_revision: 1 })
+        model.zoneInspection.sourceRevision = 2
+        model.zoneInspection.networkScopeKey = ""
+        model.zoneInspection.verification = "source_behind"
+        wait(0)
+
+        verify(!model.zoneInspection.summaryRowsUsable)
+        verify(model.zoneInspection.summaryRowsRetainable)
+        const cachedRows = model.shell.navRows().filter(function (row) {
+            return String(row.channelId || "") === channelId
+        })
+        compare(cachedRows.length, 1)
+        verify(cachedRows[0].enabled)
+        verify(model.openZoneDashboard(channelId))
+        compare(model.shell.currentView, "sequencerDashboard")
     }
 
     function test_zones_menu_selection_is_scoped_to_the_verified_network() {
@@ -229,6 +258,7 @@ TestCase {
         }))
 
         model.zoneInspection.networkScopeKey = "genesis_id:" + "33".repeat(32)
+        model.zoneInspection.summarySourceKey = "stale-source"
         wait(0)
 
         compare(model.zoneMenuGroups().length, 0)
@@ -238,6 +268,7 @@ TestCase {
 
         model.zoneInspection.summaryNetworkScopeKey
             = model.zoneInspection.networkScopeKey
+        model.zoneInspection.summarySourceKey = model.zoneInspection.desiredSourceKey
         wait(0)
         const secondGroups = model.zoneMenuGroups()
         compare(secondGroups.length, 1)
@@ -250,11 +281,13 @@ TestCase {
     }
 
     function setVerifiedZoneSummaries(rows, scopeKey) {
+        model.zoneInspection.desiredSourceKey = "direct_http\nhttps://l1.example\n"
         model.zoneInspection.verification = "verified"
         model.zoneInspection.sourceRevision = 1
         model.zoneInspection.networkScopeKey = String(scopeKey || "")
         model.zoneInspection.sourceConfigEpoch = 1
         model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summarySourceKey = model.zoneInspection.desiredSourceKey
         model.zoneInspection.summarySourceRevision = 1
         model.zoneInspection.summaryNetworkScopeKey
             = model.zoneInspection.networkScopeKey

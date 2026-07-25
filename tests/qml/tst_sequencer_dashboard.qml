@@ -256,6 +256,31 @@ TestCase {
         }
     }
 
+    function test_cached_blocks_remain_visible_and_read_only_during_catalog_recovery() {
+        let blocks = null
+        let table = null
+        tryVerify(function () {
+            blocks = findChild(page, "zoneL2Blocks")
+            table = blocks ? findChild(blocks, "zoneL2BlocksTable") : null
+            return blocks !== null && table !== null && table.visible
+        })
+        verify(blocks.enabled)
+        verify(zoneState.l2BlockRows.length > 0)
+
+        zoneState.verification = "recovering"
+        wait(0)
+
+        tryVerify(function () {
+            blocks = findChild(page, "zoneL2Blocks")
+            table = blocks ? findChild(blocks, "zoneL2BlocksTable") : null
+            return blocks !== null && table !== null && blocks.visible
+                && table.visible
+        })
+        verify(!blocks.enabled)
+        verify(hasVisibleText(page,
+            "Catalog verification is refreshing. Cached Sequencer data is read-only until it completes."))
+    }
+
     function test_page_excludes_indexer_and_l1_surfaces() {
         verify(!hasVisibleText(page, "Transfers"))
         verify(!hasVisibleText(page, "L1 Evidence"))

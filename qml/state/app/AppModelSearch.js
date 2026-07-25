@@ -90,8 +90,20 @@ function openZoneDashboard(root, channelId, recordHistory) {
     with (root) {
         const target = String(channelId || "")
         const state = zoneInspection
-        if (!target.length || !state || typeof state.activateZone !== "function"
-                || !state.activateZone(target)) {
+        if (!target.length || !state || typeof state.activateZone !== "function") {
+            return false
+        }
+        if (state.summaryRowsUsable !== true) {
+            if (state.summaryRowsRetainable !== true
+                    || String(state.activeZoneId || "") !== target) {
+                return false
+            }
+            const cachedContext = state.activeZoneContext || ({})
+            shell.selectView(String(cachedContext.selected_sequencer_source_id || "").length > 0
+                ? "sequencerDashboard" : "zones", recordHistory)
+            return true
+        }
+        if (!state.activateZone(target)) {
             return false
         }
         const context = state.activeZoneContext || ({})

@@ -11,6 +11,9 @@ ColumnLayout {
     required property Theme theme
     required property var zoneState
     property string accountQuery: String(root.zoneState.l2AccountId || "")
+    readonly property bool sequencerDataDisplayEnabled: root.zoneState
+        && (root.zoneState.l2SequencerDisplayEnabled === true
+            || root.zoneState.l2SequencerReadEnabled === true)
 
     signal configureSourcesRequested()
 
@@ -50,7 +53,8 @@ ColumnLayout {
             visible: root.zoneState.l2AccountId.length > 0
             theme: root.theme
             text: qsTr("Refresh snapshot")
-            enabled: !root.zoneState.l2AccountProvisionalInFlight
+            enabled: root.zoneState.l2SequencerReadEnabled
+                && !root.zoneState.l2AccountProvisionalInFlight
             Layout.preferredWidth: 156
             onClicked: root.zoneState.refreshL2SequencerAccount()
         }
@@ -62,9 +66,7 @@ ColumnLayout {
         tone: root.zoneState.l2Applicable ? "warning" : "info"
         title: root.zoneState.l2Applicable
             ? qsTr("Sequencer source required") : qsTr("L2 not applicable")
-        message: root.zoneState.l2Applicable
-            ? qsTr("Select a Sequencer source for this Zone.")
-            : root.zoneState.l2AvailabilityMessage()
+        message: root.zoneState.l2AvailabilityMessage()
         Layout.fillWidth: true
     }
 
@@ -78,7 +80,8 @@ ColumnLayout {
     }
 
     RowLayout {
-        visible: root.zoneState.l2SequencerReadEnabled
+        visible: root.sequencerDataDisplayEnabled
+        enabled: root.zoneState.l2SequencerReadEnabled
         spacing: root.theme.gapSmall
         Layout.fillWidth: true
 

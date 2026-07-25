@@ -31,8 +31,16 @@ QtObject {
     property var zoneSummaries: []
     property bool summaryLoaded: false
     property bool summaryStale: false
+    readonly property bool summaryRowsRetainable: summaryLoaded
+        && summaryNetworkScopeKey.length > 0
+        && (summarySourceKey.length === 0
+            || summarySourceKey === desiredSourceKey)
+        && (sourceConfigEpoch <= 0
+            || summarySourceConfigEpoch === sourceConfigEpoch)
+    readonly property string retainedNetworkScopeKey: summaryRowsRetainable
+        ? summaryNetworkScopeKey : ""
     readonly property bool summaryRowsUsable: verification === "verified"
-        && summaryLoaded
+        && summaryRowsRetainable
         && sourceRevision > 0
         && networkScopeKey.length > 0
         && summarySourceRevision === sourceRevision
@@ -108,6 +116,7 @@ QtObject {
     property int statusAcceptanceRevision: 0
     property int summaryRequestRevision: 0
     property var summaryAssembly: null
+    property string summarySourceKey: ""
     property double summarySourceRevision: 0
     property string summaryNetworkScopeKey: ""
     property double summaryCatalogRevision: 0
@@ -378,15 +387,21 @@ QtObject {
     function acceptStatus(report) {
         const nextScope = report.network_scope || null
         const nextScopeKey = scopeKey(nextScope)
+        const nextSourceConfigEpoch = numericRevision(report.source_config_epoch)
+        const nextVerification = String(report.verification || "empty")
         const scopeChanged = networkScopeKey.length > 0
             && nextScopeKey.length > 0
             && nextScopeKey !== networkScopeKey
         const restoreScopeChanged = pendingZoneRestoreScopeKey.length > 0
             && nextScopeKey.length > 0
             && nextScopeKey !== pendingZoneRestoreScopeKey
+        const retainCachedSummary = nextVerification !== "mismatch"
+            && cachedSummaryCompatible(nextScopeKey, nextSourceConfigEpoch)
+        const cachedSummaryIncompatible = !retainCachedSummary
         const catalogChanged = catalogStatus !== null
             && numericRevision(report.catalog_revision) !== catalogRevision
-        if (scopeChanged || restoreScopeChanged) {
+        if (scopeChanged || restoreScopeChanged
+                || (summaryLoaded && cachedSummaryIncompatible)) {
             pendingZoneRestoreId = ""
             pendingZoneRestoreScopeKey = ""
             startupAutoSelectionPending = true
@@ -395,12 +410,17 @@ QtObject {
         } else if (catalogChanged) {
             evidence.resetEvidenceState(true)
         }
-        if (String(report.verification || "") !== "verified") {
+        if (nextVerification !== "verified") {
             if (activeZoneId.length > 0) {
                 pendingZoneRestoreId = activeZoneId
-                pendingZoneRestoreScopeKey = networkScopeKey
+                pendingZoneRestoreScopeKey = retainCachedSummary
+                    ? summaryNetworkScopeKey : networkScopeKey
             }
-            clearActiveZone()
+            if (cachedSummaryIncompatible) {
+                clearActiveZone()
+            } else {
+                detailStale = zoneDetail !== null
+            }
         }
 
         networkScope = nextScope
@@ -408,7 +428,7 @@ QtObject {
         catalogRevision = numericRevision(report.catalog_revision)
         sourceConfigEpoch = numericRevision(report.source_config_epoch)
         observationRevision = numericRevision(report.observation_revision)
-        verification = String(report.verification || "empty")
+        verification = nextVerification
         coverage = report.coverage && typeof report.coverage === "object" ? report.coverage : ({})
         ingestion = report.ingestion && typeof report.ingestion === "object" ? report.ingestion : ({})
         readiness = report.readiness && typeof report.readiness === "object" ? report.readiness : null
@@ -622,12 +642,16 @@ QtObject {
         const report = assembly.report
         if (activeZoneId.length > 0) {
             startupAutoSelectionPending = false
-            pendingZoneRestoreId = ""
-            pendingZoneRestoreScopeKey = ""
             const nextActiveRow = rowFromRows(rows, activeZoneId)
             if (!nextActiveRow) {
+                if (pendingZoneRestoreId.length === 0) {
+                    pendingZoneRestoreId = activeZoneId
+                    pendingZoneRestoreScopeKey = summaryNetworkScopeKey
+                }
                 clearActiveZone()
             } else {
+                pendingZoneRestoreId = ""
+                pendingZoneRestoreScopeKey = ""
                 updateActiveContextFromSummary(nextActiveRow)
                 detailStale = true
             }
@@ -635,6 +659,7 @@ QtObject {
 
         summaryLoaded = true
         summarySourceRevision = numericRevision(report.source_revision)
+        summarySourceKey = desiredSourceKey
         summaryNetworkScopeKey = scopeKey(report.network_scope)
         summaryCatalogRevision = numericRevision(report.catalog_revision)
         summarySourceConfigEpoch = numericRevision(report.source_config_epoch)
@@ -978,13 +1003,19 @@ QtObject {
                 return
             }
             if (nextSourceRevision !== sourceRevision) {
+                const retainCachedContext = summaryRowsRetainable
                 if (activeZoneId.length > 0) {
                     pendingZoneRestoreId = activeZoneId
-                    pendingZoneRestoreScopeKey = networkScopeKey
+                    pendingZoneRestoreScopeKey = retainCachedContext
+                        ? summaryNetworkScopeKey : networkScopeKey
                 }
                 sourceGeneration += 1
                 sourceRevision = nextSourceRevision
-                clearActiveZone()
+                if (!retainCachedContext) {
+                    clearActiveZone()
+                } else {
+                    detailStale = zoneDetail !== null
+                }
                 invalidateSummary(false)
             }
             statusRefreshRequested()
@@ -1184,6 +1215,20 @@ QtObject {
             && summaryRevision === numericRevision(catalogStatus.summary_revision)
     }
 
+    function cachedSummaryCompatible(nextScopeKey, nextSourceConfigEpoch) {
+        if (!summaryLoaded || summaryNetworkScopeKey.length === 0
+                || (summarySourceKey.length > 0
+                    && summarySourceKey !== desiredSourceKey)) {
+            return false
+        }
+        if (String(nextScopeKey || "").length > 0
+                && String(nextScopeKey) !== summaryNetworkScopeKey) {
+            return false
+        }
+        const nextEpoch = numericRevision(nextSourceConfigEpoch)
+        return nextEpoch <= 0 || nextEpoch === summarySourceConfigEpoch
+    }
+
     function detailMatchesStatus() {
         if (!zoneDetailReport || !activeZoneContext || !zoneDetail) {
             return false
@@ -1294,6 +1339,7 @@ QtObject {
             summaryLoaded = false
             summaryStale = false
             summaryRevision = 0
+            summarySourceKey = ""
             summarySourceRevision = 0
             summaryNetworkScopeKey = ""
             summaryCatalogRevision = 0

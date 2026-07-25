@@ -265,12 +265,15 @@ QtObject {
     readonly property bool l2SourceConfigured: l2Applicable
         && (String(activeZoneContext.indexer_source_id || "").length > 0
             || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
+    readonly property bool l2DisplayEnabled: l2Applicable && l2SourceConfigured
     readonly property bool l2ReadEnabled: verification === "verified"
-        && l2Applicable && l2SourceConfigured
+        && l2DisplayEnabled
     property bool sequencerSourceReadEligible: true
     readonly property bool l2SequencerConfigured: l2Applicable
         && String(activeZoneContext
             && activeZoneContext.selected_sequencer_source_id || "").length > 0
+    readonly property bool l2SequencerDisplayEnabled: l2SequencerConfigured
+        && (l2SequencerReadEnabled || verification !== "verified")
     readonly property bool l2IndexerReadEnabled: l2ReadEnabled
         && String(activeZoneContext && activeZoneContext.indexer_source_id || "").length > 0
     readonly property bool l2SequencerReadEnabled: l2ReadEnabled

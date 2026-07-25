@@ -17,6 +17,7 @@ ColumnLayout {
     readonly property var l2State: root.zoneState.l2
     readonly property string sequencerSourceId: root.l2State.l2SequencerSourceId()
     readonly property bool sequencerConfigured: root.l2State.l2SequencerConfigured
+    readonly property bool sequencerDisplayable: root.l2State.l2SequencerDisplayEnabled
     readonly property bool sequencerReady: root.l2State.l2SequencerReadEnabled
 
     objectName: "sequencerDashboardPage"
@@ -61,7 +62,9 @@ ColumnLayout {
         message: !root.l2State.l2Applicable
             ? qsTr("Select a verified Sequencer Zone from Zones.")
             : root.sequencerConfigured
-                ? qsTr("Waiting for the selected Sequencer source to confirm this Channel.")
+                ? (root.sequencerDisplayable
+                    ? qsTr("Catalog verification is refreshing. Cached Sequencer data is read-only until it completes.")
+                    : qsTr("Waiting for the selected Sequencer source to confirm this Channel."))
                 : qsTr("Select a Sequencer source in this Zone before opening Sequencer data.")
         Layout.fillWidth: true
     }
@@ -76,7 +79,7 @@ ColumnLayout {
     }
 
     RowLayout {
-        visible: root.sequencerReady
+        visible: root.sequencerDisplayable
         spacing: root.theme.gapSmall
         Layout.fillWidth: true
 
@@ -101,7 +104,8 @@ ColumnLayout {
     }
 
     TabSwitch {
-        visible: root.sequencerReady
+        visible: root.sequencerDisplayable
+        enabled: root.sequencerReady
         theme: root.theme
         options: sequencerTabs
         current: root.currentTab
@@ -110,7 +114,7 @@ ColumnLayout {
     }
 
     Loader {
-        active: root.sequencerReady && root.currentTab === "blocks"
+        active: root.sequencerDisplayable && root.currentTab === "blocks"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
@@ -121,6 +125,7 @@ ColumnLayout {
             zoneState: root.l2State.blocks
             initialView: root.l2ViewForState()
             exactSourceId: root.sequencerSourceId
+            enabled: root.sequencerReady
             onConfigureSourcesRequested: root.openSources()
             onViewRequested: function (view) {
                 root.zoneState.requestedL2View = String(view || "blocks")
@@ -129,7 +134,7 @@ ColumnLayout {
     }
 
     Loader {
-        active: root.sequencerReady && root.currentTab === "accounts"
+        active: root.sequencerDisplayable && root.currentTab === "accounts"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
@@ -138,12 +143,13 @@ ColumnLayout {
         sourceComponent: SequencerAccounts {
             theme: root.theme
             zoneState: root.l2State.accounts
+            enabled: root.sequencerReady
             onConfigureSourcesRequested: root.openSources()
         }
     }
 
     Loader {
-        active: root.sequencerReady && root.currentTab === "programs"
+        active: root.sequencerDisplayable && root.currentTab === "programs"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
@@ -154,6 +160,7 @@ ColumnLayout {
             zoneState: root.l2State.tools
             appModel: root.model
             zoneDetail: root.zoneState.zoneDetail
+            enabled: root.sequencerReady
             onConfigureSourcesRequested: root.openSources()
             onConfigureIdlsRequested: root.openIdlRegistry()
             onTransactionRequested: function (transactionId, exactSourceId) {
