@@ -1109,11 +1109,34 @@ ColumnLayout {
     }
 
     function packageInstallRuntimeReady() {
+        if (!root.model.report || root.model.statusLoading) {
+            return false
+        }
         const state = root.model.runtimeState()
-        return state !== "running" && state !== "starting" && state !== "stopping"
+        if (state === "starting" || state === "stopping") {
+            return false
+        }
+        if (state !== "running") {
+            return true
+        }
+        const observed = root.observedAttachedModulesDir()
+        return root.model.localAttachedRuntime()
+            && observed.length > 0
+            && root.runtimeModulesDir.trim() !== observed
     }
 
     function configuredRuntimeModulesDir() {
+        if (root.model.localAttachedRuntime()) {
+            return ""
+        }
+        const runtime = root.model.runtimeInfo()
+        return String(runtime && runtime.modules_dir || "").trim()
+    }
+
+    function observedAttachedModulesDir() {
+        if (!root.model.localAttachedRuntime()) {
+            return ""
+        }
         const runtime = root.model.runtimeInfo()
         return String(runtime && runtime.modules_dir || "").trim()
     }
@@ -1148,6 +1171,9 @@ ColumnLayout {
     }
 
     function indexerPackageTargetProblem() {
+        if (root.model.localAttachedRuntime()) {
+            return qsTr("Channel Indexer package installation is not available for a service-attached LogosCore runtime yet. Use Core Modules to manage daemon packages; configure per-zone Indexers in Zone Sources.")
+        }
         return root.packageCatalogTargetProblem(
             root.model.packageCatalogModulesDir(),
             qsTr("the Indexer package catalog"))
@@ -1426,6 +1452,9 @@ ColumnLayout {
     }
 
     function moduleCatalogTone() {
+        if (root.model.modulePackageInstallError.length > 0) {
+            return "error"
+        }
         if (root.model.moduleCatalogError.length > 0) {
             return "error"
         }
@@ -1442,6 +1471,9 @@ ColumnLayout {
     }
 
     function moduleCatalogTitle() {
+        if (root.model.modulePackageInstallError.length > 0) {
+            return qsTr("Module package installation failed")
+        }
         if (root.model.moduleCatalogLoading) {
             return qsTr("Loading configured module repositories")
         }
@@ -1455,6 +1487,9 @@ ColumnLayout {
     }
 
     function moduleCatalogMessage() {
+        if (root.model.modulePackageInstallError.length > 0) {
+            return root.model.modulePackageInstallError
+        }
         if (root.model.moduleCatalogLoading) {
             return qsTr("Querying configured repositories and installed core modules for %1.")
                 .arg(root.runtimeModulesDir)
@@ -1494,6 +1529,18 @@ ColumnLayout {
     }
 
     function moduleTargetDetail() {
+        const observed = root.observedAttachedModulesDir()
+        if (root.model.localAttachedRuntime()
+                && root.model.runtimeState() === "running"
+                && observed.length > 0) {
+            if (root.runtimeModulesDir.trim() === observed) {
+                return qsTr("Target core-module directory: %1. This is the running local LogosCore service directory; stop the service before installation, then start it to load newly installed core modules.")
+                    .arg(root.runtimeModulesDir)
+            }
+            return qsTr("Target core-module directory: %1. The running local LogosCore service uses %2. Inspector verifies this target is distinct before changing it; the service will not load packages from it unless reconfigured.")
+                .arg(root.runtimeModulesDir)
+                .arg(observed)
+        }
         return qsTr("Target core-module directory: %1. Stop LogosCore Runtime before installation, then start it to load newly installed core modules.")
             .arg(root.runtimeModulesDir)
     }

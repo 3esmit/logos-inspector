@@ -40,6 +40,7 @@ TestCase {
         state.packageCatalogGeneration = 0
         state.moduleCatalog = null
         state.moduleCatalogError = ""
+        state.modulePackageInstallError = ""
         state.moduleCatalogLoading = false
         state.moduleCatalogGeneration = 0
         state.nodeConfigSnapshot = null
@@ -1561,5 +1562,37 @@ TestCase {
         compare(state.pendingOperation, "")
         compare(state.pendingModuleFilePath, "")
         compare(state.pendingModuleRepositoryName, "")
+    }
+
+    function test_module_install_failure_is_retained_for_the_package_panel() {
+        gateway.responses = ({
+            localModulePackageInstall: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "stop the local LogosCore runtime before changing installed modules"
+            }
+        })
+
+        state.beginModuleFileInstall("/tmp/openmetrics-1.0.0.lgx", "/tmp/modules")
+        state.runPendingAction()
+
+        compare(state.modulePackageInstallError,
+                "stop the local LogosCore runtime before changing installed modules")
+        compare(state.operations[state.operations.length - 1].status, "failed")
+        compare(gateway.history[gateway.history.length - 1].operation.method,
+                "localModulePackageInstall")
+    }
+
+    function test_module_package_confirmation_distinguishes_an_independent_attached_target() {
+        const report = attachedRuntimeReport("running")
+        report.runtime.modules_dir = "/opt/logos-node/modules"
+        state.report = report
+        state.revision += 1
+
+        state.beginModuleFileInstall("/tmp/openmetrics-1.0.0.lgx", "/tmp/staged-modules")
+
+        verify(state.actionDraftMessage().indexOf("continues to use /opt/logos-node/modules") >= 0)
+        verify(state.actionDraftMessage().indexOf("verifies that this target is distinct") >= 0)
     }
 }

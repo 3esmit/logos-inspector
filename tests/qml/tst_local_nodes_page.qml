@@ -59,6 +59,7 @@ Item {
             state.packageCatalogGeneration = 0
             state.moduleCatalog = null
             state.moduleCatalogError = ""
+            state.modulePackageInstallError = ""
             state.moduleCatalogLoading = false
             state.moduleCatalogGeneration = 0
             state.clearActionDraft()
@@ -290,6 +291,48 @@ Item {
             verify(indexerInstall.enabled)
             verify(moduleInstall.enabled)
             verify(moduleFileInstall.enabled)
+        }
+
+        function test_attached_runtime_keeps_its_live_modules_directory_safe() {
+            const page = createPage(attachedServiceReport("running"), null, sampleModuleCatalog([]))
+            const moduleFileInstall = findChild(page, "modulePackageInstallFileButton")
+            verify(!!moduleFileInstall, "Module file install exists")
+
+            page.localModulePackagePath = "/tmp/openmetrics-1.0.0.lgx"
+            compare(page.runtimeModulesDir, "/opt/logos-node/modules")
+            verify(!moduleFileInstall.enabled)
+            verify(page.moduleTargetDetail().indexOf("stop the service") >= 0)
+
+            page.runtimeModulesDir = "/tmp/separate-modules"
+            verify(moduleFileInstall.enabled)
+            verify(page.moduleTargetDetail().indexOf("verifies this target is distinct") >= 0)
+        }
+
+        function test_attached_runtime_does_not_offer_broken_indexer_package_install() {
+            for (const runtimeState of ["running", "stopped"]) {
+                const page = createPage(
+                    attachedServiceReport(runtimeState),
+                    samplePackageCatalog(null),
+                    sampleModuleCatalog([]))
+                const indexerInstall = findChild(page, "indexerPackageInstallButton")
+                verify(!!indexerInstall, "Indexer package install exists")
+                verify(!indexerInstall.enabled)
+                verify(page.indexerPackageTargetProblem().indexOf("service-attached") >= 0)
+                page.destroy()
+            }
+        }
+
+        function test_module_package_failure_is_visible_in_its_panel() {
+            const page = createPage(sampleReport("stopped"), null, sampleModuleCatalog([]))
+            const status = findChild(page, "modulePackageStatus")
+            verify(!!status, "Module package status exists")
+
+            state.modulePackageInstallError = "stop the local LogosCore runtime before changing installed modules"
+
+            compare(status.tone, "error")
+            compare(status.title, "Module package installation failed")
+            compare(status.message,
+                    "stop the local LogosCore runtime before changing installed modules")
         }
 
         function test_install_confirmation_owns_exact_release_and_package_identity() {
@@ -744,6 +787,7 @@ Item {
             report.runtime = {
                 ownership: "local_attached",
                 run_state: runtimeState,
+                modules_dir: "/opt/logos-node/modules",
                 service_unit: "logos-node.service",
                 detail: "local LogosCore daemon is running under system service `logos-node.service`"
             }

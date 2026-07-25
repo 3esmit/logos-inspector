@@ -6,6 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "linux")]
+use std::io::Read as _;
+
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -224,6 +227,45 @@ impl LogoscoreRuntimeProfile {
             LogoscoreRuntimeOwnership::LocalAttached => self.daemon_process_id.is_some(),
             LogoscoreRuntimeOwnership::External => false,
         }
+    }
+
+    /// Returns the module directory reported by a live local service only when
+    /// both the local CLI and the process command line identify the same daemon.
+    ///
+    /// An attached profile never persists this path: it observes a service that
+    /// Inspector did not create. Callers may use it to distinguish that service's
+    /// live modules directory from another explicitly selected package target.
+    #[must_use]
+    pub(super) fn verified_attached_modules_dir(&self) -> Option<PathBuf> {
+        if !self.is_attached() || !self.is_running() {
+            return None;
+        }
+        let process_id = self.daemon_process_id?;
+        let modules_dir = self.observed_attached_modules_dir()?;
+        if self
+            .service_target()
+            .is_some_and(|target| system_service_main_process_id(target) != Some(process_id))
+        {
+            return None;
+        }
+        let confirmed_process_id = self
+            .cli_runtime()
+            .ok()?
+            .status_probe_with_timeout(PROBE_TIMEOUT)
+            .ok()
+            .and_then(|output| running_daemon_process_id(&output.value))?;
+        (confirmed_process_id == process_id).then_some(modules_dir)
+    }
+
+    /// Returns the module directory from the command line of the daemon that
+    /// was just discovered by the local CLI. This is display-only evidence;
+    /// package mutations must use [`Self::verified_attached_modules_dir`].
+    #[must_use]
+    fn observed_attached_modules_dir(&self) -> Option<PathBuf> {
+        (self.is_attached() && self.is_running())
+            .then_some(self.daemon_process_id)
+            .flatten()
+            .and_then(running_daemon_modules_dir)
     }
 
     pub(super) fn cli_runtime(&self) -> Result<LogoscoreCliRuntime> {
@@ -577,6 +619,58 @@ fn running_daemon_process_id(status: &Value) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
+fn running_daemon_modules_dir(process_id: u32) -> Option<PathBuf> {
+    const COMMAND_LINE_LIMIT: u64 = 64 * 1024;
+
+    let mut bytes = Vec::new();
+    fs::File::open(format!("/proc/{process_id}/cmdline"))
+        .ok()?
+        .take(COMMAND_LINE_LIMIT.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > COMMAND_LINE_LIMIT as usize {
+        return None;
+    }
+    let mut arguments = Vec::new();
+    for value in bytes.split(|byte| *byte == 0) {
+        if value.is_empty() {
+            continue;
+        }
+        arguments.push(std::str::from_utf8(value).ok()?);
+    }
+    modules_dir_from_daemon_arguments(arguments)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn running_daemon_modules_dir(_process_id: u32) -> Option<PathBuf> {
+    None
+}
+
+fn modules_dir_from_daemon_arguments(arguments: Vec<&str>) -> Option<PathBuf> {
+    let mut next_is_modules_dir = false;
+    let mut modules_dir = None;
+    for argument in arguments {
+        let candidate = if next_is_modules_dir {
+            next_is_modules_dir = false;
+            Some(argument)
+        } else if matches!(argument, "-m" | "--modules-dir") {
+            next_is_modules_dir = true;
+            None
+        } else {
+            argument.strip_prefix("--modules-dir=")
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let resolved = canonical_directory(Some(candidate)).ok()?;
+        if modules_dir.replace(PathBuf::from(resolved)).is_some() {
+            return None;
+        }
+    }
+    (!next_is_modules_dir).then_some(modules_dir).flatten()
+}
+
+#[cfg(target_os = "linux")]
 fn system_service_target(process_id: u32) -> Option<LogoscoreServiceTarget> {
     let cgroup = fs::read_to_string(format!("/proc/{process_id}/cgroup")).ok()?;
     let target = cgroup.lines().find_map(system_service_target_from_cgroup)?;
@@ -837,6 +931,13 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
     };
     let running = profile.is_running();
     let service_unit = profile.service_target().map(|target| target.unit.clone());
+    let observed_modules_dir = profile
+        .observed_attached_modules_dir()
+        .map(|path| path.display().to_string());
+    let modules_dir = profile
+        .modules_dir
+        .clone()
+        .or_else(|| observed_modules_dir.clone());
     LogoscoreRuntimeStatus {
         ownership: match profile.ownership {
             LogoscoreRuntimeOwnership::External => "external",
@@ -848,11 +949,16 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
         id: Some(profile.id.clone()),
         binary_path: Some(profile.binary_path.clone()),
         config_dir: Some(profile.config_dir.clone()),
-        modules_dir: profile.modules_dir.clone(),
+        modules_dir,
         persistence_path: profile.persistence_path.clone(),
         process_id: profile.daemon_process_id.filter(|_| running),
         service_unit: service_unit.clone(),
-        detail: runtime_status_detail(profile, running, service_unit.as_deref()),
+        detail: runtime_status_detail(
+            profile,
+            running,
+            service_unit.as_deref(),
+            observed_modules_dir.as_deref(),
+        ),
     }
 }
 
@@ -860,8 +966,9 @@ fn runtime_status_detail(
     profile: &LogoscoreRuntimeProfile,
     running: bool,
     service_unit: Option<&str>,
+    observed_modules_dir: Option<&str>,
 ) -> String {
-    match (profile.ownership, running, service_unit) {
+    let detail = match (profile.ownership, running, service_unit) {
         (LogoscoreRuntimeOwnership::LocalAttached, true, Some(unit)) => {
             format!("local LogosCore daemon is running under system service `{unit}`")
         }
@@ -883,7 +990,11 @@ fn runtime_status_detail(
         (LogoscoreRuntimeOwnership::External, _, _) => {
             "non-local LogosCore runtime is not controlled by Inspector".to_owned()
         }
+    };
+    if let Some(modules_dir) = observed_modules_dir {
+        return format!("{detail}; observed modules directory `{modules_dir}`");
     }
+    detail
 }
 
 #[derive(Debug, Clone)]
@@ -1453,6 +1564,46 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         let read_only = attached_profile(Some(42), None);
         assert!(read_only.is_running());
         assert!(!read_only.is_controllable());
+    }
+
+    #[test]
+    fn daemon_modules_directory_parser_requires_one_absolute_existing_option() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        fs::create_dir_all(&modules_dir)?;
+        let expected = fs::canonicalize(&modules_dir)?;
+        let modules_dir = modules_dir.display().to_string();
+        let long_form = format!("--modules-dir={modules_dir}");
+
+        for arguments in [
+            vec!["logoscore", "-m", modules_dir.as_str(), "-D"],
+            vec!["logoscore", "--modules-dir", modules_dir.as_str(), "daemon"],
+            vec!["logoscore", long_form.as_str(), "daemon"],
+        ] {
+            anyhow::ensure!(
+                modules_dir_from_daemon_arguments(arguments) == Some(expected.clone()),
+                "valid daemon modules directory argument was not resolved"
+            );
+        }
+
+        for arguments in [
+            vec!["logoscore", "-m"],
+            vec!["logoscore", "-m", "modules"],
+            vec!["logoscore", "--modules-dir=/missing/modules"],
+            vec![
+                "logoscore",
+                "-m",
+                modules_dir.as_str(),
+                "-m",
+                modules_dir.as_str(),
+            ],
+        ] {
+            anyhow::ensure!(
+                modules_dir_from_daemon_arguments(arguments).is_none(),
+                "invalid daemon modules directory argument was accepted"
+            );
+        }
+        Ok(())
     }
 
     #[test]

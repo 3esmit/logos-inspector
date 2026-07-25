@@ -28,6 +28,7 @@ QtObject {
     property int packageCatalogGeneration: 0
     property var moduleCatalog: null
     property string moduleCatalogError: ""
+    property string modulePackageInstallError: ""
     property bool moduleCatalogLoading: false
     property int moduleCatalogGeneration: 0
     property var nodeConfigSnapshot: null
@@ -75,6 +76,7 @@ QtObject {
         operations = []
         moduleCatalog = null
         moduleCatalogError = ""
+        modulePackageInstallError = ""
         moduleCatalogLoading = false
         moduleCatalogGeneration += 1
         clearActionDraft()
@@ -475,6 +477,7 @@ QtObject {
             return null;
         }
         const operationLabel = String(label || qsTr("Install module package"));
+        modulePackageInstallError = "";
         invalidateStatusRefresh();
         gateway.setBusy(true, operationLabel);
         return gateway.request("localModulePackageInstall", [
@@ -495,6 +498,7 @@ QtObject {
                 refreshModuleCatalog(targetModulesDir);
             } else {
                 const detail = response.error || qsTr("Module package installation failed.");
+                modulePackageInstallError = detail;
                 appendOperationRecord(
                     "install",
                     "",
@@ -828,17 +832,19 @@ QtObject {
 
     function actionDraftMessage() {
         if (pendingOperation === "module_repository") {
-            return qsTr("This downloads %1 %2 from %3, verifies its exact catalog root hash %4 and package checksum, then installs it into %5. LogosCore Runtime must be stopped. The package manager applies its signature policy and reports any unsigned-package warning after installation.")
+            return qsTr("This downloads %1 %2 from %3, verifies its exact catalog root hash %4 and package checksum, then installs it into %5. %6 The package manager applies its signature policy and reports any unsigned-package warning after installation.")
                 .arg(pendingModulePackageName)
                 .arg(pendingPackageVersion)
                 .arg(pendingModuleRepositoryName)
                 .arg(pendingPackageRootHash)
-                .arg(pendingRuntimeModulesDir);
+                .arg(pendingRuntimeModulesDir)
+                .arg(modulePackageRuntimeRequirement(pendingRuntimeModulesDir));
         }
         if (pendingOperation === "module_file") {
-            return qsTr("This asks the package manager to validate and install local package %1 into %2. LogosCore Runtime must be stopped. The package manager applies its signature policy and reports any unsigned-package warning after installation.")
+            return qsTr("This asks the package manager to validate and install local package %1 into %2. %3 The package manager applies its signature policy and reports any unsigned-package warning after installation.")
                 .arg(pendingModuleFilePath)
-                .arg(pendingRuntimeModulesDir);
+                .arg(pendingRuntimeModulesDir)
+                .arg(modulePackageRuntimeRequirement(pendingRuntimeModulesDir));
         }
         const action = pendingAction;
         if (action === "delete_network") {
@@ -908,6 +914,21 @@ QtObject {
             return qsTr("This initializes %1 using config %2. It creates a module context but does not start the node.").arg(nodeLabel(pendingNode)).arg(String(node.config_path || "-"));
         }
         return qsTr("Run local node action.");
+    }
+
+    function modulePackageRuntimeRequirement(modulesDir) {
+        const target = String(modulesDir || "").trim();
+        const runtime = runtimeInfo();
+        const activeModulesDir = String(runtime && runtime.modules_dir || "").trim();
+        if (localAttachedRuntime()
+                && runtimeState() === "running"
+                && activeModulesDir.length > 0
+                && target.length > 0
+                && target !== activeModulesDir) {
+            return qsTr("The running local service continues to use %1. Inspector verifies that this target is distinct before changing it; it will not alter the service's loaded modules.")
+                .arg(activeModulesDir);
+        }
+        return qsTr("LogosCore Runtime must be stopped before changing its active modules directory.");
     }
 
     function activeNetworkId() {
