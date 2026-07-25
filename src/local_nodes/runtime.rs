@@ -191,12 +191,21 @@ impl LogoscoreRuntimeProfile {
         if !local_client_transport_is_proven(Path::new(&config_dir)) {
             return Ok(None);
         }
+        Ok(Some(Self::discover_proven_local_transport(
+            binary_path,
+            config_dir,
+        )?))
+    }
+
+    fn discover_proven_local_transport(binary_path: String, config_dir: String) -> Result<Self> {
         let mut profile = Self::local_attached_profile(binary_path, config_dir);
-        let output = profile
-            .cli_runtime()?
-            .status_probe_with_timeout(PROBE_TIMEOUT);
+        // Discovery is a display observation. Reuse a fresh status snapshot so
+        // concurrent watcher activity cannot replace a known local service
+        // with an unavailable state between UI refreshes. Package mutation
+        // always uses its own fresh probe below.
+        let output = profile.cli_runtime()?.status_with_timeout(PROBE_TIMEOUT);
         profile.apply_local_status_probe(output);
-        Ok(Some(profile))
+        Ok(profile)
     }
 
     fn local_attached_profile(binary_path: String, config_dir: String) -> Self {
@@ -1711,6 +1720,51 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         }));
         assert!(!profile.is_unavailable());
         assert_eq!(profile.daemon_process_id, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn proven_local_discovery_reuses_a_fresh_status_snapshot() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let binary = directory.path().join("logoscore");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+    printf '%s\n' status >> "$config_dir/commands"
+    printf '%s\n' '{"daemon":{"status":"stopped"}}'
+    exit 0
+fi
+exit 9
+"#,
+        )?;
+        let mut permissions = fs::metadata(&binary)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&binary, permissions)?;
+
+        let binary_path = binary.display().to_string();
+        let config_dir = directory.path().display().to_string();
+        LogoscoreCliRuntime::local(binary_path.clone(), config_dir.clone())
+            .status_with_timeout(Duration::from_secs(1))?;
+        let profile =
+            LogoscoreRuntimeProfile::discover_proven_local_transport(binary_path, config_dir)?;
+
+        assert!(!profile.is_unavailable());
+        assert!(!profile.is_running());
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .eq(["status"]),
+            "display discovery launched another status command instead of reusing a fresh snapshot"
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
