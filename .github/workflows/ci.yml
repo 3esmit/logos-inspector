@@ -21,6 +21,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       QT_VERSION_MAJOR: "6"
       QMAKE: /usr/bin/qmake6
+      # Ubuntu ships Qt tools under /usr/lib/qt6/bin rather than /usr/bin.
+      PATH: /usr/lib/qt6/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout
