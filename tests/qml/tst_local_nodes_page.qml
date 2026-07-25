@@ -308,6 +308,27 @@ Item {
             verify(page.moduleTargetDetail().indexOf("verifies this target is distinct") >= 0)
         }
 
+        function test_attached_runtime_unavailable_disables_package_mutation_and_retains_target() {
+            state.attachedRuntimeModulesDir = "/srv/logos/modules"
+            state.attachedRuntimeServiceUnit = "logos-node.service"
+            const report = attachedServiceReport("unavailable")
+            report.runtime.modules_dir = ""
+            report.runtime.detail = "Inspector cannot verify the local LogosCore daemon"
+            const page = createPage(report, null, sampleModuleCatalog([]))
+            const moduleInstall = findChild(page, "modulePackageInstallButton")
+            const moduleFileInstall = findChild(page, "modulePackageInstallFileButton")
+            verify(!!moduleInstall, "Module repository install exists")
+            verify(!!moduleFileInstall, "Module file install exists")
+
+            page.localModulePackagePath = "/tmp/openmetrics-1.0.0.lgx"
+            compare(page.runtimeModulesDir, "/srv/logos/modules")
+            verify(!moduleInstall.enabled)
+            verify(!moduleFileInstall.enabled)
+            verify(page.modulePackageTargetProblem().indexOf("cannot verify") >= 0)
+            verify(page.moduleTargetDetail().indexOf("connection recovers") >= 0)
+            compare(page.runtimeTone(), "warning")
+        }
+
         function test_attached_runtime_does_not_offer_broken_indexer_package_install() {
             for (const runtimeState of ["running", "stopped"]) {
                 const page = createPage(

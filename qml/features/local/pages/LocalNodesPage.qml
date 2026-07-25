@@ -1006,7 +1006,7 @@ ColumnLayout {
         if (state === "running") {
             return "success";
         }
-        if (state === "starting" || state === "stopping") {
+        if (state === "starting" || state === "stopping" || state === "unavailable") {
             return "warning";
         }
         return "neutral";
@@ -1113,7 +1113,7 @@ ColumnLayout {
             return false
         }
         const state = root.model.runtimeState()
-        if (state === "starting" || state === "stopping") {
+        if (state === "starting" || state === "stopping" || state === "unavailable") {
             return false
         }
         if (state !== "running") {
@@ -1180,6 +1180,10 @@ ColumnLayout {
     }
 
     function modulePackageTargetProblem() {
+        if (root.model.localAttachedRuntime()
+                && root.model.runtimeState() === "unavailable") {
+            return qsTr("Inspector cannot verify the local LogosCore service. Package installation is disabled until its connection recovers.")
+        }
         return root.packageCatalogTargetProblem(
             root.model.moduleCatalogModulesDir(),
             qsTr("the module package catalog"))
@@ -1530,6 +1534,11 @@ ColumnLayout {
 
     function moduleTargetDetail() {
         const observed = root.observedAttachedModulesDir()
+        if (root.model.localAttachedRuntime()
+                && root.model.runtimeState() === "unavailable") {
+            return qsTr("Target core-module directory: %1. Inspector cannot verify the local LogosCore service, so package installation is disabled until the connection recovers.")
+                .arg(root.runtimeModulesDir)
+        }
         if (root.model.localAttachedRuntime()
                 && root.model.runtimeState() === "running"
                 && observed.length > 0) {

@@ -894,6 +894,7 @@ mod tests {
             persistence_path: Some(directory.path().join("runtime-data").display().to_string()),
             ownership: runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: runtime::LogoscoreTimeoutProfile::Lifecycle,
+            observation: runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: Some(std::process::id()),
             service_target: None,
         });

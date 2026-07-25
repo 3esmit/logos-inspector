@@ -301,16 +301,18 @@ pub(crate) fn local_module_catalog(
     })
 }
 
-pub(crate) fn install_local_module(
+pub(crate) fn install_local_module_with_pre_install_check(
     request: &LocalModuleInstallRequest,
     download_control: CommandControl,
     package_commit: &mut LocalNodePackageCommit,
+    pre_install_check: impl FnOnce() -> Result<()>,
 ) -> Result<LocalModuleInstallReport> {
     install_local_module_with(
         &PackageToolchain::system(),
         request,
         download_control,
         package_commit,
+        pre_install_check,
     )
 }
 
@@ -319,11 +321,13 @@ fn install_local_module_with(
     request: &LocalModuleInstallRequest,
     download_control: CommandControl,
     package_commit: &mut LocalNodePackageCommit,
+    pre_install_check: impl FnOnce() -> Result<()>,
 ) -> Result<LocalModuleInstallReport> {
     let modules_dir = canonical_modules_dir(Path::new(request.modules_dir.trim()))?;
     let before = query_installed_modules(toolchain, &modules_dir)?;
     let mut warnings = before.warnings;
-    let package_path = match &request.source {
+    let mut _downloaded_package_directory = None;
+    let (package_path, expected_identity) = match &request.source {
         LocalModuleInstallSource::Repository {
             repository_name,
             repository_url,
@@ -352,25 +356,15 @@ fn install_local_module_with(
                 version: downloaded.version,
                 root_hash: downloaded.root_hash,
             };
-            let output =
-                install_module_file_with(toolchain, &path, &modules_dir, package_commit.begin()?)?;
-            let after = query_installed_modules(toolchain, &modules_dir)?;
-            warnings.extend(after.warnings);
-            warnings.extend(package_manager_warnings(&output));
-            normalize_package_warnings(&mut warnings);
-            let installed = installed_identity(&after.installed, &expected)
-                .context("lgpm completed but the selected module identity is not installed")?;
-            return Ok(LocalModuleInstallReport {
-                modules_dir: modules_dir.display().to_string(),
-                installed: vec![installed.clone()],
-                warnings,
-            });
+            _downloaded_package_directory = Some(temporary);
+            (path, Some(expected))
         }
         LocalModuleInstallSource::LocalFile { file_path } => {
             let path = validate_local_package_file(file_path)?;
-            path
+            (path, None)
         }
     };
+    pre_install_check()?;
     let output = install_module_file_with(
         toolchain,
         &package_path,
@@ -381,7 +375,14 @@ fn install_local_module_with(
     warnings.extend(after.warnings);
     warnings.extend(package_manager_warnings(&output));
     normalize_package_warnings(&mut warnings);
-    let installed = changed_installed_modules(&before.installed, &after.installed);
+    let installed = match expected_identity {
+        Some(expected) => vec![
+            installed_identity(&after.installed, &expected)
+                .context("lgpm completed but the selected module identity is not installed")?
+                .clone(),
+        ],
+        None => changed_installed_modules(&before.installed, &after.installed),
+    };
     Ok(LocalModuleInstallReport {
         modules_dir: modules_dir.display().to_string(),
         installed,
@@ -2103,6 +2104,7 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
         fs::create_dir_all(&modules_dir)?;
         let lgpd = root.path().join("lgpd");
         let lgpm = root.path().join("lgpm");
+        let download_marker = root.path().join("downloaded");
         let state_path = root.path().join("installed-state");
         let install_dir = modules_dir.join("openmetrics");
         let main_file_path = install_dir.join("openmetrics_plugin.so");
@@ -2127,7 +2129,8 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
         write_executable(
             &lgpd,
             &format!(
-                "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"--json\" ]; then\n  printf '%s\\n' '{catalog_json}'\n  exit 0\nfi\noutput=''\nversion=''\nroot_hash=''\npackage=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --output) shift; output=\"$1\" ;;\n    --version) shift; version=\"$1\" ;;\n    --root-hash) shift; root_hash=\"$1\" ;;\n    download) shift; package=\"$1\"; break ;;\n  esac\n  shift\ndone\n[ \"$package\" = \"openmetrics\" ] || exit 8\n[ \"$version\" = \"1.0.0\" ] || exit 9\n[ \"$root_hash\" = \"{ROOT_HASH}\" ] || exit 10\nprintf 'module' > \"$output/openmetrics-$version.lgx\"\n"
+                "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"--json\" ]; then\n  printf '%s\\n' '{catalog_json}'\n  exit 0\nfi\noutput=''\nversion=''\nroot_hash=''\npackage=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --output) shift; output=\"$1\" ;;\n    --version) shift; version=\"$1\" ;;\n    --root-hash) shift; root_hash=\"$1\" ;;\n    download) shift; package=\"$1\"; break ;;\n  esac\n  shift\ndone\n[ \"$package\" = \"openmetrics\" ] || exit 8\n[ \"$version\" = \"1.0.0\" ] || exit 9\n[ \"$root_hash\" = \"{ROOT_HASH}\" ] || exit 10\nprintf 'module' > \"$output/openmetrics-$version.lgx\"\ntouch '{download_marker}'\n",
+                download_marker = download_marker.display(),
             ),
         )?;
         write_executable(
@@ -2169,7 +2172,24 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
             ))
         });
 
-        let report = install_local_module_with(&toolchain, &request, control, &mut package_commit)?;
+        let mut pre_install_checked = false;
+        let report =
+            install_local_module_with(&toolchain, &request, control, &mut package_commit, || {
+                pre_install_checked = true;
+                anyhow::ensure!(
+                    download_marker.is_file(),
+                    "pre-install check ran before the repository download completed"
+                );
+                anyhow::ensure!(
+                    !state_path.exists(),
+                    "pre-install check ran after lgpm mutation"
+                );
+                Ok(())
+            })?;
+        anyhow::ensure!(
+            pre_install_checked,
+            "module installation did not run its final pre-install check"
+        );
         if report.installed.len() != 1
             || report.installed[0].name != "openmetrics"
             || report.installed[0].version != "1.0.0"

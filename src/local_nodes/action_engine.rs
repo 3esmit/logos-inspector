@@ -217,7 +217,12 @@ impl LocalNodeActionEngine {
         let _state_lock = acquire_state_lock()?;
         let runtime = self.runtime_store.load_resolved()?;
         validate_module_install_runtime(runtime.as_ref(), &request.modules_dir)?;
-        super::package::install_local_module(&request, download_control, package_commit)
+        super::package::install_local_module_with_pre_install_check(
+            &request,
+            download_control,
+            package_commit,
+            || validate_module_install_runtime(runtime.as_ref(), &request.modules_dir),
+        )
     }
 
     pub(super) fn channel_indexer_action_controlled(
@@ -289,11 +294,7 @@ fn validate_module_install_runtime(
         return Ok(());
     };
     if runtime.is_attached() {
-        return validate_attached_module_install_target(
-            runtime.is_running(),
-            runtime.verified_attached_modules_dir().as_deref(),
-            &requested,
-        );
+        return runtime.validate_attached_module_install_target(&requested);
     }
     if runtime.is_running() {
         bail!("stop the local LogosCore runtime before changing installed modules");
@@ -308,25 +309,6 @@ fn validate_module_install_runtime(
             requested.display(),
             configured.display()
         );
-    }
-    Ok(())
-}
-
-fn validate_attached_module_install_target(
-    runtime_running: bool,
-    active_modules_dir: Option<&Path>,
-    requested_modules_dir: &Path,
-) -> Result<()> {
-    if !runtime_running {
-        return Ok(());
-    }
-    let Some(active_modules_dir) = active_modules_dir else {
-        bail!(
-            "cannot verify the local LogosCore modules directory while it is running; stop the local LogosCore runtime before changing installed modules"
-        );
-    };
-    if requested_modules_dir == active_modules_dir {
-        bail!("stop the local LogosCore runtime before changing installed modules");
     }
     Ok(())
 }
@@ -487,6 +469,11 @@ impl LocalNodeReportProjector {
 
 fn runtime_actions(_profile: &str, runtime: Option<&LogoscoreRuntimeProfile>) -> Vec<NodeAction> {
     match runtime {
+        Some(runtime) if runtime.is_attached() && runtime.is_unavailable() => runtime
+            .service_target()
+            .is_some()
+            .then_some(vec![NodeAction::StartRuntime, NodeAction::StopRuntime])
+            .unwrap_or_default(),
         Some(runtime) if runtime.is_controllable() && runtime.is_running() => {
             vec![NodeAction::StopRuntime]
         }
@@ -751,6 +738,7 @@ mod tests {
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
             timeout_profile: LogoscoreTimeoutProfile::Probe,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id,
             service_target,
         }
@@ -768,6 +756,7 @@ mod tests {
             persistence_path: Some("/tmp/logoscore-managed-data".to_owned()),
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id,
             service_target: None,
         }
@@ -789,6 +778,13 @@ mod tests {
         assert_eq!(
             runtime_actions("default", Some(&stopped)),
             [NodeAction::StartRuntime]
+        );
+
+        let mut unavailable = stopped.clone();
+        unavailable.observation = super::super::runtime::LogoscoreRuntimeObservation::Unavailable;
+        assert_eq!(
+            runtime_actions("default", Some(&unavailable)),
+            [NodeAction::StartRuntime, NodeAction::StopRuntime]
         );
 
         let read_only = attached_runtime(None, None);
@@ -827,43 +823,6 @@ mod tests {
             error.is_some_and(|error| error.to_string().contains("does not match")),
             "configured modules directory mismatch was not blocked"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn attached_runtime_module_install_uses_verified_live_modules_directory() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let active_modules_dir = directory.path().join("active-modules");
-        let other_modules_dir = directory.path().join("other-modules");
-        fs::create_dir_all(&active_modules_dir)?;
-        fs::create_dir_all(&other_modules_dir)?;
-
-        validate_attached_module_install_target(false, None, &active_modules_dir)?;
-
-        let error = validate_attached_module_install_target(true, None, &other_modules_dir).err();
-        anyhow::ensure!(
-            error.is_some_and(|error| error.to_string().contains("cannot verify")),
-            "unknown running attached runtime did not require a stop"
-        );
-
-        let error = validate_attached_module_install_target(
-            true,
-            Some(&active_modules_dir),
-            &active_modules_dir,
-        )
-        .err();
-        anyhow::ensure!(
-            error.is_some_and(|error| error
-                .to_string()
-                .contains("stop the local LogosCore runtime")),
-            "active attached modules directory did not require a stop"
-        );
-
-        validate_attached_module_install_target(
-            true,
-            Some(&active_modules_dir),
-            &other_modules_dir,
-        )?;
         Ok(())
     }
 

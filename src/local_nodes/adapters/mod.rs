@@ -669,6 +669,7 @@ mod tests {
             persistence_path: Some("/tmp/node-data".to_owned()),
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: Some(process::id()),
             service_target: None,
         }
@@ -683,6 +684,7 @@ mod tests {
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
             timeout_profile: LogoscoreTimeoutProfile::Probe,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: Some(process::id()),
             service_target: Some(LogoscoreServiceTarget {
                 scope: LogoscoreServiceScope::System,

@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::modules::logos_core::LogoscoreCliRuntime;
+use crate::modules::logos_core::{LogosCoreOutput, LogoscoreCliRuntime};
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, run_command,
     run_command_controlled,
@@ -26,6 +26,7 @@ const MANAGED_RUNTIME_ID: &str = "inspector-managed-local";
 const ATTACHED_RUNTIME_ID: &str = "local-attached";
 const CHANNEL_INDEXER_RUNTIME_ID_PREFIX: &str = "inspector-managed-indexer-";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+const ATTACHED_MODULES_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(2);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
 const ATTACHED_SERVICE_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -79,6 +80,14 @@ pub(super) enum LogoscoreTimeoutProfile {
     Lifecycle,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum LogoscoreRuntimeObservation {
+    #[default]
+    Verified,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct LogoscoreRuntimeProfile {
     pub(super) id: String,
@@ -90,6 +99,8 @@ pub(super) struct LogoscoreRuntimeProfile {
     pub(super) persistence_path: Option<String>,
     pub(super) ownership: LogoscoreRuntimeOwnership,
     pub(super) timeout_profile: LogoscoreTimeoutProfile,
+    #[serde(default)]
+    pub(super) observation: LogoscoreRuntimeObservation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) daemon_process_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,6 +142,7 @@ impl LogoscoreRuntimeProfile {
             persistence_path: Some(runtime_root.join("node-data").display().to_string()),
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            observation: LogoscoreRuntimeObservation::Verified,
             daemon_process_id: None,
             service_target: None,
         })
@@ -163,6 +175,7 @@ impl LogoscoreRuntimeProfile {
             persistence_path: Some(runtime_root.join("node-data").display().to_string()),
             ownership: LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            observation: LogoscoreRuntimeObservation::Verified,
             daemon_process_id: None,
             service_target: None,
         })
@@ -178,17 +191,16 @@ impl LogoscoreRuntimeProfile {
         if !local_client_transport_is_proven(Path::new(&config_dir)) {
             return Ok(None);
         }
-        let output = match LogoscoreCliRuntime::local(binary_path.clone(), config_dir.clone())
-            .status_with_timeout(PROBE_TIMEOUT)
-        {
-            Ok(output) => output,
-            Err(_) => return Ok(None),
-        };
-        let Some(process_id) = running_daemon_process_id(&output.value) else {
-            return Ok(None);
-        };
+        let mut profile = Self::local_attached_profile(binary_path, config_dir);
+        let output = profile
+            .cli_runtime()?
+            .status_probe_with_timeout(PROBE_TIMEOUT);
+        profile.apply_local_status_probe(output);
+        Ok(Some(profile))
+    }
 
-        Ok(Some(Self {
+    fn local_attached_profile(binary_path: String, config_dir: String) -> Self {
+        Self {
             id: ATTACHED_RUNTIME_ID.to_owned(),
             binary_path,
             config_dir,
@@ -196,9 +208,24 @@ impl LogoscoreRuntimeProfile {
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
             timeout_profile: LogoscoreTimeoutProfile::Probe,
-            daemon_process_id: Some(process_id),
-            service_target: system_service_target(process_id),
-        }))
+            observation: LogoscoreRuntimeObservation::Verified,
+            daemon_process_id: None,
+            service_target: None,
+        }
+    }
+
+    fn apply_local_status_probe(&mut self, output: Result<LogosCoreOutput>) {
+        self.daemon_process_id = None;
+        self.service_target = None;
+        self.observation = LogoscoreRuntimeObservation::Verified;
+        let Ok(output) = output else {
+            self.observation = LogoscoreRuntimeObservation::Unavailable;
+            return;
+        };
+        if let Some(process_id) = running_daemon_process_id(&output.value) {
+            self.daemon_process_id = Some(process_id);
+            self.service_target = system_service_target(process_id);
+        }
     }
 
     #[must_use]
@@ -212,12 +239,20 @@ impl LogoscoreRuntimeProfile {
     }
 
     #[must_use]
+    pub(super) fn is_unavailable(&self) -> bool {
+        self.is_attached() && self.observation == LogoscoreRuntimeObservation::Unavailable
+    }
+
+    #[must_use]
     pub(super) fn is_controllable(&self) -> bool {
         self.is_managed() || self.service_target().is_some()
     }
 
     #[must_use]
     pub(super) fn is_running(&self) -> bool {
+        if self.is_unavailable() {
+            return false;
+        }
         match self.ownership {
             LogoscoreRuntimeOwnership::InspectorManaged => {
                 self.daemon_process_id.is_some_and(process_is_alive)
@@ -229,43 +264,45 @@ impl LogoscoreRuntimeProfile {
         }
     }
 
-    /// Returns the module directory reported by a live local service only when
-    /// both the local CLI and the process command line identify the same daemon.
-    ///
-    /// An attached profile never persists this path: it observes a service that
-    /// Inspector did not create. Callers may use it to distinguish that service's
-    /// live modules directory from another explicitly selected package target.
-    #[must_use]
-    pub(super) fn verified_attached_modules_dir(&self) -> Option<PathBuf> {
-        if !self.is_attached() || !self.is_running() {
-            return None;
+    pub(super) fn validate_attached_module_install_target(&self, requested: &Path) -> Result<()> {
+        if !self.is_attached() {
+            bail!(
+                "only a local attached LogosCore runtime can verify its active modules directory"
+            );
         }
-        let process_id = self.daemon_process_id?;
-        let modules_dir = self.observed_attached_modules_dir()?;
-        if self
-            .service_target()
-            .is_some_and(|target| system_service_main_process_id(target) != Some(process_id))
-        {
-            return None;
-        }
-        let confirmed_process_id = self
-            .cli_runtime()
-            .ok()?
-            .status_probe_with_timeout(PROBE_TIMEOUT)
-            .ok()
-            .and_then(|output| running_daemon_process_id(&output.value))?;
-        (confirmed_process_id == process_id).then_some(modules_dir)
+        let output = self
+            .cli_runtime()?
+            .status_probe_with_timeout(ATTACHED_MODULES_VERIFICATION_TIMEOUT)
+            .context(
+                "cannot verify the local LogosCore daemon before changing installed modules; wait for the connection to recover or stop the service",
+            )?;
+        let Some(process_id) = running_daemon_process_id(&output.value) else {
+            return Ok(());
+        };
+        let active_modules_dir = self.modules_dir_for_attached_process(process_id);
+        validate_active_attached_module_install_target(active_modules_dir.as_deref(), requested)
     }
 
     /// Returns the module directory from the command line of the daemon that
     /// was just discovered by the local CLI. This is display-only evidence;
-    /// package mutations must use [`Self::verified_attached_modules_dir`].
+    /// package mutations must use [`Self::validate_attached_module_install_target`].
     #[must_use]
     fn observed_attached_modules_dir(&self) -> Option<PathBuf> {
         (self.is_attached() && self.is_running())
             .then_some(self.daemon_process_id)
             .flatten()
             .and_then(running_daemon_modules_dir)
+    }
+
+    fn modules_dir_for_attached_process(&self, process_id: u32) -> Option<PathBuf> {
+        let modules_dir = running_daemon_modules_dir(process_id)?;
+        if self
+            .service_target()
+            .is_some_and(|target| system_service_main_process_id(target) != Some(process_id))
+        {
+            return None;
+        }
+        Some(modules_dir)
     }
 
     pub(super) fn cli_runtime(&self) -> Result<LogoscoreCliRuntime> {
@@ -618,6 +655,21 @@ fn running_daemon_process_id(status: &Value) -> Option<u32> {
         .and_then(|pid| u32::try_from(pid).ok())
 }
 
+fn validate_active_attached_module_install_target(
+    active_modules_dir: Option<&Path>,
+    requested_modules_dir: &Path,
+) -> Result<()> {
+    let Some(active_modules_dir) = active_modules_dir else {
+        bail!(
+            "cannot verify the local LogosCore modules directory while it is running; stop the local LogosCore runtime before changing installed modules"
+        );
+    };
+    if requested_modules_dir == active_modules_dir {
+        bail!("stop the local LogosCore runtime before changing installed modules");
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn running_daemon_modules_dir(process_id: u32) -> Option<PathBuf> {
     const COMMAND_LINE_LIMIT: u64 = 64 * 1024;
@@ -929,6 +981,7 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
             detail: "no local logoscore runtime configured".to_owned(),
         };
     };
+    let unavailable = profile.is_unavailable();
     let running = profile.is_running();
     let service_unit = profile.service_target().map(|target| target.unit.clone());
     let observed_modules_dir = profile
@@ -945,7 +998,14 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
             LogoscoreRuntimeOwnership::LocalAttached => "local_attached",
         }
         .to_owned(),
-        run_state: if running { "running" } else { "stopped" }.to_owned(),
+        run_state: if unavailable {
+            "unavailable"
+        } else if running {
+            "running"
+        } else {
+            "stopped"
+        }
+        .to_owned(),
         id: Some(profile.id.clone()),
         binary_path: Some(profile.binary_path.clone()),
         config_dir: Some(profile.config_dir.clone()),
@@ -968,6 +1028,14 @@ fn runtime_status_detail(
     service_unit: Option<&str>,
     observed_modules_dir: Option<&str>,
 ) -> String {
+    if profile.is_unavailable() {
+        let target = service_unit
+            .map(|unit| format!(" for system service `{unit}`"))
+            .unwrap_or_default();
+        return format!(
+            "Inspector cannot verify the local LogosCore daemon{target}; package changes stay disabled until the connection recovers"
+        );
+    }
     let detail = match (profile.ownership, running, service_unit) {
         (LogoscoreRuntimeOwnership::LocalAttached, true, Some(unit)) => {
             format!("local LogosCore daemon is running under system service `{unit}`")
@@ -1043,7 +1111,8 @@ impl LogoscoreRuntimeStore {
         {
             profile.daemon_process_id = None;
         }
-        Ok(LogoscoreRuntimeProfile::discover_local()?.or(persisted))
+        let discovered = LogoscoreRuntimeProfile::discover_local()?;
+        Ok(resolve_local_runtime_observation(discovered, persisted))
     }
 
     pub(super) fn save(&self, profile: Option<&LogoscoreRuntimeProfile>) -> Result<()> {
@@ -1082,6 +1151,35 @@ impl LogoscoreRuntimeStore {
     fn state_path(&self) -> PathBuf {
         self.config_dir.join(RUNTIME_FILE)
     }
+}
+
+fn resolve_local_runtime_observation(
+    discovered: Option<LogoscoreRuntimeProfile>,
+    persisted: Option<LogoscoreRuntimeProfile>,
+) -> Option<LogoscoreRuntimeProfile> {
+    let Some(mut discovered) = discovered else {
+        return persisted.map(|mut profile| {
+            if profile.is_attached() {
+                profile.observation = LogoscoreRuntimeObservation::Unavailable;
+                profile.daemon_process_id = None;
+            }
+            profile
+        });
+    };
+    if !discovered.is_attached() {
+        return Some(discovered);
+    }
+    let Some(previous) = persisted.filter(|profile| {
+        profile.is_attached()
+            && profile.binary_path == discovered.binary_path
+            && profile.config_dir == discovered.config_dir
+    }) else {
+        return Some(discovered);
+    };
+    if discovered.daemon_process_id.is_none() {
+        discovered.service_target = previous.service_target;
+    }
+    Some(discovered)
 }
 
 fn canonical_executable(requested: Option<&str>) -> Result<String> {
@@ -1149,6 +1247,7 @@ mod tests {
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
             timeout_profile: LogoscoreTimeoutProfile::Probe,
+            observation: LogoscoreRuntimeObservation::Verified,
             daemon_process_id,
             service_target,
         }
@@ -1564,6 +1663,124 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         let read_only = attached_profile(Some(42), None);
         assert!(read_only.is_running());
         assert!(!read_only.is_controllable());
+    }
+
+    #[test]
+    fn unresolved_attached_runtime_remains_unavailable_and_retains_its_service_target() {
+        let service_target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let persisted = attached_profile(Some(42), Some(service_target.clone()));
+        let unresolved = resolve_local_runtime_observation(None, Some(persisted))
+            .expect("attached runtime observation");
+
+        assert!(unresolved.is_unavailable());
+        assert!(!unresolved.is_running());
+        assert_eq!(unresolved.daemon_process_id, None);
+        assert_eq!(unresolved.service_target, Some(service_target.clone()));
+        let report = status(Some(&unresolved));
+        assert_eq!(report.run_state, "unavailable");
+        assert!(report.detail.contains("package changes stay disabled"));
+
+        let mut discovered = attached_profile(None, None);
+        discovered.observation = LogoscoreRuntimeObservation::Unavailable;
+        let retained = resolve_local_runtime_observation(
+            Some(discovered),
+            Some(attached_profile(None, Some(service_target.clone()))),
+        )
+        .expect("unavailable attached runtime observation");
+        assert!(retained.is_unavailable());
+        assert_eq!(retained.service_target, Some(service_target));
+    }
+
+    #[test]
+    fn local_status_probe_failure_creates_an_unavailable_attachment() {
+        let mut profile = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
+        );
+        profile.apply_local_status_probe(Err(anyhow::anyhow!("status probe timed out")));
+        assert!(profile.is_unavailable());
+        assert_eq!(profile.daemon_process_id, None);
+
+        profile.apply_local_status_probe(Ok(LogosCoreOutput {
+            runner: "fixture".to_owned(),
+            value: json!({"daemon": {"status": "stopped"}}),
+            stderr: None,
+        }));
+        assert!(!profile.is_unavailable());
+        assert_eq!(profile.daemon_process_id, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attached_module_install_requires_a_fresh_liveness_probe() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let binary = directory.path().join("logoscore");
+        let modules_dir = directory.path().join("modules");
+        fs::create_dir_all(&modules_dir)?;
+        fs::write(&binary, "#!/bin/sh\nexit 9\n")?;
+        let mut permissions = fs::metadata(&binary)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&binary, permissions.clone())?;
+
+        let mut profile = attached_profile(None, None);
+        profile.binary_path = binary.display().to_string();
+        profile.config_dir = directory.path().display().to_string();
+        profile.observation = LogoscoreRuntimeObservation::Unavailable;
+        let error = profile
+            .validate_attached_module_install_target(&modules_dir)
+            .err()
+            .context("unavailable attached runtime authorized a package mutation")?;
+        anyhow::ensure!(
+            format!("{error:#}").contains("cannot verify the local LogosCore daemon"),
+            "unavailable attached runtime returned the wrong error: {error:#}"
+        );
+
+        fs::write(
+            &binary,
+            "#!/bin/sh\nprintf '%s\\n' '{\"daemon\":{\"status\":\"stopped\"}}'\n",
+        )?;
+        fs::set_permissions(&binary, permissions)?;
+        profile.validate_attached_module_install_target(&modules_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn active_attached_modules_directory_requires_a_stop_and_allows_a_distinct_target() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let active_modules_dir = directory.path().join("active-modules");
+        let other_modules_dir = directory.path().join("other-modules");
+        fs::create_dir_all(&active_modules_dir)?;
+        fs::create_dir_all(&other_modules_dir)?;
+
+        let error = validate_active_attached_module_install_target(None, &other_modules_dir).err();
+        anyhow::ensure!(
+            error.is_some_and(|error| error.to_string().contains("cannot verify")),
+            "unverified running attached runtime authorized a package mutation"
+        );
+
+        let error = validate_active_attached_module_install_target(
+            Some(&active_modules_dir),
+            &active_modules_dir,
+        )
+        .err();
+        anyhow::ensure!(
+            error.is_some_and(|error| error
+                .to_string()
+                .contains("stop the local LogosCore runtime")),
+            "active attached modules directory did not require a stop"
+        );
+
+        validate_active_attached_module_install_target(
+            Some(&active_modules_dir),
+            &other_modules_dir,
+        )?;
+        Ok(())
     }
 
     #[test]
