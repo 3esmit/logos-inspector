@@ -1127,6 +1127,7 @@ mod tests {
         socket: PathBuf,
         transport: SharedModuleTransport,
         trigger: PathBuf,
+        watch_started: PathBuf,
         cancel_ack: PathBuf,
         cancel_attempts: PathBuf,
         watch_stopped: PathBuf,
@@ -1162,6 +1163,7 @@ mod tests {
             let root = directory.path();
             let program = root.join("logoscore-test");
             let trigger = root.join("download-started");
+            let watch_started = root.join("watch-started");
             let cancel_ack = root.join("download-cancel-acknowledged");
             let cancel_attempts = root.join("download-cancel-attempts");
             let watch_stopped = root.join("watch-stopped");
@@ -1187,6 +1189,7 @@ mod tests {
                    module-info) printf '%s\\n' '{{\"name\":\"storage_module\",\"methods\":[{{\"isInvokable\":true,\"name\":\"downloadProtocol\",\"signature\":\"downloadProtocol()\"}},{{\"isInvokable\":true,\"name\":\"downloadToUrlV2\",\"signature\":\"downloadToUrlV2(QString,QString,bool,int,QString,int)\"}},{{\"isInvokable\":true,\"name\":\"downloadCancelV2\",\"signature\":\"downloadCancelV2(QString)\"}}],\"events\":[{{\"name\":\"storageDownloadDoneV2\",\"signature\":\"storageDownloadDoneV2(QString)\"}}]}}' ;;\n\
                    watch)\n\
                      trap 'touch {watch_stopped}; exit 0' TERM INT\n\
+                     touch {watch_started}\n\
                      printf '%s\\n' '{{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDoneV2\"}}'\n\
                      while :; do sleep 0.01; done ;;\n\
                    call)\n\
@@ -1198,6 +1201,12 @@ mod tests {
                            printf '%s\\n' '{{\"status\":\"ok\",\"result\":{{\"success\":true,\"value\":{{\"protocol\":\"logos.storage.download\",\"version\":2,\"moduleOperationIdOwner\":\"caller\",\"cancelTimeoutMs\":15000,\"maxDownloadBytes\":1073741824}},\"error\":null}}}}'\n\
                          fi ;;\n\
                        downloadToUrlV2)\n\
+                         attempts=0\n\
+                         while [ ! -f {watch_started} ] && [ \"$attempts\" -lt 1500 ]; do\n\
+                           sleep 0.01\n\
+                           attempts=$((attempts + 1))\n\
+                         done\n\
+                         [ -f {watch_started} ] || exit 11\n\
                          printf '%s' \"$5\" > {staging_path}\n\
                          printf '%s' \"$4\" > {cid_path}\n\
                          touch {trigger}\n\
@@ -1218,6 +1227,7 @@ mod tests {
                    *) exit 8 ;;\n\
                  esac\n",
                 watch_stopped = shell_path(&watch_stopped),
+                watch_started = shell_path(&watch_started),
                 staging_path = shell_path(&staging_path),
                 cid_path = shell_path(&cid_path),
                 trigger = shell_path(&trigger),
@@ -1261,6 +1271,7 @@ mod tests {
                 socket,
                 transport,
                 trigger,
+                watch_started,
                 cancel_ack,
                 cancel_attempts,
                 watch_stopped,
@@ -1269,6 +1280,10 @@ mod tests {
         }
 
         fn staged_path(&self) -> Result<PathBuf> {
+            anyhow::ensure!(
+                self.watch_started.exists(),
+                "test fixture dispatched backup before watcher became ready"
+            );
             Ok(PathBuf::from(fs::read_to_string(&self.staging_path)?))
         }
 
