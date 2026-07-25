@@ -67,10 +67,12 @@ jobs:
             qt6-tools-dev-tools \
             qml6-module-qtquick \
             qml6-module-qtquick-controls \
+            qml6-module-qtquick-dialogs \
             qml6-module-qtquick-layouts \
             qml6-module-qtquick-templates \
             qml6-module-qtquick-window \
             qml6-module-qtqml \
+            qml6-module-qtqml-models \
             qml6-module-qtqml-workerscript \
             qml6-module-qttest \
             libgl1-mesa-dev
@@ -96,6 +98,15 @@ jobs:
 
       - name: Web UI checks
         run: python3 scripts/check-build-pipeline.py ci-web
+
+      - name: Install Qt 6.11 for QML checks
+        uses: jurplel/install-qt-action/action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.11.0"
+          host: linux
+          target: desktop
+          cache: true
+          install-deps: false
 
       - name: QML static and unit checks
         run: python3 scripts/check-build-pipeline.py ci-qml-static
