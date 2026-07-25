@@ -338,14 +338,14 @@ fn install_local_module_with(
             let packages = query_core_module_catalog(toolchain)?;
             let entry =
                 find_catalog_package(&packages, repository_name, repository_url, package_name)?;
-            let release = find_catalog_release(&entry, version, root_hash)?;
+            let release = find_catalog_release(entry, version, root_hash)?;
             let temporary = tempfile::Builder::new()
                 .prefix("logos-inspector-module-package-")
                 .tempdir()
                 .context("failed to create module package download directory")?;
             let downloaded = download_module_package_with(
                 toolchain,
-                &entry,
+                entry,
                 release,
                 temporary.path(),
                 download_control,
@@ -1027,7 +1027,10 @@ fn sha256_file(path: &Path) -> Result<String> {
         if count == 0 {
             break;
         }
-        hasher.update(&buffer[..count]);
+        let chunk = buffer
+            .get(..count)
+            .context("package checksum read returned an invalid byte count")?;
+        hasher.update(chunk);
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -1673,11 +1676,15 @@ mod tests {
         rows.push(ui_package);
 
         let packages = parse_core_module_catalog(&serde_json::to_vec(&catalog)?)?;
-        if packages.len() != 1
-            || packages[0].name != "openmetrics"
-            || packages[0].repository_name != "example-modules"
-            || packages[0].versions.len() != 1
-            || packages[0].versions[0].root_hash != ROOT_HASH
+        let [package] = packages.as_slice() else {
+            bail!("generic core package catalog identity was not preserved: {packages:?}");
+        };
+        let [release] = package.versions.as_slice() else {
+            bail!("generic core package catalog identity was not preserved: {packages:?}");
+        };
+        if package.name != "openmetrics"
+            || package.repository_name != "example-modules"
+            || release.root_hash != ROOT_HASH
         {
             bail!("generic core package catalog identity was not preserved: {packages:?}");
         }
@@ -1897,11 +1904,13 @@ mod tests {
         ]);
 
         let report = parse_installed_modules(&serde_json::to_vec(&installed)?, &modules_dir)?;
-        if report.installed.len() != 1
-            || report.installed[0].name != "openmetrics"
-            || report.warnings.len() != 1
-            || !report.warnings[0].contains("stale_module")
-        {
+        let [installed_module] = report.installed.as_slice() else {
+            bail!("stale core artifact prevented a valid catalog: {report:?}");
+        };
+        let [warning] = report.warnings.as_slice() else {
+            bail!("stale core artifact prevented a valid catalog: {report:?}");
+        };
+        if installed_module.name != "openmetrics" || !warning.contains("stale_module") {
             bail!("stale core artifact prevented a valid catalog: {report:?}");
         }
         Ok(())
@@ -2190,10 +2199,12 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
             pre_install_checked,
             "module installation did not run its final pre-install check"
         );
-        if report.installed.len() != 1
-            || report.installed[0].name != "openmetrics"
-            || report.installed[0].version != "1.0.0"
-            || report.installed[0].root_hash != ROOT_HASH
+        let [installed_module] = report.installed.as_slice() else {
+            bail!("generic module installation report lost verified identity: {report:?}");
+        };
+        if installed_module.name != "openmetrics"
+            || installed_module.version != "1.0.0"
+            || installed_module.root_hash != ROOT_HASH
             || report.warnings
                 != [
                     "Package manager accepted an unsigned package under its current signature policy.",

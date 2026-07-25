@@ -2180,10 +2180,10 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        if kind == LogoscoreCliSnapshotKind::Status {
-            if let Some(snapshot) = fresh_logoscore_cli_snapshot(&self.runner, kind)? {
-                return Ok(snapshot);
-            }
+        if kind == LogoscoreCliSnapshotKind::Status
+            && let Some(snapshot) = fresh_logoscore_cli_snapshot(&self.runner, kind)?
+        {
+            return Ok(snapshot);
         }
         self.with_command_gate(timeout, move |runner, deadline| {
             cached_logoscore_cli_snapshot(runner, kind, || {

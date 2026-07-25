@@ -1756,8 +1756,14 @@ exit 9
         let profile =
             LogoscoreRuntimeProfile::discover_proven_local_transport(binary_path, config_dir)?;
 
-        assert!(!profile.is_unavailable());
-        assert!(!profile.is_running());
+        anyhow::ensure!(
+            !profile.is_unavailable(),
+            "proven local transport was incorrectly reported as unavailable"
+        );
+        anyhow::ensure!(
+            !profile.is_running(),
+            "stopped local daemon was incorrectly reported as running"
+        );
         anyhow::ensure!(
             fs::read_to_string(directory.path().join("commands"))?
                 .lines()
