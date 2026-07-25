@@ -164,6 +164,7 @@ TestCase {
         verify(findAccessibleByName(pageLoader.item, "Ping peer") === null)
         verify(findAccessibleByName(pageLoader.item, "Lightpush test") === null)
         verify(findAccessibleByName(pageLoader.item, "Adapters pending") === null)
+        waitForDistinctWorkflowControlGeometry(messageTools, storeTools)
 
         mouseClick(messageTools,
             messageTools.width / 2, messageTools.height / 2)
@@ -189,6 +190,7 @@ TestCase {
                 pageLoader.item, "Open Delivery Store tools")
             return messageTools !== null && storeTools !== null
         })
+        waitForDistinctWorkflowControlGeometry(messageTools, storeTools)
 
         mouseClick(storeTools, storeTools.width / 2, storeTools.height / 2)
 
@@ -512,5 +514,27 @@ TestCase {
             }
         }
         return null
+    }
+
+    function waitForDistinctWorkflowControlGeometry(first, second) {
+        verify(first !== null)
+        verify(second !== null)
+        tryVerify(function () {
+            if (!first.visible || !second.visible
+                    || first.width <= 0 || first.height <= 0
+                    || second.width <= 0 || second.height <= 0) {
+                return false
+            }
+            const firstPosition = first.mapToItem(testWindow.contentItem, 0, 0)
+            const secondPosition = second.mapToItem(testWindow.contentItem, 0, 0)
+            const firstRight = firstPosition.x + first.width
+            const firstBottom = firstPosition.y + first.height
+            const secondRight = secondPosition.x + second.width
+            const secondBottom = secondPosition.y + second.height
+            return firstRight <= secondPosition.x
+                || secondRight <= firstPosition.x
+                || firstBottom <= secondPosition.y
+                || secondBottom <= firstPosition.y
+        })
     }
 }
