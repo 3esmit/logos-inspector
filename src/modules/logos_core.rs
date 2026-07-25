@@ -3750,6 +3750,30 @@ fn module_value_error_text(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    fn write_executable_script(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Write via a new inode then rename. In-place rewrite/exec races under
+        // parallel test load can fail with ETXTBSY on Linux.
+        let temp = path.with_extension(format!(
+            "tmp-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::write(&temp, contents)?;
+        let mut permissions = fs::metadata(&temp)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&temp, permissions)?;
+        fs::rename(&temp, path)?;
+        Ok(())
+    }
+
     use std::{
         sync::{
             Mutex,
@@ -4446,20 +4470,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn event_watch_drains_terminal_emitted_immediately_before_exit() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-watch-exit");
-        fs::write(
+        write_executable_script(
             &program,
             "#!/bin/sh\n\
              if [ \"$1\" = \"--config-dir\" ]; then shift 2; fi\n\
              printf '%s\\n' '{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDone\"}'\n\
              printf '%s\\n' '{\"type\":\"event\",\"protocol\":\"logoscore.watch\",\"version\":1,\"timestamp\":\"2026-07-14T12:00:00Z\",\"module\":\"storage_module\",\"event\":\"storageDownloadDone\",\"data\":{\"arg0\":\"{\\\"success\\\":true,\\\"sessionId\\\":\\\"session-exit\\\"}\"}}'\n",
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -4487,14 +4506,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn event_watch_stop_kills_pipe_holding_process_group_descendant() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         use nix::{sys::signal::Signal, unistd::Pid};
 
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-watch-descendant");
         let descendant_path = directory.path().join("descendant.pid");
-        fs::write(
+        write_executable_script(
             &program,
             "#!/bin/sh\n\
              state_dir=$2\n\
@@ -4504,9 +4521,6 @@ mod tests {
              printf '%s\\n' '{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDone\"}'\n\
              while :; do sleep 0.05; done\n",
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -4561,7 +4575,14 @@ mod tests {
                     .rsplit_once(')')
                     .and_then(|(_, fields)| fields.split_whitespace().next())
                     .is_none_or(|state| state != "Z"),
-                Err(error) if error.kind() == ErrorKind::NotFound => false,
+                // ENOENT and ESRCH both mean the process is gone. Stop can
+                // reap the descendant between kill and this inspection.
+                Err(error)
+                    if error.kind() == ErrorKind::NotFound
+                        || error.raw_os_error() == Some(nix::libc::ESRCH) =>
+                {
+                    false
+                }
                 Err(error) => return Err(error).context("failed to inspect watch descendant"),
             };
             if !live {
@@ -4650,12 +4671,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn controlled_cli_call_does_not_overclaim_remote_termination() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-test");
         let pid_path = directory.path().join("logoscore-test.pid");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 case "$1" in
@@ -4669,9 +4688,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let transport = LogoscoreCliTransport {
             runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime {
                 runner: LogosCoreRunner {
@@ -4742,12 +4758,10 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn closing_cli_transport_cancels_an_ordinary_pinned_call() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-close-test");
         let pid_path = directory.path().join("logoscore-close-test.pid");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 case "$1" in
@@ -4761,9 +4775,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let transport = LogoscoreCliTransport {
             runtime: LogoscoreRuntimeBinding::Fixed(LogoscoreCliRuntime {
                 runner: LogosCoreRunner {
@@ -4825,11 +4836,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn controlled_call_retries_transient_module_metadata_before_single_invocation() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-retry-metadata");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -4861,9 +4870,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -4904,11 +4910,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn controlled_module_discovery_retries_a_timed_out_metadata_probe() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-timeout-metadata");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -4935,9 +4939,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -4966,11 +4967,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn controlled_discovery_never_queries_unloaded_module_metadata() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-unloaded-metadata");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -4988,9 +4987,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5024,11 +5020,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn cli_requests_for_one_runtime_do_not_overlap() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-serialized-requests");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -5053,9 +5047,6 @@ else
 fi
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5096,11 +5087,9 @@ fi
     #[cfg(unix)]
     #[test]
     fn loaded_preflight_and_call_hold_one_runtime_gate() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-atomic-loaded-call");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -5127,9 +5116,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5182,11 +5168,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn controlled_module_discovery_surfaces_exhausted_attempt_timeout() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-exhausted-metadata");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -5210,9 +5194,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5253,11 +5234,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn controlled_module_discovery_preserves_parent_deadline() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-parent-metadata-deadline");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -5273,9 +5252,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5375,14 +5351,11 @@ esac
     #[cfg(unix)]
     #[test]
     fn cli_snapshot_coalesces_concurrent_status_and_module_inventory_queries() -> Result<()> {
-        use std::{
-            os::unix::fs::PermissionsExt as _,
-            sync::{Arc, Barrier},
-        };
+        use std::sync::{Arc, Barrier};
 
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-snapshot");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -5406,9 +5379,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5485,11 +5455,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn cli_status_uses_a_fresh_snapshot_without_waiting_for_the_command_gate() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-snapshot-fast-path");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -5503,9 +5471,6 @@ if [ "$1" = "status" ]; then
 fi
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5540,11 +5505,9 @@ fi
     #[cfg(unix)]
     #[test]
     fn cli_module_inventory_waits_for_the_command_gate_even_when_cached() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-module-gate");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -5558,9 +5521,6 @@ if [ "$1" = "list-modules" ]; then
 fi
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5653,11 +5613,9 @@ fi
     #[cfg(unix)]
     #[test]
     fn cli_snapshot_backs_off_failures_and_explicit_invalidation_retries() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-snapshot-failure");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -5672,9 +5630,6 @@ if [ "$1" = "status" ]; then
 fi
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -5719,11 +5674,9 @@ fi
     #[cfg(unix)]
     #[test]
     fn cli_module_lifecycle_invalidates_cached_inventory() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-snapshot-lifecycle");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -5744,9 +5697,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         fs::write(directory.path().join("module-status"), "loaded")?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
@@ -5779,11 +5729,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn controlled_call_preserves_unready_metadata_error_without_invoking_mutation() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-unready-metadata");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -5804,9 +5752,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let runtime = LogoscoreCliRuntime::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -6188,11 +6133,9 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_transport_preserves_typed_module_arguments() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-typed-call");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -6214,9 +6157,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         let transport = LogoscoreCliTransport::managed(
             program.display().to_string(),
             directory.path().display().to_string(),
@@ -6297,11 +6237,9 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_transport_refuses_unloaded_module_before_call() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let program = directory.path().join("logoscore-load-before-call");
-        fs::write(
+        write_executable_script(
             &program,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -6331,9 +6269,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&program)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&program, permissions)?;
         fs::write(directory.path().join("status"), "not_loaded")?;
         let transport = LogoscoreCliTransport::managed(
             program.display().to_string(),
