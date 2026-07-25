@@ -106,8 +106,11 @@ impl RuntimeOperationRequest {
     pub(super) fn deadline(&self) -> std::time::Duration {
         if matches!(
             self.command(),
+            OperationCommand::LocalNodes(local_nodes::LocalNodesCommand::ModulePackageInstall)
+        ) || (matches!(
+            self.command(),
             OperationCommand::LocalNodes(local_nodes::LocalNodesCommand::Action)
-        ) && local_nodes::is_indexer_package_install(&self.args)
+        ) && local_nodes::is_indexer_package_install(&self.args))
         {
             crate::local_nodes::INDEXER_PACKAGE_INSTALL_TIMEOUT
         } else {
@@ -956,6 +959,27 @@ mod tests {
         anyhow::ensure!(
             start.deadline() < install.deadline(),
             "extended deadline leaked to another local node action"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generic_module_package_install_uses_extended_operation_deadline() -> Result<()> {
+        let install = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalModulePackageInstall,
+            json!([{
+                "modules_dir": "/tmp/modules",
+                "source": {
+                    "kind": "local_file",
+                    "file_path": "/tmp/openmetrics-1.0.0.lgx"
+                }
+            }]),
+            "Install module package",
+        )?;
+
+        anyhow::ensure!(
+            install.deadline() == crate::local_nodes::INDEXER_PACKAGE_INSTALL_TIMEOUT,
+            "generic module package install did not receive its extended deadline"
         );
         Ok(())
     }

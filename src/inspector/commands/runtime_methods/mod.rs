@@ -259,5 +259,8 @@ mod tests {
             lookup("localNodePackageCatalog")
                 .is_some_and(|entry| !entry.allows_host_synchronous_call())
         );
+        assert!(
+            lookup("localModuleCatalog").is_some_and(|entry| !entry.allows_host_synchronous_call())
+        );
     }
 }

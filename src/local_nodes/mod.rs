@@ -58,13 +58,13 @@ impl LocalNodePackageCommit {
             let begin = self
                 .begin
                 .take()
-                .context("Indexer package commit control is unavailable")?;
+                .context("package install commit control is unavailable")?;
             self.active = Some(begin()?);
         }
         self.active
             .as_ref()
             .map(|active| active.command.clone())
-            .context("Indexer package commit did not become active")
+            .context("package install commit did not become active")
     }
 
     #[cfg(test)]
@@ -85,6 +85,9 @@ pub use model::{
     ToolStatus,
 };
 pub use module_watcher::{LocalNodeModuleSubscription, LocalNodeModuleWatcher};
+pub(crate) use package::{
+    LocalModuleCatalogReport, LocalModuleInstallReport, LocalModuleInstallRequest,
+};
 pub use package::{
     LocalNodeInstalledPackageReport, LocalNodePackageCatalogEntry, LocalNodePackageCatalogReport,
     LocalNodePackageRelease,
@@ -185,6 +188,24 @@ pub fn local_node_package_catalog(
     modules_dir: Option<&str>,
 ) -> Result<LocalNodePackageCatalogReport> {
     package::local_node_package_catalog(modules_dir)
+}
+
+pub(crate) fn local_module_catalog(modules_dir: Option<&str>) -> Result<LocalModuleCatalogReport> {
+    package::local_module_catalog(modules_dir)
+}
+
+pub(crate) fn local_module_install_controlled(
+    request: LocalModuleInstallRequest,
+    confirmation: Option<&str>,
+    download_control: CommandControl,
+    package_commit: &mut LocalNodePackageCommit,
+) -> Result<LocalModuleInstallReport> {
+    action_engine::LocalNodeActionEngine::system()?.install_module_controlled(
+        request,
+        confirmation,
+        download_control,
+        package_commit,
+    )
 }
 
 pub fn local_nodes_action(
@@ -873,6 +894,7 @@ mod tests {
             persistence_path: Some(directory.path().join("runtime-data").display().to_string()),
             ownership: runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: runtime::LogoscoreTimeoutProfile::Lifecycle,
+            observation: runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: Some(std::process::id()),
             service_target: None,
         });

@@ -1305,6 +1305,7 @@ mod tests {
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
             timeout_profile: LogoscoreTimeoutProfile::Probe,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: None,
             service_target: None,
         }

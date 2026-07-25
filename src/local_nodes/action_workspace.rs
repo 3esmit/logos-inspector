@@ -645,7 +645,7 @@ fn attached_runtime_stop(
                 "local LogosCore daemon is connected but its service lifecycle backend is not verified",
             ));
         };
-        if !profile.is_running() {
+        if !profile.is_running() && !profile.is_unavailable() {
             return Ok(OperationOutcome {
                 status: "stopped".to_owned(),
                 detail: format!("local LogosCore service `{service_unit}` is already stopped"),
@@ -4385,6 +4385,7 @@ esac
             persistence_path: Some(directory.path().join("data").display().to_string()),
             ownership: super::super::runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: super::super::runtime::LogoscoreTimeoutProfile::Lifecycle,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: None,
             service_target: None,
         };
@@ -4526,6 +4527,7 @@ esac
             persistence_path: Some(directory.path().join("data").display().to_string()),
             ownership: super::super::runtime::LogoscoreRuntimeOwnership::InspectorManaged,
             timeout_profile: super::super::runtime::LogoscoreTimeoutProfile::Lifecycle,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id: None,
             service_target: None,
         };

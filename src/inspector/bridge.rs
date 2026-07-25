@@ -912,6 +912,33 @@ mod tests {
     }
 
     #[test]
+    fn local_module_package_install_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "localModulePackageInstall",
+            json!([{
+                "modules_dir": "/tmp/logos-inspector-modules",
+                "source": {
+                    "kind": "local_file",
+                    "file_path": "/tmp/openmetrics-1.0.0.lgx"
+                }
+            }]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing module package confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("local node action requires explicit confirmation")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_operation_cancel_marks_cancelable_operation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         bridge

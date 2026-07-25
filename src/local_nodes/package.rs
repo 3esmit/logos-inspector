@@ -1,19 +1,24 @@
 use std::{
+    collections::BTreeMap,
     fs,
+    io::{BufReader, Read as _},
     path::{Component, Path, PathBuf},
     process::{Command, Output},
     time::Duration,
 };
 
 use anyhow::{Context as _, Result, bail};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use tar::Archive;
 
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, run_command,
     run_command_controlled,
 };
 
-use super::{action_engine::LocalNodeActionEngine, process::find_command};
+use super::{LocalNodePackageCommit, action_engine::LocalNodeActionEngine, process::find_command};
 
 const INDEXER_PACKAGE_NAME: &str = "lez_indexer_module";
 const INDEXER_PACKAGE_TYPE: &str = "core";
@@ -24,6 +29,8 @@ const DEFAULT_MODULES_DIR: &str = "/opt/logos-node/modules";
 const PACKAGE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const PACKAGE_CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 const PACKAGE_OUTPUT_LIMIT: usize = 1024 * 1024;
+const MAX_PACKAGE_MANIFEST_SIZE: u64 = 256 * 1024;
+const MAX_LGX_UNCOMPRESSED_INSPECTION_SIZE: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LocalNodePackageCatalogReport {
@@ -69,6 +76,80 @@ pub struct LocalNodeInstalledPackageReport {
     pub root_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct LocalModuleCatalogReport {
+    pub modules_dir: String,
+    pub repositories: Vec<LocalModuleRepositoryReport>,
+    pub packages: Vec<LocalModulePackageCatalogEntry>,
+    pub installed: Vec<LocalNodeInstalledPackageReport>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct LocalModuleRepositoryReport {
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub url: String,
+    pub enabled: bool,
+    pub is_default: bool,
+    pub resolve_error: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct LocalModulePackageCatalogEntry {
+    pub name: String,
+    pub description: String,
+    pub package_type: String,
+    pub category: String,
+    pub repository_name: String,
+    pub repository_display_name: String,
+    pub repository_url: String,
+    pub versions: Vec<LocalNodePackageRelease>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct LocalModuleInstallRequest {
+    pub modules_dir: String,
+    pub source: LocalModuleInstallSource,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum LocalModuleInstallSource {
+    Repository {
+        repository_name: String,
+        repository_url: String,
+        package_name: String,
+        version: String,
+        root_hash: String,
+    },
+    LocalFile {
+        file_path: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct LocalModuleInstallReport {
+    pub modules_dir: String,
+    pub installed: Vec<LocalNodeInstalledPackageReport>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DownloadedLocalModulePackage {
+    name: String,
+    version: String,
+    root_hash: String,
+    file_path: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct LocalModuleInstalledReport {
+    installed: Vec<LocalNodeInstalledPackageReport>,
+    warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DownloadedLocalNodePackage {
     pub(crate) name: String,
@@ -110,6 +191,18 @@ impl PackageToolchain {
         Ok(command)
     }
 
+    fn catalog_command(&self) -> Result<Command> {
+        let mut command = Command::new(self.lgpd()?);
+        command.arg("list").arg("--json");
+        Ok(command)
+    }
+
+    fn repositories_command(&self) -> Result<Command> {
+        let mut command = Command::new(self.lgpd()?);
+        command.arg("repo").arg("list").arg("--json");
+        Ok(command)
+    }
+
     fn installed_command(&self, modules_dir: &Path) -> Result<Command> {
         let mut command = Command::new(self.lgpm()?);
         command
@@ -135,6 +228,25 @@ impl PackageToolchain {
             .arg(output_dir)
             .arg("download")
             .arg(INDEXER_PACKAGE_NAME);
+        Ok(command)
+    }
+
+    fn module_download_command(
+        &self,
+        package_name: &str,
+        release: &LocalNodePackageRelease,
+        output_dir: &Path,
+    ) -> Result<Command> {
+        let mut command = Command::new(self.lgpd()?);
+        command
+            .arg("--version")
+            .arg(&release.version)
+            .arg("--root-hash")
+            .arg(&release.root_hash)
+            .arg("--output")
+            .arg(output_dir)
+            .arg("download")
+            .arg(package_name);
         Ok(command)
     }
 
@@ -168,6 +280,116 @@ pub(super) fn local_node_package_catalog(
     })
 }
 
+pub(crate) fn local_module_catalog(
+    requested_modules_dir: Option<&str>,
+) -> Result<LocalModuleCatalogReport> {
+    let modules_dir = resolve_modules_dir(requested_modules_dir)?;
+    let toolchain = PackageToolchain::system();
+    let repositories = query_repositories(&toolchain)?;
+    let packages = query_core_module_catalog(&toolchain)?;
+    let installed = if toolchain.lgpm.is_some() {
+        query_installed_modules(&toolchain, &modules_dir)?
+    } else {
+        LocalModuleInstalledReport::default()
+    };
+    Ok(LocalModuleCatalogReport {
+        modules_dir: modules_dir.display().to_string(),
+        repositories,
+        packages,
+        installed: installed.installed,
+        warnings: installed.warnings,
+    })
+}
+
+pub(crate) fn install_local_module_with_pre_install_check(
+    request: &LocalModuleInstallRequest,
+    download_control: CommandControl,
+    package_commit: &mut LocalNodePackageCommit,
+    pre_install_check: impl FnOnce() -> Result<()>,
+) -> Result<LocalModuleInstallReport> {
+    install_local_module_with(
+        &PackageToolchain::system(),
+        request,
+        download_control,
+        package_commit,
+        pre_install_check,
+    )
+}
+
+fn install_local_module_with(
+    toolchain: &PackageToolchain,
+    request: &LocalModuleInstallRequest,
+    download_control: CommandControl,
+    package_commit: &mut LocalNodePackageCommit,
+    pre_install_check: impl FnOnce() -> Result<()>,
+) -> Result<LocalModuleInstallReport> {
+    let modules_dir = canonical_modules_dir(Path::new(request.modules_dir.trim()))?;
+    let before = query_installed_modules(toolchain, &modules_dir)?;
+    let mut warnings = before.warnings;
+    let mut _downloaded_package_directory = None;
+    let (package_path, expected_identity) = match &request.source {
+        LocalModuleInstallSource::Repository {
+            repository_name,
+            repository_url,
+            package_name,
+            version,
+            root_hash,
+        } => {
+            let packages = query_core_module_catalog(toolchain)?;
+            let entry =
+                find_catalog_package(&packages, repository_name, repository_url, package_name)?;
+            let release = find_catalog_release(entry, version, root_hash)?;
+            let temporary = tempfile::Builder::new()
+                .prefix("logos-inspector-module-package-")
+                .tempdir()
+                .context("failed to create module package download directory")?;
+            let downloaded = download_module_package_with(
+                toolchain,
+                entry,
+                release,
+                temporary.path(),
+                download_control,
+            )?;
+            let path = downloaded.file_path.clone();
+            let expected = ModulePackageIdentity {
+                name: downloaded.name,
+                version: downloaded.version,
+                root_hash: downloaded.root_hash,
+            };
+            _downloaded_package_directory = Some(temporary);
+            (path, Some(expected))
+        }
+        LocalModuleInstallSource::LocalFile { file_path } => {
+            let path = validate_local_package_file(file_path)?;
+            (path, None)
+        }
+    };
+    pre_install_check()?;
+    let output = install_module_file_with(
+        toolchain,
+        &package_path,
+        &modules_dir,
+        package_commit.begin()?,
+    )?;
+    let after = query_installed_modules(toolchain, &modules_dir)?;
+    warnings.extend(after.warnings);
+    warnings.extend(package_manager_warnings(&output));
+    normalize_package_warnings(&mut warnings);
+    let installed = match expected_identity {
+        Some(expected) => vec![
+            installed_identity(&after.installed, &expected)
+                .context("lgpm completed but the selected module identity is not installed")?
+                .clone(),
+        ],
+        None => changed_installed_modules(&before.installed, &after.installed),
+    };
+    Ok(LocalModuleInstallReport {
+        modules_dir: modules_dir.display().to_string(),
+        installed,
+        warnings,
+    })
+}
+
 pub(crate) fn download_official_indexer_module(
     release: &LocalNodePackageRelease,
     output_dir: &Path,
@@ -193,6 +415,26 @@ fn query_catalog(toolchain: &PackageToolchain) -> Result<LocalNodePackageCatalog
     parse_catalog(&output.stdout)
 }
 
+fn query_repositories(toolchain: &PackageToolchain) -> Result<Vec<LocalModuleRepositoryReport>> {
+    let output = run_package_command(
+        toolchain.repositories_command()?,
+        "lgpd repo list",
+        PACKAGE_CATALOG_TIMEOUT,
+    )?;
+    parse_repositories(&output.stdout)
+}
+
+fn query_core_module_catalog(
+    toolchain: &PackageToolchain,
+) -> Result<Vec<LocalModulePackageCatalogEntry>> {
+    let output = run_package_command(
+        toolchain.catalog_command()?,
+        "lgpd list",
+        PACKAGE_CATALOG_TIMEOUT,
+    )?;
+    parse_core_module_catalog(&output.stdout)
+}
+
 fn query_installed(
     toolchain: &PackageToolchain,
     modules_dir: &Path,
@@ -204,6 +446,18 @@ fn query_installed(
     )?;
     let installed = parse_installed(&output.stdout, modules_dir)?;
     Ok(installed.filter(|installed| validate_installed_artifact(installed, modules_dir).is_ok()))
+}
+
+fn query_installed_modules(
+    toolchain: &PackageToolchain,
+    modules_dir: &Path,
+) -> Result<LocalModuleInstalledReport> {
+    let output = run_package_command(
+        toolchain.installed_command(modules_dir)?,
+        "lgpm list",
+        PACKAGE_CATALOG_TIMEOUT,
+    )?;
+    parse_installed_modules(&output.stdout, modules_dir)
 }
 
 fn download_official_indexer_module_with(
@@ -274,6 +528,153 @@ fn install_official_indexer_module_with(
     }
     validate_installed_artifact(&installed, modules_dir)?;
     Ok(installed)
+}
+
+fn download_module_package_with(
+    toolchain: &PackageToolchain,
+    package: &LocalModulePackageCatalogEntry,
+    release: &LocalNodePackageRelease,
+    output_dir: &Path,
+    control: CommandControl,
+) -> Result<DownloadedLocalModulePackage> {
+    validate_module_catalog_entry(package)?;
+    validate_module_release(&package.name, release)?;
+    validate_absolute_directory(output_dir, "package download directory", true)?;
+    run_package_command_controlled(
+        toolchain.module_download_command(&package.name, release, output_dir)?,
+        "lgpd download module package",
+        control,
+    )?;
+
+    let file_path = output_dir.join(module_package_filename(&package.name, &release.version));
+    validate_downloaded_module_file(&file_path, release)?;
+    Ok(DownloadedLocalModulePackage {
+        name: package.name.clone(),
+        version: release.version.clone(),
+        root_hash: release.root_hash.clone(),
+        file_path,
+    })
+}
+
+fn install_module_file_with(
+    toolchain: &PackageToolchain,
+    package_path: &Path,
+    modules_dir: &Path,
+    control: CommandControl,
+) -> Result<Output> {
+    validate_absolute_directory(modules_dir, "Logos modules directory", false)?;
+    validate_local_package_path(package_path)?;
+    // Do not pass `--allow-unsigned`: package-manager performs its configured
+    // verification policy and returns any unsigned-package warning to the caller.
+    run_package_command_controlled(
+        toolchain.install_command(package_path, modules_dir)?,
+        "lgpm install module package",
+        control,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModulePackageIdentity {
+    name: String,
+    version: String,
+    root_hash: String,
+}
+
+fn find_catalog_package<'a>(
+    packages: &'a [LocalModulePackageCatalogEntry],
+    repository_name: &str,
+    repository_url: &str,
+    package_name: &str,
+) -> Result<&'a LocalModulePackageCatalogEntry> {
+    validate_repository_name(repository_name)?;
+    validate_repository_url(repository_url)?;
+    validate_package_name(package_name)?;
+    let mut matches = packages.iter().filter(|package| {
+        package.repository_name == repository_name
+            && package.repository_url == repository_url
+            && package.name == package_name
+    });
+    let package = matches
+        .next()
+        .context("selected module package is no longer available in the configured catalog")?;
+    if matches.next().is_some() {
+        bail!("configured catalog contains duplicate module package identities");
+    }
+    Ok(package)
+}
+
+fn find_catalog_release<'a>(
+    package: &'a LocalModulePackageCatalogEntry,
+    version: &str,
+    root_hash: &str,
+) -> Result<&'a LocalNodePackageRelease> {
+    validate_version(version)?;
+    validate_hash(root_hash, "package root hash")?;
+    let mut matches = package
+        .versions
+        .iter()
+        .filter(|release| release.version == version && release.root_hash == root_hash);
+    let release = matches
+        .next()
+        .context("selected module release is no longer available in the configured catalog")?;
+    if matches.next().is_some() {
+        bail!("configured catalog contains duplicate module release identities");
+    }
+    Ok(release)
+}
+
+fn installed_identity<'a>(
+    installed: &'a [LocalNodeInstalledPackageReport],
+    identity: &ModulePackageIdentity,
+) -> Option<&'a LocalNodeInstalledPackageReport> {
+    installed.iter().find(|package| {
+        package.name == identity.name
+            && package.version == identity.version
+            && package.root_hash == identity.root_hash
+    })
+}
+
+fn changed_installed_modules(
+    before: &[LocalNodeInstalledPackageReport],
+    after: &[LocalNodeInstalledPackageReport],
+) -> Vec<LocalNodeInstalledPackageReport> {
+    let before_by_name = before
+        .iter()
+        .map(|package| {
+            (
+                package.name.as_str(),
+                (package.version.as_str(), package.root_hash.as_str()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    after
+        .iter()
+        .filter(|package| {
+            before_by_name
+                .get(package.name.as_str())
+                .is_none_or(|identity| {
+                    identity.0 != package.version || identity.1 != package.root_hash
+                })
+        })
+        .cloned()
+        .collect()
+}
+
+fn package_manager_warnings(output: &Output) -> Vec<String> {
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    if stderr.contains("package is unsigned") {
+        vec![
+            "Package manager accepted an unsigned package under its current signature policy."
+                .to_owned(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn normalize_package_warnings(warnings: &mut Vec<String>) {
+    warnings.sort();
+    warnings.dedup();
 }
 
 fn run_package_command(mut command: Command, label: &str, timeout: Duration) -> Result<Output> {
@@ -454,6 +855,186 @@ fn validate_release(release: &LocalNodePackageRelease) -> Result<()> {
     Ok(())
 }
 
+fn validate_module_catalog_entry(package: &LocalModulePackageCatalogEntry) -> Result<()> {
+    validate_package_name(&package.name)?;
+    if package.package_type != INDEXER_PACKAGE_TYPE {
+        bail!("only core packages can be installed into the Logos modules directory");
+    }
+    validate_repository_name(&package.repository_name)?;
+    validate_repository_url(&package.repository_url)?;
+    Ok(())
+}
+
+fn validate_module_release(package_name: &str, release: &LocalNodePackageRelease) -> Result<()> {
+    validate_package_name(package_name)?;
+    validate_version(&release.version)?;
+    validate_hash(&release.root_hash, "package root hash")?;
+    validate_hash(&release.sha256, "package SHA-256")?;
+    if release.size == 0 {
+        bail!("package size must be positive");
+    }
+    let url = url::Url::parse(&release.url).context("package download URL is invalid")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.path().ends_with(&format!(
+            "/{}",
+            module_package_filename(package_name, &release.version)
+        ))
+    {
+        bail!("package download URL is not a secure module release artifact");
+    }
+    Ok(())
+}
+
+fn validate_downloaded_module_file(
+    file_path: &Path,
+    release: &LocalNodePackageRelease,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(file_path).with_context(|| {
+        format!(
+            "lgpd did not create expected package `{}`",
+            file_path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!(
+            "lgpd package output `{}` is not a regular file",
+            file_path.display()
+        );
+    }
+    if metadata.len() != release.size {
+        bail!(
+            "downloaded package size {} does not match catalog size {}",
+            metadata.len(),
+            release.size
+        );
+    }
+    let checksum = sha256_file(file_path)?;
+    if !checksum.eq_ignore_ascii_case(&release.sha256) {
+        bail!("downloaded package checksum does not match the catalog");
+    }
+    Ok(())
+}
+
+fn validate_local_package_file(value: &str) -> Result<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("local module package file is required");
+    }
+    let path = Path::new(value);
+    validate_local_package_path(path)?;
+    let canonical = fs::canonicalize(path).with_context(|| {
+        format!(
+            "failed to resolve local module package `{}`",
+            path.display()
+        )
+    })?;
+    validate_local_package_path(&canonical)?;
+    validate_local_core_package(&canonical)?;
+    Ok(canonical)
+}
+
+fn validate_local_package_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        bail!("local module package file must be an absolute path");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        bail!("local module package file must not contain relative path components");
+    }
+    if path.extension().and_then(|value| value.to_str()) != Some("lgx") {
+        bail!("local module package file must use the .lgx extension");
+    }
+    let metadata = fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "failed to inspect local module package `{}`",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("local module package file must be a regular file");
+    }
+    Ok(())
+}
+
+fn validate_local_core_package(path: &Path) -> Result<()> {
+    let manifest = read_lgx_manifest(path)?;
+    validate_package_name(&manifest.name)
+        .context("local module package manifest name is invalid")?;
+    validate_version(&manifest.version)
+        .context("local module package manifest version is invalid")?;
+    if manifest.package_type != INDEXER_PACKAGE_TYPE {
+        bail!(
+            "local package `{}` has type `{}`; only core packages can be installed into the Logos modules directory",
+            manifest.name,
+            manifest.package_type
+        );
+    }
+    Ok(())
+}
+
+fn read_lgx_manifest(path: &Path) -> Result<RawLgxManifest> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open local module package `{}`", path.display()))?;
+    let decoder = GzDecoder::new(BufReader::new(file));
+    let mut archive = Archive::new(decoder.take(MAX_LGX_UNCOMPRESSED_INSPECTION_SIZE));
+    let mut entries = archive
+        .entries()
+        .context("local module package is not a readable LGX archive")?;
+    let Some(entry) = entries.next() else {
+        bail!("local module package does not contain manifest.json");
+    };
+    let mut entry = entry.context("local module package contains an unreadable LGX entry")?;
+    let entry_path = entry
+        .path()
+        .context("local module package contains an invalid LGX entry path")?;
+    if entry_path.as_ref() != Path::new("manifest.json") {
+        bail!("local module package manifest.json must be its first archive entry");
+    }
+    if !entry.header().entry_type().is_file() {
+        bail!("local module package manifest.json is not a regular file");
+    }
+    if entry.size() > MAX_PACKAGE_MANIFEST_SIZE {
+        bail!("local module package manifest.json exceeds the inspection size limit");
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(entry.size()).context("local module package manifest is too large")?,
+    );
+    entry
+        .read_to_end(&mut bytes)
+        .context("failed to read local module package manifest.json")?;
+    // Multi-platform LGX files can contain large variant payloads after the
+    // canonical manifest. `lgpm` validates the full archive before it writes.
+    parse_json::<RawLgxManifest>(&bytes, "local module package manifest")
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open package `{}` for checksum", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read package `{}` for checksum", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        let chunk = buffer
+            .get(..count)
+            .context("package checksum read returned an invalid byte count")?;
+        hasher.update(chunk);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 fn validate_downloaded_package(package: &DownloadedLocalNodePackage) -> Result<()> {
     if package.name != INDEXER_PACKAGE_NAME {
         bail!("only lez_indexer_module may be installed through this package flow");
@@ -490,6 +1071,41 @@ fn validate_version(version: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_package_name(value: &str) -> Result<()> {
+    validate_identifier(value, "package name")
+}
+
+fn validate_repository_name(value: &str) -> Result<()> {
+    validate_identifier(value, "package repository name")
+}
+
+fn validate_identifier(value: &str, label: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.starts_with('-')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        bail!("{label} contains unsupported characters");
+    }
+    Ok(())
+}
+
+fn validate_repository_url(value: &str) -> Result<()> {
+    let url = url::Url::parse(value).context("package repository URL is invalid")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("package repository URL must be an HTTPS URL without credentials");
+    }
+    Ok(())
+}
+
 fn validate_hash(value: &str, label: &str) -> Result<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("{label} must contain 64 hexadecimal characters");
@@ -499,6 +1115,31 @@ fn validate_hash(value: &str, label: &str) -> Result<()> {
 
 fn package_filename(version: &str) -> String {
     format!("{INDEXER_PACKAGE_NAME}-{version}.lgx")
+}
+
+fn module_package_filename(package_name: &str, version: &str) -> String {
+    format!("{package_name}-{version}.lgx")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRepository {
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    description: String,
+    url: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    is_default: bool,
+    #[serde(default)]
+    resolve_error: String,
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -545,6 +1186,14 @@ struct RawCatalogManifest {
 struct RawPackageHashes {
     #[serde(default)]
     root: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLgxManifest {
+    name: String,
+    #[serde(rename = "type")]
+    package_type: String,
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -616,6 +1265,110 @@ fn parse_catalog(bytes: &[u8]) -> Result<LocalNodePackageCatalogEntry> {
     })
 }
 
+fn parse_repositories(bytes: &[u8]) -> Result<Vec<LocalModuleRepositoryReport>> {
+    let mut repositories = parse_json::<Vec<RawRepository>>(bytes, "lgpd repo list")?
+        .into_iter()
+        .map(|repository| LocalModuleRepositoryReport {
+            name: repository.name,
+            display_name: repository.display_name,
+            description: repository.description,
+            url: repository.url,
+            enabled: repository.enabled,
+            is_default: repository.is_default,
+            resolve_error: repository.resolve_error,
+        })
+        .collect::<Vec<_>>();
+    repositories.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.display_name.cmp(&right.display_name))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.url.cmp(&right.url))
+    });
+    Ok(repositories)
+}
+
+fn parse_core_module_catalog(bytes: &[u8]) -> Result<Vec<LocalModulePackageCatalogEntry>> {
+    let mut packages = parse_json::<Vec<RawCatalogPackage>>(bytes, "lgpd list")?
+        .into_iter()
+        .filter(|package| package.package_type == INDEXER_PACKAGE_TYPE)
+        .map(parse_core_module_entry)
+        .collect::<Result<Vec<_>>>()?;
+    packages.sort_by(|left, right| {
+        left.repository_display_name
+            .cmp(&right.repository_display_name)
+            .then_with(|| left.repository_name.cmp(&right.repository_name))
+            .then_with(|| left.repository_url.cmp(&right.repository_url))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(packages)
+}
+
+fn parse_core_module_entry(raw: RawCatalogPackage) -> Result<LocalModulePackageCatalogEntry> {
+    let RawCatalogPackage {
+        name,
+        description,
+        package_type,
+        category,
+        repository_name,
+        repository_display_name,
+        repository_url,
+        versions,
+    } = raw;
+    let mut entry = LocalModulePackageCatalogEntry {
+        name,
+        description,
+        package_type,
+        category,
+        repository_name,
+        repository_display_name,
+        repository_url,
+        versions: Vec::new(),
+    };
+    validate_module_catalog_entry(&entry)?;
+    entry.versions = versions
+        .into_iter()
+        .map(|release| parse_module_release(&entry.name, &entry.package_type, release))
+        .collect::<Result<Vec<_>>>()?;
+    if entry.versions.is_empty() {
+        bail!("module package has no releases");
+    }
+    entry.versions.sort_by(|left, right| {
+        right
+            .released_at
+            .cmp(&left.released_at)
+            .then_with(|| right.version.cmp(&left.version))
+            .then_with(|| left.root_hash.cmp(&right.root_hash))
+    });
+    Ok(entry)
+}
+
+fn parse_module_release(
+    package_name: &str,
+    package_type: &str,
+    raw_release: RawCatalogRelease,
+) -> Result<LocalNodePackageRelease> {
+    if raw_release.manifest.name != package_name
+        || raw_release.manifest.package_type != package_type
+        || raw_release.manifest.version.is_empty()
+        || raw_release.manifest.hashes.root != raw_release.root_hash
+    {
+        bail!("lgpd release manifest does not match its catalog identity");
+    }
+    let release = LocalNodePackageRelease {
+        version: raw_release.manifest.version,
+        released_at: raw_release.released_at,
+        root_hash: raw_release.root_hash,
+        sha256: raw_release.sha256,
+        size: raw_release.size,
+        url: raw_release.url,
+        publisher_ref: raw_release.publisher_ref,
+    };
+    validate_module_release(package_name, &release)?;
+    Ok(release)
+}
+
 fn parse_installed(
     bytes: &[u8],
     modules_dir: &Path,
@@ -663,6 +1416,104 @@ fn parse_installed(
         main_file_path: raw.main_file_path,
         root_hash: raw.hashes.root,
     }))
+}
+
+fn parse_installed_modules(bytes: &[u8], modules_dir: &Path) -> Result<LocalModuleInstalledReport> {
+    let text = std::str::from_utf8(bytes).context("lgpm list output is not UTF-8")?;
+    if text.trim() == "No installed modules found" {
+        return Ok(LocalModuleInstalledReport::default());
+    }
+    let mut installed = Vec::new();
+    let mut warnings = Vec::new();
+    for package in parse_json::<Vec<RawInstalledPackage>>(bytes, "lgpm list")?
+        .into_iter()
+        .filter(|package| package.package_type == INDEXER_PACKAGE_TYPE)
+    {
+        let name = package.name.clone();
+        match parse_installed_module(package, modules_dir) {
+            Ok(package) => installed.push(package),
+            Err(error) => warnings.push(format!(
+                "Ignored invalid installed core module `{name}`: {error:#}"
+            )),
+        }
+    }
+    installed.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut names = BTreeMap::new();
+    for package in &installed {
+        if names.insert(package.name.as_str(), ()).is_some() {
+            bail!("lgpm returned duplicate core module installations");
+        }
+    }
+    normalize_package_warnings(&mut warnings);
+    Ok(LocalModuleInstalledReport {
+        installed,
+        warnings,
+    })
+}
+
+fn parse_installed_module(
+    raw: RawInstalledPackage,
+    modules_dir: &Path,
+) -> Result<LocalNodeInstalledPackageReport> {
+    validate_package_name(&raw.name)?;
+    validate_version(&raw.version)?;
+    validate_hash(&raw.hashes.root, "installed package root hash")?;
+    let expected_install_dir = modules_dir.join(&raw.name);
+    let install_dir = Path::new(&raw.install_dir);
+    let main_file_path = Path::new(&raw.main_file_path);
+    if install_dir != expected_install_dir {
+        bail!("installed core module is outside configured modules directory");
+    }
+    if !main_file_path.is_absolute()
+        || main_file_path == install_dir
+        || !main_file_path.starts_with(install_dir)
+    {
+        bail!("installed core module main file is outside its install directory");
+    }
+    let report = LocalNodeInstalledPackageReport {
+        name: raw.name,
+        version: raw.version,
+        description: raw.description,
+        package_type: raw.package_type,
+        category: raw.category,
+        author: raw.author,
+        install_type: raw.install_type,
+        install_dir: raw.install_dir,
+        main_file_path: raw.main_file_path,
+        root_hash: raw.hashes.root,
+    };
+    validate_installed_module_artifact(&report, modules_dir)?;
+    Ok(report)
+}
+
+fn validate_installed_module_artifact(
+    installed: &LocalNodeInstalledPackageReport,
+    modules_dir: &Path,
+) -> Result<()> {
+    let modules_dir = canonical_modules_dir(modules_dir)?;
+    let expected_install_dir = modules_dir.join(&installed.name);
+    let install_dir = fs::canonicalize(&installed.install_dir).with_context(|| {
+        format!(
+            "installed core module directory `{}` is unavailable",
+            installed.install_dir
+        )
+    })?;
+    if !install_dir.is_dir() || install_dir != expected_install_dir {
+        bail!("installed core module directory does not match configured modules directory");
+    }
+    let main_file_path = fs::canonicalize(&installed.main_file_path).with_context(|| {
+        format!(
+            "installed core module main file `{}` is unavailable",
+            installed.main_file_path
+        )
+    })?;
+    if !main_file_path.is_file()
+        || main_file_path == install_dir
+        || !main_file_path.starts_with(&install_dir)
+    {
+        bail!("installed core module main file is not a regular file in its install directory");
+    }
+    Ok(())
 }
 
 fn parse_json<T>(bytes: &[u8], label: &str) -> Result<T>
@@ -726,6 +1577,33 @@ mod tests {
         })
     }
 
+    fn module_catalog_value(package_name: &str, sha256: &str, size: u64) -> Value {
+        json!([{
+            "author": "",
+            "category": "metrics",
+            "description": "OpenMetrics module",
+            "name": package_name,
+            "repositoryDisplayName": "Example Modules",
+            "repositoryName": "example-modules",
+            "repositoryUrl": "https://example.test/logos-repo.json",
+            "type": INDEXER_PACKAGE_TYPE,
+            "versions": [{
+                "manifest": {
+                    "hashes": { "root": ROOT_HASH },
+                    "name": package_name,
+                    "type": INDEXER_PACKAGE_TYPE,
+                    "version": "1.0.0"
+                },
+                "publisherRef": "example-module-v1.0.0",
+                "releasedAt": "2026-07-20T12:00:00Z",
+                "rootHash": ROOT_HASH,
+                "sha256": sha256,
+                "size": size,
+                "url": format!("https://example.test/releases/{package_name}-1.0.0.lgx")
+            }]
+        }])
+    }
+
     #[test]
     fn parses_only_official_indexer_catalog_identity() -> Result<()> {
         let package = parse_catalog(&serde_json::to_vec(&catalog_value())?)?;
@@ -761,6 +1639,157 @@ mod tests {
         let error = parse_catalog(&serde_json::to_vec(&wrong_hash)?).err();
         if error.is_none_or(|error| !error.to_string().contains("catalog identity")) {
             bail!("catalog release hash mismatch was not rejected");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generic_catalog_preserves_configured_core_release_identity() -> Result<()> {
+        let mut catalog = module_catalog_value("openmetrics", SHA256, 42);
+        let ui_package = json!({
+            "author": "",
+            "category": "wallet",
+            "description": "Wallet UI",
+            "name": "wallet-ui",
+            "repositoryDisplayName": "Example Modules",
+            "repositoryName": "example-modules",
+            "repositoryUrl": "https://example.test/logos-repo.json",
+            "type": "ui_qml",
+            "versions": [{
+                "manifest": {
+                    "hashes": { "root": ROOT_HASH },
+                    "name": "wallet-ui",
+                    "type": "ui_qml",
+                    "version": "1.0.0"
+                },
+                "publisherRef": "wallet-ui-v1.0.0",
+                "releasedAt": "2026-07-20T12:00:00Z",
+                "rootHash": ROOT_HASH,
+                "sha256": SHA256,
+                "size": 42,
+                "url": "https://example.test/releases/wallet-ui-1.0.0.lgx"
+            }]
+        });
+        let rows = catalog
+            .as_array_mut()
+            .context("generic module catalog fixture should be an array")?;
+        rows.push(ui_package);
+
+        let packages = parse_core_module_catalog(&serde_json::to_vec(&catalog)?)?;
+        let [package] = packages.as_slice() else {
+            bail!("generic core package catalog identity was not preserved: {packages:?}");
+        };
+        let [release] = package.versions.as_slice() else {
+            bail!("generic core package catalog identity was not preserved: {packages:?}");
+        };
+        if package.name != "openmetrics"
+            || package.repository_name != "example-modules"
+            || release.root_hash != ROOT_HASH
+        {
+            bail!("generic core package catalog identity was not preserved: {packages:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn downloaded_generic_module_requires_matching_checksum() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let package_path = directory.path().join("openmetrics-1.0.0.lgx");
+        fs::write(&package_path, b"wrong")?;
+        let package = parse_core_module_catalog(&serde_json::to_vec(&module_catalog_value(
+            "openmetrics",
+            &hex::encode(Sha256::digest(b"module")),
+            5,
+        ))?)?
+        .into_iter()
+        .next()
+        .context("missing generic module catalog entry")?;
+        let release = package
+            .versions
+            .first()
+            .context("missing generic release")?;
+
+        let error = validate_downloaded_module_file(&package_path, release).err();
+        if error.is_none_or(|error| !error.to_string().contains("checksum")) {
+            bail!("generic module checksum mismatch was not rejected");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_module_file_rejects_ui_package_before_installation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let package_path = directory.path().join("chat-ui-0.2.0.lgx");
+        write_lgx_manifest(&package_path, "chat_ui", "ui_qml", "0.2.0")?;
+
+        let error = validate_local_package_file(
+            package_path
+                .to_str()
+                .context("temporary package path is not UTF-8")?,
+        )
+        .err();
+        if error.is_none_or(|error| !error.to_string().contains("only core packages")) {
+            bail!("local UI package was not rejected before package-manager installation");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_module_file_accepts_core_package_manifest_for_package_manager_validation() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let package_path = directory.path().join("openmetrics-1.0.0.lgx");
+        write_lgx_manifest(&package_path, "openmetrics", INDEXER_PACKAGE_TYPE, "1.0.0")?;
+
+        let validated = validate_local_package_file(
+            package_path
+                .to_str()
+                .context("temporary package path is not UTF-8")?,
+        )?;
+        if validated != fs::canonicalize(&package_path)? {
+            bail!("local core package path was not canonicalized");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_module_file_reads_manifest_before_large_variant_payload() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let package_path = directory.path().join("openmetrics-1.0.0.lgx");
+        let file = fs::File::create(&package_path)?;
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let manifest = serde_json::to_vec(&json!({
+            "name": "openmetrics",
+            "type": INDEXER_PACKAGE_TYPE,
+            "version": "1.0.0"
+        }))?;
+        let mut manifest_header = tar::Header::new_gnu();
+        manifest_header.set_size(manifest.len() as u64);
+        manifest_header.set_mode(0o644);
+        manifest_header.set_cksum();
+        archive.append_data(&mut manifest_header, "manifest.json", manifest.as_slice())?;
+
+        let large_payload = vec![0_u8; usize::try_from(MAX_LGX_UNCOMPRESSED_INSPECTION_SIZE)? + 1];
+        let mut payload_header = tar::Header::new_gnu();
+        payload_header.set_size(large_payload.len() as u64);
+        payload_header.set_mode(0o644);
+        payload_header.set_cksum();
+        archive.append_data(
+            &mut payload_header,
+            "variants/linux-amd64/openmetrics_plugin.so",
+            large_payload.as_slice(),
+        )?;
+        let encoder = archive.into_inner()?;
+        encoder.finish()?;
+
+        let validated = validate_local_package_file(
+            package_path
+                .to_str()
+                .context("temporary package path is not UTF-8")?,
+        )?;
+        if validated != fs::canonicalize(&package_path)? {
+            bail!("large local core package path was not canonicalized");
         }
         Ok(())
     }
@@ -833,6 +1862,57 @@ mod tests {
         }
         fs::write(&main_file_path, b"module")?;
         validate_installed_artifact(&report, &modules_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn installed_module_catalog_keeps_valid_entries_when_another_core_artifact_is_stale()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        let valid_dir = modules_dir.join("openmetrics");
+        let valid_main = valid_dir.join("openmetrics_plugin.so");
+        let stale_dir = modules_dir.join("stale_module");
+        fs::create_dir_all(&valid_dir)?;
+        fs::create_dir_all(&stale_dir)?;
+        fs::write(&valid_main, b"module")?;
+        let installed = json!([
+            {
+                "author": "",
+                "category": "metrics",
+                "description": "OpenMetrics",
+                "hashes": { "root": ROOT_HASH },
+                "installDir": valid_dir,
+                "installType": "user",
+                "mainFilePath": valid_main,
+                "name": "openmetrics",
+                "type": INDEXER_PACKAGE_TYPE,
+                "version": "1.0.0"
+            },
+            {
+                "author": "",
+                "category": "legacy",
+                "description": "Stale module",
+                "hashes": { "root": ROOT_HASH },
+                "installDir": stale_dir,
+                "installType": "user",
+                "mainFilePath": stale_dir.join("missing.so"),
+                "name": "stale_module",
+                "type": INDEXER_PACKAGE_TYPE,
+                "version": "1.0.0"
+            }
+        ]);
+
+        let report = parse_installed_modules(&serde_json::to_vec(&installed)?, &modules_dir)?;
+        let [installed_module] = report.installed.as_slice() else {
+            bail!("stale core artifact prevented a valid catalog: {report:?}");
+        };
+        let [warning] = report.warnings.as_slice() else {
+            bail!("stale core artifact prevented a valid catalog: {report:?}");
+        };
+        if installed_module.name != "openmetrics" || !warning.contains("stale_module") {
+            bail!("stale core artifact prevented a valid catalog: {report:?}");
+        }
         Ok(())
     }
 
@@ -1024,6 +2104,117 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn controlled_generic_module_install_revalidates_catalog_and_reports_package_policy_warning()
+    -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let modules_dir = root.path().join("modules");
+        fs::create_dir_all(&modules_dir)?;
+        let lgpd = root.path().join("lgpd");
+        let lgpm = root.path().join("lgpm");
+        let download_marker = root.path().join("downloaded");
+        let state_path = root.path().join("installed-state");
+        let install_dir = modules_dir.join("openmetrics");
+        let main_file_path = install_dir.join("openmetrics_plugin.so");
+        let package_sha = hex::encode(Sha256::digest(b"module"));
+        let catalog_json = serde_json::to_string(&module_catalog_value(
+            "openmetrics",
+            &package_sha,
+            b"module".len() as u64,
+        ))?;
+        let installed_json = serde_json::to_string(&json!([{
+            "author": "",
+            "category": "metrics",
+            "description": "OpenMetrics",
+            "hashes": { "root": ROOT_HASH },
+            "installDir": install_dir,
+            "installType": "user",
+            "mainFilePath": main_file_path,
+            "name": "openmetrics",
+            "type": INDEXER_PACKAGE_TYPE,
+            "version": "1.0.0"
+        }]))?;
+        write_executable(
+            &lgpd,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"--json\" ]; then\n  printf '%s\\n' '{catalog_json}'\n  exit 0\nfi\noutput=''\nversion=''\nroot_hash=''\npackage=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --output) shift; output=\"$1\" ;;\n    --version) shift; version=\"$1\" ;;\n    --root-hash) shift; root_hash=\"$1\" ;;\n    download) shift; package=\"$1\"; break ;;\n  esac\n  shift\ndone\n[ \"$package\" = \"openmetrics\" ] || exit 8\n[ \"$version\" = \"1.0.0\" ] || exit 9\n[ \"$root_hash\" = \"{ROOT_HASH}\" ] || exit 10\nprintf 'module' > \"$output/openmetrics-$version.lgx\"\ntouch '{download_marker}'\n",
+                download_marker = download_marker.display(),
+            ),
+        )?;
+        write_executable(
+            &lgpm,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--modules-dir\" ]; then\n  shift\n  shift\nfi\ncase \"$1\" in\n  list)\n    if [ -f '{state_path}' ]; then\n      printf '%s\\n' '{installed_json}'\n    else\n      printf '%s\\n' 'No installed modules found'\n    fi\n    ;;\n  install)\n    case \" $* \" in\n      *\" --allow-unsigned \"*) exit 11 ;;\n    esac\n    mkdir -p '{install_dir}'\n    printf '%s' 'module' > '{main_file_path}'\n    touch '{state_path}'\n    printf '%s\\n' 'Warning: Package is unsigned' >&2\n    ;;\n  *) exit 12 ;;\nesac\n",
+                state_path = state_path.display(),
+                install_dir = install_dir.display(),
+                main_file_path = main_file_path.display(),
+            ),
+        )?;
+        let toolchain = PackageToolchain {
+            lgpd: Some(lgpd),
+            lgpm: Some(lgpm),
+        };
+        let request = LocalModuleInstallRequest {
+            modules_dir: modules_dir.display().to_string(),
+            source: LocalModuleInstallSource::Repository {
+                repository_name: "example-modules".to_owned(),
+                repository_url: "https://example.test/logos-repo.json".to_owned(),
+                package_name: "openmetrics".to_owned(),
+                version: "1.0.0".to_owned(),
+                root_hash: ROOT_HASH.to_owned(),
+            },
+        };
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .with_isolated_test_budget();
+        let mut package_commit = LocalNodePackageCommit::new(|| {
+            Ok((
+                CommandControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .with_isolated_test_budget(),
+                (),
+            ))
+        });
+
+        let mut pre_install_checked = false;
+        let report =
+            install_local_module_with(&toolchain, &request, control, &mut package_commit, || {
+                pre_install_checked = true;
+                anyhow::ensure!(
+                    download_marker.is_file(),
+                    "pre-install check ran before the repository download completed"
+                );
+                anyhow::ensure!(
+                    !state_path.exists(),
+                    "pre-install check ran after lgpm mutation"
+                );
+                Ok(())
+            })?;
+        anyhow::ensure!(
+            pre_install_checked,
+            "module installation did not run its final pre-install check"
+        );
+        let [installed_module] = report.installed.as_slice() else {
+            bail!("generic module installation report lost verified identity: {report:?}");
+        };
+        if installed_module.name != "openmetrics"
+            || installed_module.version != "1.0.0"
+            || installed_module.root_hash != ROOT_HASH
+            || report.warnings
+                != [
+                    "Package manager accepted an unsigned package under its current signature policy.",
+                ]
+        {
+            bail!("generic module installation report lost verified identity: {report:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn catalog_report_serializes_explicit_not_installed_state() -> Result<()> {
         let report = LocalNodePackageCatalogReport {
@@ -1045,6 +2236,30 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
     fn write_executable(path: &Path, contents: &str) -> Result<()> {
         fs::write(path, contents)?;
         fs::set_permissions(path, Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+
+    fn write_lgx_manifest(
+        path: &Path,
+        name: &str,
+        package_type: &str,
+        version: &str,
+    ) -> Result<()> {
+        let file = fs::File::create(path)?;
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let manifest = serde_json::to_vec(&json!({
+            "name": name,
+            "type": package_type,
+            "version": version
+        }))?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive.append_data(&mut header, "manifest.json", manifest.as_slice())?;
+        let encoder = archive.into_inner()?;
+        encoder.finish()?;
         Ok(())
     }
 

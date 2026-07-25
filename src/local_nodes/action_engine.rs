@@ -26,7 +26,8 @@ use super::runtime::{self, LogoscoreRuntimeProfile, LogoscoreRuntimeStore};
 use super::workflow::{LocalNodeWorkflow, normalized_profile};
 use super::{
     ChannelIndexerActionRequest, ChannelIndexerConfigRequest, ChannelIndexerConfigSnapshot,
-    ChannelIndexerConfigValidation, LocalNodePackageCommit,
+    ChannelIndexerConfigValidation, LocalModuleInstallReport, LocalModuleInstallRequest,
+    LocalNodePackageCommit,
 };
 
 const STATE_FILE: &str = "local_nodes.json";
@@ -204,6 +205,26 @@ impl LocalNodeActionEngine {
         )
     }
 
+    pub(super) fn install_module_controlled(
+        &self,
+        request: LocalModuleInstallRequest,
+        confirmation: Option<&str>,
+        download_control: CommandControl,
+        package_commit: &mut LocalNodePackageCommit,
+    ) -> Result<LocalModuleInstallReport> {
+        ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+
+        let _state_lock = acquire_state_lock()?;
+        let runtime = self.runtime_store.load_resolved()?;
+        validate_module_install_runtime(runtime.as_ref(), &request.modules_dir)?;
+        super::package::install_local_module_with_pre_install_check(
+            &request,
+            download_control,
+            package_commit,
+            || validate_module_install_runtime(runtime.as_ref(), &request.modules_dir),
+        )
+    }
+
     pub(super) fn channel_indexer_action_controlled(
         &self,
         profile: &str,
@@ -262,6 +283,34 @@ impl LocalNodeActionEngine {
         }
         Ok(self.projector.report(profile, &state, runtime.as_ref()))
     }
+}
+
+fn validate_module_install_runtime(
+    runtime: Option<&LogoscoreRuntimeProfile>,
+    requested_modules_dir: &str,
+) -> Result<()> {
+    let requested = super::package::canonical_modules_dir(Path::new(requested_modules_dir.trim()))?;
+    let Some(runtime) = runtime else {
+        return Ok(());
+    };
+    if runtime.is_attached() {
+        return runtime.validate_attached_module_install_target(&requested);
+    }
+    if runtime.is_running() {
+        bail!("stop the local LogosCore runtime before changing installed modules");
+    }
+    let Some(configured_modules_dir) = runtime.modules_dir.as_deref() else {
+        return Ok(());
+    };
+    let configured = super::package::canonical_modules_dir(Path::new(configured_modules_dir))?;
+    if requested != configured {
+        bail!(
+            "module target `{}` does not match the configured LogosCore modules directory `{}`",
+            requested.display(),
+            configured.display()
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -420,6 +469,11 @@ impl LocalNodeReportProjector {
 
 fn runtime_actions(_profile: &str, runtime: Option<&LogoscoreRuntimeProfile>) -> Vec<NodeAction> {
     match runtime {
+        Some(runtime) if runtime.is_attached() && runtime.is_unavailable() => runtime
+            .service_target()
+            .is_some()
+            .then_some(vec![NodeAction::StartRuntime, NodeAction::StopRuntime])
+            .unwrap_or_default(),
         Some(runtime) if runtime.is_controllable() && runtime.is_running() => {
             vec![NodeAction::StopRuntime]
         }
@@ -684,8 +738,27 @@ mod tests {
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
             timeout_profile: LogoscoreTimeoutProfile::Probe,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
             daemon_process_id,
             service_target,
+        }
+    }
+
+    fn managed_runtime(
+        modules_dir: &Path,
+        daemon_process_id: Option<u32>,
+    ) -> LogoscoreRuntimeProfile {
+        LogoscoreRuntimeProfile {
+            id: "inspector-managed-local".to_owned(),
+            binary_path: "/bin/sh".to_owned(),
+            config_dir: "/tmp/logoscore-managed".to_owned(),
+            modules_dir: Some(modules_dir.display().to_string()),
+            persistence_path: Some("/tmp/logoscore-managed-data".to_owned()),
+            ownership: LogoscoreRuntimeOwnership::InspectorManaged,
+            timeout_profile: LogoscoreTimeoutProfile::Lifecycle,
+            observation: super::super::runtime::LogoscoreRuntimeObservation::Verified,
+            daemon_process_id,
+            service_target: None,
         }
     }
 
@@ -707,8 +780,50 @@ mod tests {
             [NodeAction::StartRuntime]
         );
 
+        let mut unavailable = stopped.clone();
+        unavailable.observation = super::super::runtime::LogoscoreRuntimeObservation::Unavailable;
+        assert_eq!(
+            runtime_actions("default", Some(&unavailable)),
+            [NodeAction::StartRuntime, NodeAction::StopRuntime]
+        );
+
         let read_only = attached_runtime(None, None);
         assert!(runtime_actions("default", Some(&read_only)).is_empty());
+    }
+
+    #[test]
+    fn module_install_requires_stopped_runtime_and_matching_modules_directory() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        let other_modules_dir = directory.path().join("other-modules");
+        fs::create_dir_all(&modules_dir)?;
+        fs::create_dir_all(&other_modules_dir)?;
+        let mut runtime = managed_runtime(&modules_dir, None);
+
+        validate_module_install_runtime(Some(&runtime), &modules_dir.display().to_string())?;
+
+        runtime.daemon_process_id = Some(std::process::id());
+        let error =
+            validate_module_install_runtime(Some(&runtime), &modules_dir.display().to_string())
+                .err();
+        anyhow::ensure!(
+            error.is_some_and(|error| error
+                .to_string()
+                .contains("stop the local LogosCore runtime")),
+            "running runtime did not block module installation"
+        );
+
+        runtime.daemon_process_id = None;
+        let error = validate_module_install_runtime(
+            Some(&runtime),
+            &other_modules_dir.display().to_string(),
+        )
+        .err();
+        anyhow::ensure!(
+            error.is_some_and(|error| error.to_string().contains("does not match")),
+            "configured modules directory mismatch was not blocked"
+        );
+        Ok(())
     }
 
     fn state_with_indexer(
