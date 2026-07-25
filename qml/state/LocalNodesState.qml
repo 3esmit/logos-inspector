@@ -524,9 +524,9 @@ QtObject {
         const value = result || {};
         const installed = Array.isArray(value.installed) ? value.installed : [];
         const installedText = installed.map(function (packageValue) {
-            const package = packageValue || {};
-            const name = String(package.name || qsTr("module"));
-            const version = String(package.version || qsTr("unknown version"));
+            const packageInfo = packageValue || {};
+            const name = String(packageInfo.name || qsTr("module"));
+            const version = String(packageInfo.version || qsTr("unknown version"));
             return name + " " + version;
         }).join(", ");
         const warnings = Array.isArray(value.warnings) ? value.warnings : [];
@@ -1144,11 +1144,11 @@ QtObject {
         const name = String(repositoryName || "");
         const url = String(repositoryUrl || "");
         return packages.filter(function (packageValue) {
-            const package = packageValue || {};
-            return String(package.package_type || "") === "core"
-                && String(package.name || "") !== "lez_indexer_module"
-                && String(package.repository_name || "") === name
-                && String(package.repository_url || "") === url;
+            const packageInfo = packageValue || {};
+            return String(packageInfo.package_type || "") === "core"
+                && String(packageInfo.name || "") !== "lez_indexer_module"
+                && String(packageInfo.repository_name || "") === name
+                && String(packageInfo.repository_url || "") === url;
         });
     }
 
@@ -1164,8 +1164,8 @@ QtObject {
     }
 
     function moduleReleases(repositoryName, repositoryUrl, packageName) {
-        const package = modulePackage(repositoryName, repositoryUrl, packageName);
-        return package && Array.isArray(package.versions) ? package.versions : [];
+        const packageInfo = modulePackage(repositoryName, repositoryUrl, packageName);
+        return packageInfo && Array.isArray(packageInfo.versions) ? packageInfo.versions : [];
     }
 
     function moduleRelease(repositoryName, repositoryUrl, packageName, version, rootHash) {
