@@ -2180,6 +2180,9 @@ impl LogoscoreCliRuntime {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        if let Some(snapshot) = fresh_logoscore_cli_snapshot(&self.runner, kind)? {
+            return Ok(snapshot);
+        }
         self.with_command_gate(timeout, move |runner, deadline| {
             cached_logoscore_cli_snapshot(runner, kind, || {
                 run_json_before_deadline(runner, args, deadline)
@@ -2332,6 +2335,21 @@ struct LogoscoreCliCommandGate {
     lock: Mutex<()>,
     controlled_waiters: AtomicUsize,
     snapshot: Mutex<LogoscoreCliSnapshot>,
+}
+
+fn fresh_logoscore_cli_snapshot(
+    runner: &LogosCoreRunner,
+    kind: LogoscoreCliSnapshotKind,
+) -> Result<Option<LogosCoreOutput>> {
+    let gate = logoscore_cli_command_gate(runner)?;
+    let cached = gate
+        .snapshot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("logoscore CLI snapshot is poisoned"))?
+        .entry(kind)
+        .filter(|entry| entry.is_fresh(kind, StdInstant::now()))
+        .cloned();
+    cached.map(|entry| entry.result.into_result()).transpose()
 }
 
 fn cached_logoscore_cli_snapshot(
@@ -5458,6 +5476,61 @@ esac
                 .count()
                 == 2,
             "snapshot changed the requested module-call count: {commands}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_status_uses_a_fresh_snapshot_without_waiting_for_the_command_gate() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-snapshot-fast-path");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" = "status" ]; then
+    printf '%s\n' status >> "$config_dir/commands"
+    printf '%s\n' '{"daemon":{"status":"running"}}'
+fi
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+
+        runtime.status_with_timeout(Duration::from_secs(1))?;
+        let gate = logoscore_cli_command_gate(&runtime.runner)?;
+        let held = gate
+            .lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("test command gate is poisoned"))?;
+        let status = runtime.status_with_timeout(Duration::from_millis(20))?;
+        drop(held);
+
+        anyhow::ensure!(
+            status
+                .value
+                .pointer("/daemon/status")
+                .and_then(Value::as_str)
+                == Some("running"),
+            "fresh status snapshot returned an unexpected payload"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .eq(["status"]),
+            "fresh status snapshot executed another command while the gate was held"
         );
         Ok(())
     }
