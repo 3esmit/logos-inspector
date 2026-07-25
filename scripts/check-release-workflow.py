@@ -179,6 +179,16 @@ def main() -> int:
             "workflow_call:",
             ".#standalone-appimage",
             ".#standalone-macos-app",
+            "Select and verify macOS Metal Toolchain",
+            "xcode_developer=/Applications/Xcode_26.3.app/Contents/Developer",
+            'test -x "$xcode_developer/usr/bin/xcodebuild"',
+            'sudo xcode-select --switch "$xcode_developer"',
+            'test "$(xcode-select --print-path)" = "$xcode_developer"',
+            "xcodebuild -help",
+            "grep -F -- '-downloadComponent' >/dev/null",
+            "xcodebuild -downloadComponent metalToolchain",
+            "xcrun --sdk macosx --find metal",
+            "xcrun --sdk macosx --find metallib",
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
             "Install Linux host graphics runtime for smoke",
@@ -245,6 +255,30 @@ def main() -> int:
         errors.append(
             "standalone release workflow must extract, audit dynamic "
             "dependencies, verify the tree, then smoke with the Nix store hidden"
+        )
+    macos_metal = standalone.find("- name: Select and verify macOS Metal Toolchain")
+    macos_help = standalone.find("xcodebuild -help", macos_metal)
+    macos_download = standalone.find(
+        "xcodebuild -downloadComponent metalToolchain", macos_metal
+    )
+    macos_metal_binary = standalone.find("xcrun --sdk macosx --find metal", macos_metal)
+    macos_metallib_binary = standalone.find(
+        "xcrun --sdk macosx --find metallib", macos_metal
+    )
+    macos_build = standalone.find("- name: Build and archive app")
+    if not (
+        0
+        <= macos_metal
+        < macos_help
+        < macos_download
+        < macos_metal_binary
+        < macos_metallib_binary
+        < macos_build
+    ):
+        errors.append(
+            "standalone release workflow must select a Metal-capable Xcode, "
+            "verify component-download support, install the Metal Toolchain, "
+            "and verify metal and metallib before building"
         )
     for name, text in texts.items():
         label = f"{name} release workflow"

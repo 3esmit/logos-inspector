@@ -171,13 +171,19 @@ jobs:
         with:
           extra-conf: |
             experimental-features = nix-command flakes
-      - name: Install macOS Metal Toolchain
+      - name: Select and verify macOS Metal Toolchain
         run: |
           set -euo pipefail
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
-          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-          xcodebuild -downloadComponent metalToolchain
+          xcode_developer=/Applications/Xcode_26.3.app/Contents/Developer
+          test -x "$xcode_developer/usr/bin/xcodebuild"
+          sudo xcode-select --switch "$xcode_developer"
+          test "$(xcode-select --print-path)" = "$xcode_developer"
+          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
+          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help \
+            | grep -F -- '-downloadComponent' >/dev/null
+          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent metalToolchain
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
       - name: Build and archive app
