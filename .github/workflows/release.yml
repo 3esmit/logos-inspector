@@ -1,0 +1,142 @@
+name: Publish Logos Inspector release
+
+# Single entry point for a complete Inspector alpha release. One confirmed
+# dispatch from main publishes:
+#   - Basecamp Core module (logos_inspector LGX)
+#   - Basecamp UI module (logos_inspector_ui LGX)
+#   - Standalone application (Linux AppImage + Darwin app archive)
+#
+# Catalog tags remain independent so Basecamp can resolve each package by
+# its source-owned release URL. Individual stream workflows remain available
+# for isolated republish after a partial failure.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: >-
+          Publish Core LGX, UI LGX, and standalone artifacts for the current
+          main version as alpha prereleases.
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-inspector-complete-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Require an explicit complete release from main
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = true
+          test "$GITHUB_REF" = refs/heads/main
+      - name: Validate release contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/check-build-pipeline.py identity
+          python3 scripts/check-release-workflow.py
+      - name: Read source version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(python3 scripts/standalone_release.py validate-source --root .)"
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Refuse any existing stream for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for tag in \
+            "logos_inspector-v$VERSION" \
+            "logos_inspector_ui-v$VERSION" \
+            "standalone-v$VERSION"
+          do
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "refusing to overwrite existing tag $tag" >&2
+              exit 1
+            fi
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "refusing to overwrite existing release $tag" >&2
+              exit 1
+            fi
+          done
+
+  publish-core:
+    needs: preflight
+    uses: ./.github/workflows/release-core.yml
+    with:
+      confirm: true
+    secrets: inherit
+
+  publish-ui:
+    needs: preflight
+    uses: ./.github/workflows/release-ui.yml
+    with:
+      confirm: true
+    secrets: inherit
+
+  publish-standalone:
+    needs: preflight
+    uses: ./.github/workflows/release-standalone.yml
+    with:
+      confirm: true
+    secrets: inherit
+
+  verify-complete:
+    needs:
+      - preflight
+      - publish-core
+      - publish-ui
+      - publish-standalone
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify all three release streams published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          core_tag="logos_inspector-v$VERSION"
+          ui_tag="logos_inspector_ui-v$VERSION"
+          standalone_tag="standalone-v$VERSION"
+
+          mkdir -p published/core published/ui published/standalone
+          gh release download "$core_tag" --repo "$GITHUB_REPOSITORY" --dir published/core
+          gh release download "$ui_tag" --repo "$GITHUB_REPOSITORY" --dir published/ui
+          gh release download "$standalone_tag" --repo "$GITHUB_REPOSITORY" --dir published/standalone
+
+          test -f "published/core/logos_inspector-$VERSION.lgx"
+          test -f "published/core/sidecar.json"
+          test -f "published/ui/logos_inspector_ui-$VERSION.lgx"
+          test -f "published/ui/sidecar.json"
+          python3 scripts/standalone_release.py verify \
+            --input-dir published/standalone \
+            --version "$VERSION"
+
+          {
+            echo "# Logos Inspector v$VERSION complete release"
+            echo
+            echo "Published source-owned alpha streams:"
+            echo
+            echo "- Core module: \`$core_tag\`"
+            echo "- UI module: \`$ui_tag\`"
+            echo "- Standalone app: \`$standalone_tag\`"
+            echo
+            echo "Assets verified after download from GitHub Releases."
+          } >> "$GITHUB_STEP_SUMMARY"

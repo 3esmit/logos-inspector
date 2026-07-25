@@ -8,6 +8,12 @@ on:
         required: true
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      confirm:
+        description: Publish the current main version as an Inspector UI alpha prerelease.
+        required: true
+        type: boolean
 
 concurrency:
   group: release-inspector-ui-${{ github.ref }}
