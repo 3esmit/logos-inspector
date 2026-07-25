@@ -93,10 +93,11 @@ QtObject {
     readonly property bool statusPollingEnabled: started
         && catalogConfigured
         && desiredSourceKey.length > 0
+    // A verified catalog worker stays alive to monitor the snapshot. Its
+    // liveness alone does not mean the catalog is rebuilding or recovering.
     readonly property bool catalogBusy: controlInFlight
         || verification !== "verified"
         || String(coverage && coverage.status || "") === "rebuilding"
-        || (ingestion && ingestion.worker_running === true)
         || currentError.length > 0
     readonly property int statusPollInterval: statusFailureCount > 0
         ? failureBackoffInterval(statusFailureCount)

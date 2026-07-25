@@ -856,6 +856,20 @@ TestCase {
         verify(zoneState.summaryInFlight)
     }
 
+    function test_verified_running_catalog_worker_uses_steady_cadence() {
+        configure("https://l1.example", 1)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete", gap_count: 0 },
+            ingestion: { worker_running: true, discovered_zone_count: 1 },
+            summary_revision: 1
+        })))
+
+        compare(zoneState.statusPollInterval, 5000)
+    }
+
     function test_status_projects_bedrock_readiness_and_clears_after_recovery() {
         configure("https://l1.example", 1)
 
