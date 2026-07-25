@@ -8,8 +8,4 @@ find "$ROOT/qml" -name '*.qml' -print0 | sort -z | xargs -0 qmllint -I "$ROOT/qm
 
 qmltestrunner \
   -input "$ROOT/tests/qml" \
-  -import "$ROOT/qml" \
-  -import "$ROOT/qml/components" \
-  -import "$ROOT/qml/components/common" \
-  -import "$ROOT/qml/features/settings/controls" \
-  -import "$ROOT/qml/theme"
+  -import "$ROOT/qml"
