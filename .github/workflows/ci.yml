@@ -238,7 +238,6 @@ jobs:
             qml6-module-qtqml-workerscript \
             libgl1-mesa-dev
           echo "/usr/lib/qt6/bin" >> "$GITHUB_PATH"
-          command -v qml
 
       - name: Install Qt 6.11 for QML checks
         uses: jurplel/install-qt-action/action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -248,6 +247,9 @@ jobs:
           target: desktop
           cache: true
           install-deps: false
+
+      - name: Verify QML visual runner
+        run: command -v qml
 
       - name: Run QML visual suite
         run: python3 scripts/check-build-pipeline.py ci-qml-visual
