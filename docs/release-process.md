@@ -32,6 +32,23 @@ Publication does not require a catalog URL or prior Basecamp install result.
 After source assets exist, the catalog can index their immutable URLs and run
 the fresh Basecamp dependency-closure test.
 
+## Automated Release via GitHub Actions (CI)
+
+Releases are triggered through GitHub Actions CI using `workflow_dispatch` on `main`:
+
+```bash
+# Trigger standalone AppImage/macOS release build in CI
+gh workflow run release-standalone.yml -f confirm=true --ref main
+
+# Trigger Inspector Core LGX release build in CI
+gh workflow run release-core.yml -f confirmation=logos-3esmit-release --ref main
+
+# Trigger Inspector UI LGX release build in CI
+gh workflow run release-ui.yml -f confirmation=logos-3esmit-release --ref main
+```
+
+Each CI release job enforces contract validation (`python3 scripts/check-release-workflow.py`), performs automated matrix builds for Linux AMD64 and Darwin ARM64, executes host graphics smoke tests without Nix store access, and creates verified GitHub prereleases.
+
 ## Standalone portability contract
 
 The Linux asset is an AppImage built from the official Logos directory and
