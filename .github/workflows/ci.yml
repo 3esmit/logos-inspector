@@ -14,7 +14,60 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  policy:
+    name: Policy checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Activate Rust toolchain
+        run: rustup show
+
+      - name: Run policy checks
+        run: python3 scripts/check-build-pipeline.py ci-policy
+
+  generated:
+    name: Generated sources and circuits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Activate Rust toolchain
+        run: rustup show
+
+      - name: Cache circuit artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/logos-blockchain-circuits
+            ${{ runner.temp }}/logos-blockchain-circuits
+          key: circuits-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-artifacts.json') }}
+          restore-keys: |
+            circuits-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Cargo registry and git
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check generated sources and circuits
+        run: python3 scripts/check-build-pipeline.py ci-generated
+
+  rust:
+    name: Rust workspace
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -51,15 +104,74 @@ jobs:
           restore-keys: |
             cargo-deps-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Install minimal Qt 6 development packages
+      - name: Install Qt development dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          # qmake6 is required for cxx-qt discovery of the Qt installation.
-          # declarative packages support the standalone GUI and QML static suite.
           sudo apt-get install --yes --no-install-recommends \
             build-essential \
             qmake6 \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            libgl1-mesa-dev
+          test -x /usr/bin/qmake6
+          /usr/bin/qmake6 -query QT_VERSION
+
+      - name: Run Rust workspace checks
+        run: python3 scripts/check-build-pipeline.py ci-rust
+
+  native:
+    name: Native CMake and CTest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install native test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            qt6-base-dev
+
+      - name: Run native CMake and CTest suite
+        run: python3 scripts/check-build-pipeline.py ci-native
+
+  web:
+    name: Web UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run web UI checks
+        run: python3 scripts/check-build-pipeline.py ci-web
+
+  qml_static:
+    name: QML static and unit checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_VERSION_MAJOR: "6"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install QML static test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
             qt6-base-dev \
             qt6-declarative-dev \
             qt6-declarative-dev-tools \
@@ -76,28 +188,9 @@ jobs:
             qml6-module-qtqml-workerscript \
             qml6-module-qttest \
             libgl1-mesa-dev
-          test -x /usr/bin/qmake6
           test -x /usr/lib/qt6/bin/qmllint
           test -x /usr/lib/qt6/bin/qmltestrunner
-          # Append rather than replace PATH so rustup/cargo remain available.
           echo "/usr/lib/qt6/bin" >> "$GITHUB_PATH"
-          /usr/bin/qmake6 -query QT_VERSION
-          /usr/bin/qmake6 -query QT_INSTALL_LIBS
-
-      - name: Policy checks
-        run: python3 scripts/check-build-pipeline.py ci-policy
-
-      - name: Generated sources and circuits
-        run: python3 scripts/check-build-pipeline.py ci-generated
-
-      - name: Rust workspace Clippy and tests
-        run: python3 scripts/check-build-pipeline.py ci-rust
-
-      - name: Native CMake/CTest suite
-        run: python3 scripts/check-build-pipeline.py ci-native
-
-      - name: Web UI checks
-        run: python3 scripts/check-build-pipeline.py ci-web
 
       - name: Install Qt 6.11 for QML checks
         uses: jurplel/install-qt-action/action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -108,9 +201,92 @@ jobs:
           cache: true
           install-deps: false
 
-      - name: QML static and unit checks
+      - name: Run QML static and unit checks
         run: python3 scripts/check-build-pipeline.py ci-qml-static
 
-      - name: QML visual suite
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  qml_visual:
+    name: QML visual suite
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_VERSION_MAJOR: "6"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install QML visual test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-declarative-dev-tools \
+            qt6-tools-dev-tools \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-dialogs \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window \
+            qml6-module-qtqml \
+            qml6-module-qtqml-models \
+            qml6-module-qtqml-workerscript \
+            libgl1-mesa-dev
+          echo "/usr/lib/qt6/bin" >> "$GITHUB_PATH"
+          command -v qml
+
+      - name: Install Qt 6.11 for QML checks
+        uses: jurplel/install-qt-action/action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.11.0"
+          host: linux
+          target: desktop
+          cache: true
+          install-deps: false
+
+      - name: Run QML visual suite
         run: python3 scripts/check-build-pipeline.py ci-qml-visual
+
+  check:
+    if: ${{ always() }}
+    needs:
+      - policy
+      - generated
+      - rust
+      - native
+      - web
+      - qml_static
+      - qml_visual
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify required checks
+        env:
+          POLICY: ${{ needs.policy.result }}
+          GENERATED: ${{ needs.generated.result }}
+          RUST: ${{ needs.rust.result }}
+          NATIVE: ${{ needs.native.result }}
+          WEB: ${{ needs.web.result }}
+          QML_STATIC: ${{ needs.qml_static.result }}
+          QML_VISUAL: ${{ needs.qml_visual.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for gate in POLICY GENERATED RUST NATIVE WEB QML_STATIC; do
+            printf '%s: %s\n' "$gate" "${!gate}"
+            if [[ "${!gate}" != "success" ]]; then
+              failed=1
+            fi
+          done
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            printf '%s: %s\n' "QML_VISUAL" "$QML_VISUAL"
+            if [[ "$QML_VISUAL" != "success" ]]; then
+              failed=1
+            fi
+          fi
+          exit "$failed"
