@@ -295,7 +295,7 @@ async fn service_liveness_with_timeout(
     config: Option<&LocalNodeConfigRecord>,
     transition_timeout: Duration,
 ) -> Result<ServiceLiveness> {
-    if !matches!(kind, NodeKind::Storage | NodeKind::Messaging) {
+    if kind != NodeKind::Messaging {
         return Ok(ServiceLiveness {
             observed: None,
             detail: None,
@@ -428,6 +428,17 @@ fn validate_lifecycle_contract(kind: NodeKind, metadata: &Value) -> Result<()> {
             .call_spec(managed_action, "")
             .with_context(|| format!("{} has no {action:?} module call", adapter.label()))?;
         require_method(metadata, contract.module_id(), spec.method, spec.signature)?;
+        if let Some(event) = contract.lifecycle_event(managed_action) {
+            let signature = contract
+                .lifecycle_event_signature(managed_action)
+                .with_context(|| {
+                    format!(
+                        "Basecamp {} lifecycle event `{event}` has no declared signature",
+                        adapter.label()
+                    )
+                })?;
+            require_event(metadata, contract.module_id(), event, signature)?;
+        }
     }
     if kind == NodeKind::Storage {
         let spec = contract
@@ -656,9 +667,6 @@ fn subscribe_host_lifecycle_event(
     module_transport: &SharedModuleTransport,
     metadata: &Value,
 ) -> Result<Option<HostLifecycleSubscription>> {
-    if plan.kind != NodeKind::Messaging {
-        return Ok(None);
-    }
     let contract = adapter_for(plan.kind)
         .managed_contract()
         .context("node has no managed module contract")?;
@@ -1384,14 +1392,21 @@ mod tests {
             if !self.emits_lifecycle_events {
                 return;
             }
-            let Ok(event) = ModuleTransportEvent::new(
-                module,
-                event,
+            let arguments = if module == "storage_module" {
+                vec![Value::String(
+                    json!({
+                        "success": self.lifecycle_event_success,
+                        "message": "recorded terminal lifecycle event",
+                    })
+                    .to_string(),
+                )]
+            } else {
                 vec![
                     Value::Bool(self.lifecycle_event_success),
                     Value::String("recorded terminal lifecycle event".to_owned()),
-                ],
-            ) else {
+                ]
+            };
+            let Ok(event) = ModuleTransportEvent::new(module, event, arguments) else {
                 return;
             };
             let Ok(mut subscribers) = self.event_subscribers.lock() else {
@@ -1419,6 +1434,8 @@ mod tests {
             let lifecycle_event = match (call.module(), call.method()) {
                 ("delivery_module", "start") => Some("nodeStarted"),
                 ("delivery_module", "stop") => Some("nodeStopped"),
+                ("storage_module", "start") => Some("storageStart"),
+                ("storage_module", "stop") => Some("storageStop"),
                 _ => None,
             };
             let result = self
@@ -1535,6 +1552,10 @@ mod tests {
             _ => Vec::new(),
         };
         let events = match module {
+            "storage_module" => vec![
+                json!({"name":"storageStart","signature":"storageStart(QString)"}),
+                json!({"name":"storageStop","signature":"storageStop(QString)"}),
+            ],
             "delivery_module" => {
                 let mut events =
                     vec![json!({"name":"nodeStarted","signature":"nodeStarted(bool,QString,int)"})];
@@ -2256,7 +2277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basecamp_storage_liveness_keeps_tcp_probe_behavior() -> Result<()> {
+    async fn basecamp_storage_status_ignores_unowned_tcp_listener() -> Result<()> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let directory = tempfile::tempdir()?;
@@ -2281,8 +2302,71 @@ mod tests {
 
         let liveness = service_liveness(NodeKind::Storage, Some(&config)).await?;
         drop(listener);
-        if liveness.observed != Some(true) || liveness.detail.is_some() {
-            bail!("Storage TCP liveness behavior changed: {liveness:?}");
+        if liveness.observed.is_some() || liveness.detail.is_some() {
+            bail!("Storage status accepted an unowned TCP listener: {liveness:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_storage_stop_uses_native_event_when_tcp_listener_is_occupied() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingHostTransport::new();
+        let transport: SharedModuleTransport = Arc::new(transport_impl);
+        set_node_config_port(&store, NodeKind::Storage, "listen-port", address.port())?;
+
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Storage),
+            &transport,
+            &store,
+        )
+        .await?;
+        let started = action_with_store(
+            "default",
+            node_action_request(NodeKind::Storage, NodeAction::Start),
+            &transport,
+            &store,
+        )
+        .await?;
+        let started_storage = started
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage after Start")?;
+        if started_storage.run_state != "running" {
+            bail!("native storageStart did not settle Storage running: {started:?}");
+        }
+
+        let stopped = action_with_store(
+            "default",
+            node_action_request(NodeKind::Storage, NodeAction::Stop),
+            &transport,
+            &store,
+        )
+        .await?;
+        drop(listener);
+        let storage = stopped
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage after Stop")?;
+        let operation = stopped
+            .operations
+            .last()
+            .context("Basecamp Storage Stop operation was not recorded")?;
+        if storage.run_state != "stopped"
+            || storage.available_actions.contains(&NodeAction::Stop)
+            || !storage.available_actions.contains(&NodeAction::Start)
+            || operation.status != "stopped"
+            || !operation
+                .detail
+                .contains("confirmed storage_module.stop completion")
+        {
+            bail!("native storageStop did not override an unrelated TCP listener: {stopped:?}");
         }
         Ok(())
     }
