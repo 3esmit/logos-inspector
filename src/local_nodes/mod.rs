@@ -13,6 +13,7 @@ mod commands;
 mod config;
 mod host;
 mod lifecycle;
+mod messaging_health;
 mod messaging_identity;
 mod model;
 mod module_watcher;

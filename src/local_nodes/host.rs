@@ -22,6 +22,7 @@ use super::{
     action_workspace::write_devnet_manifest,
     adapters::{adapter_for, managed_action},
     lifecycle::acquire_state_lock,
+    messaging_health::probe as probe_messaging_health,
     model::{
         LocalNodeActionRequest, LocalNodeConfigRecord, LocalNodeOperationReport, LocalNodeReport,
         LocalNodeStatus, LocalNodeSummary, LocalNodeTools, LocalNodesState, NodeAction, NodeKind,
@@ -45,6 +46,18 @@ struct HostNodeObservation {
     context_initialized: Option<bool>,
     liveness: Option<bool>,
     liveness_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceLiveness {
+    observed: Option<bool>,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceProbe {
+    Known(bool),
+    Inconclusive(&'static str),
 }
 
 impl HostNodeObservation {
@@ -221,21 +234,15 @@ async fn observe_node(
     };
     match dispatch_module_call(module_transport.as_ref(), call).await {
         Ok(_) => match service_liveness(kind, config).await {
-            Ok(Some(liveness)) => HostNodeObservation {
+            Ok(service) => HostNodeObservation {
                 kind,
                 module_available: true,
                 contract_error: None,
                 context_initialized: Some(true),
-                liveness: Some(liveness),
-                liveness_error: None,
-            },
-            Ok(None) => HostNodeObservation {
-                kind,
-                module_available: true,
-                contract_error: None,
-                context_initialized: Some(true),
-                liveness: Some(true),
-                liveness_error: None,
+                liveness: service
+                    .observed
+                    .or_else(|| (kind == NodeKind::Bedrock).then_some(true)),
+                liveness_error: service.detail,
             },
             Err(error) => HostNodeObservation {
                 kind,
@@ -269,9 +276,20 @@ fn is_context_not_initialized(error: &anyhow::Error) -> bool {
 async fn service_liveness(
     kind: NodeKind,
     config: Option<&LocalNodeConfigRecord>,
-) -> Result<Option<bool>> {
+) -> Result<ServiceLiveness> {
+    service_liveness_with_timeout(kind, config, SERVICE_TRANSITION_TIMEOUT).await
+}
+
+async fn service_liveness_with_timeout(
+    kind: NodeKind,
+    config: Option<&LocalNodeConfigRecord>,
+    transition_timeout: Duration,
+) -> Result<ServiceLiveness> {
     if !matches!(kind, NodeKind::Storage | NodeKind::Messaging) {
-        return Ok(None);
+        return Ok(ServiceLiveness {
+            observed: None,
+            detail: None,
+        });
     }
     let config = config.context("Basecamp node config is unavailable")?;
     let address = service_address(kind, &config.config_path)?;
@@ -280,17 +298,80 @@ async fn service_liveness(
         Some(NodeAction::Stop) => Some(false),
         _ => None,
     };
-    let deadline = Instant::now() + SERVICE_TRANSITION_TIMEOUT;
+    let deadline = Instant::now() + transition_timeout;
     loop {
-        let reachable = tokio::task::spawn_blocking(move || {
-            TcpStream::connect_timeout(&address, SERVICE_PROBE_TIMEOUT).is_ok()
-        })
-        .await
-        .context("Basecamp service liveness worker failed")?;
-        if desired.is_none_or(|expected| expected == reachable) || Instant::now() >= deadline {
-            return Ok(Some(reachable));
+        let probe = tokio::task::spawn_blocking(move || service_liveness_at(kind, address))
+            .await
+            .context("Basecamp service liveness worker failed")?;
+        match probe {
+            ServiceProbe::Known(observed) => {
+                if desired.is_none_or(|expected| expected == observed) {
+                    return Ok(ServiceLiveness {
+                        observed: Some(observed),
+                        detail: None,
+                    });
+                }
+                if Instant::now() >= deadline {
+                    return Ok(ServiceLiveness {
+                        observed: Some(observed),
+                        detail: Some(transition_timeout_detail(kind, desired, None)),
+                    });
+                }
+            }
+            ServiceProbe::Inconclusive(health) => {
+                if desired.is_none() {
+                    return Ok(ServiceLiveness {
+                        observed: None,
+                        detail: Some(format!(
+                            "Basecamp {} REST health is {health}",
+                            adapter_for(kind).label()
+                        )),
+                    });
+                }
+                if Instant::now() >= deadline {
+                    return Ok(ServiceLiveness {
+                        observed: None,
+                        detail: Some(transition_timeout_detail(kind, desired, Some(health))),
+                    });
+                }
+            }
         }
         tokio::time::sleep(SERVICE_TRANSITION_POLL_INTERVAL).await;
+    }
+}
+
+fn transition_timeout_detail(
+    kind: NodeKind,
+    desired: Option<bool>,
+    health: Option<&str>,
+) -> String {
+    let expected = match desired {
+        Some(true) => "running",
+        Some(false) => "stopped",
+        None => "a confirmed state",
+    };
+    let suffix = health.map_or_else(String::new, |health| format!("; last health: {health}"));
+    format!(
+        "Basecamp {} did not reach {expected} before the lifecycle confirmation timeout{suffix}",
+        adapter_for(kind).label()
+    )
+}
+
+fn service_liveness_at(kind: NodeKind, address: SocketAddr) -> ServiceProbe {
+    match kind {
+        NodeKind::Storage => {
+            ServiceProbe::Known(TcpStream::connect_timeout(&address, SERVICE_PROBE_TIMEOUT).is_ok())
+        }
+        NodeKind::Messaging => {
+            let health = probe_messaging_health(address);
+            health.liveness().map_or_else(
+                || ServiceProbe::Inconclusive(health.as_str()),
+                ServiceProbe::Known,
+            )
+        }
+        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer => {
+            ServiceProbe::Inconclusive("unsupported")
+        }
     }
 }
 
@@ -665,6 +746,7 @@ fn reconcile_observations(
     };
     let mut changed = false;
     let mut cleared_contexts = Vec::new();
+    let mut failed_lifecycle_actions = Vec::new();
     for observation in observations {
         if !observation.contract_ready() {
             continue;
@@ -722,9 +804,47 @@ fn reconcile_observations(
                 config.pending_lifecycle_action = None;
                 changed = true;
             }
+            Some(false) if config.lifecycle_state == NodeLifecycleState::Starting => {
+                let pending_action = config.pending_lifecycle_action.take();
+                if let Some(detail) = observation.liveness_error.clone() {
+                    config.lifecycle_state = NodeLifecycleState::Failed;
+                    if let Some(action) = pending_action {
+                        failed_lifecycle_actions.push((observation.kind, action, detail));
+                    }
+                } else {
+                    config.lifecycle_state = NodeLifecycleState::Stopped;
+                }
+                changed = true;
+            }
+            Some(false)
+                if observation.kind == NodeKind::Messaging
+                    && config.lifecycle_state == NodeLifecycleState::Running =>
+            {
+                config.lifecycle_state = NodeLifecycleState::Stopped;
+                config.pending_lifecycle_action = None;
+                changed = true;
+            }
             Some(false) if config.lifecycle_state == NodeLifecycleState::Running => {
                 config.lifecycle_state = NodeLifecycleState::Unknown;
                 config.pending_lifecycle_action = None;
+                changed = true;
+            }
+            None if observation.kind == NodeKind::Messaging
+                && config.lifecycle_state == NodeLifecycleState::Running
+                && observation.liveness_error.is_some() =>
+            {
+                config.lifecycle_state = NodeLifecycleState::Unknown;
+                config.pending_lifecycle_action = None;
+                changed = true;
+            }
+            None if config.lifecycle_state.is_pending() && observation.liveness_error.is_some() => {
+                let pending_action = config.pending_lifecycle_action.take();
+                config.lifecycle_state = NodeLifecycleState::Failed;
+                if let (Some(action), Some(detail)) =
+                    (pending_action, observation.liveness_error.clone())
+                {
+                    failed_lifecycle_actions.push((observation.kind, action, detail));
+                }
                 changed = true;
             }
             Some(false) | None => {}
@@ -735,6 +855,16 @@ fn reconcile_observations(
     }
     record.updated_at = now_millis();
     write_devnet_manifest(record)?;
+    for (kind, action, detail) in failed_lifecycle_actions {
+        if let Some(operation) = state.operations.iter_mut().rev().find(|operation| {
+            operation.node == Some(kind)
+                && operation.action == action
+                && operation.status == action_success_status(action)
+        }) {
+            operation.status = "failed".to_owned();
+            operation.detail = detail;
+        }
+    }
     for kind in cleared_contexts {
         state.clear_module_context_topology(kind);
     }
@@ -865,9 +995,11 @@ fn host_available_actions(
             }
             actions
         }
-        NodeLifecycleState::Running | NodeLifecycleState::Unknown | NodeLifecycleState::Failed => {
-            vec![NodeAction::Stop]
+        NodeLifecycleState::Running | NodeLifecycleState::Unknown => vec![NodeAction::Stop],
+        NodeLifecycleState::Failed if observation.liveness == Some(false) => {
+            vec![NodeAction::Start]
         }
+        NodeLifecycleState::Failed => vec![NodeAction::Stop],
         NodeLifecycleState::NotInitialized => vec![NodeAction::Initialize],
         NodeLifecycleState::Initializing
         | NodeLifecycleState::Starting
@@ -951,8 +1083,10 @@ fn clear_module_context(config: &mut LocalNodeConfigRecord) {
 mod tests {
     use std::{
         fs,
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        io::{Read as _, Write as _},
+        net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
         sync::{Arc, Mutex},
+        thread,
     };
 
     use anyhow::{Result, bail};
@@ -1126,6 +1260,56 @@ mod tests {
         Ok(())
     }
 
+    fn messaging_health_server(
+        health: &'static str,
+    ) -> Result<(SocketAddr, thread::JoinHandle<std::io::Result<()>>)> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let worker = thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request)?;
+            stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"nodeHealth\":\"{health}\"}}"
+                )
+                .as_bytes(),
+            )
+        });
+        Ok((address, worker))
+    }
+
+    fn configure_messaging_health(
+        store: &LocalNodeStore,
+        address: SocketAddr,
+        lifecycle_state: NodeLifecycleState,
+        pending_lifecycle_action: Option<NodeAction>,
+    ) -> Result<LocalNodeConfigRecord> {
+        let mut state = store.load()?;
+        let messaging = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        fs::write(
+            &messaging.config_path,
+            serde_json::to_vec(&json!({
+                "restAddress": address.ip().to_string(),
+                "restPort": address.port(),
+            }))?,
+        )?;
+        messaging.installed = true;
+        messaging.lifecycle_state = lifecycle_state;
+        messaging.pending_lifecycle_action = pending_lifecycle_action;
+        let config = messaging.clone();
+        store.save(&state)?;
+        Ok(config)
+    }
+
     #[tokio::test]
     async fn basecamp_initialize_dispatches_config_contents_through_host_module() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -1224,6 +1408,297 @@ mod tests {
             )? != SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8645)
         {
             bail!("Basecamp service address did not normalize to loopback");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_initializing_health_listener_stays_stopped() -> Result<()> {
+        let (address, worker) = messaging_health_server("INITIALIZING")?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let config =
+            configure_messaging_health(&store, address, NodeLifecycleState::Running, None)?;
+        let liveness = service_liveness(NodeKind::Messaging, Some(&config)).await?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("Messaging health test server panicked"))??;
+        if liveness.observed != Some(false) || liveness.detail.is_some() {
+            bail!("INITIALIZING Messaging health was treated as running: {liveness:?}");
+        }
+
+        let mut state = store.load()?;
+        let observations = [HostNodeObservation {
+            kind: NodeKind::Messaging,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(true),
+            liveness: liveness.observed,
+            liveness_error: liveness.detail,
+        }];
+        reconcile_observations(&mut state, "default", &observations, &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Stopped
+            || host_available_actions(messaging, &observations[0]) != vec![NodeAction::Start]
+        {
+            bail!("INITIALIZING Messaging health changed state: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_messaging_inconclusive_health_does_not_claim_running() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut state = store.load()?;
+        let messaging = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        messaging.installed = true;
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        let observations = [HostNodeObservation {
+            kind: NodeKind::Messaging,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(true),
+            liveness: None,
+            liveness_error: Some("Basecamp Messaging REST health is NOT_READY".to_owned()),
+        }];
+        reconcile_observations(&mut state, "default", &observations, &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Unknown
+            || host_node_detail(messaging, &observations[0])
+                != "Basecamp Messaging REST health is NOT_READY"
+        {
+            bail!("inconclusive Messaging health still claimed running: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_start_timeout_is_failed_and_retryable() -> Result<()> {
+        let (address, worker) = messaging_health_server("INITIALIZING")?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let config = configure_messaging_health(
+            &store,
+            address,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        )?;
+        let liveness =
+            service_liveness_with_timeout(NodeKind::Messaging, Some(&config), Duration::ZERO)
+                .await?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("Messaging health test server panicked"))??;
+        if liveness.observed != Some(false)
+            || !liveness
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("did not reach running"))
+        {
+            bail!("INITIALIZING start timeout was not recorded: {liveness:?}");
+        }
+
+        let mut state = store.load()?;
+        state.push_operation(LocalNodeOperationReport {
+            id: "start-messaging".to_owned(),
+            time: "1".to_owned(),
+            timestamp_millis: 1,
+            action: NodeAction::Start,
+            node: Some(NodeKind::Messaging),
+            network_id: None,
+            status: "starting".to_owned(),
+            detail: "host accepted start".to_owned(),
+            command: None,
+        });
+        let observations = [HostNodeObservation {
+            kind: NodeKind::Messaging,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(true),
+            liveness: liveness.observed,
+            liveness_error: liveness.detail,
+        }];
+        reconcile_observations(&mut state, "default", &observations, &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Failed
+            || messaging.pending_lifecycle_action.is_some()
+            || host_available_actions(messaging, &observations[0]) != vec![NodeAction::Start]
+            || state
+                .operations
+                .last()
+                .is_none_or(|operation| operation.status != "failed")
+        {
+            bail!("Messaging start timeout left an unusable lifecycle state: {state:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_stop_waits_for_health_listener_to_close() -> Result<()> {
+        let (address, worker) = messaging_health_server("SHUTTING_DOWN")?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let config = configure_messaging_health(
+            &store,
+            address,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        )?;
+        let liveness = service_liveness_with_timeout(
+            NodeKind::Messaging,
+            Some(&config),
+            Duration::from_secs(1),
+        )
+        .await?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("Messaging health test server panicked"))??;
+        if liveness.observed != Some(false) || liveness.detail.is_some() {
+            bail!("SHUTTING_DOWN did not wait for REST listener close: {liveness:?}");
+        }
+
+        let mut state = store.load()?;
+        let observations = [HostNodeObservation {
+            kind: NodeKind::Messaging,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(true),
+            liveness: liveness.observed,
+            liveness_error: liveness.detail,
+        }];
+        reconcile_observations(&mut state, "default", &observations, &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Stopped
+            || messaging.pending_lifecycle_action.is_some()
+        {
+            bail!("Messaging stop did not settle after REST listener close: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_stop_timeout_is_failed() -> Result<()> {
+        let (address, worker) = messaging_health_server("SHUTTING_DOWN")?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let config = configure_messaging_health(
+            &store,
+            address,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        )?;
+        let liveness =
+            service_liveness_with_timeout(NodeKind::Messaging, Some(&config), Duration::ZERO)
+                .await?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("Messaging health test server panicked"))??;
+        if liveness.observed.is_some()
+            || !liveness
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("SHUTTING_DOWN"))
+        {
+            bail!("SHUTTING_DOWN stop timeout was not recorded: {liveness:?}");
+        }
+
+        let mut state = store.load()?;
+        let observations = [HostNodeObservation {
+            kind: NodeKind::Messaging,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(true),
+            liveness: liveness.observed,
+            liveness_error: liveness.detail,
+        }];
+        reconcile_observations(&mut state, "default", &observations, &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Failed
+            || messaging.pending_lifecycle_action.is_some()
+            || host_available_actions(messaging, &observations[0]) != vec![NodeAction::Stop]
+        {
+            bail!("Messaging stop timeout left an unusable lifecycle state: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_storage_liveness_keeps_tcp_probe_behavior() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        set_node_config_port(&store, NodeKind::Storage, "listen-port", address.port())?;
+        let config = {
+            let mut state = store.load()?;
+            let storage = state
+                .active_topology_mut("default")
+                .and_then(|topology| {
+                    topology
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.kind == NodeKind::Storage)
+                })
+                .context("default topology omitted Storage")?;
+            storage.installed = true;
+            let config = storage.clone();
+            store.save(&state)?;
+            config
+        };
+
+        let liveness = service_liveness(NodeKind::Storage, Some(&config)).await?;
+        drop(listener);
+        if liveness.observed != Some(true) || liveness.detail.is_some() {
+            bail!("Storage TCP liveness behavior changed: {liveness:?}");
         }
         Ok(())
     }
