@@ -2288,17 +2288,32 @@ mod tests {
         ] {
             let fake = Arc::new(FakeHostDownloadTransport::new(behavior, b"backup"));
             let transport: SharedModuleTransport = fake.clone();
-            let error = host_module_download_backup_bytes_controlled(
-                &transport,
-                &transport,
-                "cid-host",
-                false,
-                64,
-                host_download_control(Duration::from_millis(75)),
-            )
-            .await
-            .err()
-            .with_context(|| format!("{behavior:?} host download should fail"))?;
+            let task_transport = Arc::clone(&transport);
+            let task_cleanup = Arc::clone(&transport);
+            let task = tokio::spawn(async move {
+                host_module_download_backup_bytes_controlled(
+                    &task_transport,
+                    &task_cleanup,
+                    "cid-host",
+                    false,
+                    64,
+                    host_download_control(Duration::from_secs(2)),
+                )
+                .await
+            });
+            let wait_deadline = Instant::now() + Duration::from_secs(1);
+            while fake.download_calls.load(Ordering::Acquire) == 0 {
+                anyhow::ensure!(
+                    Instant::now() < wait_deadline,
+                    "{behavior:?} host download was not dispatched before terminal handling"
+                );
+                tokio::task::yield_now().await;
+            }
+            let error = task
+                .await
+                .context("host timeout-and-close test task failed")?
+                .err()
+                .with_context(|| format!("{behavior:?} host download should fail"))?;
 
             if behavior == HostDownloadBehavior::NoTerminal {
                 anyhow::ensure!(
@@ -2313,6 +2328,10 @@ mod tests {
                     "host close returned unrelated error: {error:#}"
                 );
             }
+            anyhow::ensure!(
+                fake.download_calls.load(Ordering::Acquire) == 1,
+                "{behavior:?} did not retain exactly one accepted host download"
+            );
             anyhow::ensure!(
                 fake.cancel_calls.load(Ordering::Acquire) == 1,
                 "{behavior:?} did not cancel the exact accepted effect"
