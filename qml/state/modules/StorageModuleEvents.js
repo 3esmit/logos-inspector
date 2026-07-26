@@ -1,5 +1,8 @@
 function handle(root, event, forwardRuntimeEvent) {
     const eventName = String(event && event.eventName ? event.eventName : "")
+    if (eventName === "nodeChanged") {
+        return false
+    }
     const submitted = root.storageApp.applyStorageModuleEvent(
         eventName,
         event,

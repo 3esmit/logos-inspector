@@ -42,9 +42,10 @@ struct EventSpec
 {
     std::string_view module;
     std::string_view event;
+    bool required = true;
 };
 
-constexpr std::array<EventSpec, 19> kEvents = { {
+constexpr std::array<EventSpec, 20> kEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -64,6 +65,7 @@ constexpr std::array<EventSpec, 19> kEvents = { {
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
     { kBlockchainModule, kNewBlockEvent },
+    { "storage_module", "nodeChanged", false },
 } };
 
 bool isLatestBlockEvent(std::string_view module, std::string_view event) noexcept
@@ -647,10 +649,20 @@ private:
                 rawRecord);
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                rawRecord->handle = handle;
-                if (handle == nullptr || lifecycle_ != Lifecycle::activating) {
+                if (lifecycle_ != Lifecycle::activating) {
                     return false;
                 }
+                if (handle == nullptr) {
+                    if (event.required) {
+                        return false;
+                    }
+                    if (subscriptions_.empty() || subscriptions_.back().get() != rawRecord) {
+                        return false;
+                    }
+                    subscriptions_.pop_back();
+                    continue;
+                }
+                rawRecord->handle = handle;
             }
         }
         return true;

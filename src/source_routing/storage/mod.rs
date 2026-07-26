@@ -48,8 +48,9 @@ fn validate_cid(value: &str, label: &str) -> Result<()> {
 
 pub use inspection::storage_source_report;
 pub(crate) use layer::{
-    STORAGE_SOURCE_MODES, StorageLifecycleState, managed_config, managed_contract,
-    managed_lifecycle_status, module_id, module_report, report_inputs,
+    STORAGE_SOURCE_MODES, StorageLifecycleState, StorageNodeLifecycleSnapshot, managed_config,
+    managed_contract, managed_lifecycle_status, module_id, module_report, report_inputs,
+    storage_node_lifecycle_snapshot,
 };
 pub(crate) use operations::{
     StorageBackupDownloadRequest, StorageBackupUploadRequest, StorageClient,

@@ -116,7 +116,8 @@ QtObject {
                 || eventText === "nodeUnavailable"
         }
         if (moduleText === String(model && model.storageModule ? model.storageModule : "")) {
-            return eventText === "moduleReady"
+            return eventText === "nodeChanged"
+                || eventText === "moduleReady"
                 || eventText === "moduleUnavailable"
                 || eventText === "storageStart"
                 || eventText === "storageStop"

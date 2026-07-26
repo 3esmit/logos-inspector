@@ -192,6 +192,129 @@ pub(crate) fn managed_lifecycle_status(value: &Value) -> Result<StorageLifecycle
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StorageNodeLifecycleState {
+    Uninitialized,
+    Initializing,
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+    Destroying,
+}
+
+impl StorageNodeLifecycleState {
+    #[must_use]
+    pub(crate) const fn context_initialized(self) -> Option<bool> {
+        match self {
+            Self::Uninitialized => Some(false),
+            Self::Initializing => None,
+            Self::Stopped | Self::Starting | Self::Running | Self::Stopping | Self::Destroying => {
+                Some(true)
+            }
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn liveness(self) -> Option<bool> {
+        match self {
+            Self::Uninitialized | Self::Stopped => Some(false),
+            Self::Running => Some(true),
+            Self::Initializing | Self::Starting | Self::Stopping | Self::Destroying => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StorageNodeLifecycleSnapshot {
+    instance_id: String,
+    epoch: u64,
+    sequence: u64,
+    state: StorageNodeLifecycleState,
+    last_error: Option<String>,
+}
+
+impl StorageNodeLifecycleSnapshot {
+    #[must_use]
+    pub(crate) fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    #[must_use]
+    pub(crate) const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    #[must_use]
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    #[must_use]
+    pub(crate) const fn state(&self) -> StorageNodeLifecycleState {
+        self.state
+    }
+
+    #[must_use]
+    pub(crate) fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+}
+
+pub(crate) fn storage_node_lifecycle_snapshot(
+    value: &Value,
+) -> Result<StorageNodeLifecycleSnapshot> {
+    let value = match value {
+        Value::String(text) => {
+            serde_json::from_str(text).context("storage nodeStatus response is not valid JSON")?
+        }
+        value => value.clone(),
+    };
+    let payload: StorageNodeLifecycleSnapshotPayload = serde_json::from_value(value)
+        .context("storage nodeStatus response has an invalid shape")?;
+    anyhow::ensure!(
+        payload.schema == "logos.managed_node_lifecycle.snapshot" && payload.version == 1,
+        "storage nodeStatus response has an unsupported schema or version"
+    );
+    anyhow::ensure!(
+        !payload.instance_id.trim().is_empty(),
+        "storage nodeStatus response has an empty instance_id"
+    );
+    anyhow::ensure!(
+        payload.scope.kind == "storage",
+        "storage nodeStatus response has an unexpected scope"
+    );
+    let state = match payload.state.as_str() {
+        "uninitialized" => StorageNodeLifecycleState::Uninitialized,
+        "initializing" => StorageNodeLifecycleState::Initializing,
+        "stopped" => StorageNodeLifecycleState::Stopped,
+        "starting" => StorageNodeLifecycleState::Starting,
+        "running" => StorageNodeLifecycleState::Running,
+        "stopping" => StorageNodeLifecycleState::Stopping,
+        "destroying" => StorageNodeLifecycleState::Destroying,
+        state => bail!("storage nodeStatus returned unknown state `{state}`"),
+    };
+    let last_error = payload
+        .last_error
+        .map(|error| {
+            let code = error.code.trim();
+            let message = error.message.trim();
+            anyhow::ensure!(
+                !code.is_empty() && !message.is_empty(),
+                "storage nodeStatus last_error is incomplete"
+            );
+            Ok(format!("{code}: {message}"))
+        })
+        .transpose()?;
+    Ok(StorageNodeLifecycleSnapshot {
+        instance_id: payload.instance_id,
+        epoch: payload.epoch,
+        sequence: payload.sequence,
+        state,
+        last_error,
+    })
+}
+
 pub(crate) fn managed_lifecycle_outcome(
     payload: Option<&Value>,
 ) -> Result<ManagedLifecycleOutcome> {
@@ -226,6 +349,30 @@ struct StorageLifecycleStatusPayload {
     initialized: bool,
     running: bool,
     state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageNodeLifecycleSnapshotPayload {
+    schema: String,
+    version: u64,
+    instance_id: String,
+    epoch: u64,
+    sequence: u64,
+    scope: StorageNodeLifecycleScope,
+    state: String,
+    #[serde(default)]
+    last_error: Option<StorageNodeLifecycleError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageNodeLifecycleScope {
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageNodeLifecycleError {
+    code: String,
+    message: String,
 }
 
 const REST_INPUTS: &[AdapterInputPolicy] = &[
@@ -603,6 +750,58 @@ mod tests {
         .err()
         .context("contradictory Storage lifecycle status was accepted")?;
         anyhow::ensure!(error.to_string().contains("contradicts"));
+        Ok(())
+    }
+
+    #[test]
+    fn storage_node_lifecycle_snapshot_requires_v1_schema_and_complete_error() -> Result<()> {
+        let snapshot = storage_node_lifecycle_snapshot(&json!({
+            "schema": "logos.managed_node_lifecycle.snapshot",
+            "version": 1,
+            "instance_id": "storage-instance-1",
+            "epoch": 2,
+            "sequence": 7,
+            "scope": { "kind": "storage" },
+            "state": "starting",
+            "last_error": null,
+        }))?;
+        anyhow::ensure!(
+            snapshot.instance_id() == "storage-instance-1"
+                && snapshot.epoch() == 2
+                && snapshot.sequence() == 7
+                && snapshot.state() == StorageNodeLifecycleState::Starting
+                && snapshot.state().context_initialized() == Some(true)
+                && snapshot.state().liveness().is_none()
+                && snapshot.last_error().is_none()
+        );
+
+        let failed = storage_node_lifecycle_snapshot(&json!({
+            "schema": "logos.managed_node_lifecycle.snapshot",
+            "version": 1,
+            "instance_id": "storage-instance-1",
+            "epoch": 2,
+            "sequence": 8,
+            "scope": { "kind": "storage" },
+            "state": "stopped",
+            "last_error": {
+                "code": "start_failed",
+                "message": "could not start",
+            },
+        }))?;
+        anyhow::ensure!(failed.last_error() == Some("start_failed: could not start"));
+
+        let error = storage_node_lifecycle_snapshot(&json!({
+            "schema": "logos.managed_node_lifecycle.snapshot",
+            "version": 2,
+            "instance_id": "storage-instance-1",
+            "epoch": 2,
+            "sequence": 8,
+            "scope": { "kind": "storage" },
+            "state": "stopped",
+        }))
+        .err()
+        .context("unsupported Storage nodeStatus schema was accepted")?;
+        anyhow::ensure!(error.to_string().contains("unsupported schema"));
         Ok(())
     }
 
