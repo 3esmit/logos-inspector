@@ -2,6 +2,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::LazyLock,
     thread,
     time::{Duration, Instant},
 };
@@ -12,10 +13,11 @@ use std::io::Read as _;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::modules::logos_core::{LogosCoreOutput, LogoscoreCliRuntime};
 use crate::support::command_runner::{
-    CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, run_command,
+    CommandBudget, CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, run_command,
     run_command_controlled,
 };
 
@@ -27,8 +29,11 @@ const ATTACHED_RUNTIME_ID: &str = "local-attached";
 const CHANNEL_INDEXER_RUNTIME_ID_PREFIX: &str = "inspector-managed-indexer-";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const ATTACHED_MODULES_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(2);
+const ATTACHED_SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
 const ATTACHED_SERVICE_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
+static ATTACHED_SERVICE_STATUS_BUDGET: LazyLock<CommandBudget> =
+    LazyLock::new(CommandBudget::single);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +76,23 @@ pub(super) enum LogoscoreServiceStopOutcome {
     Stopped,
     StoppedWithFailure(String),
     StillRunning(String),
+}
+
+fn service_stop_outcome_allows_package_mutation(outcome: LogoscoreServiceStopOutcome) -> bool {
+    matches!(
+        outcome,
+        LogoscoreServiceStopOutcome::Stopped | LogoscoreServiceStopOutcome::StoppedWithFailure(_)
+    )
+}
+
+const fn local_probe_failure_observation(
+    service_is_terminally_stopped: bool,
+) -> LogoscoreRuntimeObservation {
+    if service_is_terminally_stopped {
+        LogoscoreRuntimeObservation::Verified
+    } else {
+        LogoscoreRuntimeObservation::Unavailable
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +219,9 @@ impl LogoscoreRuntimeProfile {
         if profile.service_target.is_none() {
             profile.service_target = stopped_service;
         }
+        if profile.is_unavailable() && profile.attached_service_is_terminally_stopped() {
+            profile.observation = LogoscoreRuntimeObservation::Verified;
+        }
         Ok(Some(profile))
     }
 
@@ -231,8 +256,9 @@ impl LogoscoreRuntimeProfile {
         self.service_target = None;
         self.observation = LogoscoreRuntimeObservation::Verified;
         let Ok(output) = output else {
-            self.observation = LogoscoreRuntimeObservation::Unavailable;
             self.service_target = discover_stopped_system_service_target();
+            self.observation =
+                local_probe_failure_observation(self.attached_service_is_terminally_stopped());
             return;
         };
         if let Some(process_id) = running_daemon_process_id(&output.value) {
@@ -286,28 +312,80 @@ impl LogoscoreRuntimeProfile {
                 "only a local attached LogosCore runtime can verify its active modules directory"
             );
         }
-        let output = self
+        if self.attached_service_is_terminally_stopped() {
+            let configured_modules_dir = self
+                .configured_attached_service_modules_dir()
+                .context(
+                    "cannot verify the stopped local LogosCore service modules directory before changing installed modules",
+                )?;
+            if requested != configured_modules_dir {
+                bail!(
+                    "module target `{}` does not match the stopped local LogosCore service modules directory `{}`",
+                    requested.display(),
+                    configured_modules_dir.display()
+                );
+            }
+            return Ok(());
+        }
+        match self
             .cli_runtime()?
             .status_probe_with_timeout(ATTACHED_MODULES_VERIFICATION_TIMEOUT)
-            .context(
-                "cannot verify the local LogosCore daemon before changing installed modules; wait for the connection to recover or stop the service",
-            )?;
-        let Some(process_id) = running_daemon_process_id(&output.value) else {
-            return Ok(());
-        };
-        let active_modules_dir = self.modules_dir_for_attached_process(process_id);
-        validate_active_attached_module_install_target(active_modules_dir.as_deref(), requested)
+        {
+            Ok(output) => {
+                let Some(process_id) = running_daemon_process_id(&output.value) else {
+                    return Ok(());
+                };
+                let active_modules_dir = self.modules_dir_for_attached_process(process_id);
+                validate_active_attached_module_install_target(
+                    active_modules_dir.as_deref(),
+                    requested,
+                )
+            }
+            Err(error) => {
+                if self.attached_service_is_terminally_stopped() {
+                    return Ok(());
+                }
+                Err(error).context(
+                    "cannot verify the local LogosCore daemon before changing installed modules; wait for the connection to recover or stop the service",
+                )
+            }
+        }
     }
 
-    /// Returns the module directory from the command line of the daemon that
-    /// was just discovered by the local CLI. This is display-only evidence;
-    /// package mutations must use [`Self::validate_attached_module_install_target`].
+    fn attached_service_is_terminally_stopped(&self) -> bool {
+        self.service_target()
+            .and_then(|target| {
+                system_service_stop_status_with_timeout(
+                    target,
+                    Some(&attached_service_query_control()),
+                    ATTACHED_SERVICE_STATUS_TIMEOUT,
+                )
+                .ok()
+            })
+            .map(SystemServiceStopStatus::outcome)
+            .is_some_and(service_stop_outcome_allows_package_mutation)
+    }
+
+    /// Returns the module directory from a running daemon command line.
+    /// Package mutations use a fresh verification in
+    /// [`Self::validate_attached_module_install_target`].
     #[must_use]
     fn observed_attached_modules_dir(&self) -> Option<PathBuf> {
         (self.is_attached() && self.is_running())
             .then_some(self.daemon_process_id)
             .flatten()
             .and_then(running_daemon_modules_dir)
+    }
+
+    /// Returns the module directory configured by a local system service.
+    /// This is only used when the service is stopped, where a daemon command
+    /// line is unavailable.
+    #[must_use]
+    fn configured_attached_service_modules_dir(&self) -> Option<PathBuf> {
+        self.is_attached()
+            .then(|| self.service_target())
+            .flatten()
+            .and_then(system_service_modules_dir)
     }
 
     fn modules_dir_for_attached_process(&self, process_id: u32) -> Option<PathBuf> {
@@ -761,6 +839,26 @@ fn modules_dir_from_daemon_arguments(arguments: Vec<&str>) -> Option<PathBuf> {
     (!next_is_modules_dir).then_some(modules_dir).flatten()
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn modules_dir_from_systemd_exec_start_json(output: &[u8]) -> Option<PathBuf> {
+    let value: Value = serde_json::from_slice(output).ok()?;
+    (value.get("type")?.as_str()? == "a(sasbttttuii)").then_some(())?;
+    let commands = value.get("data")?.as_array()?;
+    let mut modules_dir = None;
+    for command in commands {
+        let arguments = command.as_array()?.get(1)?.as_array()?;
+        let arguments = arguments
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()?;
+        let candidate = modules_dir_from_daemon_arguments(arguments)?;
+        if modules_dir.replace(candidate).is_some() {
+            return None;
+        }
+    }
+    modules_dir
+}
+
 #[cfg(target_os = "linux")]
 fn system_service_target(process_id: u32) -> Option<LogoscoreServiceTarget> {
     let cgroup = fs::read_to_string(format!("/proc/{process_id}/cgroup")).ok()?;
@@ -812,6 +910,79 @@ fn is_systemd_unit_loaded(scope: LogoscoreServiceScope, unit: &str) -> bool {
     };
     let value = String::from_utf8_lossy(&output.stdout);
     value.trim() == "loaded"
+}
+
+fn attached_service_query_control() -> CommandControl {
+    let now = Instant::now();
+    CommandControl::new(
+        CancellationToken::new(),
+        now.checked_add(ATTACHED_SERVICE_STATUS_TIMEOUT)
+            .unwrap_or(now),
+    )
+    .with_command_budget(ATTACHED_SERVICE_STATUS_BUDGET.clone())
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_modules_dir(target: &LogoscoreServiceTarget) -> Option<PathBuf> {
+    let output = run_command_controlled(
+        system_service_exec_start_command(target),
+        CommandRunPolicy {
+            label: "local LogosCore service modules directory",
+            timeout: ATTACHED_SERVICE_STATUS_TIMEOUT,
+            poll_interval: Duration::from_millis(25),
+            redactions: &[],
+            output_limit: 16 * 1024,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
+        },
+        attached_service_query_control(),
+    )
+    .ok()?;
+    modules_dir_from_systemd_exec_start_json(&output.stdout)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_service_modules_dir(_target: &LogoscoreServiceTarget) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_exec_start_command(target: &LogoscoreServiceTarget) -> Command {
+    let mut command = Command::new("busctl");
+    command.arg(match target.scope {
+        LogoscoreServiceScope::System => "--system",
+        LogoscoreServiceScope::User => "--user",
+    });
+    command
+        .arg("--json=short")
+        .arg("get-property")
+        .arg("org.freedesktop.systemd1")
+        .arg(systemd_unit_object_path(&target.unit))
+        .arg("org.freedesktop.systemd1.Service")
+        .arg("ExecStart");
+    command
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn systemd_unit_object_path(unit: &str) -> String {
+    let mut path = "/org/freedesktop/systemd1/unit/".to_owned();
+    for byte in unit.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            path.push(char::from(byte));
+        } else {
+            path.push('_');
+            path.push(lowercase_hex_digit(byte >> 4));
+            path.push(lowercase_hex_digit(byte & 0x0f));
+        }
+    }
+    path
+}
+
+const fn lowercase_hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => '\0',
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -907,10 +1078,18 @@ fn system_service_stop_status(
     target: &LogoscoreServiceTarget,
     control: Option<&CommandControl>,
 ) -> Result<SystemServiceStopStatus> {
+    system_service_stop_status_with_timeout(target, control, LIFECYCLE_TIMEOUT)
+}
+
+fn system_service_stop_status_with_timeout(
+    target: &LogoscoreServiceTarget,
+    control: Option<&CommandControl>,
+    timeout: Duration,
+) -> Result<SystemServiceStopStatus> {
     let command = service_stop_status_command(target);
     let policy = CommandRunPolicy {
         label: "local LogosCore service stop status",
-        timeout: LIFECYCLE_TIMEOUT,
+        timeout,
         poll_interval: Duration::from_millis(25),
         redactions: &[],
         output_limit: 1024,
@@ -920,7 +1099,7 @@ fn system_service_stop_status(
         Some(control) => run_command_controlled(
             command,
             policy,
-            control.with_deadline(Instant::now() + LIFECYCLE_TIMEOUT),
+            control.with_deadline(Instant::now() + timeout),
         ),
         None => run_command(command, policy),
     }
@@ -1086,6 +1265,11 @@ pub(super) fn status(profile: Option<&LogoscoreRuntimeProfile>) -> LogoscoreRunt
     let service_unit = profile.service_target().map(|target| target.unit.clone());
     let observed_modules_dir = profile
         .observed_attached_modules_dir()
+        .or_else(|| {
+            (!unavailable && !running)
+                .then(|| profile.configured_attached_service_modules_dir())
+                .flatten()
+        })
         .map(|path| path.display().to_string());
     let modules_dir = profile
         .modules_dir
@@ -1772,6 +1956,27 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
     }
 
     #[test]
+    fn only_terminal_service_results_authorize_package_mutation() {
+        assert!(service_stop_outcome_allows_package_mutation(
+            LogoscoreServiceStopOutcome::Stopped
+        ));
+        assert!(service_stop_outcome_allows_package_mutation(
+            LogoscoreServiceStopOutcome::StoppedWithFailure("exit failure".to_owned())
+        ));
+        assert!(!service_stop_outcome_allows_package_mutation(
+            LogoscoreServiceStopOutcome::StillRunning("ActiveState=active".to_owned())
+        ));
+        assert_eq!(
+            local_probe_failure_observation(true),
+            LogoscoreRuntimeObservation::Verified
+        );
+        assert_eq!(
+            local_probe_failure_observation(false),
+            LogoscoreRuntimeObservation::Unavailable
+        );
+    }
+
+    #[test]
     fn service_stop_status_rejects_missing_or_duplicate_properties() {
         let missing = parse_system_service_stop_status(
             b"ActiveState=inactive\nSubState=dead\nResult=success\nExecMainCode=exited\n",
@@ -2031,6 +2236,60 @@ exit 9
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn systemd_exec_start_modules_directory_parser_requires_one_valid_command() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        fs::create_dir_all(&modules_dir)?;
+        let expected = fs::canonicalize(&modules_dir)?;
+        let modules_dir = modules_dir.display().to_string();
+        let response = json!({
+            "type": "a(sasbttttuii)",
+            "data": [[
+                "/usr/local/bin/logoscore",
+                ["/usr/local/bin/logoscore", "-m", modules_dir, "-D"],
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ]]
+        });
+        let response = serde_json::to_vec(&response)?;
+
+        anyhow::ensure!(
+            modules_dir_from_systemd_exec_start_json(&response) == Some(expected),
+            "systemd ExecStart did not yield its configured modules directory"
+        );
+
+        let malformed = br#"{"type":"a(sasbttttuii)","data":[["/usr/local/bin/logoscore",["/usr/local/bin/logoscore","-m"],false,0,0,0,0,0,0,0]]}"#;
+        anyhow::ensure!(
+            modules_dir_from_systemd_exec_start_json(malformed).is_none(),
+            "malformed systemd ExecStart was accepted"
+        );
+        let wrong_type = br#"{"type":"s","data":[]}"#;
+        anyhow::ensure!(
+            modules_dir_from_systemd_exec_start_json(wrong_type).is_none(),
+            "wrong typed D-Bus response was accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn systemd_unit_object_path_escapes_non_alphanumeric_bytes() {
+        assert_eq!(
+            systemd_unit_object_path("logos-node.service"),
+            "/org/freedesktop/systemd1/unit/logos_2dnode_2eservice"
+        );
+        assert_eq!(
+            systemd_unit_object_path("logos_node@1.service"),
+            "/org/freedesktop/systemd1/unit/logos_5fnode_401_2eservice"
+        );
     }
 
     #[test]

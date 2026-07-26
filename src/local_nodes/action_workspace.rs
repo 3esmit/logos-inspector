@@ -872,12 +872,6 @@ fn install_indexer_package(
     if request.node != Some(NodeKind::Indexer) {
         bail!("package installation is only implemented for Indexer");
     }
-    if runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
-        return Ok(needs_configuration(
-            "Indexer package installation is unavailable until the attached local service configuration is adopted",
-        ));
-    }
-    require_runtime_stopped(runtime)?;
     let version = required_trimmed_request_value(
         request.package_version.as_deref(),
         "Indexer package version",
@@ -887,7 +881,12 @@ fn install_indexer_package(
         "Indexer package root hash",
     )?;
     let catalog = local_node_package_catalog(request.runtime_modules_dir.as_deref())?;
-    validate_runtime_modules_dir(runtime, &catalog.modules_dir)?;
+    if let Some(runtime) = runtime.filter(|runtime| runtime.is_attached()) {
+        runtime.validate_attached_module_install_target(Path::new(&catalog.modules_dir))?;
+    } else {
+        require_runtime_stopped(runtime)?;
+        validate_runtime_modules_dir(runtime, &catalog.modules_dir)?;
+    }
     let release = catalog
         .package
         .versions

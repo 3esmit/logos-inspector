@@ -315,32 +315,62 @@ Item {
             report.runtime.modules_dir = ""
             report.runtime.detail = "Inspector cannot verify the local LogosCore daemon"
             const page = createPage(report, null, sampleModuleCatalog([]))
+            const indexerInstall = findChild(page, "indexerPackageInstallButton")
             const moduleInstall = findChild(page, "modulePackageInstallButton")
             const moduleFileInstall = findChild(page, "modulePackageInstallFileButton")
+            verify(!!indexerInstall, "Indexer package install exists")
             verify(!!moduleInstall, "Module repository install exists")
             verify(!!moduleFileInstall, "Module file install exists")
 
             page.localModulePackagePath = "/tmp/openmetrics-1.0.0.lgx"
             compare(page.runtimeModulesDir, "/srv/logos/modules")
+            verify(!indexerInstall.enabled)
             verify(!moduleInstall.enabled)
             verify(!moduleFileInstall.enabled)
+            verify(page.indexerPackageTargetProblem().indexOf("cannot verify") >= 0)
             verify(page.modulePackageTargetProblem().indexOf("cannot verify") >= 0)
             verify(page.moduleTargetDetail().indexOf("connection recovers") >= 0)
             compare(page.runtimeTone(), "warning")
         }
 
-        function test_attached_runtime_does_not_offer_broken_indexer_package_install() {
-            for (const runtimeState of ["running", "stopped"]) {
-                const page = createPage(
-                    attachedServiceReport(runtimeState),
-                    samplePackageCatalog(null),
-                    sampleModuleCatalog([]))
-                const indexerInstall = findChild(page, "indexerPackageInstallButton")
-                verify(!!indexerInstall, "Indexer package install exists")
-                verify(!indexerInstall.enabled)
-                verify(page.indexerPackageTargetProblem().indexOf("service-attached") >= 0)
-                page.destroy()
-            }
+        function test_attached_running_runtime_blocks_indexer_package_install() {
+            const catalog = samplePackageCatalog(null)
+            catalog.modules_dir = "/opt/logos-node/modules"
+            const page = createPage(
+                attachedServiceReport("running"),
+                catalog,
+                sampleModuleCatalog([]))
+            const indexerInstall = findChild(page, "indexerPackageInstallButton")
+            verify(!!indexerInstall, "Indexer package install exists")
+            verify(!indexerInstall.enabled)
+            verify(page.indexerPackageTargetProblem().indexOf("Stop the local LogosCore service") >= 0)
+        }
+
+        function test_attached_stopped_runtime_allows_indexer_package_install() {
+            const catalog = samplePackageCatalog(null)
+            catalog.modules_dir = "/opt/logos-node/modules"
+            const report = attachedServiceReport("stopped")
+            report.nodes[1].available_actions = []
+            const page = createPage(
+                report,
+                catalog,
+                sampleModuleCatalog([]))
+            const indexerInstall = findChild(page, "indexerPackageInstallButton")
+            verify(!!indexerInstall, "Indexer package install exists")
+            verify(!state.actionEnabled("indexer", "install"))
+            verify(indexerInstall.enabled)
+            compare(page.indexerPackageTargetProblem(), "")
+            verify(page.moduleTargetDetail().indexOf("service is stopped") >= 0)
+        }
+
+        function test_indexer_package_install_requires_an_active_topology() {
+            const report = sampleReport("stopped")
+            report.active_devnet = null
+            const page = createPage(report, samplePackageCatalog(null), sampleModuleCatalog([]))
+            const indexerInstall = findChild(page, "indexerPackageInstallButton")
+
+            verify(!!indexerInstall, "Indexer package install exists")
+            verify(!indexerInstall.enabled)
         }
 
         function test_module_package_failure_is_visible_in_its_panel() {
