@@ -284,6 +284,28 @@ mod tests {
     };
     use crate::support::time::now_millis;
 
+    #[cfg(unix)]
+    fn write_executable_script(path: &Path, script: impl AsRef<[u8]>) -> Result<()> {
+        use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_ref())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
+    }
+
     #[test]
     fn local_profile_includes_sequencer_and_network_actions() {
         let nodes = workflow::node_set_for_profile("local");
@@ -827,8 +849,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bedrock_reinitialization_reuses_generated_config_without_key_generation() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let binary = directory.path().join("logoscore-fake");
         let calls = directory.path().join("calls.log");
@@ -839,16 +859,13 @@ mod tests {
         fs::write(&config_path, b"bedrock-sentinel")?;
         fs::write(&keystore_path, b"keystore-sentinel")?;
         fs::write(&init_path, b"{}")?;
-        fs::write(
+        write_executable_script(
             &binary,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s\\n' '[{{\"name\":\"blockchain_module\",\"status\":\"loaded\"}}]'\n",
                 calls.display()
             ),
         )?;
-        let mut permissions = fs::metadata(&binary)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&binary, permissions)?;
         let record = LocalDevnetRecord {
             deployment: LocalNodeDeployment::PublicTestnet,
             id: "logos-testnet".to_owned(),

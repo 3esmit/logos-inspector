@@ -1513,7 +1513,8 @@ fn cancel_module_download_with_timeout(
     let deadline = Instant::now()
         .checked_add(timeout)
         .context("storage download cleanup deadline overflow")?;
-    let control = CommandControl::new(CancellationToken::new(), deadline);
+    let control =
+        CommandControl::new(CancellationToken::new(), deadline).with_isolated_test_budget();
     cancel_module_download_controlled(runtime, operation_id, expected_cid, expectation, control)
 }
 
@@ -2556,6 +2557,28 @@ mod tests {
     const FAILED_TERMINAL: &str = r#"{"protocol":"logos.storage.download","version":2,"moduleOperationId":"__OPERATION_ID__","cid":"__CID__","outcome":"failed","error":"not found"}"#;
 
     #[cfg(unix)]
+    fn write_executable_script(path: &std::path::Path, script: &str) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_bytes())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
     struct FakeDownloadRuntime {
         _directory: tempfile::TempDir,
         socket: PathBuf,
@@ -2588,8 +2611,6 @@ mod tests {
             call_reply: Option<&str>,
             block_call: bool,
         ) -> Result<Self> {
-            use std::os::unix::fs::PermissionsExt as _;
-
             let directory = tempfile::tempdir()?;
             let root = directory.path();
             let payload_path = root.join("payload.json");
@@ -2695,10 +2716,7 @@ mod tests {
                 cancel_delay = shell_path(&cancel_delay),
                 cancel_first_seen = shell_path(&cancel_first_seen),
             );
-            fs::write(&program, script)?;
-            let mut permissions = fs::metadata(&program)?.permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&program, permissions)?;
+            write_executable_script(&program, &script)?;
 
             let instance_id = format!(
                 "backup-test-{}-{}",
@@ -2825,7 +2843,8 @@ mod tests {
             Instant::now()
                 .checked_add(duration)
                 .context("test download deadline overflow")?,
-        ))
+        )
+        .with_isolated_test_budget())
     }
 
     #[test]
@@ -3362,7 +3381,9 @@ mod tests {
         )
         .err()
         .context("null download acknowledgement should fail")?;
-        let staged = fake.staged_path()?;
+        let staged = fake.staged_path().with_context(|| {
+            format!("null download acknowledgement did not reach dispatch: {error:#}")
+        })?;
         anyhow::ensure!(
             error.to_string().contains("invalid acknowledgement"),
             "unexpected null acknowledgement error: {error:#}"

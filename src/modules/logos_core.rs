@@ -1931,9 +1931,15 @@ impl LogoscoreCliRuntime {
 
             command.process_group(0);
         }
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("failed to start {label}"))?;
+        let mut child = crate::support::command_runner::spawn_command_with_executable_busy_retry(
+            &mut command,
+            Some(control.deadline()),
+            || {
+                control.check_active()?;
+                Ok(())
+            },
+        )
+        .with_context(|| format!("failed to start {label}"))?;
         let Some(stdout) = child.stdout.take() else {
             let error = anyhow::anyhow!("{label} did not expose stdout");
             return Err(cleanup_failed_watch_start(

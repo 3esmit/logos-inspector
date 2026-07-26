@@ -1089,26 +1089,43 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    fn write_executable_script(path: &std::path::Path, script: impl AsRef<[u8]>) -> Result<()> {
+        use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_ref())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
     #[test]
     fn wallet_accounts_require_storage_before_invoking_cli() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         let marker = directory.path().join("wallet-cli-invoked");
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             format!(
                 "#!/bin/sh\ntouch '{}'\necho 'Public/test-account'\n",
                 marker.display()
             ),
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let error = local_wallet_accounts(json!({
             "wallet_binary": wallet_binary,
@@ -1132,24 +1149,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn wallet_account_create_requires_storage_before_invoking_cli() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         let marker = directory.path().join("wallet-cli-invoked");
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             format!(
                 "#!/bin/sh\ntouch '{}'\necho 'Generated new account with account_id Public/test-account'\n",
                 marker.display()
             ),
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let error = local_wallet_create_account(
             json!({
@@ -1177,21 +1189,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn wallet_advanced_command_requires_storage_before_invoking_cli() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         let marker = directory.path().join("wallet-cli-invoked");
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let error = local_wallet_command(
             json!({
@@ -1223,21 +1230,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn wallet_send_requires_storage_before_invoking_cli() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         let marker = directory.path().join("wallet-cli-invoked");
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let error = local_wallet_send_transaction(
             json!({
@@ -1268,8 +1270,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn controlled_wallet_accounts_reaps_cli_at_absolute_deadline() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         use crate::support::command_runner::{
             CommandStopReason, CommandTerminated, CommandTerminationScope,
         };
@@ -1280,10 +1280,7 @@ mod tests {
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(&wallet_binary, b"#!/bin/sh\nwhile :; do :; done\n")?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
+        write_executable_script(&wallet_binary, b"#!/bin/sh\nwhile :; do :; done\n")?;
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(250))
             .context("wallet test deadline overflow")?;
@@ -1313,15 +1310,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn wallet_profile_and_accounts_bind_both_home_environment_contracts() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             br#"#!/bin/sh
 if [ -z "$LEE_WALLET_HOME_DIR" ] || [ "$LEE_WALLET_HOME_DIR" != "$NSSA_WALLET_HOME_DIR" ]; then
@@ -1350,9 +1345,6 @@ case "$*" in
 esac
 "#,
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
         let profile = json!({
             "wallet_binary": wallet_binary,
             "wallet_home": wallet_home,
@@ -1397,15 +1389,13 @@ esac
     #[cfg(unix)]
     #[test]
     fn wallet_profile_rejects_binary_that_cannot_read_configured_home() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             br#"#!/bin/sh
 if [ "$1" = "--version" ]; then
@@ -1416,9 +1406,6 @@ echo "incompatible wallet storage schema at $LEE_WALLET_HOME_DIR/storage.json" >
 exit 12
 "#,
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let status = local_wallet_profile_status(json!({
             "wallet_binary": wallet_binary,
@@ -1461,20 +1448,15 @@ exit 12
     #[cfg(unix)]
     #[test]
     fn wallet_profile_requires_storage_before_enabling_accounts() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'wallet 0.1.0-test'; exit 0; fi\nexit 13\n",
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let status = local_wallet_profile_status(json!({
             "wallet_binary": wallet_binary,
@@ -1504,24 +1486,19 @@ exit 12
     #[cfg(unix)]
     #[test]
     fn wallet_profile_does_not_probe_home_without_config() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let wallet_home = directory.path().join("wallet-home");
         std::fs::create_dir(&wallet_home)?;
         std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let marker = directory.path().join("unexpected-probe");
         let wallet_binary = directory.path().join("wallet-test");
-        std::fs::write(
+        write_executable_script(
             &wallet_binary,
             format!(
                 "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'wallet 0.1.0-test'; exit 0; fi\ntouch '{}'\nexit 14\n",
                 marker.display()
             ),
         )?;
-        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wallet_binary, permissions)?;
 
         let status = local_wallet_profile_status(json!({
             "wallet_binary": wallet_binary,

@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::support::command_runner::CommandControl;
+use crate::support::command_runner::{CommandControl, spawn_command_with_executable_busy_retry};
 
 use super::adapters::RpcStartupReadiness;
 
@@ -147,8 +147,7 @@ pub(super) fn spawn_detached(mut command: Command, label: &str) -> Result<u32> {
         use std::os::unix::process::CommandExt as _;
         command.process_group(0);
     }
-    let child = command
-        .spawn()
+    let child = spawn_command_with_executable_busy_retry(&mut command, None, || Ok(()))
         .with_context(|| format!("failed to start {label}"))?;
     Ok(child.id())
 }
@@ -173,8 +172,12 @@ pub(super) fn spawn_rpc_ready(
     if let Some(control) = control {
         control.check_active()?;
     }
-    let preflight_timeout = remaining_probe_timeout(deadline, readiness.probe_timeout)
-        .context("registered process RPC readiness deadline expired before startup")?;
+    let Some(preflight_timeout) = remaining_probe_timeout(deadline, readiness.probe_timeout) else {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        bail!("registered process RPC readiness deadline expired before startup");
+    };
     if rpc_endpoint_ready(endpoint, readiness.method, preflight_timeout)? {
         bail!("{label} RPC endpoint is already serving another process");
     }
@@ -182,6 +185,9 @@ pub(super) fn spawn_rpc_ready(
         control.check_active()?;
     }
     if Instant::now() >= deadline {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
         bail!(
             "{label} RPC readiness deadline expired before startup after {}",
             display_duration(readiness.startup_timeout)
@@ -196,9 +202,19 @@ pub(super) fn spawn_rpc_ready(
         use std::os::unix::process::CommandExt as _;
         command.process_group(0);
     }
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to start {label}"))?;
+    let mut child = spawn_command_with_executable_busy_retry(&mut command, Some(deadline), || {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "{label} RPC readiness deadline expired before startup after {}",
+                display_duration(readiness.startup_timeout)
+            );
+        }
+        Ok(())
+    })
+    .with_context(|| format!("failed to start {label}"))?;
     let output = BoundedChildOutput::start(&mut child, label)?;
     loop {
         if let Some(control) = control
@@ -216,14 +232,23 @@ pub(super) fn spawn_rpc_ready(
             bail!("{label} exited before RPC readiness with {status}{detail}");
         }
         if Instant::now() >= deadline {
+            let termination = control.and_then(|control| control.check_active().err());
             terminate_child(&mut child);
             let detail = output.finish();
+            if let Some(termination) = termination {
+                return Err(termination.into());
+            }
             bail!(
                 "{label} did not reach RPC readiness within {}{detail}",
                 display_duration(readiness.startup_timeout)
             );
         }
         let Some(probe_timeout) = remaining_probe_timeout(deadline, readiness.probe_timeout) else {
+            if let Some(termination) = control.and_then(|control| control.check_active().err()) {
+                terminate_child(&mut child);
+                let _detail = output.finish();
+                return Err(termination.into());
+            }
             continue;
         };
         let ready = match rpc_endpoint_ready(endpoint, readiness.method, probe_timeout) {
@@ -636,7 +661,7 @@ mod tests {
         ]);
         let control = CommandControl::new(
             CancellationToken::new(),
-            Instant::now() + Duration::from_millis(150),
+            Instant::now() + Duration::from_secs(1),
         );
 
         let error = match spawn_rpc_ready(

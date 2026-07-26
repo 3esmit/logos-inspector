@@ -2476,6 +2476,28 @@ mod tests {
         TEST_CLI_UPLOAD_LOCK.lock().await
     }
 
+    #[cfg(unix)]
+    fn write_executable_script(path: &std::path::Path, script: impl AsRef<[u8]>) -> Result<()> {
+        use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_ref())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
+    }
+
     struct ManifestPollTransport {
         kind: ModuleTransportKind,
         calls: Mutex<Vec<String>>,
@@ -2589,15 +2611,13 @@ mod tests {
     #[cfg(unix)]
     impl FakeUploadRuntime {
         fn new(mode: &str) -> Result<Self> {
-            use std::os::unix::fs::PermissionsExt as _;
-
             let directory = tempfile::tempdir()?;
             let root = directory.path();
             let program = root.join("logoscore-upload-fixture");
             let config_dir = root.join("config");
             fs::create_dir_all(&config_dir)?;
             fs::write(config_dir.join("mode"), mode)?;
-            fs::write(
+            write_executable_script(
                 &program,
                 r#"#!/bin/sh
 if [ "$1" != "--config-dir" ]; then exit 90; fi
@@ -2749,9 +2769,6 @@ case "$1" in
 esac
 "#,
             )?;
-            let mut permissions = fs::metadata(&program)?.permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&program, permissions)?;
             let instance_id = format!(
                 "storage-operation-test-{}-{}",
                 std::process::id(),
