@@ -500,6 +500,7 @@ fn test_run_context_with_reports(
             publisher: CatalogRunPublisher {
                 desired_revision,
                 reports,
+                publication_count: None,
             },
         },
         receiver,

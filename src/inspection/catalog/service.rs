@@ -8,6 +8,9 @@ use std::{
     },
 };
 
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+
 use sha2::{Digest as _, Sha256};
 use tokio::{
     runtime::Handle,
@@ -179,6 +182,13 @@ pub struct ZoneCatalogRunContext {
 impl ZoneCatalogRunContext {
     #[cfg(test)]
     pub(crate) fn test_context(source_revision: u64) -> Self {
+        Self::test_context_with_publication_count(source_revision).0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_context_with_publication_count(
+        source_revision: u64,
+    ) -> (Self, Arc<AtomicUsize>) {
         let desired_revision = Arc::new(AtomicU64::new(source_revision));
         let (reports, _receiver) = watch::channel(ZoneCatalogServiceReport {
             source_revision,
@@ -189,16 +199,21 @@ impl ZoneCatalogRunContext {
             current_error: None,
             worker_running: true,
         });
-        Self {
-            source_revision,
-            source_fingerprint: "test-source".to_owned(),
-            run_mode: ZoneCatalogRunMode::Resume,
-            cancellation: CancellationToken::new(),
-            publisher: CatalogRunPublisher {
-                desired_revision,
-                reports,
+        let publication_count = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                source_revision,
+                source_fingerprint: "test-source".to_owned(),
+                run_mode: ZoneCatalogRunMode::Resume,
+                cancellation: CancellationToken::new(),
+                publisher: CatalogRunPublisher {
+                    desired_revision,
+                    reports,
+                    publication_count: Some(publication_count.clone()),
+                },
             },
-        }
+            publication_count,
+        )
     }
 
     #[must_use]
@@ -272,6 +287,10 @@ impl ZoneCatalogRunContext {
             accepted = true;
             true
         });
+        #[cfg(test)]
+        if accepted && let Some(publication_count) = self.publisher.publication_count.as_ref() {
+            publication_count.fetch_add(1, Ordering::Relaxed);
+        }
         accepted
     }
 
@@ -303,6 +322,8 @@ impl ZoneCatalogRunContext {
 struct CatalogRunPublisher {
     desired_revision: Arc<AtomicU64>,
     reports: watch::Sender<ZoneCatalogServiceReport>,
+    #[cfg(test)]
+    publication_count: Option<Arc<AtomicUsize>>,
 }
 
 impl CatalogRunPublisher {
@@ -360,6 +381,8 @@ impl ZoneCatalogService {
         let publisher = CatalogRunPublisher {
             desired_revision: Arc::new(AtomicU64::new(0)),
             reports: report_sender,
+            #[cfg(test)]
+            publication_count: None,
         };
         let controller = runtime.spawn(run_catalog_controller(
             runtime.clone(),
