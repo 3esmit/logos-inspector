@@ -272,12 +272,20 @@ async fn observe_node(
         },
         Err(error) => {
             let context_missing = is_context_not_initialized(&error);
+            let node_stopped = kind == NodeKind::Bedrock && is_node_not_running(&error);
+            let context_initialized = if node_stopped {
+                Some(config.is_some_and(|config| config.installed))
+            } else {
+                context_missing.then_some(false)
+            };
             HostNodeObservation {
                 kind,
                 module_available: true,
                 contract_error: None,
-                context_initialized: context_missing.then_some(false),
-                liveness: (kind == NodeKind::Bedrock || context_missing).then_some(false),
+                context_initialized,
+                liveness: node_stopped
+                    .then_some(false)
+                    .or_else(|| context_missing.then_some(false)),
                 liveness_error: Some(error.to_string()),
             }
         }
@@ -351,6 +359,12 @@ fn is_context_not_initialized(error: &anyhow::Error) -> bool {
     format!("{error:#}")
         .to_ascii_lowercase()
         .contains("context not initialized")
+}
+
+fn is_node_not_running(error: &anyhow::Error) -> bool {
+    format!("{error:#}")
+        .to_ascii_lowercase()
+        .contains("node is not running")
 }
 
 async fn service_liveness(
@@ -1104,13 +1118,26 @@ fn reconcile_observations(
                 config.pending_lifecycle_action = None;
                 changed = true;
             }
+            Some(false)
+                if observation.kind == NodeKind::Bedrock
+                    && observation.context_initialized == Some(true)
+                    && matches!(
+                        config.lifecycle_state,
+                        NodeLifecycleState::Running
+                            | NodeLifecycleState::Unknown
+                            | NodeLifecycleState::Failed
+                    ) =>
+            {
+                config.lifecycle_state = NodeLifecycleState::Stopped;
+                config.pending_lifecycle_action = None;
+                changed = true;
+            }
             Some(false) if config.lifecycle_state == NodeLifecycleState::Running => {
                 config.lifecycle_state = NodeLifecycleState::Unknown;
                 config.pending_lifecycle_action = None;
                 changed = true;
             }
-            None if observation.kind == NodeKind::Messaging
-                && config.lifecycle_state == NodeLifecycleState::Running
+            None if config.lifecycle_state == NodeLifecycleState::Running
                 && observation.liveness_error.is_some() =>
             {
                 config.lifecycle_state = NodeLifecycleState::Unknown;
@@ -1386,6 +1413,7 @@ mod tests {
         calls: Arc<Mutex<Vec<ModuleCall>>>,
         event_subscribers: Arc<Mutex<Vec<RecordingEventSubscriber>>>,
         storage_lifecycle_state: Arc<Mutex<StorageLifecycleState>>,
+        bedrock_node_stopped: bool,
         reject_storage_initialize: bool,
         emits_lifecycle_events: bool,
         lifecycle_event_success: bool,
@@ -1424,6 +1452,7 @@ mod tests {
                 storage_lifecycle_state: Arc::new(Mutex::new(
                     StorageLifecycleState::NotInitialized,
                 )),
+                bedrock_node_stopped: false,
                 reject_storage_initialize: false,
                 emits_lifecycle_events: true,
                 lifecycle_event_success: true,
@@ -1435,6 +1464,13 @@ mod tests {
         fn rejecting_storage_initialize() -> Self {
             Self {
                 reject_storage_initialize: true,
+                ..Self::new()
+            }
+        }
+
+        fn with_stopped_bedrock() -> Self {
+            Self {
+                bedrock_node_stopped: true,
                 ..Self::new()
             }
         }
@@ -1541,6 +1577,7 @@ mod tests {
 
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
             let reject_storage_initialize = self.reject_storage_initialize;
+            let bedrock_node_stopped = self.bedrock_node_stopped;
             let mut storage_lifecycle_state = None;
             let lifecycle_event = match (call.module(), call.method()) {
                 ("delivery_module", "start") => Some("nodeStarted"),
@@ -1556,6 +1593,13 @@ mod tests {
                 .and_then(|mut calls| {
                     calls.push(call.clone());
                     match (call.module(), call.method()) {
+                        ("blockchain_module", "get_cryptarchia_info")
+                            if bedrock_node_stopped =>
+                        {
+                            bail!(
+                                "blockchain_module.get_cryptarchia_info failed: The node is not running."
+                            )
+                        }
                         ("storage_module", "init") if reject_storage_initialize => Ok(
                             ModuleCallReply::new(ModuleTransportKind::Module, json!(false)),
                         ),
@@ -2567,6 +2611,111 @@ mod tests {
             || report.primary_problem.is_some()
         {
             bail!("Basecamp report exposed standalone-only nodes or runtime problems: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_stopped_bedrock_is_startable() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut state = store.load()?;
+        let bedrock = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Bedrock)
+            })
+            .context("default topology omitted Bedrock")?;
+        bedrock.installed = true;
+        bedrock.package_path = Some("blockchain_module".to_owned());
+        bedrock.lifecycle_state = NodeLifecycleState::Running;
+        store.save(&state)?;
+        let transport: SharedModuleTransport =
+            Arc::new(RecordingHostTransport::with_stopped_bedrock());
+
+        let report = status_with_store("default", &transport, &store).await?;
+        let bedrock = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("Basecamp report omitted Bedrock")?;
+        if bedrock.run_state != "stopped"
+            || bedrock.available_actions != vec![NodeAction::Start]
+            || bedrock.available_actions.contains(&NodeAction::Stop)
+        {
+            bail!("stopped Basecamp Bedrock remained non-startable: {bedrock:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_uninitialized_bedrock_remains_initializable() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport: SharedModuleTransport =
+            Arc::new(RecordingHostTransport::with_stopped_bedrock());
+
+        let report = status_with_store("default", &transport, &store).await?;
+        let bedrock = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("Basecamp report omitted Bedrock")?;
+        if bedrock.install_state != "needs_configuration"
+            || bedrock.run_state != "not_initialized"
+            || bedrock.available_actions != vec![NodeAction::Initialize]
+        {
+            bail!("uninitialized Basecamp Bedrock became incorrectly startable: {bedrock:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_unconfirmed_bedrock_liveness_is_unknown() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut state = store.load()?;
+        let bedrock = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Bedrock)
+            })
+            .context("default topology omitted Bedrock")?;
+        bedrock.installed = true;
+        bedrock.lifecycle_state = NodeLifecycleState::Running;
+
+        reconcile_observations(
+            &mut state,
+            "default",
+            &[HostNodeObservation {
+                kind: NodeKind::Bedrock,
+                module_available: true,
+                contract_error: None,
+                context_initialized: None,
+                liveness: None,
+                liveness_error: Some("Basecamp Bedrock probe timed out".to_owned()),
+            }],
+            &store,
+        )?;
+
+        let state = store.load()?;
+        let bedrock = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Bedrock)
+            })
+            .context("default topology omitted Bedrock")?;
+        if bedrock.lifecycle_state != NodeLifecycleState::Unknown {
+            bail!("unconfirmed Basecamp Bedrock liveness became terminal: {bedrock:?}");
         }
         Ok(())
     }
