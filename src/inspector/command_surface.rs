@@ -251,6 +251,19 @@ impl InspectorCommandSurface {
         self.operations.ingest_module_event(module, event, args)
     }
 
+    pub(crate) fn reduce_module_event_after_transport(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        if self.lifecycle.phase.load(Ordering::Acquire) == SURFACE_CLOSED {
+            bail!("inspector command surface is closed");
+        }
+        self.operations
+            .reduce_module_event_after_transport(module, event, args)
+    }
+
     pub(crate) fn close_handle(&self) -> InspectorCommandSurfaceCloseHandle {
         InspectorCommandSurfaceCloseHandle {
             lifecycle: Arc::clone(&self.lifecycle),

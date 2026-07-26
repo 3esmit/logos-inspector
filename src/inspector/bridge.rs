@@ -88,8 +88,8 @@ impl InspectorBridge {
         InspectorCommandSurface::allows_host_synchronous_call(method)
     }
 
-    /// Ingests one typed host module event without routing it back through the
-    /// host module transport.
+    /// Ingests one typed module event and publishes it to the module transport
+    /// before reducing runtime operations.
     pub fn ingest_module_event(
         &self,
         module: &str,
@@ -97,6 +97,18 @@ impl InspectorBridge {
         args: Vec<Value>,
     ) -> Result<Value> {
         self.surface.ingest_module_event(module, event, args)
+    }
+
+    /// Reduces one event after its transport ingress has already been
+    /// published by the caller.
+    pub fn reduce_module_event_after_transport(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.surface
+            .reduce_module_event_after_transport(module, event, args)
     }
 
     #[must_use]

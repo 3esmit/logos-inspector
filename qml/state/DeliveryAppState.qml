@@ -155,6 +155,9 @@ QtObject {
 
     function managedNodeLifecycleSource() {
         return sourceMode === "logoscore_cli"
+            || (deliveryModuleSource()
+                && managedNodes
+                && managedNodes.basecampHost === true)
     }
 
     function managedNodeActionKey(action) {

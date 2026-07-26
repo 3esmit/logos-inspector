@@ -28,6 +28,7 @@ static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
     managed_call_spec,
     None,
     None,
+    None,
 );
 
 #[must_use]

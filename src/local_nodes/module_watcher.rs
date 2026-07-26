@@ -1461,6 +1461,11 @@ fn apply_messaging_health(probe: &mut NodeLivenessProbe, health: MessagingHealth
             probe.liveness_known = true;
             probe.unavailable_detail = Some("Messaging REST health endpoint is unavailable");
         }
+        MessagingHealth::Unresponsive => {
+            probe.liveness_known = false;
+            probe.unavailable_detail =
+                Some("Messaging REST health endpoint accepted a request but did not answer");
+        }
         MessagingHealth::Unknown => {
             probe.liveness_known = false;
             probe.unavailable_detail = Some("Messaging REST health could not be verified");

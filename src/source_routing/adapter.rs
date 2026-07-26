@@ -165,6 +165,7 @@ type EnsureManagedModule = fn(&LogoscoreCliRuntime) -> Result<()>;
 type CallManagedModule = fn(&LogoscoreCliRuntime, &str, &str, &[String]) -> Result<Value>;
 type ManagedCallSpecBuilder = fn(ManagedNodeAction, &str) -> Option<ManagedModuleCallSpec>;
 type ManagedLifecycleEvent = fn(ManagedNodeAction) -> Option<&'static str>;
+type ManagedLifecycleEventSignature = fn(ManagedNodeAction) -> Option<&'static str>;
 type ManagedLifecycleDecoder = fn(&Map<String, Value>) -> Result<ManagedLifecycleOutcome>;
 
 #[derive(Debug)]
@@ -174,6 +175,7 @@ pub(crate) struct ManagedNodeContract {
     call_module: CallManagedModule,
     call_spec: ManagedCallSpecBuilder,
     lifecycle_event: Option<ManagedLifecycleEvent>,
+    lifecycle_event_signature: Option<ManagedLifecycleEventSignature>,
     lifecycle_decoder: Option<ManagedLifecycleDecoder>,
 }
 
@@ -185,6 +187,7 @@ impl ManagedNodeContract {
         call_module: CallManagedModule,
         call_spec: ManagedCallSpecBuilder,
         lifecycle_event: Option<ManagedLifecycleEvent>,
+        lifecycle_event_signature: Option<ManagedLifecycleEventSignature>,
         lifecycle_decoder: Option<ManagedLifecycleDecoder>,
     ) -> Self {
         Self {
@@ -193,6 +196,7 @@ impl ManagedNodeContract {
             call_module,
             call_spec,
             lifecycle_event,
+            lifecycle_event_signature,
             lifecycle_decoder,
         }
     }
@@ -226,6 +230,15 @@ impl ManagedNodeContract {
     #[must_use]
     pub(crate) fn lifecycle_event(&self, action: ManagedNodeAction) -> Option<&'static str> {
         self.lifecycle_event.and_then(|event| event(action))
+    }
+
+    #[must_use]
+    pub(crate) fn lifecycle_event_signature(
+        &self,
+        action: ManagedNodeAction,
+    ) -> Option<&'static str> {
+        self.lifecycle_event_signature
+            .and_then(|signature| signature(action))
     }
 
     pub(crate) fn decode_lifecycle_event(
@@ -381,14 +394,18 @@ pub(crate) mod contract_tests {
         key: &str,
         contract: &'static ManagedNodeContract,
         action: ManagedNodeAction,
-        expected_event: &str,
+        expected_event: (&str, Option<&str>),
         data: Value,
         expected_success: bool,
         expected_detail: &str,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            contract.lifecycle_event(action) == Some(expected_event),
+            contract.lifecycle_event(action) == Some(expected_event.0),
             "{key} lifecycle event drift for {action:?}"
+        );
+        anyhow::ensure!(
+            contract.lifecycle_event_signature(action) == expected_event.1,
+            "{key} lifecycle event signature drift for {action:?}"
         );
         let data = data
             .as_object()

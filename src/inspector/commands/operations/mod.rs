@@ -337,18 +337,32 @@ impl RuntimeOperations {
         self.ingest_typed_module_event(ModuleEventEnvelope::new(module, event, args)?)
     }
 
+    pub(crate) fn reduce_module_event_parts_after_transport(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.reduce_typed_module_event(ModuleEventEnvelope::new(module, event, args)?)
+    }
+
     fn ingest_typed_module_event(&self, event: ModuleEventEnvelope) -> Result<Value> {
         let transport_ingress = self.module_transport.ingest_module_event(
             event.module_name(),
             event.event_name(),
             event.args(),
         );
+        let value = self.reduce_typed_module_event(event)?;
+        transport_ingress.map(|()| value)
+    }
+
+    fn reduce_typed_module_event(&self, event: ModuleEventEnvelope) -> Result<Value> {
         let (value, settled_operation_id) =
             self.registry.ingest_module_event_with_settlement(event)?;
         if let Some(operation_id) = settled_operation_id {
             self.supervisor.settle(&operation_id)?;
         }
-        transport_ingress.map(|()| value)
+        Ok(value)
     }
 
     #[cfg(test)]
@@ -543,6 +557,16 @@ impl RuntimeOperationInterface {
     ) -> Result<Value> {
         self.operations
             .ingest_module_event_parts(module, event, args)
+    }
+
+    pub(crate) fn reduce_module_event_after_transport(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.operations
+            .reduce_module_event_parts_after_transport(module, event, args)
     }
 
     #[cfg(test)]

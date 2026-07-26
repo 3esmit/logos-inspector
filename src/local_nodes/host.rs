@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 
 use crate::{
     modules::logos_core::{
-        ModuleCall, ModuleCallTerminated, ModuleTransportClosed, ModuleTransportKind,
-        SharedModuleTransport, dispatch_module_call,
+        BoxedModuleEventSubscription, ModuleCall, ModuleCallTerminated, ModuleTransportClosed,
+        ModuleTransportEvent, ModuleTransportKind, SharedModuleTransport, dispatch_module_call,
     },
     source_routing::{ManagedModuleCallSpec, ManagedNodeAction},
     support::{confirmation::ConfirmationPolicy, state_store::config_dir, time::now_millis},
@@ -37,6 +37,7 @@ const HOST_NODE_KINDS: [NodeKind; 3] = [NodeKind::Bedrock, NodeKind::Storage, No
 const SERVICE_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 const SERVICE_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const HOST_LIFECYCLE_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct HostNodeObservation {
@@ -84,6 +85,15 @@ struct PreparedHostAction {
     module: &'static str,
     call: ManagedModuleCallSpec,
     args: Vec<Value>,
+}
+
+struct HostActionExecution {
+    lifecycle_detail: Option<String>,
+}
+
+struct HostLifecycleSubscription {
+    event: &'static str,
+    subscription: BoxedModuleEventSubscription,
 }
 
 pub(super) async fn status(
@@ -443,6 +453,20 @@ fn require_method(metadata: &Value, module: &str, method: &str, signature: &str)
     bail!("Basecamp module `{module}` does not expose `{signature}`")
 }
 
+fn require_event(metadata: &Value, module: &str, event: &str, signature: &str) -> Result<()> {
+    let events = metadata
+        .get("events")
+        .and_then(Value::as_array)
+        .with_context(|| format!("Basecamp module `{module}` metadata has no event list"))?;
+    if events.iter().any(|candidate| {
+        candidate.get("name").and_then(Value::as_str) == Some(event)
+            && candidate.get("signature").and_then(Value::as_str) == Some(signature)
+    }) {
+        return Ok(());
+    }
+    bail!("Basecamp module `{module}` does not expose lifecycle event `{signature}`")
+}
+
 fn liveness_call(kind: NodeKind) -> Option<(&'static str, &'static str, Vec<Value>)> {
     match kind {
         NodeKind::Bedrock => Some(("get_cryptarchia_info", "get_cryptarchia_info()", Vec::new())),
@@ -590,7 +614,16 @@ fn native_args(args: &[String]) -> Result<Vec<Value>> {
 async fn execute_host_action(
     plan: &PreparedHostAction,
     module_transport: &SharedModuleTransport,
-) -> Result<Value> {
+) -> Result<HostActionExecution> {
+    execute_host_action_with_lifecycle_timeout(plan, module_transport, HOST_LIFECYCLE_EVENT_TIMEOUT)
+        .await
+}
+
+async fn execute_host_action_with_lifecycle_timeout(
+    plan: &PreparedHostAction,
+    module_transport: &SharedModuleTransport,
+    lifecycle_timeout: Duration,
+) -> Result<HostActionExecution> {
     let metadata = module_transport.module_info(plan.module.to_owned()).await?;
     require_method(
         &metadata,
@@ -598,6 +631,7 @@ async fn execute_host_action(
         plan.call.method,
         plan.call.signature,
     )?;
+    let lifecycle = subscribe_host_lifecycle_event(plan, module_transport, &metadata)?;
     let call = ModuleCall::new(
         ModuleTransportKind::Module,
         plan.module,
@@ -608,7 +642,123 @@ async fn execute_host_action(
         .await?
         .into_value();
     validate_host_action_result(plan, &value)?;
-    Ok(value)
+    let lifecycle_detail = match lifecycle {
+        Some(lifecycle) => {
+            Some(wait_for_host_lifecycle_event(plan, lifecycle, lifecycle_timeout).await?)
+        }
+        None => None,
+    };
+    Ok(HostActionExecution { lifecycle_detail })
+}
+
+fn subscribe_host_lifecycle_event(
+    plan: &PreparedHostAction,
+    module_transport: &SharedModuleTransport,
+    metadata: &Value,
+) -> Result<Option<HostLifecycleSubscription>> {
+    if plan.kind != NodeKind::Messaging {
+        return Ok(None);
+    }
+    let contract = adapter_for(plan.kind)
+        .managed_contract()
+        .context("node has no managed module contract")?;
+    let action = managed_action(plan.action).context("managed lifecycle action is unavailable")?;
+    let Some(event) = contract.lifecycle_event(action) else {
+        return Ok(None);
+    };
+    let signature = contract
+        .lifecycle_event_signature(action)
+        .with_context(|| {
+            format!(
+                "Basecamp {} lifecycle event `{event}` has no declared signature",
+                adapter_for(plan.kind).label()
+            )
+        })?;
+    anyhow::ensure!(
+        module_transport.native_runtime_module_events_ready(),
+        "Basecamp host does not own healthy native lifecycle event ingress"
+    );
+    require_event(metadata, plan.module, event, signature)?;
+    let subscription = module_transport
+        .subscribe_module_event(plan.module, event)
+        .with_context(|| {
+            format!(
+                "Basecamp host cannot subscribe to {} {} confirmation",
+                adapter_for(plan.kind).label(),
+                event
+            )
+        })?;
+    Ok(Some(HostLifecycleSubscription {
+        event,
+        subscription,
+    }))
+}
+
+async fn wait_for_host_lifecycle_event(
+    plan: &PreparedHostAction,
+    mut lifecycle: HostLifecycleSubscription,
+    timeout: Duration,
+) -> Result<String> {
+    let kind = plan.kind;
+    let module = plan.module;
+    let expected_event = lifecycle.event;
+    tokio::task::spawn_blocking(move || {
+        let event = lifecycle
+            .subscription
+            .next_within(timeout)?
+            .with_context(|| {
+                format!(
+                    "Basecamp {} did not emit {} before lifecycle confirmation timeout",
+                    adapter_for(kind).label(),
+                    expected_event
+                )
+            })?;
+        validate_host_lifecycle_event(kind, module, expected_event, &event)
+    })
+    .await
+    .context("Basecamp lifecycle event worker failed")?
+}
+
+fn validate_host_lifecycle_event(
+    kind: NodeKind,
+    module: &str,
+    expected_event: &str,
+    event: &ModuleTransportEvent,
+) -> Result<String> {
+    anyhow::ensure!(
+        event.module() == module && event.event() == expected_event,
+        "Basecamp {} lifecycle subscription received an unexpected event",
+        adapter_for(kind).label()
+    );
+    let data = event
+        .args()
+        .iter()
+        .enumerate()
+        .map(|(index, value)| (format!("arg{index}"), value.clone()))
+        .collect();
+    let outcome = adapter_for(kind)
+        .managed_contract()
+        .context("node has no managed module contract")?
+        .decode_lifecycle_event(&data)
+        .with_context(|| {
+            format!(
+                "Basecamp {} {} payload is invalid",
+                adapter_for(kind).label(),
+                expected_event
+            )
+        })?;
+    anyhow::ensure!(
+        outcome.success,
+        "Basecamp {} {} reported failure{}",
+        adapter_for(kind).label(),
+        expected_event,
+        if outcome.detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", outcome.detail)
+        }
+    );
+    Ok(outcome.detail)
 }
 
 fn validate_host_action_result(plan: &PreparedHostAction, value: &Value) -> Result<()> {
@@ -635,23 +785,45 @@ fn record_action_result(
     profile: &str,
     request: &LocalNodeActionRequest,
     plan: &PreparedHostAction,
-    execution: Result<Value>,
+    execution: Result<HostActionExecution>,
     store: &LocalNodeStore,
 ) -> Result<()> {
     let timestamp = now_millis();
-    let (status, detail, succeeded) = match execution {
-        Ok(_) => (
-            action_success_status(plan.action).to_owned(),
-            format!(
-                "Basecamp host accepted {}.{}",
-                plan.module, plan.call.method
-            ),
-            true,
-        ),
-        Err(error) => ("failed".to_owned(), format!("{error:#}"), false),
+    let (status, detail, succeeded, lifecycle_detail) = match execution {
+        Ok(execution) => {
+            let lifecycle_confirmed = execution.lifecycle_detail.is_some();
+            let detail = execution.lifecycle_detail.as_deref().map_or_else(
+                || {
+                    format!(
+                        "Basecamp host accepted {}.{}",
+                        plan.module, plan.call.method
+                    )
+                },
+                |detail| {
+                    if detail.is_empty() {
+                        format!(
+                            "Basecamp host confirmed {}.{} completion",
+                            plan.module, plan.call.method
+                        )
+                    } else {
+                        format!(
+                            "Basecamp host confirmed {}.{} completion: {detail}",
+                            plan.module, plan.call.method
+                        )
+                    }
+                },
+            );
+            (
+                action_success_status(plan.action, lifecycle_confirmed).to_owned(),
+                detail,
+                true,
+                execution.lifecycle_detail,
+            )
+        }
+        Err(error) => ("failed".to_owned(), format!("{error:#}"), false, None),
     };
     if succeeded {
-        apply_successful_action(state, profile, plan)?;
+        apply_successful_action(state, profile, plan, lifecycle_detail.as_deref())?;
     }
     state.push_operation(LocalNodeOperationReport {
         id: format!("op-{timestamp}"),
@@ -670,9 +842,11 @@ fn record_action_result(
     store.save(state)
 }
 
-fn action_success_status(action: NodeAction) -> &'static str {
+fn action_success_status(action: NodeAction, lifecycle_confirmed: bool) -> &'static str {
     match action {
         NodeAction::Initialize => "initialized",
+        NodeAction::Start if lifecycle_confirmed => "running",
+        NodeAction::Stop if lifecycle_confirmed => "stopped",
         NodeAction::Start => "starting",
         NodeAction::Stop => "stopping",
         NodeAction::Uninstall => "uninstalled",
@@ -684,6 +858,7 @@ fn apply_successful_action(
     state: &mut LocalNodesState,
     profile: &str,
     plan: &PreparedHostAction,
+    lifecycle_detail: Option<&str>,
 ) -> Result<()> {
     let profile = normalized_profile(profile);
     let topology_id = state
@@ -707,12 +882,22 @@ fn apply_successful_action(
         }
         NodeAction::Start => {
             config.installed = true;
-            config.lifecycle_state = NodeLifecycleState::Starting;
-            config.pending_lifecycle_action = Some(NodeAction::Start);
+            if lifecycle_detail.is_some() {
+                config.lifecycle_state = NodeLifecycleState::Running;
+                config.pending_lifecycle_action = None;
+            } else {
+                config.lifecycle_state = NodeLifecycleState::Starting;
+                config.pending_lifecycle_action = Some(NodeAction::Start);
+            }
         }
         NodeAction::Stop => {
-            config.lifecycle_state = NodeLifecycleState::Stopping;
-            config.pending_lifecycle_action = Some(NodeAction::Stop);
+            if lifecycle_detail.is_some() {
+                config.lifecycle_state = NodeLifecycleState::Stopped;
+                config.pending_lifecycle_action = None;
+            } else {
+                config.lifecycle_state = NodeLifecycleState::Stopping;
+                config.pending_lifecycle_action = Some(NodeAction::Stop);
+            }
         }
         NodeAction::Uninstall => clear_module_context(config),
         _ => {}
@@ -859,7 +1044,7 @@ fn reconcile_observations(
         if let Some(operation) = state.operations.iter_mut().rev().find(|operation| {
             operation.node == Some(kind)
                 && operation.action == action
-                && operation.status == action_success_status(action)
+                && operation.status == action_success_status(action, false)
         }) {
             operation.status = "failed".to_owned();
             operation.detail = detail;
@@ -1085,14 +1270,18 @@ mod tests {
         fs,
         io::{Read as _, Write as _},
         net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            mpsc::{self, Receiver, SyncSender},
+        },
         thread,
     };
 
     use anyhow::{Result, bail};
 
     use crate::modules::logos_core::{
-        ModuleCallFuture, ModuleCallReply, ModuleDiagnosticFuture, ModuleTransport,
+        BoxedModuleEventSubscription, ModuleCallFuture, ModuleCallReply, ModuleDiagnosticFuture,
+        ModuleEventSubscription, ModuleTransport, ModuleTransportEvent, ModuleTransportResult,
     };
 
     use super::*;
@@ -1100,21 +1289,87 @@ mod tests {
     #[derive(Debug, Clone)]
     struct RecordingHostTransport {
         calls: Arc<Mutex<Vec<ModuleCall>>>,
+        event_subscribers: Arc<Mutex<Vec<RecordingEventSubscriber>>>,
         reject_storage_initialize: bool,
+        emits_lifecycle_events: bool,
+        lifecycle_event_success: bool,
+        delivery_node_stopped_signature: Option<&'static str>,
+        native_events_ready: bool,
+    }
+
+    #[derive(Debug)]
+    struct RecordingEventSubscriber {
+        module: String,
+        event: String,
+        sender: SyncSender<ModuleTransportEvent>,
+    }
+
+    struct RecordingEventSubscription {
+        receiver: Receiver<ModuleTransportEvent>,
+    }
+
+    impl ModuleEventSubscription for RecordingEventSubscription {
+        fn next_within(&mut self, timeout: Duration) -> Result<Option<ModuleTransportEvent>> {
+            match self.receiver.recv_timeout(timeout) {
+                Ok(event) => Ok(Some(event)),
+                Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("recording lifecycle event subscription disconnected")
+                }
+            }
+        }
     }
 
     impl RecordingHostTransport {
         fn new() -> Self {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
+                event_subscribers: Arc::new(Mutex::new(Vec::new())),
                 reject_storage_initialize: false,
+                emits_lifecycle_events: true,
+                lifecycle_event_success: true,
+                delivery_node_stopped_signature: Some("nodeStopped(bool,QString,int)"),
+                native_events_ready: true,
             }
         }
 
         fn rejecting_storage_initialize() -> Self {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
+                event_subscribers: Arc::new(Mutex::new(Vec::new())),
                 reject_storage_initialize: true,
+                emits_lifecycle_events: true,
+                lifecycle_event_success: true,
+                delivery_node_stopped_signature: Some("nodeStopped(bool,QString,int)"),
+                native_events_ready: true,
+            }
+        }
+
+        fn lifecycle_failure() -> Self {
+            Self {
+                lifecycle_event_success: false,
+                ..Self::new()
+            }
+        }
+
+        fn without_lifecycle_events() -> Self {
+            Self {
+                emits_lifecycle_events: false,
+                ..Self::new()
+            }
+        }
+
+        fn with_mismatched_stop_event_signature() -> Self {
+            Self {
+                delivery_node_stopped_signature: Some("nodeStopped(bool,QString)"),
+                ..Self::new()
+            }
+        }
+
+        fn without_stop_event_metadata() -> Self {
+            Self {
+                delivery_node_stopped_signature: None,
+                ..Self::new()
             }
         }
 
@@ -1123,6 +1378,34 @@ mod tests {
                 .lock()
                 .map(|calls| calls.clone())
                 .map_err(|_| anyhow::anyhow!("recording call lock is poisoned"))
+        }
+
+        fn publish_lifecycle_event(&self, module: &str, event: &str) {
+            if !self.emits_lifecycle_events {
+                return;
+            }
+            let Ok(event) = ModuleTransportEvent::new(
+                module,
+                event,
+                vec![
+                    Value::Bool(self.lifecycle_event_success),
+                    Value::String("recorded terminal lifecycle event".to_owned()),
+                ],
+            ) else {
+                return;
+            };
+            let Ok(mut subscribers) = self.event_subscribers.lock() else {
+                return;
+            };
+            subscribers.retain(|subscriber| {
+                if subscriber.module != module || subscriber.event != event.event() {
+                    return true;
+                }
+                !matches!(
+                    subscriber.sender.try_send(event.clone()),
+                    Err(mpsc::TrySendError::Disconnected(_))
+                )
+            });
         }
     }
 
@@ -1133,6 +1416,11 @@ mod tests {
 
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
             let reject_storage_initialize = self.reject_storage_initialize;
+            let lifecycle_event = match (call.module(), call.method()) {
+                ("delivery_module", "start") => Some("nodeStarted"),
+                ("delivery_module", "stop") => Some("nodeStopped"),
+                _ => None,
+            };
             let result = self
                 .calls
                 .lock()
@@ -1188,15 +1476,42 @@ mod tests {
                         )),
                     }
                 });
+            if result.is_ok()
+                && let Some(event) = lifecycle_event
+            {
+                self.publish_lifecycle_event(call.module(), event);
+            }
             Box::pin(async move { result? })
         }
 
+        fn subscribe_module_event(
+            &self,
+            module: &str,
+            event: &str,
+        ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            self.event_subscribers
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording lifecycle event subscribers unavailable"))?
+                .push(RecordingEventSubscriber {
+                    module: module.to_owned(),
+                    event: event.to_owned(),
+                    sender,
+                });
+            Ok(Box::new(RecordingEventSubscription { receiver }))
+        }
+
+        fn native_runtime_module_events_ready(&self) -> bool {
+            self.native_events_ready
+        }
+
         fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
-            Box::pin(async move { Ok(module_metadata(&module)) })
+            let metadata = module_metadata(&module, self.delivery_node_stopped_signature);
+            Box::pin(async move { Ok(metadata) })
         }
     }
 
-    fn module_metadata(module: &str) -> Value {
+    fn module_metadata(module: &str, delivery_node_stopped_signature: Option<&str>) -> Value {
         let methods = match module {
             "blockchain_module" => vec![
                 json!({"name":"generate_user_config","signature":"generate_user_config(QString)","isInvokable":true}),
@@ -1219,12 +1534,27 @@ mod tests {
             ],
             _ => Vec::new(),
         };
-        json!({"name":module,"methods":methods,"events":[]})
+        let events = match module {
+            "delivery_module" => {
+                let mut events =
+                    vec![json!({"name":"nodeStarted","signature":"nodeStarted(bool,QString,int)"})];
+                if let Some(signature) = delivery_node_stopped_signature {
+                    events.push(json!({"name":"nodeStopped","signature":signature}));
+                }
+                events
+            }
+            _ => Vec::new(),
+        };
+        json!({"name":module,"methods":methods,"events":events})
     }
 
     fn initialize_request(kind: NodeKind) -> LocalNodeActionRequest {
+        node_action_request(kind, NodeAction::Initialize)
+    }
+
+    fn node_action_request(kind: NodeKind, action: NodeAction) -> LocalNodeActionRequest {
         LocalNodeActionRequest {
-            action: NodeAction::Initialize,
+            action,
             node: Some(kind),
             network_id: None,
             workspace_path: None,
@@ -1275,6 +1605,20 @@ mod tests {
                 )
                 .as_bytes(),
             )
+        });
+        Ok((address, worker))
+    }
+
+    fn unresponsive_messaging_listener()
+    -> Result<(SocketAddr, thread::JoinHandle<std::io::Result<()>>)> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let worker = thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request)?;
+            thread::sleep(Duration::from_secs(2));
+            Ok(())
         });
         Ok((address, worker))
     }
@@ -1667,6 +2011,246 @@ mod tests {
             || host_available_actions(messaging, &observations[0]) != vec![NodeAction::Stop]
         {
             bail!("Messaging stop timeout left an unusable lifecycle state: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_unresponsive_listener_never_confirms_stop() -> Result<()> {
+        let (address, worker) = unresponsive_messaging_listener()?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let config = configure_messaging_health(
+            &store,
+            address,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        )?;
+        let liveness =
+            service_liveness_with_timeout(NodeKind::Messaging, Some(&config), Duration::ZERO)
+                .await?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("unresponsive Messaging listener panicked"))??;
+        if liveness.observed.is_some()
+            || !liveness
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("unresponsive"))
+        {
+            bail!("unresponsive Messaging listener became terminal evidence: {liveness:?}");
+        }
+
+        let mut state = store.load()?;
+        let observations = [HostNodeObservation {
+            kind: NodeKind::Messaging,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(true),
+            liveness: liveness.observed,
+            liveness_error: liveness.detail,
+        }];
+        reconcile_observations(&mut state, "default", &observations, &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state == NodeLifecycleState::Stopped
+            || messaging.pending_lifecycle_action.is_some()
+        {
+            bail!("unresponsive Messaging listener settled Stop: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_stop_uses_native_event_when_health_listener_is_unresponsive()
+    -> Result<()> {
+        let (address, worker) = unresponsive_messaging_listener()?;
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingHostTransport::new();
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        set_node_config_port(&store, NodeKind::Messaging, "restPort", 0)?;
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Messaging),
+            &transport,
+            &store,
+        )
+        .await?;
+        configure_messaging_health(&store, address, NodeLifecycleState::Running, None)?;
+
+        let report = action_with_store(
+            "default",
+            node_action_request(NodeKind::Messaging, NodeAction::Stop),
+            &transport,
+            &store,
+        )
+        .await?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("unresponsive Messaging listener panicked"))??;
+        let messaging = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging")?;
+        let operation = report
+            .operations
+            .last()
+            .context("Basecamp Stop operation was not recorded")?;
+        if messaging.run_state != "stopped"
+            || messaging.available_actions != vec![NodeAction::Start]
+            || operation.status != "stopped"
+            || !operation
+                .detail
+                .contains("confirmed delivery_module.stop completion")
+        {
+            bail!("native nodeStopped did not settle unresponsive Messaging Stop: {report:?}");
+        }
+        Ok(())
+    }
+
+    fn prepared_messaging_stop(
+        store: &LocalNodeStore,
+    ) -> Result<(LocalNodeActionRequest, PreparedHostAction)> {
+        let mut state = store.load()?;
+        let messaging = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        messaging.installed = true;
+        messaging.package_path = Some("delivery_module".to_owned());
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        messaging.pending_lifecycle_action = None;
+        store.save(&state)?;
+        let request = node_action_request(NodeKind::Messaging, NodeAction::Stop);
+        let plan = prepare_action("default", &state, &request)?;
+        Ok((request, plan))
+    }
+
+    async fn assert_messaging_stop_metadata_rejects_before_dispatch(
+        transport_impl: RecordingHostTransport,
+    ) -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let (_, plan) = prepared_messaging_stop(&store)?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        let error =
+            match execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO)
+                .await
+            {
+                Ok(_) => bail!("invalid native nodeStopped metadata was accepted"),
+                Err(error) => error,
+            };
+        if !format!("{error:#}").contains("nodeStopped(bool,QString,int)") {
+            bail!("invalid nodeStopped metadata lost its contract detail: {error:#}");
+        }
+        if transport_impl
+            .calls()?
+            .iter()
+            .any(|call| call.module() == "delivery_module" && call.method() == "stop")
+        {
+            bail!("invalid nodeStopped metadata dispatched delivery_module.stop");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_missing_native_stop_metadata_blocks_dispatch() -> Result<()> {
+        assert_messaging_stop_metadata_rejects_before_dispatch(
+            RecordingHostTransport::without_stop_event_metadata(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_mismatched_native_stop_signature_blocks_dispatch() -> Result<()> {
+        assert_messaging_stop_metadata_rejects_before_dispatch(
+            RecordingHostTransport::with_mismatched_stop_event_signature(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_failed_native_stop_event_never_settles_stopped() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let (request, plan) = prepared_messaging_stop(&store)?;
+        let transport: SharedModuleTransport =
+            Arc::new(RecordingHostTransport::lifecycle_failure());
+        let error =
+            match execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO)
+                .await
+            {
+                Ok(_) => bail!("failed native nodeStopped was accepted"),
+                Err(error) => error,
+            };
+        if !format!("{error:#}").contains("nodeStopped reported failure") {
+            bail!("failed native nodeStopped lost its terminal detail: {error:#}");
+        }
+        let mut state = store.load()?;
+        record_action_result(&mut state, "default", &request, &plan, Err(error), &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Running
+            || messaging.pending_lifecycle_action.is_some()
+        {
+            bail!("failed native nodeStopped changed Messaging to a terminal Stop: {messaging:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_missing_native_stop_event_never_settles_stopped() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let (request, plan) = prepared_messaging_stop(&store)?;
+        let transport: SharedModuleTransport =
+            Arc::new(RecordingHostTransport::without_lifecycle_events());
+        let error =
+            match execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO)
+                .await
+            {
+                Ok(_) => bail!("missing native nodeStopped was accepted"),
+                Err(error) => error,
+            };
+        if !format!("{error:#}").contains("did not emit nodeStopped") {
+            bail!("missing native nodeStopped lost its timeout detail: {error:#}");
+        }
+        let mut state = store.load()?;
+        record_action_result(&mut state, "default", &request, &plan, Err(error), &store)?;
+        let messaging = state
+            .active_topology("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        if messaging.lifecycle_state != NodeLifecycleState::Running
+            || messaging.pending_lifecycle_action.is_some()
+        {
+            bail!("missing native nodeStopped changed Messaging to a terminal Stop: {messaging:?}");
         }
         Ok(())
     }
