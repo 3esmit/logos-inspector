@@ -48,7 +48,7 @@ TestCase {
 
             theme: theme
             model: model
-            topic: "/topic/comment"
+            topic: "/cryptarchia/account/comment/comments"
             width: testWindow.width
         }
     }
@@ -56,14 +56,39 @@ TestCase {
     function init() {
         fakeHost.reset()
         model.shell.busy = false
+        model.shell.currentView = "overview"
+        model.navigationBackStack = []
+        model.navigationForwardStack = []
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "direct_delivery_rest",
+                    provenance: "test"
+                }
+            }
+        })
+        model.messagingSourceMode = "rest"
+        model.messagingStorePeerAddress = ""
+        model.capabilityRegistryLoaded = true
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "available",
+                    sub_capabilities: ["delivery.store.query", "delivery.send"]
+                }]
+        })
         model.social.socialCommentState = ({})
         model.social.socialCommentRevision += 1
+        panel.topic = "/cryptarchia/account/comment/comments"
         findChild(panel, "commentBody").text = "Retry this comment"
+        wait(0)
     }
 
     function test_terminal_send_error_is_visible_and_retains_draft() {
         model.social.socialCommentState = ({
-                "/topic/comment": {
+                "/cryptarchia/account/comment/comments": {
                     rows: [],
                     cursor: "",
                     loading: false,
@@ -94,7 +119,7 @@ TestCase {
 
     function test_comment_card_exposes_author_body_and_time() {
         model.social.socialCommentState = ({
-                "/topic/comment": {
+                "/cryptarchia/account/comment/comments": {
                     rows: [{
                             key: "comment-1",
                             displayName: "Pseudonym 7",
@@ -119,5 +144,207 @@ TestCase {
                 "Pseudonym 7. Accessible transaction comment")
         compare(card.Accessible.description,
                 panel.shortTime("2026-07-16T20:31:00Z"))
+    }
+
+    function test_store_provider_configuration_action_opens_delivery_settings() {
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        wait(0)
+
+        const configure = findChild(panel, "configureStoreProviderButton")
+        verify(configure !== null)
+        tryCompare(configure, "visible", true)
+        compare(configure.Accessible.name, "Configure Store provider")
+        verify(configure.width >= configure.implicitWidth)
+
+        mouseClick(configure, configure.width / 2, configure.height / 2)
+
+        tryCompare(model.shell, "currentView", "settings")
+        compare(model.shell.settingsSection, "network")
+        compare(model.shell.settingsNetworkSection, "messaging")
+
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+        tryCompare(configure, "visible", false)
+    }
+
+    function test_store_provider_configuration_action_stays_hidden_for_other_failures() {
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "unavailable",
+                    sub_capabilities: ["delivery.store.query"],
+                    unavailable_sub_capabilities: ["delivery.store.query"]
+                }]
+        })
+        wait(0)
+
+        const configure = findChild(panel, "configureStoreProviderButton")
+        verify(configure !== null)
+        tryCompare(configure, "visible", false)
+    }
+
+    function test_store_provider_configuration_action_stays_hidden_for_invalid_topic() {
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        panel.topic = "/cryptarchia/account/comment/not-comments"
+        wait(0)
+
+        const configure = findChild(panel, "configureStoreProviderButton")
+        verify(configure !== null)
+        tryCompare(configure, "visible", false)
+    }
+
+    function test_social_comments_bootstrap_delivery_source_and_reload_when_evidence_is_missing() {
+        model.metrics.invalidateConfiguration("messaging", "test reset")
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "unavailable",
+                    sub_capabilities: ["delivery.store.query"],
+                    unavailable_sub_capabilities: ["delivery.store.query"]
+                }]
+        })
+        fakeHost.responses = ({
+            deliverySourceReport: {
+                ok: true,
+                value: {
+                    health: {
+                        ready: true,
+                        reachable: true,
+                        status: "healthy"
+                    },
+                    module_info: {
+                        ok: true,
+                        value: {
+                            methods: [{
+                                name: "storeQuery",
+                                signature: "storeQuery(QString,QString,int)"
+                            }]
+                        }
+                    }
+                },
+                text: "OK",
+                error: ""
+            },
+            capabilityRegistryReport: {
+                ok: true,
+                value: {
+                    schema_version: 1,
+                    capabilities: [{
+                            key: "delivery",
+                            label: "Delivery",
+                            status: "available",
+                            sub_capabilities: ["delivery.store.query", "delivery.send"]
+                        }]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        verify(!panel.storeAvailable())
+        panel.topic = "/cryptarchia/account/bootstrap/comments"
+        tryVerify(function () {
+            const observation = model.metrics.sourceObservation("messaging")
+            return observation.sourceReport !== null && !observation.pending
+        })
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "runtimeOperationStart"
+            })
+        })
+
+        const starts = fakeHost.calls.filter(function (call) {
+            return call.method === "deliverySourceReport"
+        })
+        compare(starts.length, 1)
+        compare(String(starts[0].args[0].source_mode), "logoscore_cli")
+        compare(panel.deliverySourceBootstrapPending, false)
+        compare(panel.deliverySourceBootstrapAwaitingCapabilities, false)
+        verify(!panel.ensureDeliverySourceReport())
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "deliverySourceReport"
+        }).length, 1)
+    }
+
+    function test_social_comments_reload_after_delayed_capability_refresh() {
+        fakeHost.reset()
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "unavailable",
+                    sub_capabilities: ["delivery.store.query"],
+                    unavailable_sub_capabilities: ["delivery.store.query"]
+                }]
+        })
+        verify(!panel.storeAvailable())
+
+        panel.deliverySourceBootstrapAwaitingCapabilities = true
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "available",
+                    sub_capabilities: ["delivery.store.query", "delivery.send"]
+                }]
+        })
+        model.capabilities.revision += 1
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "runtimeOperationStart"
+            })
+        })
+        compare(panel.deliverySourceBootstrapAwaitingCapabilities, false)
     }
 }

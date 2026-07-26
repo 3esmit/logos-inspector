@@ -69,6 +69,9 @@ QtObject {
     function commentsView(topic) {
         return Orchestrator.commentView(root, topic)
     }
+    function commentStoreProviderConfigurationRequired(topic) {
+        return Orchestrator.socialCommentStoreProviderConfigurationRequired(root, topic)
+    }
     function loadComments(topic, reset, pageSize, expectedAccountId) {
         return Orchestrator.loadSocialComments(root, topic, reset, pageSize, expectedAccountId)
     }

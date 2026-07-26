@@ -541,7 +541,7 @@ function socialGateWithTopic(root, gate, topic) {
     if (!state.enabled) {
         return state
     }
-    if (!validSocialTopic(root, key)) {
+    if (!validSocialTopic(key)) {
         return socialGateWithInputMissing(state, "social.topic.valid", qsTr("Valid social topic"))
     }
     return state
@@ -554,6 +554,16 @@ function socialStoreGate(root) {
 
 function socialCommentReadGate(root, topic) {
     return socialGateWithTopic(root, socialStoreGate(root), topic)
+}
+
+function socialCommentStoreProviderConfigurationRequired(root, topic) {
+    if (!validSocialTopic(topic)) {
+        return false
+    }
+    const missing = socialStoreGate(root).missing
+    return Array.isArray(missing) && missing.length === 1
+        && String(missing[0] && missing[0].dependency || "")
+            === "delivery.store_provider"
 }
 
 function socialCommentWriteGate(root, topic) {
@@ -673,13 +683,23 @@ function socialSharedIdlWriteAvailable(root, topic) {
         && socialSharedIdlWriteGate(root, topic).enabled === true
 }
 
-function validSocialTopic(root, topic) {
-    const bridge = root.bridge || null
-    if (!bridge || typeof bridge.callModule !== "function") {
+function validSocialTopic(topic) {
+    const segments = String(topic || "").trim().split("/")
+    if (segments.length !== 5 || segments[0] !== "") {
         return false
     }
-    const response = bridge.callModule(root.inspectorModule, "socialTopicValid", [String(topic || "")])
-    return response && response.ok === true && response.value === true
+    const layer = segments[1]
+    const entity = segments[2]
+    const identity = segments[3]
+    const suffix = segments[4]
+    if (layer === "lez") {
+        return (entity === "block" || entity === "transaction" || entity === "account")
+            && identity.length === 64
+            && /^[0-9A-Fa-f]+$/.test(identity)
+            && (suffix === "comments" || (suffix === "idl" && entity === "account"))
+    }
+    return layer === "cryptarchia" && entity.length > 0
+        && identity.length > 0 && suffix === "comments"
 }
 
 function socialPageSize(root, pageSize) {
