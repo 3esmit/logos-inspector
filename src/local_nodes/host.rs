@@ -724,6 +724,7 @@ async fn execute_host_action_with_lifecycle_timeout(
     lifecycle_timeout: Duration,
 ) -> Result<HostActionExecution> {
     let metadata = module_transport.module_info(plan.module.to_owned()).await?;
+    validate_lifecycle_contract(plan.kind, &metadata)?;
     require_method(
         &metadata,
         plan.module,
@@ -1251,12 +1252,17 @@ fn project_node(
     } else {
         "needs_configuration"
     };
+    let run_state = if compatible {
+        config.lifecycle_state.as_str()
+    } else {
+        NodeLifecycleState::Unknown.as_str()
+    };
     LocalNodeStatus {
         kind: config.kind,
         key: config.kind.as_str().to_owned(),
         label: adapter_for(config.kind).label().to_owned(),
         install_state: install_state.to_owned(),
-        run_state: config.lifecycle_state.as_str().to_owned(),
+        run_state: run_state.to_owned(),
         ownership: if observation.module_available {
             "inspector_managed"
         } else {
@@ -1322,7 +1328,7 @@ fn host_node_detail(config: &LocalNodeConfigRecord, observation: &HostNodeObserv
             .unwrap_or_else(|| "Basecamp dependency module is unavailable".to_owned());
     }
     if let Some(error) = observation.contract_error.as_deref() {
-        return error.to_owned();
+        return lifecycle_contract_detail(config.kind, error);
     }
     match config.lifecycle_state {
         NodeLifecycleState::NotInitialized => {
@@ -1338,6 +1344,14 @@ fn host_node_detail(config: &LocalNodeConfigRecord, observation: &HostNodeObserv
             .clone()
             .unwrap_or_else(|| "Basecamp module liveness is not confirmed".to_owned()),
     }
+}
+
+fn lifecycle_contract_detail(kind: NodeKind, error: &str) -> String {
+    if kind == NodeKind::Storage && error.contains("lifecycleStatus()") {
+        return "The installed Storage module cannot report its lifecycle state. Update Storage, then restart Basecamp."
+            .to_owned();
+    }
+    error.to_owned()
 }
 
 fn basecamp_tools() -> LocalNodeTools {
@@ -1415,6 +1429,7 @@ mod tests {
         storage_lifecycle_state: Arc<Mutex<StorageLifecycleState>>,
         bedrock_node_stopped: bool,
         reject_storage_initialize: bool,
+        storage_lifecycle_status_available: bool,
         emits_lifecycle_events: bool,
         lifecycle_event_success: bool,
         delivery_node_stopped_signature: Option<&'static str>,
@@ -1454,6 +1469,7 @@ mod tests {
                 )),
                 bedrock_node_stopped: false,
                 reject_storage_initialize: false,
+                storage_lifecycle_status_available: true,
                 emits_lifecycle_events: true,
                 lifecycle_event_success: true,
                 delivery_node_stopped_signature: Some("nodeStopped(bool,QString,int)"),
@@ -1464,6 +1480,13 @@ mod tests {
         fn rejecting_storage_initialize() -> Self {
             Self {
                 reject_storage_initialize: true,
+                ..Self::new()
+            }
+        }
+
+        fn without_storage_lifecycle_status() -> Self {
+            Self {
+                storage_lifecycle_status_available: false,
                 ..Self::new()
             }
         }
@@ -1713,7 +1736,15 @@ mod tests {
         }
 
         fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
-            let metadata = module_metadata(&module, self.delivery_node_stopped_signature);
+            let mut metadata = module_metadata(&module, self.delivery_node_stopped_signature);
+            if module == "storage_module"
+                && !self.storage_lifecycle_status_available
+                && let Some(methods) = metadata.get_mut("methods").and_then(Value::as_array_mut)
+            {
+                methods.retain(|method| {
+                    method.get("name").and_then(Value::as_str) != Some("lifecycleStatus")
+                });
+            }
             Box::pin(async move { Ok(metadata) })
         }
     }
@@ -1773,6 +1804,100 @@ mod tests {
             .err()
             .context("Storage contract accepted a module without lifecycleStatus()")?;
         anyhow::ensure!(error.to_string().contains("lifecycleStatus()"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_storage_without_lifecycle_status_reports_incompatible_module() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingHostTransport::without_storage_lifecycle_status();
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        let report = status_with_store("default", &transport, &store).await?;
+        let storage = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage")?;
+        if storage.install_state != "needs_configuration"
+            || storage.run_state != "unknown"
+            || !storage.available_actions.is_empty()
+            || storage.detail
+                != "The installed Storage module cannot report its lifecycle state. Update Storage, then restart Basecamp."
+        {
+            bail!("incompatible Storage lifecycle API was projected misleadingly: {report:?}");
+        }
+        if transport_impl
+            .calls()?
+            .iter()
+            .any(|call| call.module() == "storage_module" && call.method() == "lifecycleStatus")
+        {
+            bail!("incompatible Storage metadata still dispatched lifecycleStatus()");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_storage_incompatible_lifecycle_contract_blocks_initialize_dispatch()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingHostTransport::without_storage_lifecycle_status();
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        let report = action_with_store(
+            "default",
+            initialize_request(NodeKind::Storage),
+            &transport,
+            &store,
+        )
+        .await?;
+        let storage = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage")?;
+        let operation = report
+            .operations
+            .last()
+            .context("Basecamp Storage Initialize operation was not recorded")?;
+        if storage.run_state != "unknown"
+            || !storage.available_actions.is_empty()
+            || operation.status != "failed"
+            || !operation.detail.contains("lifecycleStatus()")
+        {
+            bail!("incompatible Storage API accepted Initialize: {report:?}");
+        }
+        if transport_impl
+            .calls()?
+            .iter()
+            .any(|call| call.module() == "storage_module" && call.method() == "init")
+        {
+            bail!("incompatible Storage API dispatched storage_module.init");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_storage_lifecycle_status_exposes_initialize_for_fresh_context() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport: SharedModuleTransport = Arc::new(RecordingHostTransport::new());
+
+        let report = status_with_store("default", &transport, &store).await?;
+        let storage = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage")?;
+        if storage.install_state != "needs_configuration"
+            || storage.run_state != "not_initialized"
+            || storage.available_actions != vec![NodeAction::Initialize]
+        {
+            bail!("compatible Storage lifecycle API did not expose Initialize: {report:?}");
+        }
         Ok(())
     }
 
