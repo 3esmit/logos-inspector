@@ -1,4 +1,5 @@
 const SUBSCRIPTION_EVENTS = [
+    "nodeChanged",
     "storageStart",
     "storageStop",
     "storageConnect",

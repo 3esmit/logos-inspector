@@ -2,6 +2,7 @@ use std::{
     fs,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -16,7 +17,9 @@ use crate::{
     },
     source_routing::{
         ManagedModuleCallSpec, ManagedNodeAction,
-        storage::{StorageLifecycleState, managed_lifecycle_status},
+        storage::{
+            StorageNodeLifecycleSnapshot, managed_lifecycle_status, storage_node_lifecycle_snapshot,
+        },
     },
     support::{confirmation::ConfirmationPolicy, state_store::config_dir, time::now_millis},
 };
@@ -41,6 +44,13 @@ const HOST_NODE_KINDS: [NodeKind; 3] = [NodeKind::Bedrock, NodeKind::Storage, No
 const SERVICE_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HOST_LIFECYCLE_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+const STORAGE_NODE_STATUS_METHOD: &str = "nodeStatus";
+const STORAGE_NODE_STATUS_SIGNATURE: &str = "nodeStatus()";
+const STORAGE_NODE_ACTION_METHOD: &str = "nodeAction";
+const STORAGE_NODE_ACTION_SIGNATURE: &str = "nodeAction(QString)";
+const STORAGE_NODE_CHANGED_EVENT: &str = "nodeChanged";
+const STORAGE_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
+static STORAGE_NODE_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 struct HostNodeObservation {
@@ -92,6 +102,7 @@ struct PreparedHostAction {
 
 struct HostActionExecution {
     lifecycle_detail: Option<String>,
+    dispatched_method: &'static str,
 }
 
 struct HostLifecycleSubscription {
@@ -297,6 +308,9 @@ async fn observe_storage_lifecycle(
     metadata: &Value,
     module: &str,
 ) -> HostNodeObservation {
+    if supports_storage_node_lifecycle_v1(metadata) {
+        return observe_storage_node_lifecycle_v1(module_transport, module).await;
+    }
     const METHOD: &str = "lifecycleStatus";
     const SIGNATURE: &str = "lifecycleStatus()";
     if let Err(error) = require_method(metadata, module, METHOD, SIGNATURE) {
@@ -334,15 +348,7 @@ async fn observe_storage_lifecycle(
             contract_error: None,
             context_initialized: Some(status.initialized()),
             liveness: status.liveness(),
-            liveness_error: match status.state() {
-                StorageLifecycleState::Starting | StorageLifecycleState::Stopping => Some(format!(
-                    "Basecamp Storage module reports `{}`",
-                    status.state().as_str()
-                )),
-                StorageLifecycleState::NotInitialized
-                | StorageLifecycleState::Stopped
-                | StorageLifecycleState::Running => None,
-            },
+            liveness_error: None,
         },
         Err(error) => HostNodeObservation {
             kind: NodeKind::Storage,
@@ -352,6 +358,59 @@ async fn observe_storage_lifecycle(
             liveness: None,
             liveness_error: Some(error.to_string()),
         },
+    }
+}
+
+async fn observe_storage_node_lifecycle_v1(
+    module_transport: &SharedModuleTransport,
+    module: &str,
+) -> HostNodeObservation {
+    let call = match ModuleCall::new(
+        ModuleTransportKind::Module,
+        module,
+        STORAGE_NODE_STATUS_METHOD,
+        Vec::new(),
+    ) {
+        Ok(call) => call,
+        Err(error) => {
+            return HostNodeObservation {
+                kind: NodeKind::Storage,
+                module_available: true,
+                contract_error: None,
+                context_initialized: None,
+                liveness: None,
+                liveness_error: Some(error.to_string()),
+            };
+        }
+    };
+    let snapshot = dispatch_module_call(module_transport.as_ref(), call)
+        .await
+        .map(ModuleCallReply::into_value)
+        .and_then(|value| normalize_module_call_value(module, STORAGE_NODE_STATUS_METHOD, value))
+        .and_then(|value| storage_node_lifecycle_snapshot(&value));
+    match snapshot {
+        Ok(snapshot) => storage_node_lifecycle_observation(snapshot),
+        Err(error) => HostNodeObservation {
+            kind: NodeKind::Storage,
+            module_available: true,
+            contract_error: None,
+            context_initialized: None,
+            liveness: None,
+            liveness_error: Some(error.to_string()),
+        },
+    }
+}
+
+fn storage_node_lifecycle_observation(
+    snapshot: StorageNodeLifecycleSnapshot,
+) -> HostNodeObservation {
+    HostNodeObservation {
+        kind: NodeKind::Storage,
+        module_available: true,
+        contract_error: None,
+        context_initialized: snapshot.state().context_initialized(),
+        liveness: snapshot.state().liveness(),
+        liveness_error: snapshot.last_error().map(ToOwned::to_owned),
     }
 }
 
@@ -538,32 +597,54 @@ fn validate_lifecycle_contract(kind: NodeKind, metadata: &Value) -> Result<()> {
 }
 
 fn require_method(metadata: &Value, module: &str, method: &str, signature: &str) -> Result<()> {
-    let methods = metadata
-        .get("methods")
-        .and_then(Value::as_array)
-        .with_context(|| format!("Basecamp module `{module}` metadata has no method list"))?;
-    if methods.iter().any(|candidate| {
-        candidate.get("name").and_then(Value::as_str) == Some(method)
-            && candidate.get("signature").and_then(Value::as_str) == Some(signature)
-            && candidate.get("isInvokable").and_then(Value::as_bool) != Some(false)
-    }) {
+    if metadata_has_method(metadata, method, signature) {
         return Ok(());
     }
     bail!("Basecamp module `{module}` does not expose `{signature}`")
 }
 
+fn metadata_has_method(metadata: &Value, method: &str, signature: &str) -> bool {
+    let methods = metadata.get("methods").and_then(Value::as_array);
+    methods.is_some_and(|methods| {
+        methods.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some(method)
+                && candidate.get("signature").and_then(Value::as_str) == Some(signature)
+                && candidate.get("isInvokable").and_then(Value::as_bool) != Some(false)
+        })
+    })
+}
+
 fn require_event(metadata: &Value, module: &str, event: &str, signature: &str) -> Result<()> {
-    let events = metadata
-        .get("events")
-        .and_then(Value::as_array)
-        .with_context(|| format!("Basecamp module `{module}` metadata has no event list"))?;
-    if events.iter().any(|candidate| {
-        candidate.get("name").and_then(Value::as_str) == Some(event)
-            && candidate.get("signature").and_then(Value::as_str) == Some(signature)
-    }) {
+    if metadata_has_event(metadata, event, signature) {
         return Ok(());
     }
     bail!("Basecamp module `{module}` does not expose lifecycle event `{signature}`")
+}
+
+fn metadata_has_event(metadata: &Value, event: &str, signature: &str) -> bool {
+    let events = metadata.get("events").and_then(Value::as_array);
+    events.is_some_and(|events| {
+        events.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some(event)
+                && candidate.get("signature").and_then(Value::as_str) == Some(signature)
+        })
+    })
+}
+
+fn supports_storage_node_lifecycle_v1(metadata: &Value) -> bool {
+    metadata_has_method(
+        metadata,
+        STORAGE_NODE_STATUS_METHOD,
+        STORAGE_NODE_STATUS_SIGNATURE,
+    ) && metadata_has_method(
+        metadata,
+        STORAGE_NODE_ACTION_METHOD,
+        STORAGE_NODE_ACTION_SIGNATURE,
+    ) && metadata_has_event(
+        metadata,
+        STORAGE_NODE_CHANGED_EVENT,
+        STORAGE_NODE_CHANGED_SIGNATURE,
+    )
 }
 
 fn liveness_call(kind: NodeKind) -> Option<(&'static str, &'static str, Vec<Value>)> {
@@ -725,6 +806,12 @@ async fn execute_host_action_with_lifecycle_timeout(
 ) -> Result<HostActionExecution> {
     let metadata = module_transport.module_info(plan.module.to_owned()).await?;
     validate_lifecycle_contract(plan.kind, &metadata)?;
+    if plan.kind == NodeKind::Storage
+        && matches!(plan.action, NodeAction::Start | NodeAction::Stop)
+        && supports_storage_node_lifecycle_v1(&metadata)
+    {
+        return execute_storage_node_lifecycle_v1_action(plan, module_transport).await;
+    }
     require_method(
         &metadata,
         plan.module,
@@ -748,7 +835,139 @@ async fn execute_host_action_with_lifecycle_timeout(
         }
         None => None,
     };
-    Ok(HostActionExecution { lifecycle_detail })
+    Ok(HostActionExecution {
+        lifecycle_detail,
+        dispatched_method: plan.call.method,
+    })
+}
+
+async fn execute_storage_node_lifecycle_v1_action(
+    plan: &PreparedHostAction,
+    module_transport: &SharedModuleTransport,
+) -> Result<HostActionExecution> {
+    anyhow::ensure!(
+        module_transport.native_runtime_module_events_ready(),
+        "Basecamp host does not own healthy native lifecycle event ingress"
+    );
+    let snapshot =
+        storage_node_lifecycle_snapshot_for_action(plan.module, module_transport).await?;
+    let action = match plan.action {
+        NodeAction::Start => "start",
+        NodeAction::Stop => "stop",
+        _ => bail!("Storage V1 lifecycle does not support this action"),
+    };
+    let expected_state = match plan.action {
+        NodeAction::Start => "starting",
+        NodeAction::Stop => "stopping",
+        _ => bail!("Storage V1 lifecycle does not support this action"),
+    };
+    let serial = STORAGE_NODE_LIFECYCLE_OPERATION_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let operation_id = format!("logos-inspector-storage-{action}-{}-{serial}", now_millis());
+    let request = json!({
+        "schema": "logos.managed_node_lifecycle.command",
+        "version": 1,
+        "operation_id": operation_id,
+        "action": action,
+        "expected": {
+            "instance_id": snapshot.instance_id(),
+            "epoch": snapshot.epoch(),
+            "sequence": snapshot.sequence(),
+        },
+    });
+    let call = ModuleCall::new(
+        ModuleTransportKind::Module,
+        plan.module,
+        STORAGE_NODE_ACTION_METHOD,
+        vec![Value::String(request.to_string())],
+    )?;
+    let value = dispatch_module_call(module_transport.as_ref(), call)
+        .await?
+        .into_value();
+    let value = normalize_module_call_value(plan.module, STORAGE_NODE_ACTION_METHOD, value)?;
+    validate_storage_node_lifecycle_ack(&value, &operation_id, &snapshot, expected_state)?;
+    Ok(HostActionExecution {
+        lifecycle_detail: None,
+        dispatched_method: STORAGE_NODE_ACTION_METHOD,
+    })
+}
+
+async fn storage_node_lifecycle_snapshot_for_action(
+    module: &str,
+    module_transport: &SharedModuleTransport,
+) -> Result<StorageNodeLifecycleSnapshot> {
+    let call = ModuleCall::new(
+        ModuleTransportKind::Module,
+        module,
+        STORAGE_NODE_STATUS_METHOD,
+        Vec::new(),
+    )?;
+    let value = dispatch_module_call(module_transport.as_ref(), call)
+        .await?
+        .into_value();
+    let value = normalize_module_call_value(module, STORAGE_NODE_STATUS_METHOD, value)?;
+    storage_node_lifecycle_snapshot(&value)
+}
+
+fn validate_storage_node_lifecycle_ack(
+    value: &Value,
+    operation_id: &str,
+    snapshot: &StorageNodeLifecycleSnapshot,
+    expected_state: &str,
+) -> Result<()> {
+    let acknowledgement = match value {
+        Value::String(text) => {
+            serde_json::from_str(text).context("Storage nodeAction response is not valid JSON")?
+        }
+        value => value.clone(),
+    };
+    let schema = acknowledgement.get("schema").and_then(Value::as_str);
+    let version = acknowledgement.get("version").and_then(Value::as_u64);
+    anyhow::ensure!(
+        schema == Some("logos.managed_node_lifecycle.ack") && version == Some(1),
+        "Storage nodeAction response has an unsupported schema or version"
+    );
+    anyhow::ensure!(
+        acknowledgement.get("operation_id").and_then(Value::as_str) == Some(operation_id),
+        "Storage nodeAction response does not acknowledge the submitted operation"
+    );
+    let accepted = acknowledgement
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .context("Storage nodeAction response has no accepted field")?;
+    if !accepted {
+        let detail = acknowledgement
+            .get("error")
+            .and_then(Value::as_object)
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or("Storage rejected the lifecycle request");
+        bail!("Storage nodeAction rejected the lifecycle request: {detail}");
+    }
+    let instance_id = acknowledgement
+        .get("instance_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("Storage nodeAction response has no instance_id")?;
+    let epoch = acknowledgement
+        .get("epoch")
+        .and_then(Value::as_u64)
+        .context("Storage nodeAction response has no epoch")?;
+    let sequence = acknowledgement
+        .get("sequence")
+        .and_then(Value::as_u64)
+        .context("Storage nodeAction response has no sequence")?;
+    anyhow::ensure!(
+        instance_id == snapshot.instance_id()
+            && epoch == snapshot.epoch()
+            && sequence > snapshot.sequence(),
+        "Storage nodeAction response has an invalid lifecycle cursor"
+    );
+    anyhow::ensure!(
+        acknowledgement.get("state").and_then(Value::as_str) == Some(expected_state),
+        "Storage nodeAction response has an unexpected lifecycle state"
+    );
+    Ok(())
 }
 
 fn subscribe_host_lifecycle_event(
@@ -886,26 +1105,34 @@ fn record_action_result(
     store: &LocalNodeStore,
 ) -> Result<()> {
     let timestamp = now_millis();
-    let (status, detail, succeeded, lifecycle_detail) = match execution {
+    let (status, detail, succeeded, lifecycle_detail, dispatched_method) = match execution {
         Ok(execution) => {
             let lifecycle_confirmed = execution.lifecycle_detail.is_some();
             let detail = execution.lifecycle_detail.as_deref().map_or_else(
                 || {
-                    format!(
-                        "Basecamp host accepted {}.{}",
-                        plan.module, plan.call.method
-                    )
+                    if execution.dispatched_method == STORAGE_NODE_ACTION_METHOD {
+                        format!(
+                            "Basecamp {} acknowledged V1 {} transition",
+                            adapter_for(plan.kind).label(),
+                            plan.action.as_str()
+                        )
+                    } else {
+                        format!(
+                            "Basecamp host accepted {}.{}",
+                            plan.module, execution.dispatched_method
+                        )
+                    }
                 },
                 |detail| {
                     if detail.is_empty() {
                         format!(
                             "Basecamp host confirmed {}.{} completion",
-                            plan.module, plan.call.method
+                            plan.module, execution.dispatched_method
                         )
                     } else {
                         format!(
                             "Basecamp host confirmed {}.{} completion: {detail}",
-                            plan.module, plan.call.method
+                            plan.module, execution.dispatched_method
                         )
                     }
                 },
@@ -915,9 +1142,16 @@ fn record_action_result(
                 detail,
                 true,
                 execution.lifecycle_detail,
+                execution.dispatched_method,
             )
         }
-        Err(error) => ("failed".to_owned(), format!("{error:#}"), false, None),
+        Err(error) => (
+            "failed".to_owned(),
+            format!("{error:#}"),
+            false,
+            None,
+            plan.call.method,
+        ),
     };
     if succeeded {
         apply_successful_action(state, profile, plan, lifecycle_detail.as_deref())?;
@@ -933,7 +1167,7 @@ fn record_action_result(
         detail,
         command: Some(format!(
             "Basecamp host call {}.{}",
-            plan.module, plan.call.method
+            plan.module, dispatched_method
         )),
     });
     store.save(state)
@@ -1029,6 +1263,7 @@ fn reconcile_observations(
     let mut changed = false;
     let mut cleared_contexts = Vec::new();
     let mut failed_lifecycle_actions = Vec::new();
+    let mut settled_lifecycle_actions = Vec::new();
     for observation in observations {
         if !observation.contract_ready() {
             continue;
@@ -1068,6 +1303,7 @@ fn reconcile_observations(
                 if config.lifecycle_state != NodeLifecycleState::Running
                     || config.pending_lifecycle_action.is_some()
                 {
+                    let pending_action = config.pending_lifecycle_action;
                     config.installed = true;
                     config.package_path = Some(
                         adapter_for(observation.kind)
@@ -1078,12 +1314,19 @@ fn reconcile_observations(
                     );
                     config.lifecycle_state = NodeLifecycleState::Running;
                     config.pending_lifecycle_action = None;
+                    if pending_action == Some(NodeAction::Start) {
+                        settled_lifecycle_actions.push((observation.kind, NodeAction::Start));
+                    }
                     changed = true;
                 }
             }
             Some(false) if config.lifecycle_state == NodeLifecycleState::Stopping => {
+                let pending_action = config.pending_lifecycle_action;
                 config.lifecycle_state = NodeLifecycleState::Stopped;
                 config.pending_lifecycle_action = None;
+                if pending_action == Some(NodeAction::Stop) {
+                    settled_lifecycle_actions.push((observation.kind, NodeAction::Stop));
+                }
                 changed = true;
             }
             Some(false) if config.lifecycle_state == NodeLifecycleState::Starting => {
@@ -1171,6 +1414,20 @@ fn reconcile_observations(
         }) {
             operation.status = "failed".to_owned();
             operation.detail = detail;
+        }
+    }
+    for (kind, action) in settled_lifecycle_actions {
+        if let Some(operation) = state.operations.iter_mut().rev().find(|operation| {
+            operation.node == Some(kind)
+                && operation.action == action
+                && operation.status == action_success_status(action, false)
+        }) {
+            operation.status = action_success_status(action, true).to_owned();
+            operation.detail = format!(
+                "Basecamp {} {} completed after lifecycle status confirmation",
+                adapter_for(kind).label(),
+                action.as_str()
+            );
         }
     }
     for kind in cleared_contexts {
@@ -1419,6 +1676,7 @@ mod tests {
         BoxedModuleEventSubscription, ModuleCallFuture, ModuleCallReply, ModuleDiagnosticFuture,
         ModuleEventSubscription, ModuleTransport, ModuleTransportEvent, ModuleTransportResult,
     };
+    use crate::source_routing::storage::StorageLifecycleState;
 
     use super::*;
 
@@ -1430,6 +1688,7 @@ mod tests {
         bedrock_node_stopped: bool,
         reject_storage_initialize: bool,
         storage_lifecycle_status_available: bool,
+        storage_node_lifecycle_v1_available: bool,
         emits_lifecycle_events: bool,
         lifecycle_event_success: bool,
         delivery_node_stopped_signature: Option<&'static str>,
@@ -1470,6 +1729,7 @@ mod tests {
                 bedrock_node_stopped: false,
                 reject_storage_initialize: false,
                 storage_lifecycle_status_available: true,
+                storage_node_lifecycle_v1_available: false,
                 emits_lifecycle_events: true,
                 lifecycle_event_success: true,
                 delivery_node_stopped_signature: Some("nodeStopped(bool,QString,int)"),
@@ -1487,6 +1747,13 @@ mod tests {
         fn without_storage_lifecycle_status() -> Self {
             Self {
                 storage_lifecycle_status_available: false,
+                ..Self::new()
+            }
+        }
+
+        fn with_storage_node_lifecycle_v1() -> Self {
+            Self {
+                storage_node_lifecycle_v1_available: true,
                 ..Self::new()
             }
         }
@@ -1548,6 +1815,33 @@ mod tests {
             ))
         }
 
+        fn storage_node_lifecycle_snapshot(&self) -> Result<ModuleCallReply> {
+            let state = *self
+                .storage_lifecycle_state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording Storage lifecycle lock is poisoned"))?;
+            let state = match state {
+                StorageLifecycleState::NotInitialized => "uninitialized",
+                StorageLifecycleState::Stopped => "stopped",
+                StorageLifecycleState::Starting => "starting",
+                StorageLifecycleState::Running => "running",
+                StorageLifecycleState::Stopping => "stopping",
+            };
+            Ok(ModuleCallReply::new(
+                ModuleTransportKind::Module,
+                json!({
+                    "schema": "logos.managed_node_lifecycle.snapshot",
+                    "version": 1,
+                    "instance_id": "recording-storage-instance",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "scope": { "kind": "storage" },
+                    "state": state,
+                    "last_error": null,
+                }),
+            ))
+        }
+
         fn set_storage_lifecycle_state(&self, state: StorageLifecycleState) -> Result<()> {
             *self
                 .storage_lifecycle_state
@@ -1601,6 +1895,7 @@ mod tests {
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
             let reject_storage_initialize = self.reject_storage_initialize;
             let bedrock_node_stopped = self.bedrock_node_stopped;
+            let storage_node_lifecycle_v1_available = self.storage_node_lifecycle_v1_available;
             let mut storage_lifecycle_state = None;
             let lifecycle_event = match (call.module(), call.method()) {
                 ("delivery_module", "start") => Some("nodeStarted"),
@@ -1655,6 +1950,52 @@ mod tests {
                             ))
                         }
                         ("storage_module", "lifecycleStatus") => self.storage_lifecycle_status(),
+                        ("storage_module", "nodeStatus") if storage_node_lifecycle_v1_available => {
+                            self.storage_node_lifecycle_snapshot()
+                        }
+                        ("storage_module", "nodeAction") if storage_node_lifecycle_v1_available => {
+                            let request = call
+                                .args()
+                                .first()
+                                .and_then(Value::as_str)
+                                .context("recording Storage nodeAction request is missing")
+                                .and_then(|request| {
+                                    serde_json::from_str::<Value>(request)
+                                        .context("recording Storage nodeAction request is invalid")
+                                })?;
+                            let operation_id = request
+                                .get("operation_id")
+                                .and_then(Value::as_str)
+                                .context("recording Storage nodeAction has no operation_id")?;
+                            let action = request
+                                .get("action")
+                                .and_then(Value::as_str)
+                                .context("recording Storage nodeAction has no action")?;
+                            storage_lifecycle_state = Some(match action {
+                                "start" => StorageLifecycleState::Starting,
+                                "stop" => StorageLifecycleState::Stopping,
+                                _ => bail!("recording Storage nodeAction has unsupported action `{action}`"),
+                            });
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!({
+                                    "schema": "logos.managed_node_lifecycle.ack",
+                                    "version": 1,
+                                    "operation_id": operation_id,
+                                    "accepted": true,
+                                    "duplicate": false,
+                                    "instance_id": "recording-storage-instance",
+                                    "epoch": 1,
+                                    "sequence": 2,
+                                    "state": if action == "start" {
+                                        "starting"
+                                    } else {
+                                        "stopping"
+                                    },
+                                    "error": null,
+                                }),
+                            ))
+                        }
                         ("blockchain_module", "get_cryptarchia_info")
                             if calls.iter().any(|candidate| {
                                 candidate.module() == "blockchain_module"
@@ -1736,7 +2077,11 @@ mod tests {
         }
 
         fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
-            let mut metadata = module_metadata(&module, self.delivery_node_stopped_signature);
+            let mut metadata = module_metadata(
+                &module,
+                self.delivery_node_stopped_signature,
+                self.storage_node_lifecycle_v1_available,
+            );
             if module == "storage_module"
                 && !self.storage_lifecycle_status_available
                 && let Some(methods) = metadata.get_mut("methods").and_then(Value::as_array_mut)
@@ -1749,8 +2094,12 @@ mod tests {
         }
     }
 
-    fn module_metadata(module: &str, delivery_node_stopped_signature: Option<&str>) -> Value {
-        let methods = match module {
+    fn module_metadata(
+        module: &str,
+        delivery_node_stopped_signature: Option<&str>,
+        storage_node_lifecycle_v1_available: bool,
+    ) -> Value {
+        let mut methods = match module {
             "blockchain_module" => vec![
                 json!({"name":"generate_user_config","signature":"generate_user_config(QString)","isInvokable":true}),
                 json!({"name":"start","signature":"start(QString,QString)","isInvokable":true}),
@@ -1773,7 +2122,13 @@ mod tests {
             ],
             _ => Vec::new(),
         };
-        let events = match module {
+        if module == "storage_module" && storage_node_lifecycle_v1_available {
+            methods.extend([
+                json!({"name":"nodeStatus","signature":"nodeStatus()","isInvokable":true}),
+                json!({"name":"nodeAction","signature":"nodeAction(QString)","isInvokable":true}),
+            ]);
+        }
+        let mut events = match module {
             "storage_module" => vec![
                 json!({"name":"storageStart","signature":"storageStart(QString)"}),
                 json!({"name":"storageStop","signature":"storageStop(QString)"}),
@@ -1788,12 +2143,19 @@ mod tests {
             }
             _ => Vec::new(),
         };
+        if module == "storage_module" && storage_node_lifecycle_v1_available {
+            events.push(json!({"name":"nodeChanged","signature":"nodeChanged(QString)"}));
+        }
         json!({"name":module,"methods":methods,"events":events})
     }
 
     #[test]
     fn basecamp_storage_requires_authoritative_lifecycle_status() -> Result<()> {
-        let mut metadata = module_metadata("storage_module", Some("nodeStopped(bool,QString,int)"));
+        let mut metadata = module_metadata(
+            "storage_module",
+            Some("nodeStopped(bool,QString,int)"),
+            false,
+        );
         metadata
             .get_mut("methods")
             .and_then(Value::as_array_mut)
@@ -2700,6 +3062,166 @@ mod tests {
         {
             bail!("native storageStop did not override an unrelated TCP listener: {stopped:?}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_storage_v1_acknowledges_delayed_start_and_reconciles_terminal_state()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingHostTransport::with_storage_node_lifecycle_v1();
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Storage),
+            &transport,
+            &store,
+        )
+        .await?;
+        let started = tokio::time::timeout(
+            Duration::from_millis(50),
+            action_with_store(
+                "default",
+                node_action_request(NodeKind::Storage, NodeAction::Start),
+                &transport,
+                &store,
+            ),
+        )
+        .await
+        .context("Storage V1 Start waited for a terminal event")??;
+        let storage = started
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted V1 Storage after Start")?;
+        let start_operation = started
+            .operations
+            .last()
+            .context("Basecamp Storage V1 Start operation was not recorded")?;
+        if storage.run_state != "starting"
+            || start_operation.status != "starting"
+            || !start_operation
+                .detail
+                .contains("acknowledged V1 start transition")
+            || !transport_impl
+                .calls()?
+                .iter()
+                .any(|call| call.module() == "storage_module" && call.method() == "nodeAction")
+            || transport_impl
+                .calls()?
+                .iter()
+                .any(|call| call.module() == "storage_module" && call.method() == "start")
+        {
+            bail!("Storage V1 Start did not remain acknowledged and pending: {started:?}");
+        }
+
+        transport_impl.set_storage_lifecycle_state(StorageLifecycleState::Running)?;
+        let settled = status_with_store("default", &transport, &store).await?;
+        let storage = settled
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted V1 Storage after settlement")?;
+        let start_operation = settled
+            .operations
+            .last()
+            .context("Basecamp Storage V1 Start operation disappeared")?;
+        if storage.run_state != "running"
+            || start_operation.status != "running"
+            || !start_operation
+                .detail
+                .contains("completed after lifecycle status confirmation")
+        {
+            bail!("Storage V1 terminal state did not settle the pending Start: {settled:?}");
+        }
+
+        let stopped = tokio::time::timeout(
+            Duration::from_millis(50),
+            action_with_store(
+                "default",
+                node_action_request(NodeKind::Storage, NodeAction::Stop),
+                &transport,
+                &store,
+            ),
+        )
+        .await
+        .context("Storage V1 Stop waited for a terminal event")??;
+        let storage = stopped
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted V1 Storage after Stop")?;
+        let stop_operation = stopped
+            .operations
+            .last()
+            .context("Basecamp Storage V1 Stop operation was not recorded")?;
+        if storage.run_state != "stopping"
+            || stop_operation.status != "stopping"
+            || !stop_operation
+                .detail
+                .contains("acknowledged V1 stop transition")
+            || transport_impl
+                .calls()?
+                .iter()
+                .any(|call| call.module() == "storage_module" && call.method() == "stop")
+        {
+            bail!("Storage V1 Stop did not remain acknowledged and pending: {stopped:?}");
+        }
+
+        transport_impl.set_storage_lifecycle_state(StorageLifecycleState::Stopped)?;
+        let stopped = status_with_store("default", &transport, &store).await?;
+        let storage = stopped
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted V1 Storage after Stop settlement")?;
+        let stop_operation = stopped
+            .operations
+            .last()
+            .context("Basecamp Storage V1 Stop operation disappeared")?;
+        if storage.run_state != "stopped"
+            || stop_operation.status != "stopped"
+            || !stop_operation
+                .detail
+                .contains("completed after lifecycle status confirmation")
+        {
+            bail!("Storage V1 terminal state did not settle the pending Stop: {stopped:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_v1_ack_requires_the_expected_lifecycle_cursor() -> Result<()> {
+        let snapshot = storage_node_lifecycle_snapshot(&json!({
+            "schema": "logos.managed_node_lifecycle.snapshot",
+            "version": 1,
+            "instance_id": "storage-instance-1",
+            "epoch": 3,
+            "sequence": 8,
+            "scope": { "kind": "storage" },
+            "state": "stopped",
+            "last_error": null,
+        }))?;
+        let error = validate_storage_node_lifecycle_ack(
+            &json!({
+                "schema": "logos.managed_node_lifecycle.ack",
+                "version": 1,
+                "operation_id": "storage-start-1",
+                "accepted": true,
+                "instance_id": "storage-instance-1",
+                "epoch": 3,
+                "sequence": 8,
+                "state": "starting",
+            }),
+            "storage-start-1",
+            &snapshot,
+            "starting",
+        )
+        .err()
+        .context("Storage V1 acknowledgement accepted a stale cursor")?;
+        anyhow::ensure!(error.to_string().contains("invalid lifecycle cursor"));
         Ok(())
     }
 

@@ -113,7 +113,7 @@ constexpr std::array<std::string_view, 6> kExpectedModules = {
     "lez_core",
 };
 
-constexpr std::array<std::pair<std::string_view, std::string_view>, 19> kExpectedEvents = { {
+constexpr std::array<std::pair<std::string_view, std::string_view>, 20> kExpectedEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -133,6 +133,7 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 19> kExpecte
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
     { "blockchain_module", "newBlock" },
+    { "storage_module", "nodeChanged" },
 } };
 
 #define REQUIRE(condition)                                                                  \
@@ -912,7 +913,7 @@ bool activationRollbackFailsClosed()
     return true;
 }
 
-bool missingOptionalSubscriptionKeepsDispatchOpen()
+bool missingRequiredSubscriptionKeepsDispatchOpen()
 {
     Fixture fixture;
     fixture.protocol.emitDuringNextUnsubscribe();
@@ -954,6 +955,23 @@ bool missingOptionalSubscriptionKeepsDispatchOpen()
     REQUIRE(replies.replies()[0].ok == 1);
     REQUIRE(replies.replies()[0].payload == "null");
 
+    fixture.transport.close();
+    REQUIRE(fixture.protocol.destroyedClients() == kExpectedModules.size());
+    REQUIRE(fixture.protocol.lifecycleThreadViolations() == 0);
+    return true;
+}
+
+bool missingStorageV1SubscriptionKeepsCoreEventIngressHealthy()
+{
+    Fixture fixture;
+    fixture.protocol.failSubscriptionAt(kExpectedEvents.size() - 1);
+    REQUIRE(fixture.activate());
+    REQUIRE(fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 1);
+    REQUIRE(fixture.protocol.createdSubscriptions().size() == kExpectedEvents.size() - 1);
+    REQUIRE(!fixture.protocol.emitEvent("storage_module", "nodeChanged", "[]"));
+    REQUIRE(fixture.protocol.emitEvent("delivery_module", "messageSent", "[]"));
+    REQUIRE(waitUntil([&fixture] { return !fixture.ingress.calls().empty(); }, 50ms));
     fixture.transport.close();
     REQUIRE(fixture.protocol.destroyedClients() == kExpectedModules.size());
     REQUIRE(fixture.protocol.lifecycleThreadViolations() == 0);
@@ -1751,10 +1769,11 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 19> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 20> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
-        { "missingOptionalSubscriptionKeepsDispatchOpen", missingOptionalSubscriptionKeepsDispatchOpen },
+        { "missingRequiredSubscriptionKeepsDispatchOpen", missingRequiredSubscriptionKeepsDispatchOpen },
+        { "missingStorageV1SubscriptionKeepsCoreEventIngressHealthy", missingStorageV1SubscriptionKeepsCoreEventIngressHealthy },
         { "closeWaitsForAdmittedActivationStartup", closeWaitsForAdmittedActivationStartup },
         { "faultDuringReadyHealthPublicationCannotRestoreStaleHealth", faultDuringReadyHealthPublicationCannotRestoreStaleHealth },
         { "dispatchEnforcesAllowlistAndBounds", dispatchEnforcesAllowlistAndBounds },
