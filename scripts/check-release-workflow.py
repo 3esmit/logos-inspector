@@ -184,7 +184,7 @@ def main() -> int:
             'test -x "$xcode_developer/usr/bin/xcodebuild"',
             'sudo xcode-select --switch "$xcode_developer"',
             'test "$(xcode-select --print-path)" = "$xcode_developer"',
-            'toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help)"',
+            'toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help 2>&1)"',
             'case "$toolchain_help" in',
             "*-downloadComponent*) ;;",
             "xcodebuild -downloadComponent MetalToolchain",
@@ -284,6 +284,10 @@ def main() -> int:
     if "xcodebuild -help " + chr(92) in standalone:
         errors.append(
             "standalone release workflow must not pipe xcodebuild help into grep under pipefail"
+        )
+    if 'toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help)"' in standalone:
+        errors.append(
+            "standalone release workflow must capture xcodebuild help from standard error"
         )
     for name, text in texts.items():
         label = f"{name} release workflow"

@@ -181,7 +181,7 @@ jobs:
           sudo xcode-select --switch "$xcode_developer"
           test "$(xcode-select --print-path)" = "$xcode_developer"
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
-          toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help)"
+          toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help 2>&1)"
           case "$toolchain_help" in
             *-downloadComponent*) ;;
             *)
