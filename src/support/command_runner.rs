@@ -246,6 +246,12 @@ struct CommandBudgetState {
     active: usize,
 }
 
+struct CommandRunContext<'a> {
+    control: Option<CommandControl>,
+    budget: &'a CommandBudget,
+    require_success: bool,
+}
+
 struct CommandPermit {
     budget: Arc<CommandBudgetInner>,
 }
@@ -272,6 +278,10 @@ pub(crate) fn acquire_streaming_command_permit(
 }
 
 impl CommandBudget {
+    pub(crate) fn single() -> Self {
+        Self::new(1)
+    }
+
     fn new(limit: usize) -> Self {
         Self {
             inner: Arc::new(CommandBudgetInner {
@@ -405,6 +415,19 @@ pub(crate) fn run_command(command: Command, policy: CommandRunPolicy<'_>) -> Res
     run_command_inner(command, policy, None)
 }
 
+/// Runs a bounded command while preserving a nonzero process exit for a
+/// caller that has an explicit protocol-level interpretation of that exit.
+///
+/// Most callers must use [`run_command`], which rejects a nonzero exit. This
+/// variant is limited to protocols whose structured response can distinguish a
+/// known terminal state from an operation failure.
+pub(crate) fn run_command_allow_failure(
+    command: Command,
+    policy: CommandRunPolicy<'_>,
+) -> Result<Output> {
+    run_command_inner_with_exit_validation(command, policy, None, false)
+}
+
 pub(crate) fn run_command_controlled(
     command: Command,
     policy: CommandRunPolicy<'_>,
@@ -413,18 +436,48 @@ pub(crate) fn run_command_controlled(
     run_command_inner(command, policy, Some(control))
 }
 
+/// Controlled counterpart to [`run_command_allow_failure`].
+pub(crate) fn run_command_controlled_allow_failure(
+    command: Command,
+    policy: CommandRunPolicy<'_>,
+    control: CommandControl,
+) -> Result<Output> {
+    run_command_inner_with_exit_validation(command, policy, Some(control), false)
+}
+
 fn run_command_inner(
     command: Command,
     policy: CommandRunPolicy<'_>,
     control: Option<CommandControl>,
 ) -> Result<Output> {
+    run_command_inner_with_exit_validation(command, policy, control, true)
+}
+
+fn run_command_inner_with_exit_validation(
+    command: Command,
+    policy: CommandRunPolicy<'_>,
+    control: Option<CommandControl>,
+    require_success: bool,
+) -> Result<Output> {
     let budget = control
         .as_ref()
         .and_then(CommandControl::command_budget)
         .unwrap_or_else(|| COMMAND_BUDGET.clone());
-    run_command_inner_with(command, policy, control, &budget, Child::try_wait)
+    run_command_inner_with_termination_and_exit_validation(
+        command,
+        policy,
+        CommandRunContext {
+            control,
+            budget: &budget,
+            require_success,
+        },
+        Child::try_wait,
+        request_termination,
+        Child::try_wait,
+    )
 }
 
+#[cfg(test)]
 fn run_command_inner_with<P>(
     command: Command,
     policy: CommandRunPolicy<'_>,
@@ -446,11 +499,39 @@ where
     )
 }
 
+#[cfg(test)]
 fn run_command_inner_with_termination<P, R, W>(
-    mut command: Command,
+    command: Command,
     policy: CommandRunPolicy<'_>,
     control: Option<CommandControl>,
     budget: &CommandBudget,
+    poll_child: P,
+    request_stop: R,
+    poll_reap: W,
+) -> Result<Output>
+where
+    P: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+    R: FnMut(&mut Child, CommandTerminationScope) -> io::Result<CommandTerminationScope>,
+    W: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+{
+    run_command_inner_with_termination_and_exit_validation(
+        command,
+        policy,
+        CommandRunContext {
+            control,
+            budget,
+            require_success: true,
+        },
+        poll_child,
+        request_stop,
+        poll_reap,
+    )
+}
+
+fn run_command_inner_with_termination_and_exit_validation<P, R, W>(
+    mut command: Command,
+    policy: CommandRunPolicy<'_>,
+    context: CommandRunContext<'_>,
     mut poll_child: P,
     mut request_stop: R,
     mut poll_reap: W,
@@ -460,6 +541,11 @@ where
     R: FnMut(&mut Child, CommandTerminationScope) -> io::Result<CommandTerminationScope>,
     W: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
 {
+    let CommandRunContext {
+        control,
+        budget,
+        require_success,
+    } = context;
     let started = Instant::now();
     let relative_deadline = if control.is_none() {
         Some(
@@ -611,7 +697,7 @@ where
         };
         if let Some(status) = status {
             let output = collect_exited_child(status, capture, policy.label)?;
-            return validate_output(output, &policy);
+            return finish_output(output, &policy, require_success);
         }
 
         if let Some(control) = control.as_ref() {
@@ -631,7 +717,9 @@ where
                     &mut request_stop,
                     &mut poll_reap,
                 )? {
-                    StoppedOutput::Completed(output) => validate_output(output, &policy),
+                    StoppedOutput::Completed(output) => {
+                        finish_output(output, &policy, require_success)
+                    }
                     StoppedOutput::Terminated { scope, .. } => {
                         Err(CommandTerminated::after_reap(reason, scope).into())
                     }
@@ -662,7 +750,9 @@ where
                 &mut request_stop,
                 &mut poll_reap,
             )? {
-                StoppedOutput::Completed(output) => return validate_output(output, &policy),
+                StoppedOutput::Completed(output) => {
+                    return finish_output(output, &policy, require_success);
+                }
                 StoppedOutput::Terminated { output, .. } => {
                     let message = process_message(&output, policy.redactions, policy.output_limit);
                     bail!(
@@ -691,6 +781,18 @@ where
             }
         }
         thread::sleep(policy.poll_interval);
+    }
+}
+
+fn finish_output(
+    output: Output,
+    policy: &CommandRunPolicy<'_>,
+    require_success: bool,
+) -> Result<Output> {
+    if require_success {
+        validate_output(output, policy)
+    } else {
+        Ok(output)
     }
 }
 
@@ -1422,6 +1524,37 @@ mod tests {
         command.arg("-c").arg(script).arg("command-runner-test");
         command.args(arguments);
         command
+    }
+
+    #[test]
+    fn allow_failure_preserves_a_nonzero_exit_for_protocol_validation() -> Result<()> {
+        let output = run_command_allow_failure(
+            shell_command("printf '%s' structured; exit 7", &[]),
+            test_policy(Duration::from_millis(1)),
+        )?;
+        anyhow::ensure!(
+            output.status.code() == Some(7),
+            "nonzero exit status was not preserved: {}",
+            output.status
+        );
+        anyhow::ensure!(
+            output.stdout == b"structured",
+            "nonzero command output was not preserved: {:?}",
+            output.stdout
+        );
+
+        let error = command_error(
+            run_command(
+                shell_command("printf '%s' structured; exit 7", &[]),
+                test_policy(Duration::from_millis(1)),
+            ),
+            "default command execution unexpectedly accepted a nonzero exit",
+        )?;
+        anyhow::ensure!(
+            error.to_string().contains("structured"),
+            "default nonzero error lost command output: {error:#}"
+        );
+        Ok(())
     }
 
     fn wait_for_path(path: &Path, timeout: Duration) -> Result<()> {

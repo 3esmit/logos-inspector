@@ -26,7 +26,8 @@ use tokio_util::sync::CancellationToken;
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, CommandStopReason, CommandTerminated,
     CommandTerminationScope, DEFAULT_COMMAND_CAPTURE_LIMIT, StreamingCommandPermit,
-    acquire_streaming_command_permit, output_text, run_command, run_command_controlled,
+    acquire_streaming_command_permit, output_text, process_message, run_command,
+    run_command_allow_failure, run_command_controlled, run_command_controlled_allow_failure,
 };
 use crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES;
 use crate::support::storage_download_contract::{
@@ -1399,31 +1400,47 @@ impl LogoscoreCliRuntime {
     }
 
     pub(crate) fn status(&self) -> Result<LogosCoreOutput> {
-        self.cached_json(
-            LogoscoreCliSnapshotKind::Status,
-            ["status", "--json"],
-            command_timeout(),
-        )
+        self.cached_status(command_timeout())
     }
 
     pub(crate) fn status_with_timeout(&self, timeout: Duration) -> Result<LogosCoreOutput> {
-        self.cached_json(
-            LogoscoreCliSnapshotKind::Status,
-            ["status", "--json"],
-            timeout,
-        )
+        self.cached_status(timeout)
     }
 
     pub(crate) fn status_probe_with_timeout(&self, timeout: Duration) -> Result<LogosCoreOutput> {
-        self.run_json(["status", "--json"], timeout)
+        self.run_status_json(timeout)
     }
 
     pub(crate) fn status_controlled(&self, control: CommandControl) -> Result<LogosCoreOutput> {
-        self.cached_json_controlled(
-            LogoscoreCliSnapshotKind::Status,
-            ["status", "--json"],
-            control,
-        )
+        self.cached_status_controlled(control)
+    }
+
+    fn cached_status(&self, timeout: Duration) -> Result<LogosCoreOutput> {
+        if let Some(snapshot) =
+            fresh_logoscore_cli_snapshot(&self.runner, LogoscoreCliSnapshotKind::Status)?
+        {
+            return Ok(snapshot);
+        }
+        self.with_command_gate(timeout, move |runner, deadline| {
+            cached_logoscore_cli_snapshot(runner, LogoscoreCliSnapshotKind::Status, || {
+                run_status_json_before_deadline(runner, deadline)
+            })
+        })
+    }
+
+    fn cached_status_controlled(&self, control: CommandControl) -> Result<LogosCoreOutput> {
+        let gate_control = control.clone();
+        self.with_controlled_command_gate(&gate_control, move |runner| {
+            cached_logoscore_cli_snapshot(runner, LogoscoreCliSnapshotKind::Status, || {
+                run_status_json_with_controlled(runner, control)
+            })
+        })
+    }
+
+    fn run_status_json(&self, timeout: Duration) -> Result<LogosCoreOutput> {
+        self.with_command_gate(timeout, move |runner, deadline| {
+            run_status_json_before_deadline(runner, deadline)
+        })
     }
 
     pub(crate) fn list_modules(&self) -> Result<LogosCoreOutput> {
@@ -2443,7 +2460,7 @@ fn cacheable_logoscore_cli_snapshot(
                 .value
                 .pointer("/daemon/status")
                 .and_then(Value::as_str),
-            Some("running" | "stopped")
+            Some("running" | "stopped" | "not_running")
         )
 }
 
@@ -2891,6 +2908,22 @@ where
     })
 }
 
+fn run_status_json_with(runner: &LogosCoreRunner, timeout: Duration) -> Result<LogosCoreOutput> {
+    let command = command_for_runner(runner, ["status", "--json"]);
+    let output = run_command_allow_failure(
+        command,
+        CommandRunPolicy {
+            label: &runner.label,
+            timeout,
+            poll_interval: LOGOSCORE_POLL_INTERVAL,
+            redactions: &[],
+            output_limit: LOGOSCORE_OUTPUT_LIMIT,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
+        },
+    )?;
+    logos_core_status_output_with_limit(runner, output, LOGOSCORE_JSON_OUTPUT_LIMIT)
+}
+
 fn run_json_before_deadline<I, S>(
     runner: &LogosCoreRunner,
     args: I,
@@ -2908,6 +2941,20 @@ where
         );
     }
     run_json_with(runner, args, remaining_timeout)
+}
+
+fn run_status_json_before_deadline(
+    runner: &LogosCoreRunner,
+    deadline: StdInstant,
+) -> Result<LogosCoreOutput> {
+    let remaining_timeout = deadline.saturating_duration_since(StdInstant::now());
+    if remaining_timeout == Duration::ZERO {
+        bail!(
+            "{} request timed out waiting for another LogosCore CLI request",
+            runner.label
+        );
+    }
+    run_status_json_with(runner, remaining_timeout)
 }
 
 fn run_json_with_controlled<I, S>(
@@ -2948,6 +2995,51 @@ where
         control,
     )?;
     logos_core_output_with_limit(runner, output, json_output_limit)
+}
+
+fn run_status_json_with_controlled(
+    runner: &LogosCoreRunner,
+    control: CommandControl,
+) -> Result<LogosCoreOutput> {
+    let command = command_for_runner(runner, ["status", "--json"]);
+    let output = run_command_controlled_allow_failure(
+        command,
+        CommandRunPolicy {
+            label: &runner.label,
+            // Controlled commands have one authority: CommandControl's absolute deadline.
+            timeout: Duration::ZERO,
+            poll_interval: LOGOSCORE_POLL_INTERVAL,
+            redactions: &[],
+            output_limit: LOGOSCORE_OUTPUT_LIMIT,
+            capture_limit: LOGOSCORE_JSON_OUTPUT_LIMIT,
+        },
+        control,
+    )?;
+    logos_core_status_output_with_limit(runner, output, LOGOSCORE_JSON_OUTPUT_LIMIT)
+}
+
+fn logos_core_status_output_with_limit(
+    runner: &LogosCoreRunner,
+    output: std::process::Output,
+    json_output_limit: usize,
+) -> Result<LogosCoreOutput> {
+    let exit_succeeded = output.status.success();
+    let exit_status = output.status.to_string();
+    let failure_message =
+        (!exit_succeeded).then(|| process_message(&output, &[], LOGOSCORE_OUTPUT_LIMIT));
+    let result = logos_core_output_with_limit(runner, output, json_output_limit)?;
+    if exit_succeeded || status_reports_not_running(&result.value) {
+        return Ok(result);
+    }
+    bail!(
+        "{} exited with {exit_status}: {}",
+        runner.label,
+        failure_message.unwrap_or_else(|| "no output".to_owned())
+    )
+}
+
+fn status_reports_not_running(value: &Value) -> bool {
+    value.pointer("/daemon/status").and_then(Value::as_str) == Some("not_running")
 }
 
 fn logos_core_output_with_limit(
@@ -5509,6 +5601,93 @@ fi
                 .lines()
                 .eq(["status"]),
             "fresh status snapshot executed another command while the gate was held"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_status_accepts_structured_not_running_output_after_nonzero_exit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-not-running-status");
+        write_executable_script(
+            &program,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+    printf '%s\n' status >> "$config_dir/commands"
+    printf '%s\n' '{"daemon":{"status":"not_running"},"rpc_error":"core_service not reachable"}'
+    exit 1
+fi
+exit 9
+"#,
+        )?;
+        let runtime = LogoscoreCliRuntime::local(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+
+        let status = runtime.status_with_timeout(Duration::from_secs(1))?;
+        anyhow::ensure!(
+            status
+                .value
+                .pointer("/daemon/status")
+                .and_then(Value::as_str)
+                == Some("not_running"),
+            "known stopped status was not preserved: {}",
+            status.value
+        );
+        runtime.status_with_timeout(Duration::from_secs(1))?;
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("commands"))?
+                .lines()
+                .eq(["status"]),
+            "recognized not-running status was not cached"
+        );
+
+        let direct = runtime.status_probe_with_timeout(Duration::from_secs(1))?;
+        anyhow::ensure!(
+            direct
+                .value
+                .pointer("/daemon/status")
+                .and_then(Value::as_str)
+                == Some("not_running"),
+            "direct status probe discarded the known stopped state"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_status_rejects_an_unrecognized_nonzero_response() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-invalid-nonzero-status");
+        write_executable_script(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    shift 2
+fi
+printf '%s\n' '{"daemon":{"status":"running"}}'
+exit 1
+"#,
+        )?;
+        let runtime = LogoscoreCliRuntime::local(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let error = runtime
+            .status_probe_with_timeout(Duration::from_secs(1))
+            .err()
+            .context("nonzero running status was unexpectedly accepted")?;
+        anyhow::ensure!(
+            error.to_string().contains("exited with")
+                && error.to_string().contains("\"status\":\"running\""),
+            "unexpected nonzero status error: {error:#}"
         );
         Ok(())
     }

@@ -1172,7 +1172,16 @@ ColumnLayout {
 
     function indexerPackageTargetProblem() {
         if (root.model.localAttachedRuntime()) {
-            return qsTr("Channel Indexer package installation is not available for a service-attached LogosCore runtime yet. Use Core Modules to manage daemon packages; configure per-zone Indexers in Zone Sources.")
+            const state = root.model.runtimeState()
+            if (state === "running") {
+                return qsTr("Stop the local LogosCore service before changing the Indexer package.")
+            }
+            if (state === "starting" || state === "stopping") {
+                return qsTr("Wait for the local LogosCore service to stop before changing the Indexer package.")
+            }
+            if (state === "unavailable") {
+                return qsTr("Inspector cannot verify the local LogosCore service. Indexer package installation is disabled until its connection recovers.")
+            }
         }
         return root.packageCatalogTargetProblem(
             root.model.packageCatalogModulesDir(),
@@ -1236,6 +1245,12 @@ ColumnLayout {
         }
         const installed = root.model.installedPackage()
         if (installed) {
+            if (root.model.localAttachedRuntime()
+                    && root.model.runtimeState() === "stopped") {
+                return qsTr("Version %1 is installed in %2. The local LogosCore service is stopped, so you can choose another exact release. Start the service to load newly installed packages. Channel Indexer start and stop are in Zone Sources.")
+                    .arg(String(installed.version || qsTr("unknown")))
+                    .arg(root.model.packageCatalogModulesDir())
+            }
             return qsTr("Version %1 is installed in %2. Stop LogosCore Runtime before changing it. Channel Indexer start and stop are in Zone Sources.")
                 .arg(String(installed.version || qsTr("unknown")))
                 .arg(root.model.packageCatalogModulesDir())
@@ -1537,6 +1552,11 @@ ColumnLayout {
         if (root.model.localAttachedRuntime()
                 && root.model.runtimeState() === "unavailable") {
             return qsTr("Target core-module directory: %1. Inspector cannot verify the local LogosCore service, so package installation is disabled until the connection recovers.")
+                .arg(root.runtimeModulesDir)
+        }
+        if (root.model.localAttachedRuntime()
+                && root.model.runtimeState() === "stopped") {
+            return qsTr("Target core-module directory: %1. The local LogosCore service is stopped, so package installation is available. Start the service after installation to load newly installed core modules.")
                 .arg(root.runtimeModulesDir)
         }
         if (root.model.localAttachedRuntime()
