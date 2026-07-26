@@ -186,6 +186,7 @@ enum WorkerCommand {
         module: String,
         event: String,
         args: Vec<Value>,
+        fanout_ready: mpsc::Receiver<()>,
     },
     Shutdown,
 }
@@ -964,12 +965,24 @@ impl AsynchronousCore {
         if registry.phase != LifecyclePhase::Open {
             return EVENT_REJECTED;
         }
+        // Keep this guard through queue reservation, fanout, and signal so
+        // competing host callbacks observe the same event order as reduction.
+        let (fanout_complete, fanout_ready) = mpsc::channel();
         match self.sender.try_send(WorkerCommand::ModuleEvent {
-            module,
-            event,
-            args,
+            module: module.clone(),
+            event: event.clone(),
+            args: args.clone(),
+            fanout_ready,
         }) {
-            Ok(()) => EVENT_ACCEPTED,
+            Ok(()) => {
+                // A host lifecycle operation can wait for its terminal event
+                // on the bridge worker. Publish subscriptions before that
+                // worker reduces the queued event, otherwise its own wait
+                // prevents the confirmation from ever being observed.
+                let _published = self.host.publish_module_event(&module, &event, &args);
+                let _signalled = fanout_complete.send(()).is_ok();
+                EVENT_ACCEPTED
+            }
             Err(mpsc::TrySendError::Full(_)) => EVENT_BACKPRESSURE,
             Err(mpsc::TrySendError::Disconnected(_)) => EVENT_REJECTED,
         }
@@ -1060,9 +1073,13 @@ fn run_worker(
                 module,
                 event,
                 args,
+                fanout_ready,
             } => {
+                if fanout_ready.recv().is_err() {
+                    continue;
+                }
                 let _result = catch_unwind(AssertUnwindSafe(|| {
-                    bridge.ingest_module_event(&module, &event, args)
+                    bridge.reduce_module_event_after_transport(&module, &event, args)
                 }));
             }
             WorkerCommand::Shutdown => {
@@ -1690,6 +1707,38 @@ mod tests {
     }
 
     struct TestCoreHandle(*mut LogosInspectorCore);
+
+    struct TestHostRequestGuard {
+        host: Arc<TestHost>,
+        request: Option<TestHostRequest>,
+    }
+
+    impl TestHostRequestGuard {
+        fn new(host: Arc<TestHost>, request: TestHostRequest) -> Self {
+            Self {
+                host,
+                request: Some(request),
+            }
+        }
+
+        fn finish(&mut self) -> TestResult {
+            self.host.release_dispatch();
+            if let Some(request) = self.request.as_ref() {
+                self.host.complete(request.id, 1, "1", false)?;
+                self.request = None;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for TestHostRequestGuard {
+        fn drop(&mut self) {
+            self.host.release_dispatch();
+            if let Some(request) = self.request.take() {
+                let _complete = self.host.complete(request.id, 1, "1", false);
+            }
+        }
+    }
 
     impl TestHost {
         fn new() -> Arc<Self> {
@@ -3659,6 +3708,162 @@ mod tests {
         {
             return err("closed handle accepted a module event");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn module_event_reaches_host_subscription_while_bridge_worker_waits_for_host_call() -> TestResult
+    {
+        let host = TestHost::new();
+        host.block_dispatch();
+        let handle = TestCoreHandle::new(&host)?;
+        let mut subscription = {
+            // SAFETY: this test keeps the asynchronous handle allocation live
+            // through the subscription and its matching worker activity.
+            let core = unsafe { &*handle.as_ptr() };
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                return err("expected asynchronous test core");
+            };
+            core.host
+                .subscribe_module_event("delivery_module", "nodeStarted")?
+        };
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        if enqueue_test_call(
+            handle.as_ptr(),
+            49,
+            "storage_module",
+            "space",
+            "[]",
+            reply_context(&collector, &drops),
+        )? != 1
+        {
+            return err("gated host call was rejected");
+        }
+        if let Err(error) = host.wait_for_dispatch_entry() {
+            host.release_dispatch();
+            return Err(error);
+        }
+        let request = match host.wait_for_request() {
+            Ok(request) => request,
+            Err(error) => {
+                host.release_dispatch();
+                return Err(error);
+            }
+        };
+        let mut pending_host_call = TestHostRequestGuard::new(Arc::clone(&host), request);
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let ingress = thread::spawn(move || {
+            ingest_test_module_event(
+                ptr::with_exposed_provenance_mut(handle_address),
+                "delivery_module",
+                "nodeStarted",
+                "[true,\"\",1]",
+            )
+            .map_err(|error| error.to_string())
+        })
+        .join()
+        .map_err(|_| std::io::Error::other("foreign event ingress thread panicked"))??;
+        if ingress != EVENT_ACCEPTED {
+            pending_host_call.finish()?;
+            collector.wait_for_replies(1)?;
+            return err("event ingress rejected while the bridge worker was busy");
+        }
+
+        let event = subscription
+            .next_within(Duration::from_secs(1))?
+            .ok_or_else(|| {
+                std::io::Error::other(
+                    "host subscription did not receive event while bridge worker waited",
+                )
+            })?;
+        if event.module() != "delivery_module"
+            || event.event() != "nodeStarted"
+            || event.args()
+                != [
+                    serde_json::json!(true),
+                    serde_json::json!(""),
+                    serde_json::json!(1),
+                ]
+        {
+            pending_host_call.finish()?;
+            collector.wait_for_replies(1)?;
+            return err("host subscription received altered lifecycle event");
+        }
+
+        pending_host_call.finish()?;
+        collector.wait_for_replies(1)?;
+        let _barrier = call_test_inspector(handle.as_ptr(), "sourcePolicy", "[]")
+            .map_err(std::io::Error::other)?;
+        if subscription
+            .next_within(Duration::from_millis(100))?
+            .is_some()
+        {
+            return err("queued event reduction duplicated host subscription delivery");
+        }
+        if drops.load(Ordering::Acquire) != 1 {
+            return err("gated host call callback context was not released once");
+        }
+        handle.close();
+        Ok(())
+    }
+
+    #[test]
+    fn queued_event_reduction_waits_for_fanout_before_following_bridge_calls() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let sender = {
+            // SAFETY: this test keeps the asynchronous handle allocation live
+            // through the worker commands and their reply channel.
+            let core = unsafe { &*handle.as_ptr() };
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                return err("expected asynchronous test core");
+            };
+            core.sender.clone()
+        };
+        let (fanout_complete, fanout_ready) = mpsc::channel();
+        let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
+        sender
+            .send(WorkerCommand::ModuleEvent {
+                module: "delivery_module".to_owned(),
+                event: "nodeStarted".to_owned(),
+                args: vec![
+                    serde_json::json!(true),
+                    serde_json::json!(""),
+                    serde_json::json!(1),
+                ],
+                fanout_ready,
+            })
+            .map_err(|_| std::io::Error::other("bridge worker is unavailable"))?;
+        sender
+            .send(WorkerCommand::LocalCall {
+                method: "sourcePolicy".to_owned(),
+                args_json: "[]".to_owned(),
+                reply: reply_sender,
+            })
+            .map_err(|_| std::io::Error::other("bridge worker is unavailable"))?;
+
+        match reply_receiver.recv_timeout(Duration::from_millis(100)) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(_) => return err("bridge worker reduced an event before fanout completed"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return err("bridge worker disconnected before fanout completed");
+            }
+        }
+
+        fanout_complete
+            .send(())
+            .map_err(|_| std::io::Error::other("bridge worker dropped fanout gate"))?;
+        let response = reply_receiver.recv_timeout(Duration::from_secs(1))?;
+        let response: Value = serde_json::from_str(&response)?;
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(std::io::Error::other(format!(
+                "bridge worker did not resume after fanout: {response}"
+            ))
+            .into());
+        }
+        handle.close();
         Ok(())
     }
 

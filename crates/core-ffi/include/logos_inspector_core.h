@@ -166,10 +166,11 @@ int32_t logos_inspector_core_call_module_async(
  * args_json must be a valid JSON array representing the callback arguments.
  * Returns EVENT_ACCEPTED when validated and queued before close began,
  * EVENT_REJECTED for invalid input or a closing handle, and
- * EVENT_BACKPRESSURE when the bounded ingress queue is full. Accepted events
- * share FIFO worker ordering with bridge calls. This function may run on any
- * thread and may race call, cancel, or close. The host must quiesce these calls
- * before its close callback returns.
+ * EVENT_BACKPRESSURE when the bounded ingress queue is full. An accepted event
+ * may synchronously reach matching host transport subscriptions before queued
+ * worker reduction. Reductions share FIFO worker ordering with bridge calls.
+ * This function may run on any thread and may race call, cancel, or close. The
+ * host must quiesce these calls before its close callback returns.
  *
  * The core does not retry. On BACKPRESSURE, a native event owner must copy and
  * retry the event without blocking the host callback, or begin host shutdown.

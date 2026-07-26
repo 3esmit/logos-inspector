@@ -69,6 +69,7 @@ TestCase {
         id: managedNodesFixture
 
         property bool busy: false
+        property bool basecampHost: false
         property bool statusLoading: false
         property string error: ""
         property var report: null
@@ -159,6 +160,7 @@ TestCase {
     function init() {
         gateway.reset()
         managedNodesFixture.busy = false
+        managedNodesFixture.basecampHost = false
         managedNodesFixture.statusLoading = false
         managedNodesFixture.error = ""
         managedNodesFixture.report = null
@@ -205,6 +207,14 @@ TestCase {
 
     function useManagedDeliverySource() {
         state.sourceMode = "logoscore_cli"
+        state.effectiveSourceMode = "module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+    }
+
+    function useBasecampManagedDeliverySource() {
+        managedNodesFixture.basecampHost = true
+        state.sourceMode = "module"
         state.effectiveSourceMode = "module"
         state.sourceTargetKind = "module"
         state.usesRestEndpoint = false
@@ -260,6 +270,24 @@ TestCase {
         verify(state.nodeActionAvailable("start"))
         verify(!state.nodeActionAvailable("stop"))
         verify(state.nodeActionEnabled("start"))
+    }
+
+    function test_basecamp_delivery_module_uses_managed_lifecycle_actions() {
+        useBasecampManagedDeliverySource()
+        setManagedMessaging(["stop"], "running")
+
+        verify(state.managedNodeLifecycleSource())
+        verify(!state.nodeActionAvailable("create"))
+        verify(!state.nodeActionAvailable("start"))
+        verify(state.nodeActionAvailable("stop"))
+        verify(state.confirmNodeAction("stop", ""))
+        compare(managedNodesFixture.pendingAction, "stop")
+        compare(managedNodesFixture.pendingNode, "messaging")
+
+        const started = state.runPendingNodeAction()
+        verify(started.started)
+        compare(managedNodesFixture.runCount, 1)
+        compare(gateway.requestCount, 0)
     }
 
     function test_host_module_never_exposes_nonterminal_native_stop() {

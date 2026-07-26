@@ -23,6 +23,7 @@ static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
     call_managed_module,
     managed_call_spec,
     Some(managed_lifecycle_event),
+    Some(managed_lifecycle_event_signature),
     Some(decode_managed_lifecycle_event),
 );
 
@@ -90,6 +91,17 @@ pub(crate) const fn managed_lifecycle_event(action: ManagedNodeAction) -> Option
     match action {
         ManagedNodeAction::Start => Some("nodeStarted"),
         ManagedNodeAction::Stop => Some("nodeStopped"),
+        ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
+    }
+}
+
+#[must_use]
+pub(crate) const fn managed_lifecycle_event_signature(
+    action: ManagedNodeAction,
+) -> Option<&'static str> {
+    match action {
+        ManagedNodeAction::Start => Some("nodeStarted(bool,QString,int)"),
+        ManagedNodeAction::Stop => Some("nodeStopped(bool,QString,int)"),
         ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
     }
 }
@@ -470,7 +482,7 @@ mod tests {
             "messaging",
             managed_contract(),
             ManagedNodeAction::Start,
-            "nodeStarted",
+            ("nodeStarted", Some("nodeStarted(bool,QString,int)")),
             json!({ "arg0": true, "arg1": "started" }),
             true,
             "started",

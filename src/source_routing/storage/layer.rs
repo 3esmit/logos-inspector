@@ -23,6 +23,7 @@ static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
     call_managed_module,
     managed_call_spec,
     Some(managed_lifecycle_event),
+    None,
     Some(decode_managed_lifecycle_event),
 );
 
@@ -459,7 +460,7 @@ mod tests {
             "storage",
             managed_contract(),
             ManagedNodeAction::Start,
-            "storageStart",
+            ("storageStart", None),
             json!({ "arg0": "{\"success\":true,\"message\":\"started\"}" }),
             true,
             "started",
