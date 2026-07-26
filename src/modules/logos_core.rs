@@ -696,7 +696,7 @@ impl std::fmt::Debug for LogoscoreRuntimeBinding {
 
 impl LogoscoreRuntimeBinding {
     fn resolve(&self) -> Result<LogoscoreCliRuntime> {
-        let explicitly_configured = logoscore_environment_is_configured().then(configured_runtime);
+        let explicitly_configured = LogoscoreCliTransport::configured_runtime_from_environment();
         self.resolve_with_explicit(explicitly_configured)
     }
 
@@ -724,8 +724,8 @@ pub struct LogoscoreCliTransport {
 
 impl Default for LogoscoreCliTransport {
     fn default() -> Self {
-        let runtime = if logoscore_environment_is_configured() {
-            LogoscoreRuntimeBinding::Fixed(configured_runtime())
+        let runtime = if let Some(runtime) = Self::configured_runtime_from_environment() {
+            LogoscoreRuntimeBinding::Fixed(runtime)
         } else {
             LogoscoreRuntimeBinding::ConfiguredWithFallback(Arc::new(
                 crate::local_nodes::running_local_logoscore_runtime,
@@ -739,6 +739,11 @@ impl Default for LogoscoreCliTransport {
 }
 
 impl LogoscoreCliTransport {
+    #[must_use]
+    pub(crate) fn configured_runtime_from_environment() -> Option<LogoscoreCliRuntime> {
+        logoscore_environment_is_configured().then(configured_runtime)
+    }
+
     #[must_use]
     pub(crate) fn fixed_runtime(runtime: LogoscoreCliRuntime) -> Self {
         Self {
