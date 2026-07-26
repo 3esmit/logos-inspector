@@ -85,7 +85,7 @@ ColumnLayout {
         text: qsTr("Configure Store provider")
         primary: true
         enabled: !root.model.shell.busy
-        Layout.preferredWidth: 218
+        Layout.preferredWidth: implicitWidth
         onClicked: root.model.openSettings("network", "messaging")
     }
 

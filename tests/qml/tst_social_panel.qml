@@ -162,6 +162,7 @@ TestCase {
         verify(configure !== null)
         tryCompare(configure, "visible", true)
         compare(configure.Accessible.name, "Configure Store provider")
+        verify(configure.width >= configure.implicitWidth)
 
         mouseClick(configure, configure.width / 2, configure.height / 2)
 
