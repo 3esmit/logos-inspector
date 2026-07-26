@@ -37,7 +37,8 @@ def circuit_target_by_platform(catalog: dict[str, Any], os_name: str, arch: str)
             return {
                 "os": str(target["os"]),
                 "arch": str(target["arch"]),
-                "hash": str(target["hash"]),
+                "archiveHash": str(target["archiveHash"]),
+                "sourceHash": str(target["sourceHash"]),
             }
     raise RuntimeError(f"no circuits artifact for {os_name}-{arch}")
 
@@ -67,6 +68,7 @@ class BuildArtifacts:
         errors.extend(catalog_shape_errors(catalog))
         errors.extend(self.cargo_manifest_errors(catalog))
         errors.extend(self.cargo_lock_errors(catalog))
+        errors.extend(self.nix_errors())
         errors.extend(self.ci_errors(catalog))
         return errors
 
@@ -130,6 +132,10 @@ class BuildArtifacts:
             return ["CI must use the build pipeline script instead of hardcoded circuits release"]
         return []
 
+    def nix_errors(self) -> list[str]:
+        flake_text = self.path(Path("flake.nix")).read_text(encoding="utf-8")
+        return circuit_nix_hash_errors(flake_text)
+
     def load_toml(self, relative: Path) -> dict[str, Any]:
         with self.path(relative).open("rb") as handle:
             return tomllib.load(handle)
@@ -147,7 +153,13 @@ def catalog_shape_errors(catalog: dict[str, Any]) -> list[str]:
         errors.append("circuits.release must include the leading v")
     if not circuits.get("repo"):
         errors.append("circuits.repo is required")
-    errors.extend(target_errors("circuits.targets", circuits.get("targets"), ("os", "arch", "hash")))
+    errors.extend(
+        target_errors(
+            "circuits.targets",
+            circuits.get("targets"),
+            ("os", "arch", "archiveHash", "sourceHash"),
+        )
+    )
 
     rapidsnark = catalog.get("rapidsnark")
     if not isinstance(rapidsnark, dict):
@@ -167,6 +179,17 @@ def catalog_shape_errors(catalog: dict[str, Any]) -> list[str]:
             if not lez.get(key):
                 errors.append(f"lez.{key} is required")
     return errors
+
+
+def circuit_nix_hash_errors(flake_text: str) -> list[str]:
+    start = flake_text.find("mkCircuitsArtifact = pkgs:")
+    end = flake_text.find("mkCircuitBuildContext", start)
+    if start < 0 or end < 0:
+        return ["flake.nix must define the circuit artifact fetchzip"]
+    artifact_block = flake_text[start:end]
+    if "hash = target.sourceHash;" not in artifact_block:
+        return ["flake.nix circuit fetchzip must use target.sourceHash"]
+    return []
 
 
 def target_errors(label: str, targets: object, required_keys: tuple[str, ...]) -> list[str]:

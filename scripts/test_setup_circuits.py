@@ -27,6 +27,8 @@ def load_module():
 
 setup_circuits = load_module()
 
+import build_artifacts
+
 
 class DecodeSriTests(unittest.TestCase):
     def test_valid_sri(self) -> None:
@@ -71,9 +73,9 @@ class SetupCircuitsTests(unittest.TestCase):
 
             setup_circuits.setup_circuits(
                 release="v0.5.3",
-                target={"os": "linux", "arch": "x86_64", "hash": sri},
+                target={"os": "linux", "arch": "x86_64"},
                 artifact="circuits.tar.gz",
-                expected_hash=sri,
+                expected_archive_hash=sri,
                 url="https://example.test/circuits.tar.gz",
                 install_dir=install_dir,
                 cache_dir=cache_dir,
@@ -81,7 +83,7 @@ class SetupCircuitsTests(unittest.TestCase):
             self.assertTrue((install_dir / "proof.bin").is_file())
             marker = json.loads((install_dir / setup_circuits.MARKER_NAME).read_text(encoding="utf-8"))
             self.assertEqual(marker["release"], "v0.5.3")
-            self.assertEqual(marker["hash"], sri)
+            self.assertEqual(marker["archiveHash"], sri)
             self.assertEqual(marker["artifact"], "circuits.tar.gz")
 
     def test_hash_mismatch(self) -> None:
@@ -95,9 +97,9 @@ class SetupCircuitsTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 setup_circuits.setup_circuits(
                     release="v0.5.3",
-                    target={"os": "linux", "arch": "x86_64", "hash": wrong},
+                    target={"os": "linux", "arch": "x86_64"},
                     artifact="circuits.tar.gz",
-                    expected_hash=wrong,
+                    expected_archive_hash=wrong,
                     url="https://example.test/circuits.tar.gz",
                     install_dir=base / "install",
                     cache_dir=cache_dir,
@@ -113,9 +115,9 @@ class SetupCircuitsTests(unittest.TestCase):
             (cache_dir / "circuits.tar.gz").write_bytes(data)
             kwargs = dict(
                 release="v0.5.3",
-                target={"os": "linux", "arch": "x86_64", "hash": sri},
+                target={"os": "linux", "arch": "x86_64"},
                 artifact="circuits.tar.gz",
-                expected_hash=sri,
+                expected_archive_hash=sri,
                 url="https://example.test/circuits.tar.gz",
                 install_dir=install_dir,
                 cache_dir=cache_dir,
@@ -140,7 +142,7 @@ class SetupCircuitsTests(unittest.TestCase):
                         "release": "v0.0.1",
                         "platform": {"os": "linux", "arch": "x86_64"},
                         "artifact": "old.tar.gz",
-                        "hash": "sha256-" + base64.b64encode(b"0" * 32).decode("ascii"),
+                        "archiveHash": "sha256-" + base64.b64encode(b"0" * 32).decode("ascii"),
                     }
                 ),
                 encoding="utf-8",
@@ -150,14 +152,105 @@ class SetupCircuitsTests(unittest.TestCase):
             (cache_dir / "circuits.tar.gz").write_bytes(data)
             setup_circuits.setup_circuits(
                 release="v0.5.3",
-                target={"os": "linux", "arch": "x86_64", "hash": sri},
+                target={"os": "linux", "arch": "x86_64"},
                 artifact="circuits.tar.gz",
-                expected_hash=sri,
+                expected_archive_hash=sri,
                 url="https://example.test/circuits.tar.gz",
                 install_dir=install_dir,
                 cache_dir=cache_dir,
             )
             self.assertEqual((install_dir / "proof.bin").read_bytes(), b"fresh")
+
+    def test_main_uses_archive_hash(self) -> None:
+        target = {
+            "os": "linux",
+            "arch": "x86_64",
+            "archiveHash": "sha256-archive",
+            "sourceHash": "sha256-source",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                mock.patch.object(setup_circuits, "load_catalog", return_value={}),
+                mock.patch.object(setup_circuits, "circuits_release", return_value="v0.5.3"),
+                mock.patch.object(setup_circuits, "current_target", return_value=target),
+                mock.patch.object(setup_circuits, "circuit_artifact_name", return_value="circuits.tar.gz"),
+                mock.patch.object(setup_circuits, "circuit_artifact_url", return_value="https://example.test/circuits.tar.gz"),
+                mock.patch.object(setup_circuits, "setup_circuits") as install,
+            ):
+                self.assertEqual(
+                    setup_circuits.main(
+                        [
+                            "--install-dir",
+                            str(root / "install"),
+                            "--cache-dir",
+                            str(root / "cache"),
+                        ]
+                    ),
+                    0,
+                )
+
+        self.assertEqual(install.call_args.kwargs["expected_archive_hash"], target["archiveHash"])
+
+
+class BuildArtifactCatalogTests(unittest.TestCase):
+    def catalog(self) -> dict:
+        return {
+            "circuits": {
+                "repo": "example/circuits",
+                "release": "v0.5.3",
+                "targets": {
+                    "x86_64-linux": {
+                        "os": "linux",
+                        "arch": "x86_64",
+                        "archiveHash": "sha256-archive",
+                        "sourceHash": "sha256-source",
+                    }
+                },
+            },
+            "rapidsnark": {
+                "version": "0.0.8",
+                "cargoRev": "revision",
+                "targets": {"x86_64-linux": {"url": "https://example.test/rapidsnark.zip", "hash": "sha256-hash"}},
+            },
+            "lez": {
+                "repo": "example/lez",
+                "cargoTag": "v0.2.0",
+                "revision": "revision",
+                "sourceHash": "sha256-source",
+            },
+        }
+
+    def test_target_exposes_archive_and_source_hashes(self) -> None:
+        target = build_artifacts.circuit_target_by_platform(self.catalog(), "linux", "x86_64")
+        self.assertEqual(target["archiveHash"], "sha256-archive")
+        self.assertEqual(target["sourceHash"], "sha256-source")
+
+    def test_target_requires_both_hash_domains(self) -> None:
+        for key in ("archiveHash", "sourceHash"):
+            with self.subTest(key=key):
+                catalog = self.catalog()
+                del catalog["circuits"]["targets"]["x86_64-linux"][key]
+                self.assertIn(
+                    f"circuits.targets.x86_64-linux.{key} is required",
+                    build_artifacts.catalog_shape_errors(catalog),
+                )
+
+    def test_nix_circuit_fetch_requires_source_hash(self) -> None:
+        source_hash = """
+            mkCircuitsArtifact = pkgs:
+              pkgs.fetchzip {
+                hash = target.sourceHash;
+              };
+            mkCircuitBuildContext = pkgs: {};
+        """
+        archive_hash = source_hash.replace("target.sourceHash", "target.archiveHash")
+
+        self.assertEqual(build_artifacts.circuit_nix_hash_errors(source_hash), [])
+        self.assertEqual(
+            build_artifacts.circuit_nix_hash_errors(archive_hash),
+            ["flake.nix circuit fetchzip must use target.sourceHash"],
+        )
 
 
 if __name__ == "__main__":

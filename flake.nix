@@ -139,7 +139,7 @@
         in
         pkgs.fetchzip {
           url = "https://github.com/logos-blockchain/logos-blockchain-circuits/releases/download/${circuitsRelease}/logos-blockchain-circuits-${circuitsRelease}-${target.os}-${target.arch}.tar.gz";
-          hash = target.hash;
+          hash = target.sourceHash;
         };
 
       mkCircuitBuildContext = pkgs: { includeLogosBlockchainCircuits ? false }:
