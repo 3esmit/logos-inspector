@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -106,6 +106,92 @@ pub(crate) const fn managed_lifecycle_event_signature(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StorageLifecycleState {
+    NotInitialized,
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+}
+
+impl StorageLifecycleState {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotInitialized => "not_initialized",
+            Self::Stopped => "stopped",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn liveness(self) -> Option<bool> {
+        match self {
+            Self::NotInitialized | Self::Stopped => Some(false),
+            Self::Running => Some(true),
+            Self::Starting | Self::Stopping => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StorageLifecycleStatus {
+    initialized: bool,
+    state: StorageLifecycleState,
+}
+
+impl StorageLifecycleStatus {
+    #[must_use]
+    pub(crate) const fn initialized(self) -> bool {
+        self.initialized
+    }
+
+    #[must_use]
+    pub(crate) const fn state(self) -> StorageLifecycleState {
+        self.state
+    }
+
+    #[must_use]
+    pub(crate) const fn liveness(self) -> Option<bool> {
+        self.state.liveness()
+    }
+}
+
+pub(crate) fn managed_lifecycle_status(value: &Value) -> Result<StorageLifecycleStatus> {
+    let value = match value {
+        Value::String(text) => serde_json::from_str(text)
+            .context("storage lifecycleStatus response is not valid JSON")?,
+        value => value.clone(),
+    };
+    let payload: StorageLifecycleStatusPayload = serde_json::from_value(value)
+        .context("storage lifecycleStatus response has an invalid shape")?;
+    let state = match payload.state.as_str() {
+        "not_initialized" => StorageLifecycleState::NotInitialized,
+        "stopped" => StorageLifecycleState::Stopped,
+        "starting" => StorageLifecycleState::Starting,
+        "running" => StorageLifecycleState::Running,
+        "stopping" => StorageLifecycleState::Stopping,
+        state => bail!("storage lifecycleStatus returned unknown state `{state}`"),
+    };
+    let expected_initialized = state != StorageLifecycleState::NotInitialized;
+    let expected_running = state == StorageLifecycleState::Running;
+    if payload.initialized != expected_initialized || payload.running != expected_running {
+        bail!(
+            "storage lifecycleStatus state `{}` contradicts initialized={} running={}",
+            state.as_str(),
+            payload.initialized,
+            payload.running
+        );
+    }
+    Ok(StorageLifecycleStatus {
+        initialized: payload.initialized,
+        state,
+    })
+}
+
 pub(crate) fn managed_lifecycle_outcome(
     payload: Option<&Value>,
 ) -> Result<ManagedLifecycleOutcome> {
@@ -133,6 +219,13 @@ struct StorageLifecyclePayload {
     success: bool,
     #[serde(default)]
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageLifecycleStatusPayload {
+    initialized: bool,
+    running: bool,
+    state: String,
 }
 
 const REST_INPUTS: &[AdapterInputPolicy] = &[
@@ -476,6 +569,41 @@ mod tests {
             true,
             "started",
         )
+    }
+
+    #[test]
+    fn storage_lifecycle_status_requires_coherent_module_owned_state() -> Result<()> {
+        let running = managed_lifecycle_status(&json!({
+            "initialized": true,
+            "running": true,
+            "state": "running",
+        }))?;
+        anyhow::ensure!(
+            running.initialized()
+                && running.state() == StorageLifecycleState::Running
+                && running.liveness() == Some(true)
+        );
+
+        let stopped = managed_lifecycle_status(&json!({
+            "initialized": true,
+            "running": false,
+            "state": "stopped",
+        }))?;
+        anyhow::ensure!(
+            stopped.initialized()
+                && stopped.state() == StorageLifecycleState::Stopped
+                && stopped.liveness() == Some(false)
+        );
+
+        let error = managed_lifecycle_status(&json!({
+            "initialized": true,
+            "running": true,
+            "state": "stopped",
+        }))
+        .err()
+        .context("contradictory Storage lifecycle status was accepted")?;
+        anyhow::ensure!(error.to_string().contains("contradicts"));
+        Ok(())
     }
 
     #[test]

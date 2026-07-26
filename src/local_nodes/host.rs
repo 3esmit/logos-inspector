@@ -1,6 +1,6 @@
 use std::{
     fs,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
     time::{Duration, Instant},
 };
@@ -10,10 +10,14 @@ use serde_json::{Value, json};
 
 use crate::{
     modules::logos_core::{
-        BoxedModuleEventSubscription, ModuleCall, ModuleCallTerminated, ModuleTransportClosed,
-        ModuleTransportEvent, ModuleTransportKind, SharedModuleTransport, dispatch_module_call,
+        BoxedModuleEventSubscription, ModuleCall, ModuleCallReply, ModuleCallTerminated,
+        ModuleTransportClosed, ModuleTransportEvent, ModuleTransportKind, SharedModuleTransport,
+        dispatch_module_call, normalize_module_call_value,
     },
-    source_routing::{ManagedModuleCallSpec, ManagedNodeAction},
+    source_routing::{
+        ManagedModuleCallSpec, ManagedNodeAction,
+        storage::{StorageLifecycleState, managed_lifecycle_status},
+    },
     support::{confirmation::ConfirmationPolicy, state_store::config_dir, time::now_millis},
 };
 
@@ -34,7 +38,6 @@ use super::{
 };
 
 const HOST_NODE_KINDS: [NodeKind; 3] = [NodeKind::Bedrock, NodeKind::Storage, NodeKind::Messaging];
-const SERVICE_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 const SERVICE_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HOST_LIFECYCLE_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -209,6 +212,10 @@ async fn observe_node(
         };
     }
 
+    if kind == NodeKind::Storage {
+        return observe_storage_lifecycle(module_transport, &metadata, module).await;
+    }
+
     let Some((method, signature, args)) = liveness_call(kind) else {
         return HostNodeObservation {
             kind,
@@ -274,6 +281,69 @@ async fn observe_node(
                 liveness_error: Some(error.to_string()),
             }
         }
+    }
+}
+
+async fn observe_storage_lifecycle(
+    module_transport: &SharedModuleTransport,
+    metadata: &Value,
+    module: &str,
+) -> HostNodeObservation {
+    const METHOD: &str = "lifecycleStatus";
+    const SIGNATURE: &str = "lifecycleStatus()";
+    if let Err(error) = require_method(metadata, module, METHOD, SIGNATURE) {
+        return HostNodeObservation {
+            kind: NodeKind::Storage,
+            module_available: true,
+            contract_error: Some(error.to_string()),
+            context_initialized: None,
+            liveness: None,
+            liveness_error: None,
+        };
+    }
+    let call = match ModuleCall::new(ModuleTransportKind::Module, module, METHOD, Vec::new()) {
+        Ok(call) => call,
+        Err(error) => {
+            return HostNodeObservation {
+                kind: NodeKind::Storage,
+                module_available: true,
+                contract_error: None,
+                context_initialized: None,
+                liveness: None,
+                liveness_error: Some(error.to_string()),
+            };
+        }
+    };
+    let status = dispatch_module_call(module_transport.as_ref(), call)
+        .await
+        .map(ModuleCallReply::into_value)
+        .and_then(|value| normalize_module_call_value(module, METHOD, value))
+        .and_then(|value| managed_lifecycle_status(&value));
+    match status {
+        Ok(status) => HostNodeObservation {
+            kind: NodeKind::Storage,
+            module_available: true,
+            contract_error: None,
+            context_initialized: Some(status.initialized()),
+            liveness: status.liveness(),
+            liveness_error: match status.state() {
+                StorageLifecycleState::Starting | StorageLifecycleState::Stopping => Some(format!(
+                    "Basecamp Storage module reports `{}`",
+                    status.state().as_str()
+                )),
+                StorageLifecycleState::NotInitialized
+                | StorageLifecycleState::Stopped
+                | StorageLifecycleState::Running => None,
+            },
+        },
+        Err(error) => HostNodeObservation {
+            kind: NodeKind::Storage,
+            module_available: true,
+            contract_error: None,
+            context_initialized: None,
+            liveness: None,
+            liveness_error: Some(error.to_string()),
+        },
     }
 }
 
@@ -369,9 +439,7 @@ fn transition_timeout_detail(
 
 fn service_liveness_at(kind: NodeKind, address: SocketAddr) -> ServiceProbe {
     match kind {
-        NodeKind::Storage => {
-            ServiceProbe::Known(TcpStream::connect_timeout(&address, SERVICE_PROBE_TIMEOUT).is_ok())
-        }
+        NodeKind::Storage => ServiceProbe::Inconclusive("unsupported"),
         NodeKind::Messaging => {
             let health = probe_messaging_health(address);
             health.liveness().map_or_else(
@@ -441,6 +509,12 @@ fn validate_lifecycle_contract(kind: NodeKind, metadata: &Value) -> Result<()> {
         }
     }
     if kind == NodeKind::Storage {
+        require_method(
+            metadata,
+            contract.module_id(),
+            "lifecycleStatus",
+            "lifecycleStatus()",
+        )?;
         let spec = contract
             .call_spec(ManagedNodeAction::Destroy, "")
             .context("Storage has no destroy module call")?;
@@ -481,7 +555,7 @@ fn require_event(metadata: &Value, module: &str, event: &str, signature: &str) -
 fn liveness_call(kind: NodeKind) -> Option<(&'static str, &'static str, Vec<Value>)> {
     match kind {
         NodeKind::Bedrock => Some(("get_cryptarchia_info", "get_cryptarchia_info()", Vec::new())),
-        NodeKind::Storage => Some(("space", "space()", Vec::new())),
+        NodeKind::Storage => None,
         NodeKind::Messaging => Some((
             "getNodeInfo",
             "getNodeInfo(QString)",
@@ -965,10 +1039,10 @@ fn reconcile_observations(
             config.package_path = adapter_for(observation.kind)
                 .managed_contract()
                 .map(|contract| contract.module_id().to_owned());
-            config.lifecycle_state = if observation.liveness == Some(true) {
-                NodeLifecycleState::Running
-            } else {
-                NodeLifecycleState::Stopped
+            config.lifecycle_state = match observation.liveness {
+                Some(true) => NodeLifecycleState::Running,
+                Some(false) => NodeLifecycleState::Stopped,
+                None => NodeLifecycleState::Unknown,
             };
             config.pending_lifecycle_action = None;
             changed = true;
@@ -1012,6 +1086,19 @@ fn reconcile_observations(
             Some(false)
                 if observation.kind == NodeKind::Messaging
                     && config.lifecycle_state == NodeLifecycleState::Running =>
+            {
+                config.lifecycle_state = NodeLifecycleState::Stopped;
+                config.pending_lifecycle_action = None;
+                changed = true;
+            }
+            Some(false)
+                if matches!(observation.kind, NodeKind::Storage | NodeKind::Messaging)
+                    && matches!(
+                        config.lifecycle_state,
+                        NodeLifecycleState::Running
+                            | NodeLifecycleState::Unknown
+                            | NodeLifecycleState::Failed
+                    ) =>
             {
                 config.lifecycle_state = NodeLifecycleState::Stopped;
                 config.pending_lifecycle_action = None;
@@ -1298,6 +1385,7 @@ mod tests {
     struct RecordingHostTransport {
         calls: Arc<Mutex<Vec<ModuleCall>>>,
         event_subscribers: Arc<Mutex<Vec<RecordingEventSubscriber>>>,
+        storage_lifecycle_state: Arc<Mutex<StorageLifecycleState>>,
         reject_storage_initialize: bool,
         emits_lifecycle_events: bool,
         lifecycle_event_success: bool,
@@ -1333,6 +1421,9 @@ mod tests {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 event_subscribers: Arc::new(Mutex::new(Vec::new())),
+                storage_lifecycle_state: Arc::new(Mutex::new(
+                    StorageLifecycleState::NotInitialized,
+                )),
                 reject_storage_initialize: false,
                 emits_lifecycle_events: true,
                 lifecycle_event_success: true,
@@ -1343,13 +1434,8 @@ mod tests {
 
         fn rejecting_storage_initialize() -> Self {
             Self {
-                calls: Arc::new(Mutex::new(Vec::new())),
-                event_subscribers: Arc::new(Mutex::new(Vec::new())),
                 reject_storage_initialize: true,
-                emits_lifecycle_events: true,
-                lifecycle_event_success: true,
-                delivery_node_stopped_signature: Some("nodeStopped(bool,QString,int)"),
-                native_events_ready: true,
+                ..Self::new()
             }
         }
 
@@ -1386,6 +1472,30 @@ mod tests {
                 .lock()
                 .map(|calls| calls.clone())
                 .map_err(|_| anyhow::anyhow!("recording call lock is poisoned"))
+        }
+
+        fn storage_lifecycle_status(&self) -> Result<ModuleCallReply> {
+            let state = *self
+                .storage_lifecycle_state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording Storage lifecycle lock is poisoned"))?;
+            Ok(ModuleCallReply::new(
+                ModuleTransportKind::Module,
+                json!({
+                    "initialized": state != StorageLifecycleState::NotInitialized,
+                    "running": state == StorageLifecycleState::Running,
+                    "state": state.as_str(),
+                }),
+            ))
+        }
+
+        fn set_storage_lifecycle_state(&self, state: StorageLifecycleState) -> Result<()> {
+            *self
+                .storage_lifecycle_state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording Storage lifecycle lock is poisoned"))? =
+                state;
+            Ok(())
         }
 
         fn publish_lifecycle_event(&self, module: &str, event: &str) {
@@ -1431,6 +1541,7 @@ mod tests {
 
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
             let reject_storage_initialize = self.reject_storage_initialize;
+            let mut storage_lifecycle_state = None;
             let lifecycle_event = match (call.module(), call.method()) {
                 ("delivery_module", "start") => Some("nodeStarted"),
                 ("delivery_module", "stop") => Some("nodeStopped"),
@@ -1442,12 +1553,41 @@ mod tests {
                 .calls
                 .lock()
                 .map_err(|_| anyhow::anyhow!("recording call lock is poisoned"))
-                .map(|mut calls| {
+                .and_then(|mut calls| {
                     calls.push(call.clone());
                     match (call.module(), call.method()) {
                         ("storage_module", "init") if reject_storage_initialize => Ok(
                             ModuleCallReply::new(ModuleTransportKind::Module, json!(false)),
                         ),
+                        ("storage_module", "init") => {
+                            storage_lifecycle_state = Some(StorageLifecycleState::Stopped);
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!(true),
+                            ))
+                        }
+                        ("storage_module", "start") => {
+                            storage_lifecycle_state = Some(StorageLifecycleState::Running);
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!(true),
+                            ))
+                        }
+                        ("storage_module", "stop") => {
+                            storage_lifecycle_state = Some(StorageLifecycleState::Stopped);
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!(true),
+                            ))
+                        }
+                        ("storage_module", "destroy") => {
+                            storage_lifecycle_state = Some(StorageLifecycleState::NotInitialized);
+                            Ok(ModuleCallReply::new(
+                                ModuleTransportKind::Module,
+                                json!(true),
+                            ))
+                        }
+                        ("storage_module", "lifecycleStatus") => self.storage_lifecycle_status(),
                         ("blockchain_module", "get_cryptarchia_info")
                             if calls.iter().any(|candidate| {
                                 candidate.module() == "blockchain_module"
@@ -1492,13 +1632,19 @@ mod tests {
                             json!(true),
                         )),
                     }
+                })
+                .and_then(|reply| {
+                    if let Some(state) = storage_lifecycle_state {
+                        self.set_storage_lifecycle_state(state)?;
+                    }
+                    Ok(reply)
                 });
             if result.is_ok()
                 && let Some(event) = lifecycle_event
             {
                 self.publish_lifecycle_event(call.module(), event);
             }
-            Box::pin(async move { result? })
+            Box::pin(async move { result })
         }
 
         fn subscribe_module_event(
@@ -1541,6 +1687,7 @@ mod tests {
                 json!({"name":"start","signature":"start()","isInvokable":true}),
                 json!({"name":"stop","signature":"stop()","isInvokable":true}),
                 json!({"name":"destroy","signature":"destroy()","isInvokable":true}),
+                json!({"name":"lifecycleStatus","signature":"lifecycleStatus()","isInvokable":true}),
                 json!({"name":"space","signature":"space()","isInvokable":true}),
             ],
             "delivery_module" => vec![
@@ -1567,6 +1714,22 @@ mod tests {
             _ => Vec::new(),
         };
         json!({"name":module,"methods":methods,"events":events})
+    }
+
+    #[test]
+    fn basecamp_storage_requires_authoritative_lifecycle_status() -> Result<()> {
+        let mut metadata = module_metadata("storage_module", Some("nodeStopped(bool,QString,int)"));
+        metadata
+            .get_mut("methods")
+            .and_then(Value::as_array_mut)
+            .context("Storage metadata has no method list")?
+            .retain(|method| method.get("name").and_then(Value::as_str) != Some("lifecycleStatus"));
+
+        let error = validate_lifecycle_contract(NodeKind::Storage, &metadata)
+            .err()
+            .context("Storage contract accepted a module without lifecycleStatus()")?;
+        anyhow::ensure!(error.to_string().contains("lifecycleStatus()"));
+        Ok(())
     }
 
     fn initialize_request(kind: NodeKind) -> LocalNodeActionRequest {
@@ -2282,28 +2445,28 @@ mod tests {
         let address = listener.local_addr()?;
         let directory = tempfile::tempdir()?;
         let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingHostTransport::new();
+        let transport: SharedModuleTransport = Arc::new(transport_impl);
         set_node_config_port(&store, NodeKind::Storage, "listen-port", address.port())?;
-        let config = {
-            let mut state = store.load()?;
-            let storage = state
-                .active_topology_mut("default")
-                .and_then(|topology| {
-                    topology
-                        .nodes
-                        .iter_mut()
-                        .find(|node| node.kind == NodeKind::Storage)
-                })
-                .context("default topology omitted Storage")?;
-            storage.installed = true;
-            let config = storage.clone();
-            store.save(&state)?;
-            config
-        };
-
-        let liveness = service_liveness(NodeKind::Storage, Some(&config)).await?;
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Storage),
+            &transport,
+            &store,
+        )
+        .await?;
+        let report = status_with_store("default", &transport, &store).await?;
         drop(listener);
-        if liveness.observed.is_some() || liveness.detail.is_some() {
-            bail!("Storage status accepted an unowned TCP listener: {liveness:?}");
+        let storage = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("Basecamp report omitted Storage")?;
+        if storage.run_state != "stopped"
+            || storage.available_actions.contains(&NodeAction::Stop)
+            || !storage.available_actions.contains(&NodeAction::Start)
+        {
+            bail!("Storage status accepted an unowned TCP listener: {report:?}");
         }
         Ok(())
     }

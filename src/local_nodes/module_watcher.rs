@@ -19,7 +19,12 @@ use crate::{
         LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransportEvent,
         module_transport_event_from_watch_frame, normalize_module_call_value,
     },
-    source_routing::{ManagedNodeAction, ManagedNodeContract},
+    source_routing::{
+        ManagedNodeAction, ManagedNodeContract,
+        storage::{
+            StorageLifecycleState, managed_lifecycle_status, module_id as storage_module_id,
+        },
+    },
     support::{command_runner::CommandControl, time::now_millis},
 };
 
@@ -42,6 +47,7 @@ const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const NODE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const MESSAGING_CONTEXT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const INDEXER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const STORAGE_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
@@ -64,7 +70,6 @@ const DELIVERY_NATIVE_EVENTS: [&str; 5] = [
     "messageReceived",
     "connectionStateChanged",
 ];
-const STORAGE_LISTEN_PORT: u16 = 8091;
 const INDEXER_WATCHER_MODULE: &str = "lez_indexer_module";
 const SEQUENCER_WATCHER_MODULE: &str = "sequencer_service";
 
@@ -372,6 +377,7 @@ struct NodeLivenessProbe {
     module: &'static str,
     event_route: LifecycleEventRoute,
     requires_module_context: bool,
+    module_context_initialized: Option<bool>,
     process_backed: bool,
     module_availability: ModuleAvailability,
     alive: bool,
@@ -407,6 +413,15 @@ enum ModuleAvailability {
 enum IndexerModuleHealth {
     Running(IndexerStatusObservation),
     Stopped,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageModuleHealth {
+    NotInitialized,
+    Stopped,
+    Running,
+    Transitioning(StorageLifecycleState),
     Unknown,
 }
 
@@ -1343,6 +1358,7 @@ fn observe_modules(
     let mut probes =
         collect_liveness_probes(state, &loaded_modules, daemon != DaemonState::Unavailable);
     if local_runtime.is_some() {
+        reconcile_storage_liveness(&mut probes, &runtime, cancellation);
         reconcile_messaging_liveness(&mut probes, &runtime, cancellation);
         reconcile_indexer_liveness(&mut probes, &runtime, cancellation);
     }
@@ -1410,6 +1426,91 @@ fn reconcile_messaging_liveness(
         match probe_messaging_context(runtime, control) {
             MessagingContextProbe::Available => {}
             context => apply_messaging_context_probe(probe, context),
+        }
+    }
+}
+
+fn reconcile_storage_liveness(
+    probes: &mut [NodeLivenessProbe],
+    runtime: &LogoscoreCliRuntime,
+    cancellation: &CancellationToken,
+) {
+    if !probes.iter().any(|probe| {
+        probe.kind == NodeKind::Storage && probe.module_availability == ModuleAvailability::Loaded
+    }) {
+        return;
+    }
+    let now = Instant::now();
+    let deadline = now.checked_add(STORAGE_STATUS_PROBE_TIMEOUT).unwrap_or(now);
+    let control = CommandControl::new(cancellation.clone(), deadline);
+    let module = storage_module_id();
+    let health = runtime
+        .call_controlled(module, "lifecycleStatus", &[], control)
+        .and_then(|output| normalize_module_call_value(module, "lifecycleStatus", output.value))
+        .map_or(StorageModuleHealth::Unknown, |value| {
+            storage_module_health(&value)
+        });
+    for probe in probes.iter_mut().filter(|probe| {
+        probe.kind == NodeKind::Storage && probe.module_availability == ModuleAvailability::Loaded
+    }) {
+        apply_storage_module_health(probe, health);
+    }
+}
+
+fn storage_module_health(value: &Value) -> StorageModuleHealth {
+    let Ok(status) = managed_lifecycle_status(value) else {
+        return StorageModuleHealth::Unknown;
+    };
+    match status.state() {
+        StorageLifecycleState::NotInitialized => StorageModuleHealth::NotInitialized,
+        StorageLifecycleState::Stopped => StorageModuleHealth::Stopped,
+        StorageLifecycleState::Running => StorageModuleHealth::Running,
+        state @ (StorageLifecycleState::Starting | StorageLifecycleState::Stopping) => {
+            StorageModuleHealth::Transitioning(state)
+        }
+    }
+}
+
+fn apply_storage_module_health(probe: &mut NodeLivenessProbe, health: StorageModuleHealth) {
+    match health {
+        StorageModuleHealth::Running => {
+            probe.alive = true;
+            probe.liveness_known = true;
+            probe.unavailable_detail = None;
+            probe.module_context_initialized = Some(true);
+        }
+        StorageModuleHealth::NotInitialized => {
+            probe.alive = false;
+            probe.liveness_known = true;
+            probe.unavailable_detail = Some("Storage module context is not initialized");
+            probe.module_context_initialized = Some(false);
+        }
+        StorageModuleHealth::Stopped => {
+            probe.alive = false;
+            probe.liveness_known = true;
+            probe.unavailable_detail = Some("Storage module reports no running Storage node");
+            probe.module_context_initialized = Some(true);
+        }
+        StorageModuleHealth::Transitioning(state) => {
+            probe.alive = false;
+            probe.liveness_known = false;
+            probe.unavailable_detail = Some(match state {
+                StorageLifecycleState::Starting => "Storage module reports `starting`",
+                StorageLifecycleState::Stopping => "Storage module reports `stopping`",
+                StorageLifecycleState::NotInitialized
+                | StorageLifecycleState::Stopped
+                | StorageLifecycleState::Running => {
+                    "Storage module lifecycle status could not be verified"
+                }
+            });
+            probe.module_context_initialized = Some(true);
+        }
+        StorageModuleHealth::Unknown => {
+            probe.alive = false;
+            probe.liveness_known = false;
+            probe.unavailable_detail =
+                Some("Storage module lifecycle status could not be verified");
+            probe.module_context_initialized = None;
         }
     }
 }
@@ -1660,6 +1761,12 @@ fn liveness_probe(
             false,
             Some("Messaging lifecycle requires managed REST health verification"),
         )
+    } else if node.kind == NodeKind::Storage {
+        (
+            false,
+            false,
+            Some("Storage lifecycle requires managed module status verification"),
+        )
     } else if node.kind == NodeKind::Indexer {
         (
             false,
@@ -1678,6 +1785,7 @@ fn liveness_probe(
         module,
         event_route,
         requires_module_context,
+        module_context_initialized: None,
         process_backed,
         module_availability: if module_status_known && requires_module_context {
             if loaded_modules.contains(module) {
@@ -1718,17 +1826,17 @@ fn lifecycle_event_route(kind: NodeKind) -> Option<(&'static str, LifecycleEvent
     }
 }
 
-fn liveness_port(node: &LocalNodeConfigRecord) -> Option<u16> {
-    liveness_port_for_kind(node.kind, node.port)
-}
-
 fn liveness_port_for_kind(kind: NodeKind, configured_port: Option<u16>) -> Option<u16> {
     match kind {
-        NodeKind::Storage => Some(STORAGE_LISTEN_PORT),
-        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer | NodeKind::Messaging => {
+        NodeKind::Bedrock | NodeKind::Messaging => {
             configured_port.or_else(|| adapter_for(kind).default_port())
         }
+        NodeKind::Sequencer | NodeKind::Indexer | NodeKind::Storage => None,
     }
+}
+
+fn liveness_port(node: &LocalNodeConfigRecord) -> Option<u16> {
+    liveness_port_for_kind(node.kind, node.port)
 }
 
 fn tcp_port_is_open(port: u16) -> bool {
@@ -1742,6 +1850,7 @@ fn apply_liveness_observation(
 ) -> Result<(bool, Vec<ModuleTransportEvent>)> {
     let mut changed_records = BTreeSet::new();
     let mut accepted_record_versions = BTreeSet::new();
+    let mut cleared_module_contexts = BTreeSet::new();
     let mut events = Vec::new();
     let observed_at = now_millis();
     for probe in probes {
@@ -1762,6 +1871,16 @@ fn apply_liveness_observation(
         let Some(node) = record.nodes.iter_mut().find(|node| node.kind == probe.kind) else {
             continue;
         };
+        if probe.kind == NodeKind::Storage
+            && probe.module_context_initialized == Some(false)
+            && node.installed
+        {
+            clear_observed_module_context(node);
+            record.updated_at = observed_at;
+            changed_records.insert(record.id.clone());
+            cleared_module_contexts.insert(probe.kind);
+            continue;
+        }
         let indexer_status_changed = apply_indexer_status_observation(node, probe);
         let confirmation_timed_out = observed_at.saturating_sub(probe.record_updated_at)
             >= LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS;
@@ -1955,7 +2074,21 @@ fn apply_liveness_observation(
         };
         write_devnet_manifest(record)?;
     }
+    for kind in cleared_module_contexts {
+        state.clear_module_context_topology(kind);
+    }
     Ok((changed, events))
+}
+
+fn clear_observed_module_context(node: &mut LocalNodeConfigRecord) {
+    node.installed = false;
+    node.package_path = None;
+    node.package_version = None;
+    node.package_root_hash = None;
+    node.module_path = None;
+    node.process_id = None;
+    node.lifecycle_state = NodeLifecycleState::NotInitialized;
+    node.pending_lifecycle_action = None;
 }
 
 fn apply_indexer_status_observation(
@@ -2248,6 +2381,7 @@ mod tests {
             module,
             event_route,
             requires_module_context: adapter_for(kind).managed_contract().is_some(),
+            module_context_initialized: None,
             process_backed: matches!(
                 adapter_for(kind).lifecycle(),
                 NodeLifecycle::RegisteredProcess { .. }
@@ -2619,6 +2753,98 @@ mod tests {
                 && node.indexer_state.as_deref() == Some("syncing")
                 && node.indexer_head.as_deref() == Some("42")
                 && node.indexer_error.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_module_status_confirms_lifecycle_without_tcp_port() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Storage,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        only_node_mut(&mut state)?.port = Some(8091);
+        let mut probes = collect_liveness_probes(
+            &state,
+            &BTreeSet::from([storage_module_id().to_owned()]),
+            true,
+        );
+        let probe = probes.first_mut().context("missing Storage module probe")?;
+        anyhow::ensure!(
+            !probe.alive
+                && !probe.liveness_known
+                && probe.unavailable_detail
+                    == Some("Storage lifecycle requires managed module status verification")
+        );
+        apply_storage_module_health(
+            probe,
+            storage_module_health(&json!({
+                "initialized": true,
+                "running": true,
+                "state": "running",
+            })),
+        );
+
+        let (changed, events) = apply_liveness_observation(&mut state, &probes)?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        let event = only_event(&events)?;
+        anyhow::ensure!(event.module() == storage_module_id() && event.event() == "storageStart");
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Running
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_module_status_rejects_incoherent_payload() {
+        assert_eq!(
+            storage_module_health(&json!({
+                "initialized": true,
+                "running": true,
+                "state": "stopped",
+            })),
+            StorageModuleHealth::Unknown
+        );
+    }
+
+    #[test]
+    fn storage_module_status_clears_an_absent_module_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Storage,
+            NodeLifecycleState::Running,
+            None,
+        );
+        only_node_mut(&mut state)?.package_path = Some("storage_module".to_owned());
+        let mut probes = collect_liveness_probes(
+            &state,
+            &BTreeSet::from([storage_module_id().to_owned()]),
+            true,
+        );
+        let probe = probes.first_mut().context("missing Storage module probe")?;
+        apply_storage_module_health(probe, StorageModuleHealth::NotInitialized);
+
+        let (changed, events) = apply_liveness_observation(&mut state, &probes)?;
+
+        anyhow::ensure!(changed && events.is_empty());
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            !node.installed
+                && node.package_path.is_none()
+                && node.lifecycle_state == NodeLifecycleState::NotInitialized
+                && node.pending_lifecycle_action.is_none()
+        );
+        anyhow::ensure!(
+            state
+                .module_context_topology_id(NodeKind::Storage)
+                .is_none()
         );
         Ok(())
     }
