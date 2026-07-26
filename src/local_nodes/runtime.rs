@@ -1333,6 +1333,28 @@ fn canonical_directory(requested: Option<&str>) -> Result<String> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn write_executable_script(path: &std::path::Path, script: impl AsRef<[u8]>) -> Result<()> {
+        use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_ref())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
+    }
     use serde_json::json;
 
     fn attached_profile(
@@ -1461,11 +1483,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn controlled_readiness_retries_not_configured_until_runtime_is_ready() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let binary = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &binary,
             r#"#!/bin/sh
 marker="$0.calls"
@@ -1477,9 +1497,6 @@ fi
 printf '%s\n' '{"daemon":{"status":"running"}}'
 "#,
         )?;
-        let mut permissions = fs::metadata(&binary)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&binary, permissions)?;
         let profile = LogoscoreRuntimeProfile::create_or_restart(
             directory.path(),
             None,
@@ -1519,11 +1536,9 @@ printf '%s\n' '{"daemon":{"status":"running"}}'
     #[cfg(unix)]
     #[test]
     fn readiness_wait_accepts_delayed_cli_status_with_supplied_timeout() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let binary = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &binary,
             r#"#!/bin/sh
 marker="$0.calls"
@@ -1539,18 +1554,27 @@ fi
 printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
 "#,
         )?;
-        let mut permissions = fs::metadata(&binary)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&binary, permissions)?;
 
         let mut profile = attached_profile(None, None);
         profile.binary_path = binary.display().to_string();
-        profile
-            .wait_until_ready_with_timeout(Duration::from_millis(50))
-            .expect_err("short readiness budget unexpectedly accepted delayed CLI status");
+        anyhow::ensure!(
+            profile
+                .wait_until_ready_with_timeout(Duration::from_millis(50))
+                .is_err(),
+            "short readiness budget unexpectedly accepted delayed CLI status"
+        );
 
-        fs::remove_file(binary.with_extension("calls"))?;
-        profile.wait_until_ready_with_timeout(Duration::from_millis(500))?;
+        fs::write(binary.with_extension("calls"), "")?;
+        // The fixture requires three independent CLI probes. Leave enough room
+        // for the shared process budget to schedule them under full-suite load.
+        profile.wait_until_ready_with_timeout(Duration::from_secs(2))?;
+        let calls = fs::read_to_string(binary.with_extension("calls"))?
+            .lines()
+            .count();
+        anyhow::ensure!(
+            calls == 3,
+            "delayed readiness made {calls} status probes instead of retrying twice"
+        );
         Ok(())
     }
 
@@ -1856,11 +1880,9 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
     #[cfg(unix)]
     #[test]
     fn proven_local_discovery_reuses_a_fresh_status_snapshot() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let binary = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &binary,
             r#"#!/bin/sh
 set -eu
@@ -1876,9 +1898,6 @@ fi
 exit 9
 "#,
         )?;
-        let mut permissions = fs::metadata(&binary)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&binary, permissions)?;
 
         let binary_path = binary.display().to_string();
         let config_dir = directory.path().display().to_string();
@@ -1907,16 +1926,12 @@ exit 9
     #[cfg(unix)]
     #[test]
     fn attached_module_install_requires_a_fresh_liveness_probe() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let binary = directory.path().join("logoscore");
         let modules_dir = directory.path().join("modules");
         fs::create_dir_all(&modules_dir)?;
-        fs::write(&binary, "#!/bin/sh\nexit 9\n")?;
-        let mut permissions = fs::metadata(&binary)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&binary, permissions.clone())?;
+        write_executable_script(&binary, "#!/bin/sh\nexit 9\n")?;
+        let permissions = fs::metadata(&binary)?.permissions();
 
         let mut profile = attached_profile(None, None);
         profile.binary_path = binary.display().to_string();

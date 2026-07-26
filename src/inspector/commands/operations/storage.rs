@@ -1130,35 +1130,34 @@ mod tests {
         watch_started: PathBuf,
         cancel_ack: PathBuf,
         cancel_attempts: PathBuf,
-        watch_stopped: PathBuf,
+        watch_pid: PathBuf,
         staging_path: PathBuf,
     }
 
     #[cfg(unix)]
     impl CliBackupCancelFixture {
         fn new() -> Result<Self> {
-            Self::with_behavior(false, false, false)
+            Self::with_behavior(false, false, false, false)
         }
 
         fn cleanup_unknown() -> Result<Self> {
-            Self::with_behavior(true, true, false)
+            Self::with_behavior(true, true, false, false)
         }
 
         fn cancellation_cleanup_unknown() -> Result<Self> {
-            Self::with_behavior(false, true, false)
+            Self::with_behavior(false, true, false, true)
         }
 
         fn unsupported_protocol() -> Result<Self> {
-            Self::with_behavior(false, false, true)
+            Self::with_behavior(false, false, true, false)
         }
 
         fn with_behavior(
             malformed_dispatch_reply: bool,
             fail_cancel: bool,
             unsupported_protocol_version: bool,
+            ignore_watch_termination: bool,
         ) -> Result<Self> {
-            use std::os::unix::fs::PermissionsExt as _;
-
             let directory = tempfile::tempdir()?;
             let root = directory.path();
             let program = root.join("logoscore-test");
@@ -1166,12 +1165,13 @@ mod tests {
             let watch_started = root.join("watch-started");
             let cancel_ack = root.join("download-cancel-acknowledged");
             let cancel_attempts = root.join("download-cancel-attempts");
-            let watch_stopped = root.join("watch-stopped");
+            let watch_pid = root.join("watch-pid");
             let staging_path = root.join("staging-path");
             let cid_path = root.join("cid");
             let malformed_dispatch = root.join("malformed-dispatch");
             let cancel_failure = root.join("cancel-failure");
             let unsupported_protocol = root.join("unsupported-protocol");
+            let ignore_watch_termination_path = root.join("ignore-watch-termination");
             if malformed_dispatch_reply {
                 fs::write(&malformed_dispatch, b"malformed")?;
             }
@@ -1181,6 +1181,9 @@ mod tests {
             if unsupported_protocol_version {
                 fs::write(&unsupported_protocol, b"unsupported")?;
             }
+            if ignore_watch_termination {
+                fs::write(&ignore_watch_termination_path, b"ignore")?;
+            }
             let script = format!(
                 "#!/bin/sh\n\
                  if [ \"$1\" = \"--config-dir\" ]; then shift 2; fi\n\
@@ -1188,7 +1191,8 @@ mod tests {
                    list-modules) printf '%s\\n' '[{{\"name\":\"storage_module\",\"status\":\"loaded\"}}]' ;;\n\
                    module-info) printf '%s\\n' '{{\"name\":\"storage_module\",\"methods\":[{{\"isInvokable\":true,\"name\":\"downloadProtocol\",\"signature\":\"downloadProtocol()\"}},{{\"isInvokable\":true,\"name\":\"downloadToUrlV2\",\"signature\":\"downloadToUrlV2(QString,QString,bool,int,QString,int)\"}},{{\"isInvokable\":true,\"name\":\"downloadCancelV2\",\"signature\":\"downloadCancelV2(QString)\"}}],\"events\":[{{\"name\":\"storageDownloadDoneV2\",\"signature\":\"storageDownloadDoneV2(QString)\"}}]}}' ;;\n\
                    watch)\n\
-                     trap 'touch {watch_stopped}; exit 0' TERM INT\n\
+                     if [ -f {ignore_watch_termination} ]; then trap '' TERM INT; else trap 'exit 0' TERM INT; fi\n\
+                     printf '%s' \"$$\" > {watch_pid}\n\
                      touch {watch_started}\n\
                      printf '%s\\n' '{{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDoneV2\"}}'\n\
                      while :; do sleep 0.01; done ;;\n\
@@ -1226,7 +1230,7 @@ mod tests {
                      esac ;;\n\
                    *) exit 8 ;;\n\
                  esac\n",
-                watch_stopped = shell_path(&watch_stopped),
+                watch_pid = shell_path(&watch_pid),
                 watch_started = shell_path(&watch_started),
                 staging_path = shell_path(&staging_path),
                 cid_path = shell_path(&cid_path),
@@ -1236,11 +1240,9 @@ mod tests {
                 malformed_dispatch = shell_path(&malformed_dispatch),
                 cancel_failure = shell_path(&cancel_failure),
                 unsupported_protocol = shell_path(&unsupported_protocol),
+                ignore_watch_termination = shell_path(&ignore_watch_termination_path),
             );
-            fs::write(&program, script)?;
-            let mut permissions = fs::metadata(&program)?.permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&program, permissions)?;
+            write_executable_script(&program, &script)?;
 
             let instance_id = format!(
                 "backup-cancel-test-{}-{}",
@@ -1274,7 +1276,7 @@ mod tests {
                 watch_started,
                 cancel_ack,
                 cancel_attempts,
-                watch_stopped,
+                watch_pid,
                 staging_path,
             })
         }
@@ -1294,6 +1296,26 @@ mod tests {
                 Err(error) => Err(error.into()),
             }
         }
+
+        fn watcher_stopped(&self) -> Result<bool> {
+            use nix::{errno::Errno, sys::signal::killpg, unistd::Pid};
+
+            let pid = match fs::read_to_string(&self.watch_pid) {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.into()),
+            };
+            let pid = match pid.trim().parse::<i32>() {
+                Ok(pid) if pid > 0 => pid,
+                Ok(_) => anyhow::bail!("watch fixture wrote an invalid PID `{pid}`"),
+                Err(error) => return Err(error).context("watch fixture wrote a non-numeric PID"),
+            };
+            match killpg(Pid::from_raw(pid), None) {
+                Err(Errno::ESRCH) => Ok(true),
+                Ok(()) | Err(Errno::EPERM) => Ok(false),
+                Err(error) => Err(error).context("failed to inspect watch fixture process group"),
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -1306,6 +1328,28 @@ mod tests {
     #[cfg(unix)]
     fn shell_path(path: &Path) -> String {
         format!("'{}'", path.display().to_string().replace('\'', "'\"'\"'"))
+    }
+
+    #[cfg(unix)]
+    fn write_executable_script(path: &Path, script: &str) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_bytes())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
     }
 
     #[test]
@@ -1431,7 +1475,7 @@ mod tests {
             &operation_id,
             &staged,
             &fixture.cancel_ack,
-            &fixture.watch_stopped,
+            &fixture,
             SUPERVISOR_TEST_TIMEOUT,
         ))?;
         anyhow::ensure!(
@@ -1495,11 +1539,7 @@ mod tests {
         );
         // cleanup_unconfirmed can surface before watch teardown and staging
         // removal finish under concurrent workspace load.
-        runtime.block_on(wait_for_path_state(
-            &fixture.watch_stopped,
-            true,
-            SUPERVISOR_TEST_TIMEOUT,
-        ))?;
+        runtime.block_on(wait_for_watcher_stop(&fixture, SUPERVISOR_TEST_TIMEOUT))?;
         runtime.block_on(wait_for_path_state(&staged, false, SUPERVISOR_TEST_TIMEOUT))?;
         runtime.block_on(wait_for_cancel_attempts(
             &fixture,
@@ -1576,11 +1616,7 @@ mod tests {
             "cancel cleanup uncertainty reached a terminal state: {operation}"
         );
         // Phase publication can race slightly ahead of local cleanup effects.
-        runtime.block_on(wait_for_path_state(
-            &fixture.watch_stopped,
-            true,
-            SUPERVISOR_TEST_TIMEOUT,
-        ))?;
+        runtime.block_on(wait_for_watcher_stop(&fixture, SUPERVISOR_TEST_TIMEOUT))?;
         runtime.block_on(wait_for_path_state(&staged, false, SUPERVISOR_TEST_TIMEOUT))?;
         runtime.block_on(wait_for_cancel_attempts(
             &fixture,
@@ -1643,7 +1679,7 @@ mod tests {
         anyhow::ensure!(
             fixture.cancel_attempt_count()? == 1
                 && !fixture.cancel_ack.exists()
-                && fixture.watch_stopped.exists()
+                && fixture.watcher_stopped()?
                 && !staged.exists(),
             "deadline cleanup uncertainty did not exhaust known local cleanup"
         );
@@ -1803,7 +1839,7 @@ mod tests {
         operation_id: &str,
         staging: &Path,
         cancel_ack: &Path,
-        watch_stopped: &Path,
+        fixture: &CliBackupCancelFixture,
         timeout: Duration,
     ) -> Result<Value> {
         let deadline = tokio::time::Instant::now()
@@ -1811,7 +1847,7 @@ mod tests {
             .context("CLI canceled-operation wait deadline overflow")?;
         loop {
             let remote_settled_before_status = cancel_ack.exists();
-            let watch_stopped_before_status = watch_stopped.exists();
+            let watch_stopped_before_status = fixture.watcher_stopped()?;
             let staging_removed_before_status = !staging.exists();
             let operation = operations.status(operation_id)?;
             let status = operation
@@ -1876,6 +1912,25 @@ mod tests {
                     path.display(),
                     if expected { "exist" } else { "be removed" }
                 );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_watcher_stop(
+        fixture: &CliBackupCancelFixture,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("watcher-stop wait deadline overflow")?;
+        loop {
+            if fixture.watcher_stopped()? {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("timed out waiting for watch fixture process to stop");
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }

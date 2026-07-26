@@ -259,21 +259,16 @@ fn cli_encrypted_backup_requires_wallet_before_preview_or_apply() -> Result<()> 
 #[cfg(unix)]
 #[test]
 fn cli_rejects_unsafe_backup_cids_before_transport_or_catalog_mutation() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let directory = tempfile::tempdir()?;
     seed_original_state(directory.path())?;
     let fixture = directory.path().join("unsafe-cid-fixture");
     fs::create_dir_all(&fixture)?;
     let invoked = fixture.join("logoscore-invoked");
     let program = fixture.join("logoscore-test");
-    fs::write(
+    write_executable_script(
         &program,
         format!("#!/bin/sh\ntouch {}\nexit 99\n", shell_path(&invoked)),
     )?;
-    let mut permissions = fs::metadata(&program)?.permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&program, permissions)?;
 
     let instance_id = format!("unsafe-cid-test-{}", std::process::id());
     let logoscore_config = fixture.join("logoscore-config");
@@ -356,8 +351,6 @@ fn cli_rejects_unsafe_backup_cids_before_transport_or_catalog_mutation() -> Resu
 #[cfg(unix)]
 #[test]
 fn cli_logoscore_event_download_flows_through_catalog_before_apply() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let directory = tempfile::tempdir()?;
     seed_original_state(directory.path())?;
     let payload = json!({
@@ -421,10 +414,7 @@ fn cli_logoscore_event_download_flows_through_catalog_before_apply() -> Result<(
         staging = shell_path(&staging_path),
         payload = shell_path(&payload_path),
     );
-    fs::write(&program, script)?;
-    let mut permissions = fs::metadata(&program)?.permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&program, permissions)?;
+    write_executable_script(&program, script)?;
 
     let instance_id = format!("cli-backup-event-{}", std::process::id());
     let logoscore_config = fixture.join("logoscore-config");
@@ -676,8 +666,6 @@ fn assert_cli_backup_signal_cleanup(
     label: &str,
     cancel_should_settle: bool,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     use nix::{sys::signal::kill, unistd::Pid};
 
     let directory = tempfile::tempdir()?;
@@ -756,10 +744,7 @@ fn assert_cli_backup_signal_cleanup(
         cancel_failure = shell_path(&cancel_failure),
         trace = shell_path(&trace_path),
     );
-    fs::write(&program, script)?;
-    let mut permissions = fs::metadata(&program)?.permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&program, permissions)?;
+    write_executable_script(&program, script)?;
 
     let instance_id = format!(
         "cli-backup-signal-{}-{cleanup_outcome}-{}",
@@ -1035,6 +1020,28 @@ fn assert_imported_state(base_dir: &Path) -> Result<()> {
 #[cfg(unix)]
 fn shell_path(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\"'\"'"))
+}
+
+#[cfg(unix)]
+fn write_executable_script(path: &Path, script: impl AsRef<[u8]>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("fixture executable has no parent: {}", path.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(script.as_ref())?;
+    let mut permissions = temporary.as_file().metadata()?.permissions();
+    permissions.set_mode(0o700);
+    temporary.as_file().set_permissions(permissions)?;
+    temporary.into_temp_path().persist(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to publish fixture executable `{}`: {}",
+            path.display(),
+            error.error
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

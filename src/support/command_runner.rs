@@ -22,6 +22,8 @@ pub(crate) const MAX_CONCURRENT_COMMANDS: usize = 4;
 const TERMINATION_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 const TERMINATION_RETRY_WINDOW: Duration = Duration::from_millis(250);
 const TERMINATION_REAP_WINDOW: Duration = Duration::from_millis(250);
+const EXECUTABLE_BUSY_RETRY_ATTEMPTS: usize = 5;
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
 static COMMAND_BUDGET: LazyLock<CommandBudget> =
     LazyLock::new(|| CommandBudget::new(MAX_CONCURRENT_COMMANDS));
 static COMMAND_RECOVERY: LazyLock<std::result::Result<mpsc::SyncSender<CommandRecovery>, String>> =
@@ -360,6 +362,45 @@ fn pre_spawn_wait_duration(
     })
 }
 
+/// Starts a command, retrying the transient Unix `ETXTBSY` launch race.
+///
+/// Test and module binaries can be atomically replaced while another command
+/// begins to execute them. Linux rejects that narrow overlap with `ETXTBSY`.
+/// The caller supplies its normal pre-spawn check so cancellation and deadline
+/// contracts remain in force before and after each bounded retry delay.
+pub(crate) fn spawn_command_with_executable_busy_retry<F>(
+    command: &mut Command,
+    deadline: Option<Instant>,
+    mut check_before_spawn: F,
+) -> Result<Child>
+where
+    F: FnMut() -> Result<()>,
+{
+    for attempt in 0..=EXECUTABLE_BUSY_RETRY_ATTEMPTS {
+        check_before_spawn()?;
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == ErrorKind::ExecutableFileBusy
+                    && attempt < EXECUTABLE_BUSY_RETRY_ATTEMPTS =>
+            {
+                let retry_delay = executable_busy_retry_delay(deadline, Instant::now());
+                if !retry_delay.is_zero() {
+                    thread::sleep(retry_delay);
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("the bounded executable-busy retry loop always returns")
+}
+
+fn executable_busy_retry_delay(deadline: Option<Instant>, now: Instant) -> Duration {
+    deadline.map_or(EXECUTABLE_BUSY_RETRY_DELAY, |deadline| {
+        EXECUTABLE_BUSY_RETRY_DELAY.min(deadline.saturating_duration_since(now))
+    })
+}
+
 pub(crate) fn run_command(command: Command, policy: CommandRunPolicy<'_>) -> Result<Output> {
     run_command_inner(command, policy, None)
 }
@@ -435,9 +476,14 @@ where
     let termination_scope = configure_termination_scope(&mut command);
     let capture_setup = CaptureSetup::configure(&mut command, policy.label)?;
     check_pre_spawn_control(&policy, control.as_ref(), relative_deadline)?;
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to run {}", policy.label))?;
+    let retry_deadline = control
+        .as_ref()
+        .map(CommandControl::deadline)
+        .or(relative_deadline);
+    let mut child = spawn_command_with_executable_busy_retry(&mut command, retry_deadline, || {
+        check_pre_spawn_control(&policy, control.as_ref(), relative_deadline)
+    })
+    .with_context(|| format!("failed to run {}", policy.label))?;
     let mut capture = match capture_setup.start(
         &mut child,
         policy.label,
@@ -1497,6 +1543,59 @@ mod tests {
             Ok(_) => bail!("{unexpected_success}"),
             Err(error) => Ok(error),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn executable_file_busy_launch_is_retried_until_writer_closes() -> Result<()> {
+        use std::{fs::OpenOptions, os::unix::fs::PermissionsExt as _};
+
+        let directory = tempfile::tempdir()?;
+        let executable = directory.path().join("busy-executable");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n")?;
+        let mut permissions = fs::metadata(&executable)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&executable, permissions)?;
+
+        let writer = OpenOptions::new().write(true).open(&executable)?;
+        let release_writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            drop(writer);
+        });
+        let result = (|| -> Result<()> {
+            let mut command = Command::new(&executable);
+            let mut child =
+                spawn_command_with_executable_busy_retry(&mut command, None, || Ok(()))?;
+            let status = child.wait()?;
+            if !status.success() {
+                bail!("retried executable exited unsuccessfully: {status}");
+            }
+            Ok(())
+        })();
+        release_writer
+            .join()
+            .map_err(|_| anyhow::anyhow!("executable writer release thread panicked"))?;
+        result
+    }
+
+    #[test]
+    fn executable_busy_retry_delay_respects_deadline() {
+        let now = Instant::now();
+        assert_eq!(
+            executable_busy_retry_delay(Some(now), now),
+            Duration::ZERO,
+            "an expired retry deadline must not sleep"
+        );
+        let deadline = now + Duration::from_millis(1);
+        assert!(
+            executable_busy_retry_delay(Some(deadline), now)
+                <= deadline.saturating_duration_since(now),
+            "retry delay exceeded the remaining deadline"
+        );
+        assert_eq!(
+            executable_busy_retry_delay(None, now),
+            EXECUTABLE_BUSY_RETRY_DELAY
+        );
     }
 
     #[test]

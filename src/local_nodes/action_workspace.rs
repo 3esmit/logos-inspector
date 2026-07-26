@@ -2570,6 +2570,7 @@ mod tests {
     #[cfg(unix)]
     use std::{
         fs,
+        io::Write as _,
         os::unix::{fs::PermissionsExt as _, process::CommandExt as _},
         process::{self, Command},
         thread,
@@ -2595,6 +2596,26 @@ mod tests {
                 let _ignored = stop_process(self.process_id);
             }
         }
+    }
+
+    #[cfg(unix)]
+    fn write_executable_script(path: &Path, script: impl AsRef<[u8]>) -> Result<()> {
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("fixture executable has no parent: {}", path.display())
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(script.as_ref())?;
+        let mut permissions = temporary.as_file().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        temporary.as_file().set_permissions(permissions)?;
+        temporary.into_temp_path().persist(path).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to publish fixture executable `{}`: {}",
+                path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -2899,7 +2920,7 @@ mod tests {
     fn stopped_indexer_context_rebinds_when_another_topology_starts() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -2920,9 +2941,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
         let modules_dir = directory.path().join("modules");
         fs::create_dir_all(&modules_dir)?;
         let mut runtime = LogoscoreRuntimeProfile::create_or_restart(
@@ -3165,7 +3183,7 @@ esac
         // Arrange
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -3188,9 +3206,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
 
         let port = {
             let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -3429,7 +3444,7 @@ esac
     fn first_runtime_start_guards_legacy_messaging_identity_before_context_reset() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 while [ "$#" -gt 0 ]; do
@@ -3453,9 +3468,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
 
         let mut state = LocalNodesState::default_for_config_dir(directory.path());
         ensure_testnet_topology(&mut state)?;
@@ -3554,7 +3566,7 @@ esac
     fn runtime_start_reaps_module_hosts_after_daemon_already_exited() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 while [ "$#" -gt 0 ]; do
@@ -3578,9 +3590,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
 
         let child_path = directory.path().join("module-host.pid");
         let mut daemon_command = Command::new("/bin/sh");
@@ -3706,7 +3715,7 @@ esac
         // Arrange
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -3719,9 +3728,6 @@ if [ "$1" = "stop" ]; then
 fi
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
 
         let child_path = directory.path().join("module-host.pid");
         let mut daemon_command = Command::new("/bin/sh");
@@ -4040,11 +4046,9 @@ fi
     #[cfg(unix)]
     #[test]
     fn messaging_initialize_restarts_crashed_runtime_without_replaying_create() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 config_dir=""
@@ -4107,9 +4111,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
 
         let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             directory.path(),
@@ -4240,7 +4241,7 @@ esac
     ) -> Result<(LocalNodeActionResult, LocalNodesState, Vec<String>)> {
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
-        fs::write(
+        write_executable_script(
             &cli,
             r#"#!/bin/sh
 if [ "$1" = "--config-dir" ]; then
@@ -4294,9 +4295,6 @@ case "$1" in
 esac
 "#,
         )?;
-        let mut permissions = fs::metadata(&cli)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&cli, permissions)?;
 
         let mut runtime = LogoscoreRuntimeProfile::create_or_restart(
             directory.path(),

@@ -3521,14 +3521,24 @@ mod tests {
                 tokio::time::timeout(Duration::from_secs(1), async {
                     loop {
                         let value = supervisor.inner.shared.registry.value(&operation_id)?;
-                        if value.get("status").and_then(Value::as_str) == Some("failed") {
+                        let failed_closed = {
+                            let state = supervisor.inner.shared.state.lock().map_err(|_| {
+                                anyhow::anyhow!("test supervisor state unavailable")
+                            })?;
+                            value.get("status").and_then(Value::as_str) == Some("failed")
+                                && state.phase == SupervisorPhase::Closed
+                                && state.shutdown_error.is_some()
+                                && state.controls.is_empty()
+                                && state.live_tasks.is_empty()
+                        };
+                        if failed_closed {
                             return Ok::<_, anyhow::Error>(value);
                         }
                         tokio::task::yield_now().await;
                     }
                 })
                 .await
-                .context("controller watcher did not terminalize residual operation")?
+                .context("controller watcher did not fail closed")?
             })?;
 
             let value = supervisor.inner.shared.registry.value(&operation_id)?;
