@@ -1105,7 +1105,9 @@ ColumnLayout {
             && release !== null
             && String(release.version || "").length > 0
             && String(release.root_hash || "").length > 0
-            && root.model.actionEnabled("indexer", "install")
+            && root.model.activeNetworkId().length > 0
+            && root.model.nodeByKind("indexer") !== null
+            && !root.model.busy
     }
 
     function packageInstallRuntimeReady() {

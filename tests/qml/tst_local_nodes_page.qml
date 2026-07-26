@@ -349,15 +349,28 @@ Item {
         function test_attached_stopped_runtime_allows_indexer_package_install() {
             const catalog = samplePackageCatalog(null)
             catalog.modules_dir = "/opt/logos-node/modules"
+            const report = attachedServiceReport("stopped")
+            report.nodes[1].available_actions = []
             const page = createPage(
-                attachedServiceReport("stopped"),
+                report,
                 catalog,
                 sampleModuleCatalog([]))
             const indexerInstall = findChild(page, "indexerPackageInstallButton")
             verify(!!indexerInstall, "Indexer package install exists")
+            verify(!state.actionEnabled("indexer", "install"))
             verify(indexerInstall.enabled)
             compare(page.indexerPackageTargetProblem(), "")
             verify(page.moduleTargetDetail().indexOf("service is stopped") >= 0)
+        }
+
+        function test_indexer_package_install_requires_an_active_topology() {
+            const report = sampleReport("stopped")
+            report.active_devnet = null
+            const page = createPage(report, samplePackageCatalog(null), sampleModuleCatalog([]))
+            const indexerInstall = findChild(page, "indexerPackageInstallButton")
+
+            verify(!!indexerInstall, "Indexer package install exists")
+            verify(!indexerInstall.enabled)
         }
 
         function test_module_package_failure_is_visible_in_its_panel() {
