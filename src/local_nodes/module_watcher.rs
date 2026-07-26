@@ -874,14 +874,26 @@ fn ready_module_watch_runtime(
 }
 
 fn module_watch_runtime() -> Result<LogoscoreCliRuntime> {
+    if let Some(runtime) = LogoscoreCliTransport::configured_runtime_from_environment() {
+        return Ok(runtime);
+    }
     let engine = LocalNodeActionEngine::system()?;
     let profile = engine.runtime_profile()?;
     let local = profile
         .as_ref()
         .filter(|profile| profile.is_managed() || profile.is_attached());
-    local
+    let local_runtime = local
         .map(LogoscoreRuntimeProfile::cli_runtime)
-        .transpose()?
+        .transpose()?;
+    resolve_module_watch_runtime(None, local_runtime)
+}
+
+fn resolve_module_watch_runtime(
+    explicitly_configured: Option<LogoscoreCliRuntime>,
+    local_runtime: Option<LogoscoreCliRuntime>,
+) -> Result<LogoscoreCliRuntime> {
+    explicitly_configured
+        .or(local_runtime)
         .map_or_else(|| LogoscoreCliTransport::default().runtime(), Ok)
 }
 
@@ -1301,7 +1313,12 @@ fn observe_modules(
     let runtime = local_runtime
         .map(LogoscoreRuntimeProfile::cli_runtime)
         .transpose()
-        .and_then(|runtime| runtime.map_or_else(|| LogoscoreCliTransport::default().runtime(), Ok));
+        .and_then(|runtime| {
+            resolve_module_watch_runtime(
+                LogoscoreCliTransport::configured_runtime_from_environment(),
+                runtime,
+            )
+        });
     let Ok(runtime) = runtime else {
         return unavailable_observation(state, local_runtime.is_some());
     };
@@ -2169,6 +2186,42 @@ mod tests {
             anyhow::bail!("expected one module event, got {}", events.len());
         };
         Ok(event)
+    }
+
+    #[test]
+    fn module_watch_runtime_prefers_explicit_cli_context() -> Result<()> {
+        let explicit = LogoscoreCliRuntime::managed(
+            "/opt/logoscore-configured".to_owned(),
+            "/var/lib/logoscore-configured".to_owned(),
+        );
+        let discovered = LogoscoreCliRuntime::local(
+            "/opt/logoscore-discovered".to_owned(),
+            "/tmp/logoscore-discovered".to_owned(),
+        );
+
+        let selected = resolve_module_watch_runtime(Some(explicit.clone()), Some(discovered))?;
+
+        anyhow::ensure!(
+            selected == explicit,
+            "module watch discarded the explicitly configured CLI context"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn module_watch_runtime_uses_discovered_context_without_explicit_configuration() -> Result<()> {
+        let discovered = LogoscoreCliRuntime::local(
+            "/opt/logoscore-discovered".to_owned(),
+            "/tmp/logoscore-discovered".to_owned(),
+        );
+
+        let selected = resolve_module_watch_runtime(None, Some(discovered.clone()))?;
+
+        anyhow::ensure!(
+            selected == discovered,
+            "module watch did not retain the discovered local CLI context"
+        );
+        Ok(())
     }
 
     fn first_event_arg(event: &ModuleTransportEvent) -> Result<&Value> {
