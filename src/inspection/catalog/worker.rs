@@ -416,7 +416,6 @@ async fn run_catalog_scan_with_pacer(
                 apply_catalog_page(catalog.clone(), source.as_ref(), snapshot, page, context)
                     .await?;
             made_progress |= snapshot.metadata.catalog_revision != previous_revision;
-            publish_verified(context, snapshot.clone());
             let reached_target = snapshot
                 .traversal
                 .as_ref()
@@ -835,6 +834,8 @@ mod tests {
         call_events: mpsc::UnboundedSender<usize>,
     }
 
+    struct RepairingPageSource;
+
     struct BlockingPacer {
         wait_events: mpsc::UnboundedSender<()>,
     }
@@ -904,6 +905,54 @@ mod tests {
                 Err(super::super::CatalogL1SourceError::InvalidRequest(
                     "paging test does not repair ancestry".to_owned(),
                 ))
+            })
+        }
+    }
+
+    impl CatalogL1Source for RepairingPageSource {
+        fn chain_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1ChainStatus> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "repair-page test does not use chain status".to_owned(),
+                ))
+            })
+        }
+
+        fn time_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1TimeStatus> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "repair-page test does not use time status".to_owned(),
+                ))
+            })
+        }
+
+        fn finalized_range(
+            &self,
+            _request: CatalogL1RangeRequest,
+        ) -> super::super::CatalogL1SourceFuture<'_, CatalogL1RangePage> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "repair-page test does not request ranges".to_owned(),
+                ))
+            })
+        }
+
+        fn block(
+            &self,
+            block_id: String,
+        ) -> super::super::CatalogL1SourceFuture<'_, Option<super::super::CatalogL1Block>> {
+            Box::pin(async move {
+                if block_id == id('7') {
+                    Ok(Some(test_block(7, '7', '5')))
+                } else {
+                    Err(super::super::CatalogL1SourceError::InvalidRequest(
+                        "repair-page test requested an unexpected block".to_owned(),
+                    ))
+                }
             })
         }
     }
@@ -1006,6 +1055,21 @@ mod tests {
                 },
                 "transactions": []
             }),
+        }
+    }
+
+    fn test_page_event(
+        slot: u64,
+        block_id: char,
+        parent_id: char,
+        target: &super::super::CatalogBlockReference,
+    ) -> super::super::CatalogL1BlockEvent {
+        super::super::CatalogL1BlockEvent {
+            block: test_block(slot, block_id, parent_id),
+            snapshot: super::super::CatalogL1ChainSnapshot {
+                tip: target.clone(),
+                lib: target.clone(),
+            },
         }
     }
 
@@ -1135,6 +1199,123 @@ mod tests {
         ensure!(
             matches!(task.await?, Err(ZoneCatalogServiceError::Cancelled)),
             "catalog scan did not stop through the paced cancellation boundary"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catch_up_publishes_each_committed_page_once() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let catalog = Arc::new(ZoneCatalog::create(
+            directory.path().join("catalog.redb"),
+            CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+        )?);
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        let status = super::super::CatalogL1ChainStatus {
+            snapshot: super::super::CatalogL1ChainSnapshot {
+                tip: target.clone(),
+                lib: target,
+            },
+            genesis_id: Some(id('0')),
+        };
+        let (call_events, mut calls) = mpsc::unbounded_channel();
+        let source = Arc::new(PagingSource {
+            status,
+            calls: AtomicUsize::new(0),
+            call_events,
+        });
+        let (context, publication_count) =
+            ZoneCatalogRunContext::test_context_with_publication_count(1);
+        let (wait_events, mut waits) = mpsc::unbounded_channel();
+        let pacer = BlockingPacer { wait_events };
+        let task_context = context.clone();
+        let task = tokio::spawn(async move {
+            run_catalog_scan_with_pacer(catalog.clone(), source, &task_context, &pacer).await
+        });
+
+        ensure!(
+            calls.recv().await == Some(1),
+            "first range page was not requested"
+        );
+        if waits.recv().await.is_none() {
+            bail!("catch-up pacer was not entered: {:?}", task.await?);
+        }
+        ensure!(
+            publication_count.load(Ordering::SeqCst) == 2,
+            "prepared catalog and one committed page must publish once each"
+        );
+        context.cancellation().cancel();
+        ensure!(
+            matches!(task.await?, Err(ZoneCatalogServiceError::Cancelled)),
+            "catalog scan did not stop through the paced cancellation boundary"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn split_and_repair_page_publishes_each_committed_revision_once() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let catalog = Arc::new(ZoneCatalog::create(
+            directory.path().join("catalog.redb"),
+            CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+        )?);
+        let target = super::super::CatalogBlockReference {
+            slot: 10,
+            block_id: id('a'),
+        };
+        let prepared = prepare_catalog_catch_up(
+            &catalog.snapshot()?,
+            target.clone(),
+            CatalogEngineContext::new(1, 101)?,
+        )?
+        .context("catalog preparation should produce a batch")?;
+        let snapshot = catalog.commit_batch(prepared)?;
+        let (context, publication_count) =
+            ZoneCatalogRunContext::test_context_with_publication_count(1);
+        let page = CatalogL1RangePage {
+            events: vec![
+                test_page_event(0, '0', 'f', &target),
+                test_page_event(5, '5', '0', &target),
+                test_page_event(8, '8', '7', &target),
+                test_page_event(10, 'a', '8', &target),
+            ],
+        };
+
+        let committed =
+            apply_catalog_page(catalog, &RepairingPageSource, snapshot, page, &context).await?;
+
+        ensure!(
+            publication_count.load(Ordering::SeqCst) == 2,
+            "split and repair commits must publish once each"
+        );
+        ensure!(
+            committed.metadata.catalog_revision == 3,
+            "split and repair page did not commit both reductions"
+        );
+        ensure!(
+            committed
+                .traversal
+                .as_ref()
+                .and_then(|traversal| traversal.ingestion_cursor.as_ref())
+                == Some(&target),
+            "split and repair page did not reach its target"
+        );
+        ensure!(
+            committed.gaps.is_empty(),
+            "connected repair unexpectedly opened a coverage gap"
         );
         Ok(())
     }
