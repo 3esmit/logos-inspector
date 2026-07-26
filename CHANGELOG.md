@@ -6,6 +6,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0-rc9] - 2026-07-26
+
+### Fixed
+
+- Local Nodes now parses with the Qt 6.9.2 runtime bundled by Basecamp.
+- Release builds keep raw circuit archive digests separate from the unpacked
+  source digests required by Nix.
+
 ## [0.2.0-rc8] - 2026-07-25
 
 ### Added
