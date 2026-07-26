@@ -184,9 +184,10 @@ def main() -> int:
             'test -x "$xcode_developer/usr/bin/xcodebuild"',
             'sudo xcode-select --switch "$xcode_developer"',
             'test "$(xcode-select --print-path)" = "$xcode_developer"',
-            "xcodebuild -help",
-            "grep -F -- '-downloadComponent' >/dev/null",
-            "xcodebuild -downloadComponent metalToolchain",
+            'toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help)"',
+            'case "$toolchain_help" in',
+            "*-downloadComponent*) ;;",
+            "xcodebuild -downloadComponent MetalToolchain",
             "xcrun --sdk macosx --find metal",
             "xcrun --sdk macosx --find metallib",
             "unshare --mount",
@@ -257,9 +258,9 @@ def main() -> int:
             "dependencies, verify the tree, then smoke with the Nix store hidden"
         )
     macos_metal = standalone.find("- name: Select and verify macOS Metal Toolchain")
-    macos_help = standalone.find("xcodebuild -help", macos_metal)
+    macos_help = standalone.find("toolchain_help=", macos_metal)
     macos_download = standalone.find(
-        "xcodebuild -downloadComponent metalToolchain", macos_metal
+        "xcodebuild -downloadComponent MetalToolchain", macos_metal
     )
     macos_metal_binary = standalone.find("xcrun --sdk macosx --find metal", macos_metal)
     macos_metallib_binary = standalone.find(
@@ -279,6 +280,10 @@ def main() -> int:
             "standalone release workflow must select a Metal-capable Xcode, "
             "verify component-download support, install the Metal Toolchain, "
             "and verify metal and metallib before building"
+        )
+    if "xcodebuild -help " + chr(92) in standalone:
+        errors.append(
+            "standalone release workflow must not pipe xcodebuild help into grep under pipefail"
         )
     for name, text in texts.items():
         label = f"{name} release workflow"
