@@ -629,8 +629,8 @@ fn validate_block_reference(reference: &CatalogBlockReference) -> CatalogResult<
 pub(crate) fn validate_hex_id(value: &str, label: &str) -> CatalogResult<()> {
     if value.len() != 64
         || !value
-            .chars()
-            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
     {
         return Err(CatalogError::invalid_input(format!(
             "{label} must be canonical 32-byte hexadecimal text"
@@ -658,4 +658,27 @@ pub(crate) fn validate_local_id(value: &str, label: &str) -> CatalogResult<()> {
         return Err(CatalogError::invalid_input(format!("{label} is invalid")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_hex_id;
+
+    #[test]
+    fn canonical_hex_validation_accepts_only_lowercase_ascii_hex() {
+        let uppercase = "A".repeat(64);
+        let non_ascii = format!("{}é", "a".repeat(62));
+        let non_hex = format!("{}g", "a".repeat(63));
+        let too_short = "a".repeat(63);
+        let too_long = "a".repeat(65);
+
+        for character in "0123456789abcdef".chars() {
+            assert!(validate_hex_id(&character.to_string().repeat(64), "id").is_ok());
+        }
+        assert!(validate_hex_id(&uppercase, "id").is_err());
+        assert!(validate_hex_id(&non_ascii, "id").is_err());
+        assert!(validate_hex_id(&non_hex, "id").is_err());
+        assert!(validate_hex_id(&too_short, "id").is_err());
+        assert!(validate_hex_id(&too_long, "id").is_err());
+    }
 }
