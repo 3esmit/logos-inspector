@@ -17,6 +17,9 @@ ColumnLayout {
     property string title: qsTr("Comments")
     property string expectedAccountId: ""
     property var entityRef: null
+    property bool deliverySourceBootstrapPending: false
+    property bool deliverySourceBootstrapAwaitingCapabilities: false
+    property int deliverySourceBootstrapCapabilityRevision: -1
     readonly property var commentView: model.social.commentsView(topic)
     readonly property var identityView: model.social.identitiesView()
     property string composerIdentityKey: model.social.selectedSocialIdentityKey
@@ -25,14 +28,32 @@ ColumnLayout {
     spacing: root.theme.gap
     Layout.fillWidth: true
 
-    onTopicChanged: Qt.callLater(root.reload)
-    Component.onCompleted: Qt.callLater(root.reload)
+    onTopicChanged: {
+        Qt.callLater(root.ensureDeliverySourceReport)
+        Qt.callLater(root.reload)
+    }
+    Component.onCompleted: {
+        Qt.callLater(root.ensureDeliverySourceReport)
+        Qt.callLater(root.reload)
+    }
 
     Connections {
         target: root.model.social
 
         function onSocialIdentityRevisionChanged() {
             root.composerIdentityKey = root.model.social.selectedSocialIdentityKey
+        }
+    }
+
+    Connections {
+        target: root.model.capabilities
+
+        function onRevisionChanged() {
+            if (!root.deliverySourceBootstrapAwaitingCapabilities) {
+                return
+            }
+            root.deliverySourceBootstrapAwaitingCapabilities = false
+            Qt.callLater(root.reload)
         }
     }
 
@@ -353,6 +374,55 @@ ColumnLayout {
             return
         }
         root.model.social.loadComments(root.topic, true, root.model.social.socialCommentPageSize, root.expectedAccountId)
+    }
+
+    function ensureDeliverySourceReport() {
+        if (!root.topic.length || !root.model || !root.model.metrics) {
+            return false
+        }
+        const observation = root.model.metrics.sourceObservation("messaging")
+        if ((observation && observation.sourceReport)
+                || root.deliverySourceBootstrapPending) {
+            return false
+        }
+        root.deliverySourceBootstrapPending = true
+        root.deliverySourceBootstrapAwaitingCapabilities = false
+        const capabilities = root.model.capabilities
+        root.deliverySourceBootstrapCapabilityRevision = Number(
+            capabilities && capabilities.revision || 0)
+        const dispatched = root.model.metrics.observeNetworkConnection(
+            "messaging", false, false, function (response) {
+                root.deliverySourceBootstrapPending = false
+                if (!response || response.ok !== true) {
+                    root.deliverySourceBootstrapAwaitingCapabilities = false
+                    return
+                }
+                const currentCapabilities = root.model.capabilities
+                const currentRevision = Number(
+                    currentCapabilities && currentCapabilities.revision || 0)
+                if (currentRevision
+                        !== root.deliverySourceBootstrapCapabilityRevision) {
+                    Qt.callLater(root.reload)
+                    return
+                }
+                root.deliverySourceBootstrapAwaitingCapabilities = true
+                if (root.model.capabilityRegistryLoaded !== true
+                        && typeof root.model.loadCapabilityRegistryAsync === "function") {
+                    const refresh = root.model.loadCapabilityRegistryAsync()
+                    if (refresh === false || refresh === null) {
+                        root.deliverySourceBootstrapAwaitingCapabilities = false
+                        Qt.callLater(root.reload)
+                    }
+                }
+            }, "social")
+        const admitted = dispatched !== null && dispatched !== false
+            && !(dispatched && typeof dispatched === "object"
+                && dispatched.ok === false)
+        if (!admitted) {
+            root.deliverySourceBootstrapPending = false
+            root.deliverySourceBootstrapAwaitingCapabilities = false
+        }
+        return admitted
     }
 
     function storeGate() {

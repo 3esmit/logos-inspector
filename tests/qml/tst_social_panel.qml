@@ -218,4 +218,133 @@ TestCase {
         verify(configure !== null)
         tryCompare(configure, "visible", false)
     }
+
+    function test_social_comments_bootstrap_delivery_source_and_reload_when_evidence_is_missing() {
+        model.metrics.invalidateConfiguration("messaging", "test reset")
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "unavailable",
+                    sub_capabilities: ["delivery.store.query"],
+                    unavailable_sub_capabilities: ["delivery.store.query"]
+                }]
+        })
+        fakeHost.responses = ({
+            deliverySourceReport: {
+                ok: true,
+                value: {
+                    health: {
+                        ready: true,
+                        reachable: true,
+                        status: "healthy"
+                    },
+                    module_info: {
+                        ok: true,
+                        value: {
+                            methods: [{
+                                name: "storeQuery",
+                                signature: "storeQuery(QString,QString,int)"
+                            }]
+                        }
+                    }
+                },
+                text: "OK",
+                error: ""
+            },
+            capabilityRegistryReport: {
+                ok: true,
+                value: {
+                    schema_version: 1,
+                    capabilities: [{
+                            key: "delivery",
+                            label: "Delivery",
+                            status: "available",
+                            sub_capabilities: ["delivery.store.query", "delivery.send"]
+                        }]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        verify(!panel.storeAvailable())
+        panel.topic = "/cryptarchia/account/bootstrap/comments"
+        tryVerify(function () {
+            const observation = model.metrics.sourceObservation("messaging")
+            return observation.sourceReport !== null && !observation.pending
+        })
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "runtimeOperationStart"
+            })
+        })
+
+        const starts = fakeHost.calls.filter(function (call) {
+            return call.method === "deliverySourceReport"
+        })
+        compare(starts.length, 1)
+        compare(String(starts[0].args[0].source_mode), "logoscore_cli")
+        compare(panel.deliverySourceBootstrapPending, false)
+        compare(panel.deliverySourceBootstrapAwaitingCapabilities, false)
+        verify(!panel.ensureDeliverySourceReport())
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "deliverySourceReport"
+        }).length, 1)
+    }
+
+    function test_social_comments_reload_after_delayed_capability_refresh() {
+        fakeHost.reset()
+        model.messagingSourceMode = "logoscore_cli"
+        model.networkConnectorConfig = ({
+            scopes: {
+                delivery: {
+                    connector_id: "logoscore_cli_delivery_module",
+                    provenance: "test"
+                }
+            }
+        })
+        model.messagingStorePeerAddress = "/dns4/provider.example/tcp/30303/p2p/peer"
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "unavailable",
+                    sub_capabilities: ["delivery.store.query"],
+                    unavailable_sub_capabilities: ["delivery.store.query"]
+                }]
+        })
+        verify(!panel.storeAvailable())
+
+        panel.deliverySourceBootstrapAwaitingCapabilities = true
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "available",
+                    sub_capabilities: ["delivery.store.query", "delivery.send"]
+                }]
+        })
+        model.capabilities.revision += 1
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "runtimeOperationStart"
+            })
+        })
+        compare(panel.deliverySourceBootstrapAwaitingCapabilities, false)
+    }
 }
