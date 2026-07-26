@@ -1326,6 +1326,28 @@ TestCase {
         verify(!l2State.l2ReadEnabled)
     }
 
+    function test_lagging_status_revision_does_not_schedule_immediate_poll() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        statusRefreshSpy.clear()
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            summary_revision: 0
+        })))
+
+        compare(statusRefreshSpy.count, 0)
+        compare(gateway.requestCount("zonesSummary"), 1)
+        compare(zoneState.zoneSummaries.length, 1)
+        compare(zoneState.zoneSummaries[0].channel_id, "zone-a")
+        verify(zoneState.summaryRowsUsable)
+        verify(!zoneState.summaryInFlight)
+    }
+
     function test_source_config_change_does_not_retain_old_summary_rows() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")

@@ -471,7 +471,9 @@ QtObject {
                 && summarySourceRevision === sourceRevision
                 && summaryNetworkScopeKey === networkScopeKey
                 && numericRevision(catalogStatus.summary_revision) < summaryRevision) {
-            statusRefreshRequested()
+            // The status endpoint can briefly lag an already assembled
+            // summary. Keep the newer display snapshot and let the regular
+            // polling cadence converge instead of recursively restarting it.
             return false
         }
         beginSummaryAssembly()
