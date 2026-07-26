@@ -77,6 +77,18 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    ActionButton {
+        objectName: "configureStoreProviderButton"
+
+        visible: root.storeProviderConfigurationRequired()
+        theme: root.theme
+        text: qsTr("Configure Store provider")
+        primary: true
+        enabled: !root.model.shell.busy
+        Layout.preferredWidth: 218
+        onClicked: root.model.openSettings("network", "messaging")
+    }
+
     StatusMessage {
         objectName: "commentSendError"
         visible: String(root.panelState().sendError || "").length > 0
@@ -349,6 +361,10 @@ ColumnLayout {
 
     function storeAvailable() {
         return root.storeGate().enabled === true
+    }
+
+    function storeProviderConfigurationRequired() {
+        return root.model.social.commentStoreProviderConfigurationRequired(root.topic)
     }
 
     function writeGate() {

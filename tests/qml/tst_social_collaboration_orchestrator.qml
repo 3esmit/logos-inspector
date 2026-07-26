@@ -23,6 +23,7 @@ TestCase {
     property var hydrationRequests: []
     property var hydrationCallbacks: []
     property int syncStoreCalls: 0
+    property int topicValidationCalls: 0
     property string commentDecodeError: ""
     property string currentZoneScope: "zone-a"
 
@@ -31,10 +32,10 @@ TestCase {
 
         function callModule(moduleName, method, args) {
             if (method === "socialTopicValid") {
-                const topic = String(args[0] || "")
+                testRoot.topicValidationCalls += 1
                 return {
-                    ok: true,
-                    value: topic.indexOf("/valid/") === 0 || topic.indexOf("/lez/account/") === 0
+                    ok: false,
+                    value: null
                 }
             }
             if (method === "socialCommentTopic") {
@@ -46,7 +47,7 @@ TestCase {
             if (method === "socialZoneAccountIdlTopic") {
                 return {
                     ok: true,
-                    value: "/lez/account/" + String(args[0] && args[0].canonical_key || "") + "/idl"
+                    value: testRoot.validLezAccountIdlTopic()
                 }
             }
             return {
@@ -295,6 +296,7 @@ TestCase {
         hydrationRequests = []
         hydrationCallbacks = []
         syncStoreCalls = 0
+        topicValidationCalls = 0
         commentDecodeError = ""
         currentZoneScope = "zone-a"
         sourceRoutingStub.deliveryAdapter = ({
@@ -348,6 +350,14 @@ TestCase {
         }
     }
 
+    function validCommentTopic(id) {
+        return "/cryptarchia/account/" + String(id || "") + "/comments"
+    }
+
+    function validLezAccountIdlTopic() {
+        return "/lez/account/" + "a".repeat(64) + "/idl"
+    }
+
     function uploadOperation(id, status, result, eventCursor) {
         return {
             operationId: id,
@@ -385,7 +395,7 @@ TestCase {
             programIdHex: "program-1",
             source: "shared",
             sharedAccountId: "account-1",
-            sharedTopic: "/lez/account/account-1/idl",
+            sharedTopic: validLezAccountIdlTopic(),
             accountType: "State"
         }
     }
@@ -419,7 +429,7 @@ TestCase {
                 body: "one"
             }
         ]
-        verify(social.loadComments("/valid/topic", true, 20, ""))
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
 
         commentPageRows = [
             {
@@ -431,8 +441,8 @@ TestCase {
                 body: "two"
             }
         ]
-        verify(social.loadComments("/valid/topic", false, 20, ""))
-        const view = social.commentsView("/valid/topic")
+        verify(social.loadComments(validCommentTopic("topic"), false, 20, ""))
+        const view = social.commentsView(validCommentTopic("topic"))
 
         compare(view.rows.length, 2)
         compare(view.rows[0].body, "one")
@@ -445,10 +455,10 @@ TestCase {
         gateEnabled = true
         autoCompleteStore = false
 
-        verify(social.loadComments("/valid/topic-a", true, 20, ""))
-        verify(social.loadComments("/valid/topic-b", true, 20, ""))
-        verify(social.commentsView("/valid/topic-a").state.loading)
-        verify(social.commentsView("/valid/topic-b").state.loading)
+        verify(social.loadComments(validCommentTopic("topic-a"), true, 20, ""))
+        verify(social.loadComments(validCommentTopic("topic-b"), true, 20, ""))
+        verify(social.commentsView(validCommentTopic("topic-a")).state.loading)
+        verify(social.commentsView(validCommentTopic("topic-b")).state.loading)
 
         replyStart(1, storeOperation("store-b", "completed", {
             rows: [
@@ -469,8 +479,8 @@ TestCase {
             cursor: "cursor-a"
         }, 1))
 
-        compare(social.commentsView("/valid/topic-a").rows[0].body, "one")
-        compare(social.commentsView("/valid/topic-b").rows[0].body, "two")
+        compare(social.commentsView(validCommentTopic("topic-a")).rows[0].body, "one")
+        compare(social.commentsView(validCommentTopic("topic-b")).rows[0].body, "two")
         compare(syncStoreCalls, 0)
     }
 
@@ -478,10 +488,10 @@ TestCase {
         gateEnabled = true
         autoCompleteStore = false
 
-        verify(social.loadComments("/valid/topic", true, 20, ""))
-        verify(!social.loadComments("/valid/topic", true, 20, ""))
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
+        verify(!social.loadComments(validCommentTopic("topic"), true, 20, ""))
         compare(startCallbacks.length, 1)
-        verify(social.commentsView("/valid/topic").state.loading)
+        verify(social.commentsView(validCommentTopic("topic")).state.loading)
         replyStart(0, storeOperation("store-first", "completed", {
             rows: [
                 {
@@ -492,7 +502,7 @@ TestCase {
             cursor: "cursor-first"
         }, 1))
 
-        const view = social.commentsView("/valid/topic")
+        const view = social.commentsView(validCommentTopic("topic"))
         compare(view.rows.length, 1)
         compare(view.rows[0].key, "first")
         verify(!view.state.loading)
@@ -502,8 +512,8 @@ TestCase {
         gateEnabled = true
         autoCompleteCommentDecode = false
 
-        verify(social.loadComments("/valid/topic", true, 20, ""))
-        verify(social.loadComments("/valid/topic", true, 20, ""))
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
         compare(commentDecodeCallbacks.length, 2)
         replyCommentDecode(1, {
             ok: true,
@@ -532,7 +542,7 @@ TestCase {
             error: ""
         })
 
-        const view = social.commentsView("/valid/topic")
+        const view = social.commentsView(validCommentTopic("topic"))
         compare(view.rows.length, 1)
         compare(view.rows[0].key, "new")
         verify(!view.state.loading)
@@ -542,10 +552,10 @@ TestCase {
         gateEnabled = true
         autoCompleteStore = false
 
-        verify(social.loadComments("/valid/topic", true, 20, ""))
-        verify(social.commentsView("/valid/topic").state.loading)
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
+        verify(social.commentsView(validCommentTopic("topic")).state.loading)
         social.invalidateSourceRequests()
-        verify(!social.commentsView("/valid/topic").state.loading)
+        verify(!social.commentsView(validCommentTopic("topic")).state.loading)
         replyStart(0, storeOperation("store-late", "completed", {
             rows: [
                 {
@@ -556,7 +566,7 @@ TestCase {
             cursor: "cursor-late"
         }, 1))
 
-        compare(social.commentsView("/valid/topic").rows.length, 0)
+        compare(social.commentsView(validCommentTopic("topic")).rows.length, 0)
     }
 
     function test_source_invalidation_discards_idle_rows_and_cursor_before_load_more() {
@@ -567,17 +577,17 @@ TestCase {
                 body: "old"
             }
         ]
-        verify(social.loadComments("/valid/topic", true, 20, ""))
-        compare(social.commentsView("/valid/topic").state.cursor, "cursor-1")
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
+        compare(social.commentsView(validCommentTopic("topic")).state.cursor, "cursor-1")
 
         social.invalidateSourceRequests()
-        const invalidated = social.commentsView("/valid/topic").state
+        const invalidated = social.commentsView(validCommentTopic("topic")).state
         compare(invalidated.rows.length, 0)
         compare(invalidated.cursor, "")
 
         autoCompleteStore = false
         const startIndex = startRequests.length
-        verify(social.loadComments("/valid/topic", false, 20, ""))
+        verify(social.loadComments(validCommentTopic("topic"), false, 20, ""))
         compare(startRequests[startIndex].payload.cursor, "")
         replyStart(startIndex, storeOperation("store-new-source", "completed", {
             rows: [
@@ -588,27 +598,27 @@ TestCase {
             ],
             cursor: "new-cursor"
         }, 1))
-        compare(social.commentsView("/valid/topic").rows[0].key, "new")
+        compare(social.commentsView(validCommentTopic("topic")).rows[0].key, "new")
     }
 
     function test_comment_terminal_and_decode_failures_clear_loading() {
         gateEnabled = true
         autoCompleteStore = false
 
-        verify(social.loadComments("/valid/terminal", true, 20, ""))
+        verify(social.loadComments(validCommentTopic("terminal"), true, 20, ""))
         const failed = storeOperation("store-failed", "failed", null, 1)
         failed.error = "store failed"
         replyStart(0, failed)
-        compare(social.commentsView("/valid/terminal").state.error, "store failed")
-        verify(!social.commentsView("/valid/terminal").state.loading)
+        compare(social.commentsView(validCommentTopic("terminal")).state.error, "store failed")
+        verify(!social.commentsView(validCommentTopic("terminal")).state.loading)
 
         commentDecodeError = "decode failed"
-        verify(social.loadComments("/valid/decode", true, 20, ""))
+        verify(social.loadComments(validCommentTopic("decode"), true, 20, ""))
         replyStart(1, storeOperation("store-decode", "completed", {
             messages: []
         }, 1))
-        compare(social.commentsView("/valid/decode").state.error, "decode failed")
-        verify(!social.commentsView("/valid/decode").state.loading)
+        compare(social.commentsView(validCommentTopic("decode")).state.error, "decode failed")
+        verify(!social.commentsView(validCommentTopic("decode")).state.loading)
     }
 
     function test_shared_idl_hydration_rejects_superseded_callback() {
@@ -804,14 +814,14 @@ TestCase {
         gateEnabled = true
         messagingMutatingEnabled = true
 
-        verify(social.postComment("/valid/topic-a", "first", "", null))
-        verify(social.postComment("/valid/topic-a", "second", "", null))
-        verify(social.postComment("/valid/topic-a", "second", "", null))
-        verify(social.postComment("/valid/topic-b", "third", "", null))
+        verify(social.postComment(validCommentTopic("topic-a"), "first", "", null))
+        verify(social.postComment(validCommentTopic("topic-a"), "second", "", null))
+        verify(social.postComment(validCommentTopic("topic-a"), "second", "", null))
+        verify(social.postComment(validCommentTopic("topic-b"), "third", "", null))
 
         compare(social.identitiesView().rows.length, 2)
-        compare(social.commentsView("/valid/topic-a").rows.length, 3)
-        compare(social.commentsView("/valid/topic-b").rows.length, 1)
+        compare(social.commentsView(validCommentTopic("topic-a")).rows.length, 3)
+        compare(social.commentsView(validCommentTopic("topic-b")).rows.length, 1)
         compare(sendCalls, 4)
         compare(syncSendCalls, 0)
     }
@@ -822,21 +832,21 @@ TestCase {
         autoCompleteSend = false
         let completion = null
 
-        verify(social.postComment("/valid/topic", "first", "", null, function (response) {
+        verify(social.postComment(validCommentTopic("topic"), "first", "", null, function (response) {
             completion = response
         }))
 
         compare(sendCalls, 1)
         compare(syncSendCalls, 0)
-        compare(social.commentsView("/valid/topic").rows.length, 0)
-        verify(social.commentsView("/valid/topic").state.sending)
-        verify(!social.postComment("/valid/other", "second", "", null))
+        compare(social.commentsView(validCommentTopic("topic")).rows.length, 0)
+        verify(social.commentsView(validCommentTopic("topic")).state.sending)
+        verify(!social.postComment(validCommentTopic("other"), "second", "", null))
 
-        replyStart(0, sendOperation("send-held", "completed", "/valid/topic", ["request-1", "hash-1"], 1))
+        replyStart(0, sendOperation("send-held", "completed", validCommentTopic("topic"), ["request-1", "hash-1"], 1))
 
         verify(completion && completion.ok)
-        compare(social.commentsView("/valid/topic").rows.length, 1)
-        verify(!social.commentsView("/valid/topic").state.sending)
+        compare(social.commentsView(validCommentTopic("topic")).rows.length, 1)
+        verify(!social.commentsView(validCommentTopic("topic")).state.sending)
     }
 
     function test_post_terminal_failure_keeps_row_absent_and_allows_retry() {
@@ -844,12 +854,12 @@ TestCase {
         messagingMutatingEnabled = true
         autoCompleteSend = false
 
-        verify(social.postComment("/valid/topic", "first", "", null))
-        verify(social.commentsView("/valid/topic").state.sending)
+        verify(social.postComment(validCommentTopic("topic"), "first", "", null))
+        verify(social.commentsView(validCommentTopic("topic")).state.sending)
 
-        replyStart(0, sendOperation("send-failed", "failed", "/valid/topic", null, 1))
+        replyStart(0, sendOperation("send-failed", "failed", validCommentTopic("topic"), null, 1))
 
-        const view = social.commentsView("/valid/topic")
+        const view = social.commentsView(validCommentTopic("topic"))
         compare(view.rows.length, 0)
         verify(!view.state.sending)
         compare(view.state.sendError, "send failed")
@@ -863,20 +873,20 @@ TestCase {
         messagingMutatingEnabled = true
         autoCompleteSend = false
 
-        verify(social.postComment("/valid/topic", "first", "", null))
-        verify(social.commentsView("/valid/topic").state.sending)
+        verify(social.postComment(validCommentTopic("topic"), "first", "", null))
+        verify(social.commentsView(validCommentTopic("topic")).state.sending)
 
         messagingMutatingEnabled = false
 
-        const pending = social.commentsView("/valid/topic")
+        const pending = social.commentsView(validCommentTopic("topic"))
         verify(social.writesRunning)
         verify(pending.state.sending)
         compare(pending.rows.length, 0)
 
-        replyStart(0, sendOperation("send-late", "completed", "/valid/topic", {
+        replyStart(0, sendOperation("send-late", "completed", validCommentTopic("topic"), {
             sent: true
         }, 1))
-        const afterLateReply = social.commentsView("/valid/topic")
+        const afterLateReply = social.commentsView(validCommentTopic("topic"))
         compare(afterLateReply.rows.length, 1)
         verify(!afterLateReply.state.sending)
         compare(afterLateReply.state.sendError, "")
@@ -942,7 +952,7 @@ TestCase {
 
         compare(startRequests.length, 2)
         compare(startRequests[1].method, "deliverySend")
-        compare(startRequests[1].payload.topic, "/lez/account/account-1/idl")
+        compare(startRequests[1].payload.topic, validLezAccountIdlTopic())
     }
 
     function test_auto_share_delivery_failure_does_not_persist_marker() {
@@ -973,12 +983,23 @@ TestCase {
     }
 
     function test_gate_and_topic_helpers_use_explicit_dependencies() {
-        const unavailable = social.commentsView("/valid/topic")
+        const unavailable = social.commentsView(validCommentTopic("topic"))
         verify(unavailable.readError.indexOf("Delivery Store") >= 0)
 
         gateEnabled = true
-        verify(social.commentsView("/valid/topic").readGate.enabled)
+        verify(social.commentsView(validCommentTopic("topic")).readGate.enabled)
         compare(social.commentTopic("cryptarchia", "block", "a"), "/cryptarchia/block/a/comments")
+    }
+
+    function test_topic_validation_stays_local_and_matches_supported_shapes() {
+        gateEnabled = true
+        const lezAccount = "/lez/account/" + "Aa".repeat(32) + "/idl"
+
+        verify(social.commentsView(validCommentTopic("topic")).readGate.enabled)
+        verify(social.commentsView(lezAccount).readGate.enabled)
+        verify(!social.commentsView("/cryptarchia/account/topic/not-comments").readGate.enabled)
+        verify(!social.commentsView("/lez/account/" + "a".repeat(63) + "/comments").readGate.enabled)
+        compare(topicValidationCalls, 0)
     }
 
     function test_cli_store_reads_require_configured_provider() {
@@ -990,10 +1011,10 @@ TestCase {
         })
         wait(0)
 
-        const unavailable = social.commentsView("/valid/topic")
+        const unavailable = social.commentsView(validCommentTopic("topic"))
         verify(!unavailable.readGate.enabled)
         verify(unavailable.readError.indexOf("Store provider multiaddress") >= 0)
-        verify(!social.loadComments("/valid/topic", true, 20, ""))
+        verify(!social.loadComments(validCommentTopic("topic"), true, 20, ""))
         verify(!social.refreshSharedIdlsForAccount(
             autoShareEntity(), "aabb", "program-1"))
         compare(startRequests.length, 0)
@@ -1006,10 +1027,27 @@ TestCase {
         })
         wait(0)
 
-        verify(social.commentsView("/valid/topic").readGate.enabled)
-        verify(social.loadComments("/valid/topic", true, 20, ""))
+        verify(social.commentsView(validCommentTopic("topic")).readGate.enabled)
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
         compare(startRequests.length, 1)
         compare(startRequests[0].adapter.inputs.store_peer_addr,
                 "/dns4/provider.example/tcp/30303/p2p/peer")
+    }
+
+    function test_cli_store_provider_configuration_action_requires_the_sole_missing_input() {
+        gateEnabled = true
+        social.messagingSourceMode = "logoscore_cli"
+        sourceRoutingStub.deliveryAdapter = ({
+            source_mode: "logoscore_cli",
+            inputs: {}
+        })
+        wait(0)
+
+        verify(social.commentStoreProviderConfigurationRequired(validCommentTopic("topic")))
+        verify(!social.commentStoreProviderConfigurationRequired(
+            "/cryptarchia/account/topic/not-comments"))
+
+        gateEnabled = false
+        verify(!social.commentStoreProviderConfigurationRequired(validCommentTopic("topic")))
     }
 }
