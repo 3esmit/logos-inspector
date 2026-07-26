@@ -181,9 +181,15 @@ jobs:
           sudo xcode-select --switch "$xcode_developer"
           test "$(xcode-select --print-path)" = "$xcode_developer"
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
-          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help \
-            | grep -F -- '-downloadComponent' >/dev/null
-          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent metalToolchain
+          toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help)"
+          case "$toolchain_help" in
+            *-downloadComponent*) ;;
+            *)
+              echo "selected Xcode does not support component downloads" >&2
+              exit 1
+              ;;
+          esac
+          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
       - name: Build and archive app
