@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0-rc10] - 2026-07-27
+
+### Fixed
+
+- Basecamp Local Nodes now consumes the Bedrock managed-node lifecycle V1
+  contract and confirms terminal lifecycle events.
+- Local Nodes can safely control already-running local service modules through
+  their advertised lifecycle actions without adopting their configuration.
+- Basecamp Storage lifecycle acknowledgements reconcile with the module's
+  asynchronous terminal state.
+
 ## [0.2.0-rc9] - 2026-07-26
 
 ### Fixed
