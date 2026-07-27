@@ -1,7 +1,7 @@
 {
   "name": "logos_inspector_ui",
   "display_name": "Logos Inspector",
-  "version": "0.2.0-rc9",
+  "version": "0.2.0-rc10",
   "description": "QML frontend for Logos Inspector",
   "type": "ui_qml",
   "view": "qml/Main.qml",

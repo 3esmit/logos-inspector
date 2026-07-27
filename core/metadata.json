@@ -1,7 +1,7 @@
 {
   "name": "logos_inspector",
   "display_name": "Logos Inspector",
-  "version": "0.2.0-rc9",
+  "version": "0.2.0-rc10",
   "description": "Core runtime module for Logos Inspector",
   "author": "Logos Core Team",
   "type": "core",
