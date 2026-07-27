@@ -8,7 +8,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, LazyLock, Mutex, MutexGuard, TryLockError,
-        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -54,9 +54,11 @@ const LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs
 const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(5);
 const LOGOSCORE_WATCH_PROTOCOL: &str = "logoscore.watch";
 const LOGOSCORE_WATCH_PROTOCOL_VERSION: u64 = 1;
+const LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV: &str = "LOGOS_INSPECTOR_WATCH_TOKEN";
 static LOGOSCORE_WATCH_RECOVERY: LazyLock<
     std::result::Result<mpsc::Sender<LogoscoreWatchRecovery>, String>,
 > = LazyLock::new(start_watch_recovery_worker);
+static LOGOSCORE_WATCH_CLEANUP_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogosCoreOutput {
@@ -1140,6 +1142,33 @@ impl std::fmt::Display for LogoscoreWatchCleanupUnconfirmed {
 
 impl std::error::Error for LogoscoreWatchCleanupUnconfirmed {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatchCleanupAuthority {
+    Direct,
+    #[cfg(target_os = "linux")]
+    ServiceIdentity {
+        user: String,
+    },
+}
+
+impl WatchCleanupAuthority {
+    fn for_runner(runner: &LogosCoreRunner) -> Self {
+        #[cfg(target_os = "linux")]
+        if let Some(user) = &runner.sudo_user {
+            return Self::ServiceIdentity { user: user.clone() };
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = runner;
+        Self::Direct
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WatchCleanup {
+    token: String,
+    authority: WatchCleanupAuthority,
+}
+
 pub(crate) struct LogoscoreEventWatch {
     child: Option<Child>,
     output: mpsc::Receiver<LogoscoreWatchOutput>,
@@ -1150,6 +1179,8 @@ pub(crate) struct LogoscoreEventWatch {
     reader_stop: Arc<AtomicBool>,
     process_permit: Option<StreamingCommandPermit>,
     recovery: Option<mpsc::Sender<LogoscoreWatchRecovery>>,
+    cleanup_token: String,
+    cleanup_authority: WatchCleanupAuthority,
     label: String,
 }
 
@@ -1241,7 +1272,12 @@ impl LogoscoreEventWatch {
     pub(crate) fn stop(&mut self) -> Result<()> {
         self.reader_stop.store(true, Ordering::Release);
         let child_result = match self.child.as_mut() {
-            Some(child) => stop_watch_child_with_retry(child, &self.label),
+            Some(child) => stop_watch_child_with_retry(
+                child,
+                &self.cleanup_token,
+                &self.cleanup_authority,
+                &self.label,
+            ),
             None => Ok(()),
         };
         child_result?;
@@ -1282,6 +1318,8 @@ impl LogoscoreEventWatch {
             stderr_reader: self.stderr_reader.take(),
             reader_stop: Arc::clone(&self.reader_stop),
             process_permit: self.process_permit.take(),
+            cleanup_token: self.cleanup_token.clone(),
+            cleanup_authority: self.cleanup_authority.clone(),
             label: self.label.clone(),
         };
         handoff_watch_recovery(self.recovery.take(), recovery);
@@ -1294,6 +1332,8 @@ struct LogoscoreWatchRecovery {
     stderr_reader: Option<thread::JoinHandle<()>>,
     reader_stop: Arc<AtomicBool>,
     process_permit: Option<StreamingCommandPermit>,
+    cleanup_token: String,
+    cleanup_authority: WatchCleanupAuthority,
     label: String,
 }
 
@@ -1316,7 +1356,13 @@ fn watch_recovery_sender() -> Result<mpsc::Sender<LogoscoreWatchRecovery>> {
 
 fn run_watch_recovery_queue(receiver: &mpsc::Receiver<LogoscoreWatchRecovery>) {
     run_watch_recovery_queue_with(receiver, LOGOSCORE_WATCH_STOP_GRACE, |recovery| {
-        stop_watch_child_with_retry(&mut recovery.child, &recovery.label).is_ok()
+        stop_watch_child_with_retry(
+            &mut recovery.child,
+            &recovery.cleanup_token,
+            &recovery.cleanup_authority,
+            &recovery.label,
+        )
+        .is_ok()
     });
 }
 
@@ -1356,7 +1402,14 @@ fn run_watch_recovery_queue_with<F>(
 
 fn run_watch_recovery(mut recovery: LogoscoreWatchRecovery) {
     recovery.reader_stop.store(true, Ordering::Release);
-    while stop_watch_child_with_retry(&mut recovery.child, &recovery.label).is_err() {
+    while stop_watch_child_with_retry(
+        &mut recovery.child,
+        &recovery.cleanup_token,
+        &recovery.cleanup_authority,
+        &recovery.label,
+    )
+    .is_err()
+    {
         thread::sleep(LOGOSCORE_WATCH_STOP_GRACE);
     }
     finish_watch_recovery(recovery);
@@ -1880,30 +1933,6 @@ impl LogoscoreCliRuntime {
         )
     }
 
-    #[must_use]
-    pub(crate) fn watch_command(&self, module: &str, event: &str) -> Command {
-        command_for_runner(
-            &self.runner,
-            [
-                "watch",
-                module,
-                "--event",
-                event,
-                "--json",
-                "--watch-protocol",
-                "v1",
-            ],
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn watch_all_command(&self, module: &str) -> Command {
-        command_for_runner(
-            &self.runner,
-            ["watch", module, "--json", "--watch-protocol", "v1"],
-        )
-    }
-
     pub(crate) fn start_event_watch(
         &self,
         module: &str,
@@ -1936,12 +1965,37 @@ impl LogoscoreCliRuntime {
         }
         control.check_active()?;
         let recovery = watch_recovery_sender()?;
+        let cleanup_authority = WatchCleanupAuthority::for_runner(&self.runner);
         let event_label = event.unwrap_or("*");
         let label = format!("logoscore watch {module}.{event_label}");
         let process_permit = acquire_streaming_command_permit(&label, control)?;
+        // Some launchers re-exec the real CLI in a separate process group.
+        // The inherited token lets shutdown find only this watch's escaped child.
+        let cleanup_token = new_logoscore_watch_cleanup_token()?;
+        let watch_environment = [(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV, cleanup_token.as_str())];
         let mut command = event.map_or_else(
-            || self.watch_all_command(module),
-            |event| self.watch_command(module, event),
+            || {
+                command_for_runner_with_environment(
+                    &self.runner,
+                    ["watch", module, "--json", "--watch-protocol", "v1"],
+                    &watch_environment,
+                )
+            },
+            |event| {
+                command_for_runner_with_environment(
+                    &self.runner,
+                    [
+                        "watch",
+                        module,
+                        "--event",
+                        event,
+                        "--json",
+                        "--watch-protocol",
+                        "v1",
+                    ],
+                    &watch_environment,
+                )
+            },
         );
         command
             .stdin(Stdio::null())
@@ -1966,14 +2020,36 @@ impl LogoscoreCliRuntime {
             let error = anyhow::anyhow!("{label} did not expose stdout");
             return Err(cleanup_failed_watch_start(
                 error,
-                FailedWatchStart::new(child, None, None, process_permit, recovery, &label),
+                FailedWatchStart::new(
+                    child,
+                    None,
+                    None,
+                    process_permit,
+                    recovery,
+                    WatchCleanup {
+                        token: cleanup_token,
+                        authority: cleanup_authority,
+                    },
+                    &label,
+                ),
             ));
         };
         let Some(stderr) = child.stderr.take() else {
             let error = anyhow::anyhow!("{label} did not expose stderr");
             return Err(cleanup_failed_watch_start(
                 error,
-                FailedWatchStart::new(child, None, None, process_permit, recovery, &label),
+                FailedWatchStart::new(
+                    child,
+                    None,
+                    None,
+                    process_permit,
+                    recovery,
+                    WatchCleanup {
+                        token: cleanup_token,
+                        authority: cleanup_authority,
+                    },
+                    &label,
+                ),
             ));
         };
         #[cfg(unix)]
@@ -1984,7 +2060,18 @@ impl LogoscoreCliRuntime {
                 .context(format!("failed to configure {label} output capture"));
             return Err(cleanup_failed_watch_start(
                 error,
-                FailedWatchStart::new(child, None, None, process_permit, recovery, &label),
+                FailedWatchStart::new(
+                    child,
+                    None,
+                    None,
+                    process_permit,
+                    recovery,
+                    WatchCleanup {
+                        token: cleanup_token,
+                        authority: cleanup_authority,
+                    },
+                    &label,
+                ),
             ));
         }
         let (sender, output) = mpsc::sync_channel(LOGOSCORE_EVENT_QUEUE_CAPACITY);
@@ -2021,6 +2108,10 @@ impl LogoscoreCliRuntime {
                         Some(reader_stop),
                         process_permit,
                         recovery,
+                        WatchCleanup {
+                            token: cleanup_token,
+                            authority: cleanup_authority,
+                        },
                         &label,
                     ),
                 ));
@@ -2046,6 +2137,10 @@ impl LogoscoreCliRuntime {
                         Some(reader_stop),
                         process_permit,
                         recovery,
+                        WatchCleanup {
+                            token: cleanup_token,
+                            authority: cleanup_authority,
+                        },
                         &label,
                     ),
                 ));
@@ -2061,6 +2156,8 @@ impl LogoscoreCliRuntime {
             reader_stop,
             process_permit: Some(process_permit),
             recovery: Some(recovery),
+            cleanup_token,
+            cleanup_authority,
             label,
         })
     }
@@ -3110,11 +3207,26 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    command_for_runner_with_environment(runner, args, &[])
+}
+
+fn command_for_runner_with_environment<I, S>(
+    runner: &LogosCoreRunner,
+    args: I,
+    environment: &[(&str, &str)],
+) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     if let Some(user) = &runner.sudo_user {
         let mut command = Command::new("sudo");
         command.arg("-n").arg("-u").arg(user).arg("env");
         if let Some(home) = &runner.home {
             command.arg(format!("HOME={home}"));
+        }
+        for (key, value) in environment {
+            command.arg(format!("{key}={value}"));
         }
         command.arg(&runner.program);
         if let Some(config_dir) = &runner.config_dir {
@@ -3128,6 +3240,9 @@ where
         let mut command = Command::new(&runner.program);
         if let Some(home) = &runner.home {
             command.env("HOME", home);
+        }
+        for (key, value) in environment {
+            command.env(key, value);
         }
         if let Some(config_dir) = &runner.config_dir {
             command.arg("--config-dir").arg(config_dir);
@@ -3480,6 +3595,8 @@ struct FailedWatchStart {
     reader_stop: Option<Arc<AtomicBool>>,
     process_permit: StreamingCommandPermit,
     recovery: mpsc::Sender<LogoscoreWatchRecovery>,
+    cleanup_token: String,
+    cleanup_authority: WatchCleanupAuthority,
     label: String,
 }
 
@@ -3490,14 +3607,21 @@ impl FailedWatchStart {
         reader_stop: Option<Arc<AtomicBool>>,
         process_permit: StreamingCommandPermit,
         recovery: mpsc::Sender<LogoscoreWatchRecovery>,
+        cleanup: WatchCleanup,
         label: &str,
     ) -> Self {
+        let WatchCleanup {
+            token: cleanup_token,
+            authority: cleanup_authority,
+        } = cleanup;
         Self {
             child,
             reader,
             reader_stop,
             process_permit,
             recovery,
+            cleanup_token,
+            cleanup_authority,
             label: label.to_owned(),
         }
     }
@@ -3513,7 +3637,7 @@ fn cleanup_failed_watch_start_with<F>(
     cleanup: F,
 ) -> anyhow::Error
 where
-    F: FnOnce(&mut Child, &str) -> Result<()>,
+    F: FnOnce(&mut Child, &str, &WatchCleanupAuthority, &str) -> Result<()>,
 {
     let FailedWatchStart {
         mut child,
@@ -3521,11 +3645,13 @@ where
         reader_stop,
         process_permit,
         recovery,
+        cleanup_token,
+        cleanup_authority,
         label,
     } = state;
     let reader_stop = reader_stop.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     reader_stop.store(true, Ordering::Release);
-    let stop = cleanup(&mut child, &label);
+    let stop = cleanup(&mut child, &cleanup_token, &cleanup_authority, &label);
     if let Err(stop) = stop {
         handoff_watch_recovery(
             Some(recovery),
@@ -3535,6 +3661,8 @@ where
                 stderr_reader: None,
                 reader_stop,
                 process_permit: Some(process_permit),
+                cleanup_token,
+                cleanup_authority,
                 label: label.clone(),
             },
         );
@@ -3584,19 +3712,65 @@ fn ensure_logoscore_event_watch_supported() -> Result<()> {
     }
 }
 
-fn stop_watch_child_with_retry(child: &mut Child, label: &str) -> Result<()> {
-    match stop_watch_child(child, label) {
+fn new_logoscore_watch_cleanup_token() -> Result<String> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).context("failed to generate logoscore watch cleanup token")?;
+    let serial = LOGOSCORE_WATCH_CLEANUP_SERIAL.fetch_add(1, Ordering::Relaxed);
+    Ok(format!(
+        "logos-inspector-watch-{serial}-{}",
+        hex::encode(nonce)
+    ))
+}
+
+fn stop_watch_child_with_retry(
+    child: &mut Child,
+    cleanup_token: &str,
+    cleanup_authority: &WatchCleanupAuthority,
+    label: &str,
+) -> Result<()> {
+    let direct = match cleanup_authority {
+        WatchCleanupAuthority::Direct => stop_direct_watch_child(child, label),
+        #[cfg(target_os = "linux")]
+        WatchCleanupAuthority::ServiceIdentity { user } => {
+            stop_service_watch_child(child, user, label)
+        }
+    };
+    let direct = match direct {
         Ok(()) => Ok(()),
-        Err(first) => stop_watch_child(child, label).map_err(|second| {
+        Err(first) => stop_watch_child_once(child, cleanup_authority, label).map_err(|second| {
             LogoscoreWatchCleanupUnconfirmed::new(format!(
-                "{label} cleanup remained unconfirmed after retry: first={first:#}; second={second:#}"
+                "{label} primary cleanup remained unconfirmed after retry: first={first:#}; second={second:#}"
             ))
             .into()
         }),
+    };
+    let tagged = stop_tagged_watch_processes(cleanup_token, cleanup_authority, label);
+    match (direct, tagged) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(direct), Ok(())) => Err(direct),
+        (Ok(()), Err(tagged)) => Err(tagged),
+        (Err(direct), Err(tagged)) => Err(LogoscoreWatchCleanupUnconfirmed::new(format!(
+            "{label} cleanup failed: direct={direct:#}; token-tagged={tagged:#}"
+        ))
+        .into()),
     }
 }
 
-fn stop_watch_child(child: &mut Child, label: &str) -> Result<()> {
+fn stop_watch_child_once(
+    child: &mut Child,
+    cleanup_authority: &WatchCleanupAuthority,
+    label: &str,
+) -> Result<()> {
+    match cleanup_authority {
+        WatchCleanupAuthority::Direct => stop_direct_watch_child(child, label),
+        #[cfg(target_os = "linux")]
+        WatchCleanupAuthority::ServiceIdentity { user } => {
+            stop_service_watch_child(child, user, label)
+        }
+    }
+}
+
+fn stop_direct_watch_child(child: &mut Child, label: &str) -> Result<()> {
     match child.try_wait() {
         Ok(Some(_)) => return kill_remaining_watch_group(child, label),
         Ok(None) => {}
@@ -3639,6 +3813,161 @@ fn stop_watch_child(child: &mut Child, label: &str) -> Result<()> {
     )
 }
 
+#[cfg(target_os = "linux")]
+fn stop_service_watch_child(child: &mut Child, user: &str, label: &str) -> Result<()> {
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => {
+            return force_stop_service_watch_child(
+                child,
+                user,
+                label,
+                anyhow::Error::new(error)
+                    .context(format!("failed to poll {label} during service cleanup")),
+            );
+        }
+    }
+    if let Err(error) = signal_service_watch_child(child, user, "TERM", label) {
+        return force_stop_service_watch_child(child, user, label, error);
+    }
+    let deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("logoscore service watch cleanup deadline overflow")?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(error) => {
+                return force_stop_service_watch_child(
+                    child,
+                    user,
+                    label,
+                    anyhow::Error::new(error)
+                        .context(format!("failed to poll {label} during service cleanup")),
+                );
+            }
+        }
+        if StdInstant::now() >= deadline {
+            break;
+        }
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+    }
+    force_stop_service_watch_child(
+        child,
+        user,
+        label,
+        anyhow::anyhow!("{label} did not stop after graceful service termination"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn force_stop_service_watch_child(
+    child: &mut Child,
+    user: &str,
+    label: &str,
+    primary: anyhow::Error,
+) -> Result<()> {
+    let force = signal_service_watch_child(child, user, "KILL", label);
+    let deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("logoscore service watch forced-cleanup deadline overflow")?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "{primary}; forced service cleanup failed: signal={}, reap={error}",
+                    watch_cleanup_status(force),
+                ));
+            }
+        }
+        if StdInstant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "{primary}; forced service cleanup timed out: signal={}",
+                watch_cleanup_status(force),
+            ));
+        }
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn signal_service_watch_child(
+    child: &mut Child,
+    user: &str,
+    signal: &str,
+    label: &str,
+) -> Result<()> {
+    let process = child.id();
+    match signal_service_watch_child_as_root(process, signal, label) {
+        Ok(()) => Ok(()),
+        Err(root_error) => match signal_service_watch_child_as_user(process, user, signal, label) {
+            Ok(()) => Ok(()),
+            Err(user_error) => match child.try_wait() {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => Err(anyhow::anyhow!(
+                    "could not signal {label} through configured service cleanup: elevated={root_error:#}; service={user_error:#}"
+                )),
+                Err(error) => Err(error).context(format!(
+                    "could not signal {label} through configured service cleanup; child status is unavailable"
+                )),
+            },
+        },
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn signal_service_watch_child_as_root(process: u32, signal: &str, label: &str) -> Result<()> {
+    let mut command = elevated_watch_child_signal_command(process, signal);
+    let output = command
+        .output()
+        .with_context(|| format!("failed to signal {label} through elevated cleanup"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "elevated cleanup could not signal {label}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn elevated_watch_child_signal_command(process: u32, signal: &str) -> Command {
+    let mut command = Command::new("sudo");
+    command
+        .arg("-n")
+        .arg("/bin/kill")
+        .arg(format!("-{signal}"))
+        .arg("--")
+        .arg(process.to_string());
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn signal_service_watch_child_as_user(
+    process: u32,
+    user: &str,
+    signal: &str,
+    label: &str,
+) -> Result<()> {
+    let mut command = Command::new("sudo");
+    command
+        .arg("-n")
+        .arg("-u")
+        .arg(user)
+        .arg("/bin/kill")
+        .arg(format!("-{signal}"))
+        .arg("--")
+        .arg(process.to_string());
+    let output = command
+        .output()
+        .with_context(|| format!("failed to signal {label} through configured service identity"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    bail!("configured service identity could not signal {label}")
+}
+
 fn force_stop_watch_child(child: &mut Child, label: &str, primary: anyhow::Error) -> Result<()> {
     let group_kill = kill_watch_child(child);
     let direct_kill = child
@@ -3674,6 +4003,301 @@ fn force_stop_watch_child(child: &mut Child, label: &str, primary: anyhow::Error
             ));
         }
         thread::sleep(LOGOSCORE_POLL_INTERVAL);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_tagged_watch_processes(
+    cleanup_token: &str,
+    cleanup_authority: &WatchCleanupAuthority,
+    label: &str,
+) -> Result<()> {
+    match cleanup_authority {
+        WatchCleanupAuthority::Direct => stop_direct_tagged_watch_processes(cleanup_token, label),
+        WatchCleanupAuthority::ServiceIdentity { user } => {
+            stop_service_tagged_watch_processes(cleanup_token, user, label)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_direct_tagged_watch_processes(cleanup_token: &str, label: &str) -> Result<()> {
+    use nix::{
+        errno::Errno,
+        sys::signal::{Signal, kill},
+        unistd::Pid,
+    };
+
+    fn signal(processes: &[i32], signal: Signal, label: &str) -> Result<()> {
+        for process in processes {
+            match kill(Pid::from_raw(*process), signal) {
+                Ok(()) | Err(Errno::ESRCH) => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to send {signal:?} to token-tagged {label} process {process}"
+                        )
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut processes = tagged_watch_processes(cleanup_token)?;
+    if processes.is_empty() {
+        return Ok(());
+    }
+    signal(&processes, Signal::SIGTERM, label)?;
+    let graceful_deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("token-tagged logoscore watch cleanup deadline overflow")?;
+    while !processes.is_empty() && StdInstant::now() < graceful_deadline {
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        processes = tagged_watch_processes(cleanup_token)?;
+    }
+    if processes.is_empty() {
+        return Ok(());
+    }
+    signal(&processes, Signal::SIGKILL, label)?;
+    let forced_deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("forced token-tagged logoscore watch cleanup deadline overflow")?;
+    while !processes.is_empty() && StdInstant::now() < forced_deadline {
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        processes = tagged_watch_processes(cleanup_token)?;
+    }
+    anyhow::ensure!(
+        processes.is_empty(),
+        "{label} cleanup left token-tagged descendant processes running: {processes:?}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum ServiceWatchTokenAction {
+    Check,
+    Terminate,
+    Kill,
+}
+
+#[cfg(target_os = "linux")]
+impl ServiceWatchTokenAction {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Check => "CHECK",
+            Self::Terminate => "TERM",
+            Self::Kill => "KILL",
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+const SERVICE_WATCH_TOKEN_CLEANUP_SCRIPT: &str = r#"
+token=$1
+action=$2
+marker="LOGOS_INSPECTOR_WATCH_TOKEN=$token"
+
+case "$action" in
+  CHECK) signal="" ;;
+  TERM) signal="-TERM" ;;
+  KILL) signal="-KILL" ;;
+  *) exit 64 ;;
+esac
+
+for entry in /proc/[0-9]*; do
+  pid=${entry#/proc/}
+  [ "$pid" = "$$" ] && continue
+  [ -r "$entry/environ" ] || continue
+  if /usr/bin/grep -Fzx -- "$marker" "$entry/environ" >/dev/null 2>&1; then
+    printf '%s\n' "$pid"
+    [ -z "$signal" ] || /bin/kill "$signal" "$pid" 2>/dev/null || :
+  fi
+done
+"#;
+
+#[cfg(target_os = "linux")]
+fn stop_service_tagged_watch_processes(cleanup_token: &str, user: &str, label: &str) -> Result<()> {
+    let mut processes = service_tagged_watch_processes(
+        user,
+        cleanup_token,
+        ServiceWatchTokenAction::Terminate,
+        label,
+    )?;
+    let graceful_deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("service token-tagged logoscore watch cleanup deadline overflow")?;
+    while !processes.is_empty() && StdInstant::now() < graceful_deadline {
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        processes = service_tagged_watch_processes(
+            user,
+            cleanup_token,
+            ServiceWatchTokenAction::Check,
+            label,
+        )?;
+    }
+    if processes.is_empty() {
+        return Ok(());
+    }
+    processes =
+        service_tagged_watch_processes(user, cleanup_token, ServiceWatchTokenAction::Kill, label)?;
+    let forced_deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("forced service token-tagged logoscore watch cleanup deadline overflow")?;
+    while !processes.is_empty() && StdInstant::now() < forced_deadline {
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        processes = service_tagged_watch_processes(
+            user,
+            cleanup_token,
+            ServiceWatchTokenAction::Check,
+            label,
+        )?;
+    }
+    anyhow::ensure!(
+        processes.is_empty(),
+        "{label} cleanup left token-tagged service descendants running: {processes:?}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn service_tagged_watch_processes(
+    user: &str,
+    cleanup_token: &str,
+    action: ServiceWatchTokenAction,
+    label: &str,
+) -> Result<Vec<i32>> {
+    let mut command = service_watch_cleanup_command(user, cleanup_token, action);
+    let output = command.output().with_context(|| {
+        format!(
+            "failed to inspect token-tagged {label} processes through configured service identity"
+        )
+    })?;
+    anyhow::ensure!(
+        output.status.success(),
+        "configured service identity could not inspect token-tagged {label} processes"
+    );
+    parse_service_watch_processes(&output.stdout, label)
+}
+
+#[cfg(target_os = "linux")]
+fn service_watch_cleanup_command(
+    user: &str,
+    cleanup_token: &str,
+    action: ServiceWatchTokenAction,
+) -> Command {
+    let mut command = Command::new("sudo");
+    command
+        .arg("-n")
+        .arg("-u")
+        .arg(user)
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(SERVICE_WATCH_TOKEN_CLEANUP_SCRIPT)
+        .arg("logos-inspector-watch-cleanup")
+        .arg(cleanup_token)
+        .arg(action.name());
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn parse_service_watch_processes(output: &[u8], label: &str) -> Result<Vec<i32>> {
+    let text = std::str::from_utf8(output).with_context(|| {
+        format!("configured service cleanup returned non-UTF-8 output for {label}")
+    })?;
+    let mut processes = Vec::new();
+    for line in text.lines() {
+        let process = line.parse::<i32>().with_context(|| {
+            format!("configured service cleanup returned an invalid PID for {label}")
+        })?;
+        anyhow::ensure!(
+            process > 0,
+            "configured service cleanup returned a nonpositive PID for {label}"
+        );
+        processes.push(process);
+    }
+    processes.sort_unstable();
+    processes.dedup();
+    Ok(processes)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stop_tagged_watch_processes(
+    _cleanup_token: &str,
+    _cleanup_authority: &WatchCleanupAuthority,
+    _label: &str,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn tagged_watch_processes(cleanup_token: &str) -> Result<Vec<i32>> {
+    let mut marker = Vec::with_capacity(
+        LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV
+            .len()
+            .saturating_add(cleanup_token.len())
+            .saturating_add(1),
+    );
+    marker.extend_from_slice(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV.as_bytes());
+    marker.push(b'=');
+    marker.extend_from_slice(cleanup_token.as_bytes());
+
+    let entries =
+        fs::read_dir("/proc").context("failed to inspect Linux processes for watch cleanup")?;
+    let mut processes = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(process) = name.parse::<i32>() else {
+            continue;
+        };
+        if process <= 0 || process == i32::try_from(std::process::id()).unwrap_or_default() {
+            continue;
+        }
+        let environment = match fs::read(entry.path().join("environ")) {
+            Ok(environment) => environment,
+            Err(error)
+                if error.kind() == ErrorKind::NotFound
+                    || error.kind() == ErrorKind::PermissionDenied =>
+            {
+                continue;
+            }
+            Err(_) => continue,
+        };
+        if !environment
+            .split(|byte| *byte == b'\0')
+            .any(|value| value == marker)
+        {
+            continue;
+        }
+        if linux_process_is_live(process)? {
+            processes.push(process);
+        }
+    }
+    Ok(processes)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_is_live(process: i32) -> Result<bool> {
+    let status_path = PathBuf::from(format!("/proc/{process}/stat"));
+    match fs::read_to_string(status_path) {
+        Ok(status) => Ok(status
+            .rsplit_once(')')
+            .and_then(|(_, fields)| fields.split_whitespace().next())
+            .is_none_or(|state| state != "Z")),
+        Err(error)
+            if error.kind() == ErrorKind::NotFound
+                || error.raw_os_error() == Some(nix::libc::ESRCH) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error).context("failed to inspect token-tagged logoscore watch process"),
     }
 }
 
@@ -3912,6 +4536,106 @@ mod tests {
         ensure_logoscore_event_watch_supported()
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn configured_service_runner_uses_service_owned_watch_cleanup() -> Result<()> {
+        let runner = LogosCoreRunner {
+            program: "logoscore".to_owned(),
+            sudo_user: Some("service-account".to_owned()),
+            home: Some("/var/lib/logos-node".to_owned()),
+            config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
+            label: "configured logoscore".to_owned(),
+        };
+
+        let authority = WatchCleanupAuthority::for_runner(&runner);
+        anyhow::ensure!(
+            authority
+                == WatchCleanupAuthority::ServiceIdentity {
+                    user: "service-account".to_owned()
+                },
+            "configured service runtime lost its watch cleanup authority"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn service_watch_cleanup_passes_token_as_positional_argument() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let token = "cleanup-token";
+        let command =
+            service_watch_cleanup_command("service-account", token, ServiceWatchTokenAction::Check);
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        anyhow::ensure!(command.get_program() == OsStr::new("sudo"));
+        anyhow::ensure!(
+            args == [
+                "-n",
+                "-u",
+                "service-account",
+                "/bin/sh",
+                "-c",
+                SERVICE_WATCH_TOKEN_CLEANUP_SCRIPT,
+                "logos-inspector-watch-cleanup",
+                token,
+                "CHECK",
+            ],
+            "service watch cleanup command changed its scoped argument contract: {args:?}"
+        );
+        anyhow::ensure!(
+            command
+                .get_envs()
+                .all(|(name, _)| name != OsStr::new(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV)),
+            "service watch cleanup leaked its token through the command environment"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn service_watch_child_signal_targets_only_the_owned_supervisor() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let command = elevated_watch_child_signal_command(431, "TERM");
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        anyhow::ensure!(command.get_program() == OsStr::new("sudo"));
+        anyhow::ensure!(
+            args == ["-n", "/bin/kill", "-TERM", "--", "431"],
+            "service watch supervisor signal changed its scoped argument contract: {args:?}"
+        );
+        anyhow::ensure!(
+            command
+                .get_envs()
+                .all(|(name, _)| name != OsStr::new(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV)),
+            "service watch supervisor signal leaked its token through the command environment"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn service_watch_cleanup_rejects_invalid_process_output() -> Result<()> {
+        let processes = parse_service_watch_processes(b"17\n5\n17\n", "fixture watch")?;
+        anyhow::ensure!(processes == [5, 17]);
+        anyhow::ensure!(
+            parse_service_watch_processes(b"not-a-pid\n", "fixture watch").is_err(),
+            "invalid service cleanup PID was accepted"
+        );
+        anyhow::ensure!(
+            parse_service_watch_processes(b"0\n", "fixture watch").is_err(),
+            "nonpositive service cleanup PID was accepted"
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn watch_recovery_queue_retries_without_head_of_line_blocking() -> Result<()> {
@@ -3927,6 +4651,8 @@ mod tests {
                 stderr_reader: None,
                 reader_stop: Arc::new(AtomicBool::new(false)),
                 process_permit: None,
+                cleanup_token: new_logoscore_watch_cleanup_token()?,
+                cleanup_authority: WatchCleanupAuthority::Direct,
                 label: label.to_owned(),
             })
         }
@@ -3982,9 +4708,15 @@ mod tests {
                 None,
                 permit,
                 watch_recovery_sender()?,
+                WatchCleanup {
+                    token: new_logoscore_watch_cleanup_token()?,
+                    authority: WatchCleanupAuthority::Direct,
+                },
                 "injected failed watch",
             ),
-            |_child, _label| bail!("injected cleanup uncertainty"),
+            |_child, _cleanup_token, _cleanup_authority, _label| {
+                bail!("injected cleanup uncertainty")
+            },
         );
         anyhow::ensure!(
             error
@@ -4321,7 +5053,16 @@ mod tests {
             "logoscore".to_owned(),
             "/tmp/logoscore-config".to_owned(),
         );
-        let command = runtime.watch_all_command("delivery_module");
+        let command = command_for_runner(
+            &runtime.runner,
+            [
+                "watch",
+                "delivery_module",
+                "--json",
+                "--watch-protocol",
+                "v1",
+            ],
+        );
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -4524,6 +5265,8 @@ mod tests {
             reader_stop: Arc::new(AtomicBool::new(false)),
             process_permit: None,
             recovery: None,
+            cleanup_token: new_logoscore_watch_cleanup_token()?,
+            cleanup_authority: WatchCleanupAuthority::Direct,
             label: "queued terminal watch".to_owned(),
         };
 
@@ -4552,6 +5295,8 @@ mod tests {
             reader_stop: Arc::new(AtomicBool::new(false)),
             process_permit: None,
             recovery: None,
+            cleanup_token: new_logoscore_watch_cleanup_token()?,
+            cleanup_authority: WatchCleanupAuthority::Direct,
             label: "idle watch".to_owned(),
         };
 
@@ -4695,6 +5440,83 @@ mod tests {
                 let _result =
                     nix::sys::signal::killpg(Pid::from_raw(process_group), Signal::SIGKILL);
                 bail!("watch cleanup left descendant PID {descendant} running");
+            }
+            thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn event_watch_stop_kills_token_tagged_detached_descendant() -> Result<()> {
+        use nix::{
+            sys::signal::{Signal, kill},
+            unistd::Pid,
+        };
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-watch-detached-descendant");
+        let descendant_path = directory.path().join("detached.pid");
+        write_executable_script(
+            &program,
+            "#!/bin/sh\n\
+             state_dir=$2\n\
+             setsid sh -c '\n\
+               printf \"%s\" \"$$\" > \"$1/detached.pid\"\n\
+               trap \"\" TERM\n\
+               while :; do sleep 0.05; done\n\
+             ' sh \"$state_dir\" &\n\
+             trap 'exit 0' TERM\n\
+             printf '%s\\n' '{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDone\"}'\n\
+             while :; do sleep 0.05; done\n",
+        )?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(2),
+        );
+        let mut watch =
+            runtime.start_event_watch("storage_module", "storageDownloadDone", &control)?;
+        watch.wait_ready(&control)?;
+
+        let deadline = StdInstant::now() + Duration::from_secs(1);
+        let descendant = loop {
+            match fs::read_to_string(&descendant_path) {
+                Ok(value) => {
+                    break value
+                        .trim()
+                        .parse::<i32>()
+                        .context("detached descendant fixture wrote an invalid PID")?;
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).context("failed to read detached watch descendant PID");
+                }
+            }
+            if StdInstant::now() >= deadline {
+                bail!("detached watch descendant did not report its PID");
+            }
+            thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        };
+        let cleanup_token = watch.cleanup_token.clone();
+        let tagged = tagged_watch_processes(&cleanup_token)?;
+        anyhow::ensure!(
+            tagged.contains(&descendant),
+            "detached watch descendant did not retain its cleanup token: {tagged:?}"
+        );
+
+        if let Err(error) = watch.stop() {
+            let _result = kill(Pid::from_raw(descendant), Signal::SIGKILL);
+            return Err(error);
+        }
+        let deadline = StdInstant::now() + Duration::from_secs(1);
+        while linux_process_is_live(descendant)? {
+            if StdInstant::now() >= deadline {
+                let _result = kill(Pid::from_raw(descendant), Signal::SIGKILL);
+                bail!("watch cleanup left detached descendant PID {descendant} running");
             }
             thread::sleep(LOGOSCORE_POLL_INTERVAL);
         }
