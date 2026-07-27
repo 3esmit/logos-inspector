@@ -45,7 +45,7 @@ struct EventSpec
     bool required = true;
 };
 
-constexpr std::array<EventSpec, 21> kEvents = { {
+constexpr std::array<EventSpec, 22> kEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -53,6 +53,7 @@ constexpr std::array<EventSpec, 21> kEvents = { {
     { "delivery_module", "connectionStateChanged" },
     { "delivery_module", "nodeStarted" },
     { "delivery_module", "nodeStopped" },
+    { "delivery_module", "nodeChanged", false },
     { "storage_module", "storageStart" },
     { "storage_module", "storageStop" },
     { "storage_module", "storageConnect" },
