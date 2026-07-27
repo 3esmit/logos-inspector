@@ -1485,6 +1485,43 @@ TestCase {
         compare(basecamp.storage.connector_id, "storage_module")
     }
 
+    function test_standalone_persists_normalized_host_connector_migration() {
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    network_connector_config: {
+                        scopes: {
+                            l1: { connector_id: "blockchain_module", provenance: "build_default" },
+                            delivery: { connector_id: "delivery_module", provenance: "build_default" },
+                            storage: { connector_id: "storage_module", provenance: "build_default" }
+                        }
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        compare(model.networkConnectorConfig.scopes.l1.connector_id, "direct_l1_rpc")
+        compare(model.networkConnectorConfig.scopes.delivery.connector_id,
+                "direct_delivery_rest")
+        compare(model.networkConnectorConfig.scopes.storage.connector_id,
+                "logoscore_cli_storage_module")
+        const migrationSaves = fakeHost.calls.filter(function (call) {
+            return call.method === "saveSettingsState"
+        })
+        compare(migrationSaves.length, 1)
+        compare(migrationSaves[0].args[0].network_connector_config.scopes.l1.connector_id,
+                "direct_l1_rpc")
+        compare(migrationSaves[0].args[0].network_connector_config.scopes.delivery.connector_id,
+                "direct_delivery_rest")
+        compare(migrationSaves[0].args[0].network_connector_config.scopes.storage.connector_id,
+                "logoscore_cli_storage_module")
+    }
+
     function test_standalone_migrates_only_auto_selected_delivery_cli() {
         const scopes = {
             l1: { connector_id: "direct_l1_rpc", provenance: "build_default" },

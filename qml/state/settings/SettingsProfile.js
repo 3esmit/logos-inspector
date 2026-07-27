@@ -36,9 +36,10 @@ function updatedBackupContents(contents, area, enabled) {
 function applySettingsState(root, value) {
     with (root) {
         let selectionMigrationRequired = false
+        let connectorMigrationRequired = false
         settingsStateError = ""
         root.loadNetworkProfileSettings(value)
-        root.loadNetworkConnectorConfig(value)
+        connectorMigrationRequired = root.loadNetworkConnectorConfig(value)
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
         messagingStorePeerAddress = root.stringSetting(
@@ -89,7 +90,7 @@ function applySettingsState(root, value) {
         root.social.loadSettings(value)
         root.favoriteStore.load(value.favorites)
         settingsStateLoaded = true
-        if (selectionMigrationRequired) {
+        if (selectionMigrationRequired || connectorMigrationRequired) {
             root.saveSettingsState()
         }
     }
