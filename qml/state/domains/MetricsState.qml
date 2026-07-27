@@ -64,6 +64,7 @@ QtObject {
     property var storageSourceReport: null
     property var messagingSourceReport: null
     property var messagingMetricsReport: null
+    property var messagingMetricsIndex: null
     property double messagingMetricsCheckedAtMs: 0
     property int messagingMetricsRequestGeneration: 0
     property int messagingMetricsRevision: 0
@@ -1501,10 +1502,13 @@ QtObject {
                     < messagingMetricsRequestGeneration) {
             return false
         }
+        const nextRevision = messagingMetricsRevision + 1
         messagingMetricsReport = report
+        messagingMetricsIndex = AppModelMetrics.buildOpenMetricsIndex(
+            root, probe.value, nextRevision)
         messagingMetricsCheckedAtMs = Number(checkedAtMs || Date.now())
         messagingMetricsRequestGeneration = Number(requestGeneration || 0)
-        messagingMetricsRevision += 1
+        messagingMetricsRevision = nextRevision
         return true
     }
 
@@ -1628,6 +1632,7 @@ QtObject {
         if (target === "messaging") {
             activeMessagingMetricsLease = null
             messagingMetricsReport = null
+            messagingMetricsIndex = null
             messagingMetricsCheckedAtMs = 0
             messagingMetricsRequestGeneration = 0
             messagingMetricsAttempt = null
@@ -2043,6 +2048,7 @@ QtObject {
     function moduleLastError(kind) { return AppModelMetrics.moduleLastError(root, kind) }
     function openMetricsText(kind) { return AppModelMetrics.openMetricsText(root, kind) }
     function openMetricsTextFromValue(value) { return AppModelMetrics.openMetricsTextFromValue(root, value) }
+    function cachedOpenMetricsIndex(kind) { return AppModelMetrics.cachedOpenMetricsIndex(root, kind) }
     function openMetricValue(kind, names) { return AppModelMetrics.openMetricValue(root, kind, names) }
     function openMetricSeries(kind, spec) { return AppModelMetrics.openMetricSeries(root, kind, spec) }
     function openMetricLabels(text) { return AppModelMetrics.openMetricLabels(root, text) }

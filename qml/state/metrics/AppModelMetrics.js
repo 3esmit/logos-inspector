@@ -166,6 +166,10 @@ function openMetricValue(root, kind, names) {
         if (jsonMetric !== null) {
             return jsonMetric
         }
+        const cached = root.cachedOpenMetricsIndex(kind)
+        if (cached !== null) {
+            return indexedOpenMetricValue(root, cached, wanted)
+        }
         const text = root.openMetricsTextFromValue(value)
         if (!text.length) {
             return null
@@ -326,6 +330,10 @@ function openMetricSeries(root, kind, spec) {
         if (jsonRows.length > 0) {
             return jsonRows
         }
+        const cached = root.cachedOpenMetricsIndex(kind)
+        if (cached !== null) {
+            return indexedOpenMetricSeries(root, cached, spec)
+        }
         const text = root.openMetricsTextFromValue(source)
         if (!text.length) {
             return []
@@ -368,6 +376,145 @@ function openMetricSeries(root, kind, spec) {
         }
         return normalizedMetricSeries(rows)
     }
+}
+
+function buildOpenMetricsIndex(root, value, revision) {
+    if (typeof value !== "string") {
+        return null
+    }
+    const samples = []
+    const samplesByName = {}
+    const malformedNames = {}
+    const invalidSamplesByName = {}
+    const lines = value.split(/\r?\n/)
+    for (let i = 0; i < lines.length; ++i) {
+        const line = lines[i].trim()
+        if (!line.length || line[0] === "#") {
+            continue
+        }
+        const sample = line.match(
+            /^([^{\s]+)(?:\{([^}]*)\})?(?:\s+(.+))?$/)
+        if (!sample) {
+            const prefix = line.match(/^([^{\s]+)/)
+            if (prefix && prefix[1]) {
+                malformedNames[prefix[1]] = true
+            }
+            continue
+        }
+        const name = sample[1]
+        const labels = root.openMetricLabels(sample[2] || "")
+        const numeric = String(sample[3] || "").match(
+            /^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?)(?:\s|$)/i)
+        if (!numeric) {
+            appendInvalidOpenMetricSample(
+                invalidSamplesByName, name, labels)
+            continue
+        }
+        const parsed = Number(numeric[1])
+        if (!Number.isFinite(parsed)) {
+            appendInvalidOpenMetricSample(
+                invalidSamplesByName, name, labels)
+            continue
+        }
+        const entry = {
+            name: name,
+            labels: labels,
+            value: parsed,
+            order: samples.length
+        }
+        samples.push(entry)
+        if (samplesByName[name] === undefined) {
+            samplesByName[name] = []
+        }
+        samplesByName[name].push(entry)
+    }
+    return {
+        revision: Number(revision || 0),
+        samples: samples,
+        samplesByName: samplesByName,
+        malformedNames: malformedNames,
+        invalidSamplesByName: invalidSamplesByName
+    }
+}
+
+function appendInvalidOpenMetricSample(samplesByName, name, labels) {
+    if (!Array.isArray(samplesByName[name])) {
+        samplesByName[name] = []
+    }
+    samplesByName[name].push({ labels: labels })
+}
+
+function cachedOpenMetricsIndex(root, kind) {
+    const target = String(kind || "")
+    if (target !== "messaging" && target !== "delivery") {
+        return null
+    }
+    const index = root.messagingMetricsIndex
+    if (!index || Number(index.revision || 0)
+            !== Number(root.messagingMetricsRevision || 0)) {
+        return null
+    }
+    return index
+}
+
+function indexedOpenMetricValue(root, index, wanted) {
+    const entriesByName = index && index.samplesByName
+        && typeof index.samplesByName === "object"
+        ? index.samplesByName : {}
+    let selected = null
+    for (let i = 0; i < wanted.length; ++i) {
+        const name = root.metricSpecName(wanted[i])
+        const labels = root.metricSpecLabels(wanted[i])
+        const entries = Array.isArray(entriesByName[name])
+            ? entriesByName[name] : []
+        for (let j = 0; j < entries.length; ++j) {
+            const entry = entries[j]
+            if (!root.metricLabelsMatch(entry.labels, labels)) {
+                continue
+            }
+            if (selected === null || entry.order < selected.order) {
+                selected = entry
+            }
+        }
+    }
+    return selected === null ? null : selected.value
+}
+
+function indexedOpenMetricSeries(root, index, spec) {
+    const name = root.metricSpecName(spec)
+    const labels = root.metricSpecLabels(spec)
+    const malformed = index && index.malformedNames
+        && index.malformedNames[name] === true
+    if (malformed) {
+        return null
+    }
+    const invalidByName = index && index.invalidSamplesByName
+        && typeof index.invalidSamplesByName === "object"
+        ? index.invalidSamplesByName : {}
+    const invalidEntries = Array.isArray(invalidByName[name])
+        ? invalidByName[name] : []
+    for (let i = 0; i < invalidEntries.length; ++i) {
+        if (root.metricLabelsMatch(invalidEntries[i].labels, labels)) {
+            return null
+        }
+    }
+    const entriesByName = index && index.samplesByName
+        && typeof index.samplesByName === "object"
+        ? index.samplesByName : {}
+    const entries = Array.isArray(entriesByName[name])
+        ? entriesByName[name] : []
+    const rows = []
+    for (let j = 0; j < entries.length; ++j) {
+        const entry = entries[j]
+        if (root.metricLabelsMatch(entry.labels, labels)) {
+            rows.push({
+                name: entry.name,
+                labels: entry.labels,
+                value: entry.value
+            })
+        }
+    }
+    return normalizedMetricSeries(rows)
 }
 
 function openMetricLabels(root, text) {
