@@ -1685,13 +1685,14 @@ ColumnLayout {
         return nodes.map(function (node) {
             const nodeKey = String(node.key || node.kind || "")
             const controlState = root.model.controlState(node)
-            const runState = root.model.basecampHost
+            const attached = String(node.ownership || "") === "local_attached"
+            const runState = root.model.basecampHost || attached
                 ? String(node.run_state || "unknown")
                 : root.model.publicTestnetMode()
                 ? root.model.observedRunState(nodeKey)
                 : String(node.run_state || "unknown")
             const observation = root.model.observedNode(nodeKey)
-            const observationDetail = root.model.basecampHost
+            const observationDetail = root.model.basecampHost || attached
                 ? String(node.detail || "")
                 : String(observation && observation.detail || "")
             const channelIndexers = nodeKey === "indexer" && observation
@@ -1926,7 +1927,7 @@ ColumnLayout {
 
     function installTone(value) {
         const text = String(value || "");
-        if (text === "installed" || text === "managed") {
+        if (text === "installed" || text === "managed" || text === "attached") {
             return "success";
         }
         if (text === "needs_configuration") {

@@ -8,6 +8,7 @@ use crate::support::command_runner::CommandControl;
 mod action_engine;
 mod action_workspace;
 mod adapters;
+mod attached;
 mod channel_indexer;
 mod commands;
 mod config;

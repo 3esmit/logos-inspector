@@ -363,6 +363,35 @@ Item {
             verify(page.moduleTargetDetail().indexOf("service is stopped") >= 0)
         }
 
+        function test_attached_v1_node_uses_lifecycle_status_and_detail() {
+            const report = attachedServiceReport("running")
+            report.nodes[0] = Object.assign({}, report.nodes[0], {
+                ownership: "local_attached",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"],
+                config_path: null,
+                detail: "Attached local Bedrock is stopped; lifecycle is controlled through the local service."
+            })
+            const page = createPage(report, samplePackageCatalog(null))
+            state.observedNodes = ({
+                bedrock: { status: "healthy", detail: "Stale public probe" }
+            })
+
+            const bedrock = page.nodeTableRows().filter(function (row) {
+                return row.key === "bedrock"
+            })[0]
+            const start = findVisibleAccessibleByName(page, "Start Bedrock")
+
+            verify(bedrock !== undefined)
+            compare(bedrock.cells[1].text, "Attached")
+            compare(bedrock.cells[2].text, "Stopped")
+            compare(bedrock.cells[5].text,
+                "Attached local Bedrock is stopped; lifecycle is controlled through the local service.")
+            verify(!!start, "Start action exists")
+            verify(start.enabled)
+        }
+
         function test_indexer_package_install_requires_an_active_topology() {
             const report = sampleReport("stopped")
             report.active_devnet = null
