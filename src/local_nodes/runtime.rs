@@ -1033,6 +1033,7 @@ fn systemd_unit_object_path(unit: &str) -> String {
     path
 }
 
+#[cfg(any(target_os = "linux", test))]
 const fn lowercase_hex_digit(nibble: u8) -> char {
     match nibble {
         0..=9 => (b'0' + nibble) as char,
