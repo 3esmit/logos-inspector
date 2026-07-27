@@ -28,7 +28,8 @@ function subscriptionCatalog(model) {
         {
             moduleName: model.blockchainModule,
             events: [
-                "newBlock"
+                "newBlock",
+                "nodeChanged"
             ]
         }
     ]
@@ -56,6 +57,9 @@ function projectEnvelope(model, event, forwardRuntimeEvent) {
     }
     if (moduleText === model.blockchainModule && eventText === "newBlock") {
         return BlockchainModuleEvents.handleNewBlock(model, event)
+    }
+    if (moduleText === model.blockchainModule && eventText === "nodeChanged") {
+        return false
     }
     return false
 }

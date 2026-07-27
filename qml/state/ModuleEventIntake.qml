@@ -97,7 +97,8 @@ QtObject {
             return true
         }
         if (moduleText === String(model && model.blockchainModule ? model.blockchainModule : "")) {
-            return eventText === "moduleReady"
+            return eventText === "nodeChanged"
+                || eventText === "moduleReady"
                 || eventText === "moduleUnavailable"
                 || eventText === "nodeStarted"
                 || eventText === "nodeStopped"

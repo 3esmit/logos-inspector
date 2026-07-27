@@ -45,7 +45,7 @@ struct EventSpec
     bool required = true;
 };
 
-constexpr std::array<EventSpec, 20> kEvents = { {
+constexpr std::array<EventSpec, 21> kEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -65,6 +65,7 @@ constexpr std::array<EventSpec, 20> kEvents = { {
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
     { kBlockchainModule, kNewBlockEvent },
+    { kBlockchainModule, "nodeChanged", false },
     { "storage_module", "nodeChanged", false },
 } };
 

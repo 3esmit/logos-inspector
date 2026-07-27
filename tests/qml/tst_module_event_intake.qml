@@ -352,15 +352,17 @@ TestCase {
     function test_install_subscribes_module_event_catalog() {
         const count = intake.install()
 
-        compare(count, 18)
+        compare(count, 19)
         compare(intake.subscriptionCatalog().length, 3)
-        compare(fakeHost.subscriptions.length, 18)
+        compare(fakeHost.subscriptions.length, 19)
         compare(fakeHost.subscriptions[0].moduleName, model.deliveryModule)
         compare(fakeHost.subscriptions[0].eventName, "messageSent")
         compare(fakeHost.subscriptions[7].moduleName, model.storageModule)
         compare(fakeHost.subscriptions[7].eventName, "nodeChanged")
-        compare(fakeHost.subscriptions[fakeHost.subscriptions.length - 1].moduleName, model.blockchainModule)
-        compare(fakeHost.subscriptions[fakeHost.subscriptions.length - 1].eventName, "newBlock")
+        compare(fakeHost.subscriptions[17].moduleName, model.blockchainModule)
+        compare(fakeHost.subscriptions[17].eventName, "newBlock")
+        compare(fakeHost.subscriptions[18].moduleName, model.blockchainModule)
+        compare(fakeHost.subscriptions[18].eventName, "nodeChanged")
     }
 
     function test_raw_module_event_builds_canonical_envelope() {
@@ -377,12 +379,12 @@ TestCase {
 
     function test_host_swap_resubscribes_catalog() {
         intake.install()
-        compare(fakeHost.subscriptions.length, 18)
+        compare(fakeHost.subscriptions.length, 19)
         const staleCallback = fakeHost.subscriptions[0].callback
 
         bridge.host = replacementHost
 
-        tryVerify(function () { return replacementHost.subscriptions.length === 18 })
+        tryVerify(function () { return replacementHost.subscriptions.length === 19 })
         staleCallback({ requestId: "stale" })
         compare(model.deliveryModuleEvents.length, 0)
     }
@@ -496,11 +498,13 @@ TestCase {
         bridge.host = basecampHost
 
         tryCompare(model.metrics, "deliveryModuleEventStreamStatus", "ready")
-        tryVerify(function() { return basecampHost.subscriptions.length === 18 })
+        tryVerify(function() { return basecampHost.subscriptions.length === 19 })
         compare(basecampHost.subscriptions[0].moduleName, model.deliveryModule)
         compare(basecampHost.subscriptions[0].eventName, "messageSent")
         compare(basecampHost.subscriptions[17].moduleName, model.blockchainModule)
         compare(basecampHost.subscriptions[17].eventName, "newBlock")
+        compare(basecampHost.subscriptions[18].moduleName, model.blockchainModule)
+        compare(basecampHost.subscriptions[18].eventName, "nodeChanged")
         verify(basecampHost.calls.some(function (call) {
             return call.moduleName === "logos_inspector"
                 && call.method === "logosInspectorOwnsRuntimeModuleEvents"
@@ -514,7 +518,7 @@ TestCase {
     function test_basecamp_global_event_projects_without_second_runtime_ingress() {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
-        tryVerify(function() { return basecampHost.subscriptions.length === 18 })
+        tryVerify(function() { return basecampHost.subscriptions.length === 19 })
         useHostBlockchainModule()
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
@@ -622,8 +626,8 @@ TestCase {
     function test_direct_native_event_owner_keeps_projection_subscription() {
         bridge.host = directEventOwnerHost
 
-        compare(intake.install(), 18)
-        compare(directEventOwnerHost.subscriptions.length, 18)
+        compare(intake.install(), 19)
+        compare(directEventOwnerHost.subscriptions.length, 19)
         verify(!intake.forwardsRuntimeOperationEvents())
         directEventOwnerHost.calls = []
 
@@ -673,6 +677,19 @@ TestCase {
                 return call.method === "localNodesStatus"
             })
         })
+
+        nativeWatcherHost.calls = []
+        nativeWatcherHost.moduleEventJson(
+            model.blockchainModule,
+            "nodeChanged",
+            JSON.stringify([{ schema: "logos.managed_node_lifecycle.event", version: 1 }])
+        )
+        tryVerify(function () {
+            return nativeWatcherHost.calls.some(function(call) {
+                return call.method === "localNodesStatus"
+            })
+        })
+        compare(runtimeModuleEventCalls(nativeWatcherHost.calls), 0)
 
         nativeWatcherHost.calls = []
         nativeWatcherHost.moduleEventJson(

@@ -113,7 +113,7 @@ constexpr std::array<std::string_view, 6> kExpectedModules = {
     "lez_core",
 };
 
-constexpr std::array<std::pair<std::string_view, std::string_view>, 20> kExpectedEvents = { {
+constexpr std::array<std::pair<std::string_view, std::string_view>, 21> kExpectedEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -133,6 +133,7 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 20> kExpecte
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
     { "blockchain_module", "newBlock" },
+    { "blockchain_module", "nodeChanged" },
     { "storage_module", "nodeChanged" },
 } };
 
@@ -554,7 +555,7 @@ private:
         void* userData)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::size_t ordinal = createdSubscriptions_.size();
+        const std::size_t ordinal = subscriptionAttempts_++;
         if (client->destroyed || event == nullptr || callback == nullptr
             || ordinal == failSubscriptionOrdinal_) {
             return nullptr;
@@ -652,6 +653,7 @@ private:
     InvokeMode invokeMode_ = InvokeMode::hold;
     std::size_t failClientOrdinal_ = (std::numeric_limits<std::size_t>::max)();
     std::size_t failSubscriptionOrdinal_ = (std::numeric_limits<std::size_t>::max)();
+    std::size_t subscriptionAttempts_ = 0;
     std::size_t destroyedClients_ = 0;
     std::size_t lifecycleThreadViolations_ = 0;
     std::size_t marshalledLifecycleCalls_ = 0;
@@ -971,6 +973,23 @@ bool missingStorageV1SubscriptionKeepsCoreEventIngressHealthy()
     REQUIRE(fixture.protocol.createdSubscriptions().size() == kExpectedEvents.size() - 1);
     REQUIRE(!fixture.protocol.emitEvent("storage_module", "nodeChanged", "[]"));
     REQUIRE(fixture.protocol.emitEvent("delivery_module", "messageSent", "[]"));
+    REQUIRE(waitUntil([&fixture] { return !fixture.ingress.calls().empty(); }, 50ms));
+    fixture.transport.close();
+    REQUIRE(fixture.protocol.destroyedClients() == kExpectedModules.size());
+    REQUIRE(fixture.protocol.lifecycleThreadViolations() == 0);
+    return true;
+}
+
+bool missingBlockchainV1SubscriptionKeepsCoreEventIngressHealthy()
+{
+    Fixture fixture;
+    fixture.protocol.failSubscriptionAt(kExpectedEvents.size() - 2);
+    REQUIRE(fixture.activate());
+    REQUIRE(fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 1);
+    REQUIRE(fixture.protocol.createdSubscriptions().size() == kExpectedEvents.size() - 1);
+    REQUIRE(!fixture.protocol.emitEvent("blockchain_module", "nodeChanged", "[]"));
+    REQUIRE(fixture.protocol.emitEvent("storage_module", "nodeChanged", "[]"));
     REQUIRE(waitUntil([&fixture] { return !fixture.ingress.calls().empty(); }, 50ms));
     fixture.transport.close();
     REQUIRE(fixture.protocol.destroyedClients() == kExpectedModules.size());
@@ -1769,11 +1788,12 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 20> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 21> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
         { "missingRequiredSubscriptionKeepsDispatchOpen", missingRequiredSubscriptionKeepsDispatchOpen },
         { "missingStorageV1SubscriptionKeepsCoreEventIngressHealthy", missingStorageV1SubscriptionKeepsCoreEventIngressHealthy },
+        { "missingBlockchainV1SubscriptionKeepsCoreEventIngressHealthy", missingBlockchainV1SubscriptionKeepsCoreEventIngressHealthy },
         { "closeWaitsForAdmittedActivationStartup", closeWaitsForAdmittedActivationStartup },
         { "faultDuringReadyHealthPublicationCannotRestoreStaleHealth", faultDuringReadyHealthPublicationCannotRestoreStaleHealth },
         { "dispatchEnforcesAllowlistAndBounds", dispatchEnforcesAllowlistAndBounds },
