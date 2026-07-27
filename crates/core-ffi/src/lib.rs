@@ -669,6 +669,27 @@ impl ModuleTransport for BasecampHostTransport {
     fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
+            let combined = state
+                .dispatch(ModuleCall::new(
+                    ModuleTransportKind::Module,
+                    module.clone(),
+                    "getPluginInterface",
+                    Vec::new(),
+                )?)
+                .await
+                .map(ModuleCallReply::into_value)
+                .ok()
+                .and_then(split_module_interface);
+            if let Some((methods, events)) = combined {
+                return Ok(serde_json::json!({
+                    "name": module,
+                    "methods": methods,
+                    "events": events,
+                }));
+            }
+
+            // Older hosts do not expose the combined interface endpoint. Keep
+            // their established split-method metadata path as the fallback.
             let methods = state
                 .dispatch(ModuleCall::new(
                     ModuleTransportKind::Module,
@@ -706,6 +727,23 @@ impl ModuleTransport for BasecampHostTransport {
             }))
         })
     }
+}
+
+fn split_module_interface(value: Value) -> Option<(Value, Value)> {
+    let entries = value.as_array()?;
+    let mut methods = Vec::new();
+    let mut events = Vec::new();
+    for entry in entries {
+        match entry.get("type").and_then(Value::as_str) {
+            Some("event") => events.push(entry.clone()),
+            None | Some("method") => methods.push(entry.clone()),
+            Some(_) => {}
+        }
+    }
+    if methods.is_empty() && events.is_empty() {
+        return None;
+    }
+    Some((Value::Array(methods), Value::Array(events)))
 }
 
 impl AsyncState {
@@ -3050,7 +3088,7 @@ mod tests {
     }
 
     #[test]
-    fn host_module_info_merges_methods_and_events() -> TestResult {
+    fn host_module_info_prefers_combined_interface() -> TestResult {
         let host = TestHost::new();
         let vtable = host.vtable();
         // SAFETY: the local vtable provides a complete readable v1 prefix.
@@ -3062,35 +3100,19 @@ mod tests {
         let mut future = transport.module_info("storage_module".to_owned());
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
-            return err("host module info completed before method metadata reply");
+            return err("host module info completed before combined metadata reply");
         }
-        let methods_request = host.wait_for_request()?;
-        if methods_request.module != "storage_module"
-            || methods_request.method != "getPluginMethods"
-            || methods_request.args_json != "[]"
+        let interface_request = host.wait_for_request()?;
+        if interface_request.module != "storage_module"
+            || interface_request.method != "getPluginInterface"
+            || interface_request.args_json != "[]"
         {
-            return err("host module info issued the wrong method metadata call");
+            return err("host module info did not request the combined interface first");
         }
         host.complete(
-            methods_request.id,
+            interface_request.id,
             1,
-            r#"[{"name":"downloadProtocol","signature":"downloadProtocol()"}]"#,
-            false,
-        )?;
-        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
-            return err("host module info completed before event metadata reply");
-        }
-        let events_request = host.wait_for_request()?;
-        if events_request.module != "storage_module"
-            || events_request.method != "getPluginEvents"
-            || events_request.args_json != "[]"
-        {
-            return err("host module info issued the wrong event metadata call");
-        }
-        host.complete(
-            events_request.id,
-            1,
-            r#"[{"name":"storageDownloadDoneV2","signature":"storageDownloadDoneV2(QString)"}]"#,
+            r#"[{"name":"nodeStatus","signature":"nodeStatus()","isInvokable":true},{"name":"nodeAction","signature":"nodeAction(QString)","isInvokable":true},{"type":"event","name":"nodeChanged","signature":"nodeChanged(QString)"}]"#,
             false,
         )?;
         let info = match std::future::Future::poll(future.as_mut(), &mut context) {
@@ -3106,13 +3128,94 @@ mod tests {
             || info
                 .get("methods")
                 .and_then(Value::as_array)
+                .is_none_or(|methods| methods.len() != 2)
+            || info
+                .get("events")
+                .and_then(Value::as_array)
+                .is_none_or(|events| events.len() != 1)
+        {
+            return err("host module info did not split untyped methods and typed events");
+        }
+        drop(future);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn host_module_info_falls_back_to_split_metadata() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let transport = BasecampHostTransport {
+            state: Arc::clone(&state),
+        };
+        let mut future = transport.module_info("storage_module".to_owned());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module info completed before combined metadata fallback");
+        }
+        let interface_request = host.wait_for_request()?;
+        if interface_request.module != "storage_module"
+            || interface_request.method != "getPluginInterface"
+            || interface_request.args_json != "[]"
+        {
+            return err("host module info did not request the combined interface first");
+        }
+        host.complete(interface_request.id, 1, "null", false)?;
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module info completed before split method metadata reply");
+        }
+        let methods_request = host.wait_for_request()?;
+        if methods_request.module != "storage_module"
+            || methods_request.method != "getPluginMethods"
+            || methods_request.args_json != "[]"
+        {
+            return err("host module info issued the wrong split method metadata call");
+        }
+        host.complete(
+            methods_request.id,
+            1,
+            r#"[{"name":"downloadProtocol","signature":"downloadProtocol()"}]"#,
+            false,
+        )?;
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module info completed before split event metadata reply");
+        }
+        let events_request = host.wait_for_request()?;
+        if events_request.module != "storage_module"
+            || events_request.method != "getPluginEvents"
+            || events_request.args_json != "[]"
+        {
+            return err("host module info issued the wrong split event metadata call");
+        }
+        host.complete(
+            events_request.id,
+            1,
+            r#"[{"name":"storageDownloadDoneV2","signature":"storageDownloadDoneV2(QString)"}]"#,
+            false,
+        )?;
+        let info = match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Ok(info)) => info,
+            std::task::Poll::Ready(Err(error)) => {
+                return err(&format!("host module info failed: {error:#}"));
+            }
+            std::task::Poll::Pending => {
+                return err("host module info remained pending after split metadata replies");
+            }
+        };
+        if info.get("name").and_then(Value::as_str) != Some("storage_module")
+            || info
+                .get("methods")
+                .and_then(Value::as_array)
                 .is_none_or(|methods| methods.len() != 1)
             || info
                 .get("events")
                 .and_then(Value::as_array)
                 .is_none_or(|events| events.len() != 1)
         {
-            return err("host module info did not merge named method and event metadata");
+            return err("host module info did not retain split metadata fallback");
         }
         drop(future);
         state.close();

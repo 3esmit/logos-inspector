@@ -59,6 +59,13 @@ const BEDROCK_NODE_ACTION_SIGNATURE: &str = "nodeAction(QString)";
 const BEDROCK_NODE_CHANGED_EVENT: &str = "nodeChanged";
 const BEDROCK_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
 static BEDROCK_NODE_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
+const MESSAGING_NODE_STATUS_METHOD: &str = "nodeStatus";
+const MESSAGING_NODE_STATUS_SIGNATURE: &str = "nodeStatus()";
+const MESSAGING_NODE_ACTION_METHOD: &str = "nodeAction";
+const MESSAGING_NODE_ACTION_SIGNATURE: &str = "nodeAction(QString)";
+const MESSAGING_NODE_CHANGED_EVENT: &str = "nodeChanged";
+const MESSAGING_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
+static MESSAGING_NODE_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 struct HostNodeObservation {
@@ -409,8 +416,8 @@ async fn observe_node(
         Ok(metadata) => metadata,
         Err(error) => return HostNodeObservation::unavailable(kind, error),
     };
-    if kind == NodeKind::Bedrock && supports_bedrock_node_lifecycle_v1(&metadata) {
-        return observe_bedrock_node_lifecycle_v1(module_transport, module).await;
+    if supports_managed_node_lifecycle_v1(kind, &metadata) {
+        return observe_managed_node_lifecycle_v1(kind, module_transport, module).await;
     }
 
     let contract_error = validate_lifecycle_contract(kind, &metadata)
@@ -507,20 +514,25 @@ async fn observe_node(
     }
 }
 
-async fn observe_bedrock_node_lifecycle_v1(
+async fn observe_managed_node_lifecycle_v1(
+    kind: NodeKind,
     module_transport: &SharedModuleTransport,
     module: &str,
 ) -> HostNodeObservation {
+    let Some(contract) = managed_node_lifecycle_v1_contract(kind) else {
+        return HostNodeObservation::unavailable(kind, "node has no V1 lifecycle contract");
+    };
+    let label = adapter_for(kind).label();
     let call = match ModuleCall::new(
         ModuleTransportKind::Module,
         module,
-        BEDROCK_NODE_STATUS_METHOD,
+        contract.status_method,
         Vec::new(),
     ) {
         Ok(call) => call,
         Err(error) => {
             return HostNodeObservation {
-                kind: NodeKind::Bedrock,
+                kind,
                 module_available: true,
                 contract_error: None,
                 context_initialized: None,
@@ -532,11 +544,13 @@ async fn observe_bedrock_node_lifecycle_v1(
     let snapshot = dispatch_module_call(module_transport.as_ref(), call)
         .await
         .map(ModuleCallReply::into_value)
-        .and_then(|value| normalize_module_call_value(module, BEDROCK_NODE_STATUS_METHOD, value))
-        .and_then(|value| managed_node_lifecycle_snapshot(&value, "bedrock", "Bedrock nodeStatus"));
+        .and_then(|value| normalize_module_call_value(module, contract.status_method, value))
+        .and_then(|value| {
+            managed_node_lifecycle_snapshot(&value, contract.scope, &format!("{label} nodeStatus"))
+        });
     match snapshot {
         Ok(snapshot) => HostNodeObservation {
-            kind: NodeKind::Bedrock,
+            kind,
             module_available: true,
             contract_error: None,
             context_initialized: snapshot.state().context_initialized(),
@@ -544,7 +558,7 @@ async fn observe_bedrock_node_lifecycle_v1(
             liveness_error: snapshot.last_error().map(ToOwned::to_owned),
         },
         Err(error) => HostNodeObservation {
-            kind: NodeKind::Bedrock,
+            kind,
             module_available: true,
             contract_error: None,
             context_initialized: None,
@@ -898,20 +912,62 @@ fn supports_storage_node_lifecycle_v1(metadata: &Value) -> bool {
     )
 }
 
-fn supports_bedrock_node_lifecycle_v1(metadata: &Value) -> bool {
-    metadata_has_method(
-        metadata,
-        BEDROCK_NODE_STATUS_METHOD,
-        BEDROCK_NODE_STATUS_SIGNATURE,
-    ) && metadata_has_method(
-        metadata,
-        BEDROCK_NODE_ACTION_METHOD,
-        BEDROCK_NODE_ACTION_SIGNATURE,
-    ) && metadata_has_event(
-        metadata,
-        BEDROCK_NODE_CHANGED_EVENT,
-        BEDROCK_NODE_CHANGED_SIGNATURE,
-    )
+#[derive(Clone, Copy)]
+struct ManagedNodeLifecycleV1Contract {
+    scope: &'static str,
+    status_method: &'static str,
+    status_signature: &'static str,
+    action_method: &'static str,
+    action_signature: &'static str,
+    changed_event: &'static str,
+    changed_signature: &'static str,
+    operation_serial: &'static AtomicU64,
+}
+
+fn managed_node_lifecycle_v1_contract(kind: NodeKind) -> Option<ManagedNodeLifecycleV1Contract> {
+    match kind {
+        NodeKind::Bedrock => Some(ManagedNodeLifecycleV1Contract {
+            scope: "bedrock",
+            status_method: BEDROCK_NODE_STATUS_METHOD,
+            status_signature: BEDROCK_NODE_STATUS_SIGNATURE,
+            action_method: BEDROCK_NODE_ACTION_METHOD,
+            action_signature: BEDROCK_NODE_ACTION_SIGNATURE,
+            changed_event: BEDROCK_NODE_CHANGED_EVENT,
+            changed_signature: BEDROCK_NODE_CHANGED_SIGNATURE,
+            operation_serial: &BEDROCK_NODE_LIFECYCLE_OPERATION_SERIAL,
+        }),
+        NodeKind::Messaging => Some(ManagedNodeLifecycleV1Contract {
+            scope: "messaging",
+            status_method: MESSAGING_NODE_STATUS_METHOD,
+            status_signature: MESSAGING_NODE_STATUS_SIGNATURE,
+            action_method: MESSAGING_NODE_ACTION_METHOD,
+            action_signature: MESSAGING_NODE_ACTION_SIGNATURE,
+            changed_event: MESSAGING_NODE_CHANGED_EVENT,
+            changed_signature: MESSAGING_NODE_CHANGED_SIGNATURE,
+            operation_serial: &MESSAGING_NODE_LIFECYCLE_OPERATION_SERIAL,
+        }),
+        NodeKind::Storage | NodeKind::Sequencer | NodeKind::Indexer => None,
+    }
+}
+
+fn supports_managed_node_lifecycle_v1(kind: NodeKind, metadata: &Value) -> bool {
+    let Some(contract) = managed_node_lifecycle_v1_contract(kind) else {
+        return false;
+    };
+    metadata_has_method(metadata, contract.status_method, contract.status_signature)
+        && metadata_has_method(metadata, contract.action_method, contract.action_signature)
+        && managed_node_lifecycle_event_metadata_compatible(metadata, contract)
+}
+
+fn managed_node_lifecycle_event_metadata_compatible(
+    metadata: &Value,
+    contract: ManagedNodeLifecycleV1Contract,
+) -> bool {
+    let Some(events) = metadata.get("events").and_then(Value::as_array) else {
+        return true;
+    };
+    events.is_empty()
+        || metadata_has_event(metadata, contract.changed_event, contract.changed_signature)
 }
 
 fn liveness_call(kind: NodeKind) -> Option<(&'static str, &'static str, Vec<Value>)> {
@@ -1072,8 +1128,8 @@ async fn execute_host_action_with_lifecycle_timeout(
     lifecycle_timeout: Duration,
 ) -> Result<HostActionExecution> {
     let metadata = module_transport.module_info(plan.module.to_owned()).await?;
-    if plan.kind == NodeKind::Bedrock && supports_bedrock_node_lifecycle_v1(&metadata) {
-        return execute_bedrock_node_lifecycle_v1_action(
+    if supports_managed_node_lifecycle_v1(plan.kind, &metadata) {
+        return execute_managed_node_lifecycle_v1_action(
             plan,
             module_transport,
             &metadata,
@@ -1117,27 +1173,35 @@ async fn execute_host_action_with_lifecycle_timeout(
     })
 }
 
-async fn execute_bedrock_node_lifecycle_v1_action(
+async fn execute_managed_node_lifecycle_v1_action(
     plan: &PreparedHostAction,
     module_transport: &SharedModuleTransport,
     metadata: &Value,
     lifecycle_timeout: Duration,
 ) -> Result<HostActionExecution> {
+    let contract = managed_node_lifecycle_v1_contract(plan.kind)
+        .context("node has no V1 lifecycle contract")?;
+    let label = adapter_for(plan.kind).label();
     anyhow::ensure!(
         module_transport.native_runtime_module_events_ready(),
         "Basecamp host does not own healthy native lifecycle event ingress"
     );
     let snapshot =
-        bedrock_node_lifecycle_snapshot_for_action(plan.module, module_transport).await?;
+        managed_node_lifecycle_snapshot_for_action(plan.kind, plan.module, module_transport)
+            .await?;
     let (action, expected_transition, expected_terminal, parameters) =
-        bedrock_node_lifecycle_action_request(plan)?;
+        managed_node_lifecycle_action_request(plan)?;
     anyhow::ensure!(
         snapshot.supports_action(action),
-        "Bedrock V1 nodeStatus does not allow `{action}` in its current state"
+        "{label} V1 nodeStatus does not allow `{action}` in its current state"
     );
-    let lifecycle = subscribe_bedrock_node_lifecycle_event(plan, module_transport, metadata)?;
-    let serial = BEDROCK_NODE_LIFECYCLE_OPERATION_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let operation_id = format!("logos-inspector-bedrock-{action}-{}-{serial}", now_millis());
+    let lifecycle = subscribe_managed_node_lifecycle_event(plan, module_transport, metadata)?;
+    let serial = contract.operation_serial.fetch_add(1, Ordering::Relaxed);
+    let operation_id = format!(
+        "logos-inspector-{}-{action}-{}-{serial}",
+        contract.scope,
+        now_millis()
+    );
     let request = json!({
         "schema": "logos.managed_node_lifecycle.command",
         "version": 1,
@@ -1153,15 +1217,21 @@ async fn execute_bedrock_node_lifecycle_v1_action(
     let call = ModuleCall::new(
         ModuleTransportKind::Module,
         plan.module,
-        BEDROCK_NODE_ACTION_METHOD,
+        contract.action_method,
         vec![Value::String(request.to_string())],
     )?;
     let value = dispatch_module_call(module_transport.as_ref(), call)
         .await?
         .into_value();
-    let value = normalize_module_call_value(plan.module, BEDROCK_NODE_ACTION_METHOD, value)?;
-    validate_bedrock_node_lifecycle_ack(&value, &operation_id, &snapshot, expected_transition)?;
-    let lifecycle_detail = wait_for_bedrock_node_lifecycle_event(
+    let value = normalize_module_call_value(plan.module, contract.action_method, value)?;
+    validate_managed_node_lifecycle_ack(
+        plan.kind,
+        &value,
+        &operation_id,
+        &snapshot,
+        expected_transition,
+    )?;
+    let lifecycle_detail = wait_for_managed_node_lifecycle_event(
         plan,
         lifecycle,
         &operation_id,
@@ -1173,25 +1243,25 @@ async fn execute_bedrock_node_lifecycle_v1_action(
     .await?;
     Ok(HostActionExecution {
         lifecycle_detail: Some(lifecycle_detail),
-        dispatched_method: BEDROCK_NODE_ACTION_METHOD,
+        dispatched_method: contract.action_method,
     })
 }
 
-fn bedrock_node_lifecycle_action_request(
+fn managed_node_lifecycle_action_request(
     plan: &PreparedHostAction,
 ) -> Result<(&'static str, &'static str, &'static str, Value)> {
+    let label = adapter_for(plan.kind).label();
     match plan.action {
         NodeAction::Initialize => {
-            let config = plan
-                .args
-                .first()
-                .and_then(Value::as_str)
-                .context("Bedrock initialization has no generated configuration")?;
-            let parsed: Value = serde_json::from_str(config)
-                .context("Bedrock initialization configuration is not valid JSON")?;
+            let config = plan.args.first().and_then(Value::as_str).with_context(|| {
+                format!("{label} initialization has no generated configuration")
+            })?;
+            let parsed: Value = serde_json::from_str(config).with_context(|| {
+                format!("{label} initialization configuration is not valid JSON")
+            })?;
             anyhow::ensure!(
                 parsed.is_object(),
-                "Bedrock initialization configuration must be a JSON object"
+                "{label} initialization configuration must be a JSON object"
             );
             Ok((
                 "initialize",
@@ -1201,86 +1271,106 @@ fn bedrock_node_lifecycle_action_request(
             ))
         }
         NodeAction::Start => {
-            let deployment = plan.args.get(1).and_then(Value::as_str).unwrap_or_default();
-            let parameters = if deployment.is_empty() {
-                json!({})
-            } else {
-                json!({ "deployment": deployment })
+            let parameters = match plan.kind {
+                NodeKind::Bedrock => {
+                    let deployment = plan.args.get(1).and_then(Value::as_str).unwrap_or_default();
+                    if deployment.is_empty() {
+                        json!({})
+                    } else {
+                        json!({ "deployment": deployment })
+                    }
+                }
+                NodeKind::Messaging => json!({}),
+                NodeKind::Storage | NodeKind::Sequencer | NodeKind::Indexer => {
+                    bail!("{label} V1 lifecycle is not supported")
+                }
             };
             Ok(("start", "starting", "running", parameters))
         }
         NodeAction::Stop => Ok(("stop", "stopping", "stopped", json!({}))),
-        action => bail!("Bedrock V1 lifecycle does not support {}", action.as_str()),
+        action => bail!("{label} V1 lifecycle does not support {}", action.as_str()),
     }
 }
 
-async fn bedrock_node_lifecycle_snapshot_for_action(
+async fn managed_node_lifecycle_snapshot_for_action(
+    kind: NodeKind,
     module: &str,
     module_transport: &SharedModuleTransport,
 ) -> Result<ManagedNodeLifecycleSnapshot> {
+    let contract =
+        managed_node_lifecycle_v1_contract(kind).context("node has no V1 lifecycle contract")?;
+    let label = adapter_for(kind).label();
     let call = ModuleCall::new(
         ModuleTransportKind::Module,
         module,
-        BEDROCK_NODE_STATUS_METHOD,
+        contract.status_method,
         Vec::new(),
     )?;
     let value = dispatch_module_call(module_transport.as_ref(), call)
         .await?
         .into_value();
-    let value = normalize_module_call_value(module, BEDROCK_NODE_STATUS_METHOD, value)?;
-    managed_node_lifecycle_snapshot(&value, "bedrock", "Bedrock nodeStatus")
+    let value = normalize_module_call_value(module, contract.status_method, value)?;
+    managed_node_lifecycle_snapshot(&value, contract.scope, &format!("{label} nodeStatus"))
 }
 
-fn subscribe_bedrock_node_lifecycle_event(
+fn subscribe_managed_node_lifecycle_event(
     plan: &PreparedHostAction,
     module_transport: &SharedModuleTransport,
     metadata: &Value,
 ) -> Result<HostLifecycleSubscription> {
-    require_event(
-        metadata,
+    let contract = managed_node_lifecycle_v1_contract(plan.kind)
+        .context("node has no V1 lifecycle contract")?;
+    anyhow::ensure!(
+        managed_node_lifecycle_event_metadata_compatible(metadata, contract),
+        "Basecamp module `{}` advertises lifecycle events but omits `{}`",
         plan.module,
-        BEDROCK_NODE_CHANGED_EVENT,
-        BEDROCK_NODE_CHANGED_SIGNATURE,
-    )?;
+        contract.changed_signature,
+    );
     let subscription = module_transport
-        .subscribe_module_event(plan.module, BEDROCK_NODE_CHANGED_EVENT)
-        .context("Basecamp host cannot subscribe to Bedrock nodeChanged confirmation")?;
+        .subscribe_module_event(plan.module, contract.changed_event)
+        .with_context(|| {
+            format!(
+                "Basecamp host cannot subscribe to {} nodeChanged confirmation",
+                adapter_for(plan.kind).label()
+            )
+        })?;
     Ok(HostLifecycleSubscription {
-        event: BEDROCK_NODE_CHANGED_EVENT,
+        event: contract.changed_event,
         subscription,
     })
 }
 
-fn validate_bedrock_node_lifecycle_ack(
+fn validate_managed_node_lifecycle_ack(
+    kind: NodeKind,
     value: &Value,
     operation_id: &str,
     snapshot: &ManagedNodeLifecycleSnapshot,
     expected_state: &str,
 ) -> Result<()> {
+    let label = adapter_for(kind).label();
     let acknowledgement = match value {
-        Value::String(text) => {
-            serde_json::from_str(text).context("Bedrock nodeAction response is not valid JSON")?
-        }
+        Value::String(text) => serde_json::from_str(text)
+            .with_context(|| format!("{label} nodeAction response is not valid JSON"))?,
         value => value.clone(),
     };
     anyhow::ensure!(
         acknowledgement.get("schema").and_then(Value::as_str)
             == Some("logos.managed_node_lifecycle.ack")
             && acknowledgement.get("version").and_then(Value::as_u64) == Some(1),
-        "Bedrock nodeAction response has an unsupported schema or version"
+        "{label} nodeAction response has an unsupported schema or version"
     );
     anyhow::ensure!(
         acknowledgement.get("operation_id").and_then(Value::as_str) == Some(operation_id),
-        "Bedrock nodeAction response does not acknowledge the submitted operation"
+        "{label} nodeAction response does not acknowledge the submitted operation"
     );
     anyhow::ensure!(
         acknowledgement.get("duplicate").and_then(Value::as_bool) == Some(false),
-        "Bedrock nodeAction response unexpectedly reused the operation"
+        "{label} nodeAction response unexpectedly reused the operation"
     );
     let accepted = acknowledgement
         .get("accepted")
         .and_then(Value::as_bool)
-        .context("Bedrock nodeAction response has no accepted field")?;
+        .with_context(|| format!("{label} nodeAction response has no accepted field"))?;
     if !accepted {
         let detail = acknowledgement
             .get("error")
@@ -1288,31 +1378,31 @@ fn validate_bedrock_node_lifecycle_ack(
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
             .filter(|message| !message.trim().is_empty())
-            .unwrap_or("Bedrock rejected the lifecycle request");
-        bail!("Bedrock nodeAction rejected the lifecycle request: {detail}");
+            .unwrap_or("module rejected the lifecycle request");
+        bail!("{label} nodeAction rejected the lifecycle request: {detail}");
     }
     let instance_id = acknowledgement
         .get("instance_id")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .context("Bedrock nodeAction response has no instance_id")?;
+        .with_context(|| format!("{label} nodeAction response has no instance_id"))?;
     let epoch = acknowledgement
         .get("epoch")
         .and_then(Value::as_u64)
-        .context("Bedrock nodeAction response has no epoch")?;
+        .with_context(|| format!("{label} nodeAction response has no epoch"))?;
     let sequence = acknowledgement
         .get("sequence")
         .and_then(Value::as_u64)
-        .context("Bedrock nodeAction response has no sequence")?;
+        .with_context(|| format!("{label} nodeAction response has no sequence"))?;
     anyhow::ensure!(
         instance_id == snapshot.instance_id()
             && epoch == snapshot.epoch()
             && sequence > snapshot.sequence(),
-        "Bedrock nodeAction response has an invalid lifecycle cursor"
+        "{label} nodeAction response has an invalid lifecycle cursor"
     );
     anyhow::ensure!(
         acknowledgement.get("state").and_then(Value::as_str) == Some(expected_state),
-        "Bedrock nodeAction response has an unexpected lifecycle state"
+        "{label} nodeAction response has an unexpected lifecycle state"
     );
     Ok(())
 }
@@ -1348,46 +1438,56 @@ struct ManagedNodeLifecycleEvent {
     error: Option<String>,
 }
 
-fn bedrock_node_lifecycle_event(event: &ModuleTransportEvent) -> Result<ManagedNodeLifecycleEvent> {
+fn managed_node_lifecycle_event(
+    kind: NodeKind,
+    module: &str,
+    expected_event: &str,
+    event: &ModuleTransportEvent,
+) -> Result<ManagedNodeLifecycleEvent> {
+    let contract =
+        managed_node_lifecycle_v1_contract(kind).context("node has no V1 lifecycle contract")?;
+    let label = adapter_for(kind).label();
     anyhow::ensure!(
-        event.module() == "blockchain_module" && event.event() == BEDROCK_NODE_CHANGED_EVENT,
-        "Basecamp Bedrock lifecycle subscription received an unexpected event"
+        event.module() == module && event.event() == expected_event,
+        "Basecamp {label} lifecycle subscription received an unexpected event"
     );
     anyhow::ensure!(
         event.args().len() == 1,
-        "Basecamp Bedrock nodeChanged has an invalid argument count"
+        "Basecamp {label} nodeChanged has an invalid argument count"
     );
     let payload = event
         .args()
         .first()
         .and_then(Value::as_str)
-        .context("Basecamp Bedrock nodeChanged payload is not a string")?;
+        .with_context(|| format!("Basecamp {label} nodeChanged payload is not a string"))?;
     let payload: ManagedNodeLifecycleEventPayload = serde_json::from_str(payload)
-        .context("Basecamp Bedrock nodeChanged payload is not valid JSON")?;
+        .with_context(|| format!("Basecamp {label} nodeChanged payload is not valid JSON"))?;
     anyhow::ensure!(
         payload.schema == "logos.managed_node_lifecycle.event" && payload.version == 1,
-        "Basecamp Bedrock nodeChanged has an unsupported schema or version"
+        "Basecamp {label} nodeChanged has an unsupported schema or version"
     );
     anyhow::ensure!(
-        payload.scope.kind == "bedrock" && !payload.instance_id.trim().is_empty(),
-        "Basecamp Bedrock nodeChanged has an invalid scope or instance_id"
+        payload.scope.kind == contract.scope && !payload.instance_id.trim().is_empty(),
+        "Basecamp {label} nodeChanged has an invalid scope or instance_id"
     );
     anyhow::ensure!(
         payload.emitted_at_ms >= 0,
-        "Basecamp Bedrock nodeChanged has an invalid timestamp"
+        "Basecamp {label} nodeChanged has an invalid timestamp"
     );
-    let _previous_state =
-        ManagedNodeLifecycleState::parse(&payload.previous_state, "Basecamp Bedrock nodeChanged")?;
+    let _previous_state = ManagedNodeLifecycleState::parse(
+        &payload.previous_state,
+        &format!("Basecamp {label} nodeChanged"),
+    )?;
     let status = managed_node_lifecycle_snapshot(
         &payload.status,
-        "bedrock",
-        "Basecamp Bedrock nodeChanged status",
+        contract.scope,
+        &format!("Basecamp {label} nodeChanged status"),
     )?;
     anyhow::ensure!(
         status.instance_id() == payload.instance_id
             && status.epoch() == payload.epoch
             && status.sequence() == payload.sequence,
-        "Basecamp Bedrock nodeChanged status cursor does not match its event"
+        "Basecamp {label} nodeChanged status cursor does not match its event"
     );
     let error = payload
         .error
@@ -1396,7 +1496,7 @@ fn bedrock_node_lifecycle_event(event: &ModuleTransportEvent) -> Result<ManagedN
             let message = error.message.trim();
             anyhow::ensure!(
                 !code.is_empty() && !message.is_empty(),
-                "Basecamp Bedrock nodeChanged error is incomplete"
+                "Basecamp {label} nodeChanged error is incomplete"
             );
             Ok(format!("{code}: {message}"))
         })
@@ -1414,7 +1514,7 @@ fn bedrock_node_lifecycle_event(event: &ModuleTransportEvent) -> Result<ManagedN
     })
 }
 
-async fn wait_for_bedrock_node_lifecycle_event(
+async fn wait_for_managed_node_lifecycle_event(
     plan: &PreparedHostAction,
     mut lifecycle: HostLifecycleSubscription,
     operation_id: &str,
@@ -1430,6 +1530,9 @@ async fn wait_for_bedrock_node_lifecycle_event(
     let action = plan.action.as_str();
     let expected_transition = expected_transition.to_owned();
     let expected_terminal = expected_terminal.to_owned();
+    let kind = plan.kind;
+    let module = plan.module.to_owned();
+    let label = adapter_for(kind).label();
     tokio::task::spawn_blocking(move || {
         let deadline = Instant::now() + timeout;
         let mut accepted = false;
@@ -1440,11 +1543,11 @@ async fn wait_for_bedrock_node_lifecycle_event(
                 .next_within(remaining)?
                 .with_context(|| {
                     format!(
-                        "Basecamp Bedrock did not emit {} before lifecycle confirmation timeout",
+                        "Basecamp {label} did not emit {} before lifecycle confirmation timeout",
                         lifecycle.event
                     )
                 })?;
-            let event = bedrock_node_lifecycle_event(&event)?;
+            let event = managed_node_lifecycle_event(kind, &module, lifecycle.event, &event)?;
             if event.operation_id.as_deref() != Some(operation_id.as_str()) {
                 continue;
             }
@@ -1452,41 +1555,41 @@ async fn wait_for_bedrock_node_lifecycle_event(
                 event.instance_id == initial_instance_id
                     && event.epoch >= initial_epoch
                     && event.sequence > initial_sequence,
-                "Basecamp Bedrock nodeChanged has an invalid lifecycle cursor"
+                "Basecamp {label} nodeChanged has an invalid lifecycle cursor"
             );
             anyhow::ensure!(
                 event.action == action,
-                "Basecamp Bedrock nodeChanged does not match the requested action"
+                "Basecamp {label} nodeChanged does not match the requested action"
             );
             match event.phase.as_str() {
                 "accepted" => {
                     anyhow::ensure!(
                         event.outcome == "accepted"
                             && event.status.state().as_str() == expected_transition,
-                        "Basecamp Bedrock nodeChanged has an invalid accepted transition"
+                        "Basecamp {label} nodeChanged has an invalid accepted transition"
                     );
                     accepted = true;
                 }
                 "settled" => {
                     anyhow::ensure!(
                         accepted,
-                        "Basecamp Bedrock nodeChanged settled before its accepted transition"
+                        "Basecamp {label} nodeChanged settled before its accepted transition"
                     );
                     if !matches!(event.outcome.as_str(), "succeeded" | "no_op") {
                         let detail = event
                             .error
                             .as_deref()
                             .or(event.status.last_error())
-                            .unwrap_or("Bedrock reported a lifecycle failure");
-                        bail!("Basecamp Bedrock V1 {action} failed: {detail}");
+                            .unwrap_or("module reported a lifecycle failure");
+                        bail!("Basecamp {label} V1 {action} failed: {detail}");
                     }
                     anyhow::ensure!(
                         event.status.state().as_str() == expected_terminal,
-                        "Basecamp Bedrock nodeChanged has an unexpected terminal state"
+                        "Basecamp {label} nodeChanged has an unexpected terminal state"
                     );
                     return Ok(format!("V1 {action} transition settled"));
                 }
-                _ => bail!("Basecamp Bedrock nodeChanged has an unknown lifecycle phase"),
+                _ => bail!("Basecamp {label} nodeChanged has an unknown lifecycle phase"),
             }
         }
     })
@@ -2749,57 +2852,101 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Copy)]
-    struct RecordingBedrockLifecycleState {
+    struct RecordingManagedNodeLifecycleState {
         state: ManagedNodeLifecycleState,
         epoch: u64,
         sequence: u64,
     }
 
     #[derive(Debug, Clone)]
-    struct RecordingBedrockNodeLifecycleTransport {
+    struct RecordingManagedNodeLifecycleTransport {
         calls: Arc<Mutex<Vec<ModuleCall>>>,
         event_subscribers: Arc<Mutex<Vec<RecordingEventSubscriber>>>,
-        state: Arc<Mutex<RecordingBedrockLifecycleState>>,
+        state: Arc<Mutex<RecordingManagedNodeLifecycleState>>,
         native_events_ready: bool,
+        event_metadata_available: bool,
+        module: &'static str,
+        scope: &'static str,
+        instance_id: &'static str,
+        label: &'static str,
     }
 
-    impl RecordingBedrockNodeLifecycleTransport {
+    impl RecordingManagedNodeLifecycleTransport {
         fn new(native_events_ready: bool) -> Self {
+            Self::with_identity(
+                native_events_ready,
+                "blockchain_module",
+                "bedrock",
+                "recording-bedrock-instance",
+                "Bedrock",
+            )
+        }
+
+        fn messaging(native_events_ready: bool) -> Self {
+            Self::with_identity(
+                native_events_ready,
+                "delivery_module",
+                "messaging",
+                "recording-messaging-instance",
+                "Messaging",
+            )
+        }
+
+        fn with_identity(
+            native_events_ready: bool,
+            module: &'static str,
+            scope: &'static str,
+            instance_id: &'static str,
+            label: &'static str,
+        ) -> Self {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 event_subscribers: Arc::new(Mutex::new(Vec::new())),
-                state: Arc::new(Mutex::new(RecordingBedrockLifecycleState {
+                state: Arc::new(Mutex::new(RecordingManagedNodeLifecycleState {
                     state: ManagedNodeLifecycleState::Uninitialized,
                     epoch: 0,
                     sequence: 0,
                 })),
                 native_events_ready,
+                event_metadata_available: true,
+                module,
+                scope,
+                instance_id,
+                label,
             }
+        }
+
+        fn messaging_without_event_metadata(native_events_ready: bool) -> Self {
+            let mut transport = Self::messaging(native_events_ready);
+            transport.event_metadata_available = false;
+            transport
         }
 
         fn calls(&self) -> Result<Vec<ModuleCall>> {
             self.calls
                 .lock()
                 .map(|calls| calls.clone())
-                .map_err(|_| anyhow::anyhow!("recording Bedrock call lock is poisoned"))
+                .map_err(|_| anyhow::anyhow!("recording {} call lock is poisoned", self.label))
         }
 
         fn set_state(&self, state: ManagedNodeLifecycleState) -> Result<()> {
             self.state
                 .lock()
-                .map_err(|_| anyhow::anyhow!("recording Bedrock lifecycle lock is poisoned"))?
+                .map_err(|_| {
+                    anyhow::anyhow!("recording {} lifecycle lock is poisoned", self.label)
+                })?
                 .state = state;
             Ok(())
         }
 
-        fn snapshot_value(state: RecordingBedrockLifecycleState) -> Value {
+        fn snapshot_value(&self, state: RecordingManagedNodeLifecycleState) -> Value {
             json!({
                 "schema": "logos.managed_node_lifecycle.snapshot",
                 "version": 1,
-                "instance_id": "recording-bedrock-instance",
+                "instance_id": self.instance_id,
                 "epoch": state.epoch,
                 "sequence": state.sequence,
-                "scope": { "kind": "bedrock" },
+                "scope": { "kind": self.scope },
                 "state": state.state.as_str(),
                 "health": if state.state == ManagedNodeLifecycleState::Running {
                     "healthy"
@@ -2815,26 +2962,27 @@ mod tests {
         }
 
         fn lifecycle_event(
+            &self,
             action: &str,
             operation_id: &str,
             phase: &str,
             outcome: &str,
             previous_state: ManagedNodeLifecycleState,
-            state: RecordingBedrockLifecycleState,
+            state: RecordingManagedNodeLifecycleState,
         ) -> Value {
             json!({
                 "schema": "logos.managed_node_lifecycle.event",
                 "version": 1,
-                "instance_id": "recording-bedrock-instance",
+                "instance_id": self.instance_id,
                 "epoch": state.epoch,
                 "sequence": state.sequence,
-                "scope": { "kind": "bedrock" },
+                "scope": { "kind": self.scope },
                 "operation_id": operation_id,
                 "action": action,
                 "phase": phase,
                 "outcome": outcome,
                 "previous_state": previous_state.as_str(),
-                "status": Self::snapshot_value(state),
+                "status": self.snapshot_value(state),
                 "error": null,
                 "emitted_at_ms": 1,
             })
@@ -2842,8 +2990,8 @@ mod tests {
 
         fn publish_node_changed(&self, event: Value) {
             let Ok(event) = ModuleTransportEvent::new(
-                "blockchain_module",
-                BEDROCK_NODE_CHANGED_EVENT,
+                self.module,
+                "nodeChanged",
                 vec![Value::String(event.to_string())],
             ) else {
                 return;
@@ -2852,9 +3000,7 @@ mod tests {
                 return;
             };
             subscribers.retain(|subscriber| {
-                if subscriber.module != "blockchain_module"
-                    || subscriber.event != BEDROCK_NODE_CHANGED_EVENT
-                {
+                if subscriber.module != self.module || subscriber.event != "nodeChanged" {
                     return true;
                 }
                 !matches!(
@@ -2865,13 +3011,12 @@ mod tests {
         }
 
         fn node_status(&self) -> Result<ModuleCallReply> {
-            let state = *self
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("recording Bedrock lifecycle lock is poisoned"))?;
+            let state = *self.state.lock().map_err(|_| {
+                anyhow::anyhow!("recording {} lifecycle lock is poisoned", self.label)
+            })?;
             Ok(ModuleCallReply::new(
                 ModuleTransportKind::Module,
-                Value::String(Self::snapshot_value(state).to_string()),
+                Value::String(self.snapshot_value(state).to_string()),
             ))
         }
 
@@ -2880,31 +3025,37 @@ mod tests {
                 .args()
                 .first()
                 .and_then(Value::as_str)
-                .context("recording Bedrock nodeAction request is missing")?;
-            let request: Value = serde_json::from_str(request)
-                .context("recording Bedrock nodeAction request is invalid")?;
+                .with_context(|| {
+                    format!("recording {} nodeAction request is missing", self.label)
+                })?;
+            let request: Value = serde_json::from_str(request).with_context(|| {
+                format!("recording {} nodeAction request is invalid", self.label)
+            })?;
             let operation_id = request
                 .get("operation_id")
                 .and_then(Value::as_str)
-                .context("recording Bedrock nodeAction has no operation_id")?;
+                .with_context(|| {
+                    format!("recording {} nodeAction has no operation_id", self.label)
+                })?;
             let action = request
                 .get("action")
                 .and_then(Value::as_str)
-                .context("recording Bedrock nodeAction has no action")?;
+                .with_context(|| format!("recording {} nodeAction has no action", self.label))?;
             let expected = request
                 .get("expected")
                 .and_then(Value::as_object)
-                .context("recording Bedrock nodeAction has no expected cursor")?;
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("recording Bedrock lifecycle lock is poisoned"))?;
+                .with_context(|| {
+                    format!("recording {} nodeAction has no expected cursor", self.label)
+                })?;
+            let mut state = self.state.lock().map_err(|_| {
+                anyhow::anyhow!("recording {} lifecycle lock is poisoned", self.label)
+            })?;
             anyhow::ensure!(
-                expected.get("instance_id").and_then(Value::as_str)
-                    == Some("recording-bedrock-instance")
+                expected.get("instance_id").and_then(Value::as_str) == Some(self.instance_id)
                     && expected.get("epoch").and_then(Value::as_u64) == Some(state.epoch)
                     && expected.get("sequence").and_then(Value::as_u64) == Some(state.sequence),
-                "recording Bedrock nodeAction received a stale expected cursor"
+                "recording {} nodeAction received a stale expected cursor",
+                self.label
             );
             let previous_state = state.state;
             let (transition, settled) = match action {
@@ -2913,12 +3064,15 @@ mod tests {
                         .get("parameters")
                         .and_then(|parameters| parameters.get("config"))
                         .and_then(Value::as_str)
-                        .context("recording Bedrock initialize has no config")?;
+                        .with_context(|| {
+                            format!("recording {} initialize has no config", self.label)
+                        })?;
                     anyhow::ensure!(
                         serde_json::from_str::<Value>(config)
                             .map(|value| value.is_object())
                             .unwrap_or(false),
-                        "recording Bedrock initialize config is invalid"
+                        "recording {} initialize config is invalid",
+                        self.label
                     );
                     (
                         ManagedNodeLifecycleState::Initializing,
@@ -2930,7 +3084,8 @@ mod tests {
                         request
                             .get("parameters")
                             .is_some_and(|parameters| parameters.is_object()),
-                        "recording Bedrock start parameters are invalid"
+                        "recording {} start parameters are invalid",
+                        self.label
                     );
                     (
                         ManagedNodeLifecycleState::Starting,
@@ -2944,14 +3099,18 @@ mod tests {
                             .is_some_and(|parameters| parameters
                                 .as_object()
                                 .is_some_and(|object| object.is_empty())),
-                        "recording Bedrock stop parameters are invalid"
+                        "recording {} stop parameters are invalid",
+                        self.label
                     );
                     (
                         ManagedNodeLifecycleState::Stopping,
                         ManagedNodeLifecycleState::Stopped,
                     )
                 }
-                _ => bail!("recording Bedrock nodeAction has invalid action or state"),
+                _ => bail!(
+                    "recording {} nodeAction has invalid action or state",
+                    self.label
+                ),
             };
             state.state = transition;
             state.sequence += 1;
@@ -2961,13 +3120,13 @@ mod tests {
                 "operation_id": operation_id,
                 "accepted": true,
                 "duplicate": false,
-                "instance_id": "recording-bedrock-instance",
+                "instance_id": self.instance_id,
                 "epoch": state.epoch,
                 "sequence": state.sequence,
                 "state": transition.as_str(),
                 "error": null,
             });
-            let accepted = Self::lifecycle_event(
+            let accepted = self.lifecycle_event(
                 action,
                 operation_id,
                 "accepted",
@@ -2980,7 +3139,7 @@ mod tests {
                 state.epoch += 1;
             }
             state.sequence += 1;
-            let settled = Self::lifecycle_event(
+            let settled = self.lifecycle_event(
                 action,
                 operation_id,
                 "settled",
@@ -2998,7 +3157,7 @@ mod tests {
         }
     }
 
-    impl ModuleTransport for RecordingBedrockNodeLifecycleTransport {
+    impl ModuleTransport for RecordingManagedNodeLifecycleTransport {
         fn kind(&self) -> ModuleTransportKind {
             ModuleTransportKind::Module
         }
@@ -3007,18 +3166,28 @@ mod tests {
             let result = self
                 .calls
                 .lock()
-                .map_err(|_| anyhow::anyhow!("recording Bedrock call lock is poisoned"))
+                .map_err(|_| anyhow::anyhow!("recording {} call lock is poisoned", self.label))
                 .and_then(|mut calls| {
                     calls.push(call.clone());
-                    match (call.module(), call.method()) {
-                        ("blockchain_module", BEDROCK_NODE_STATUS_METHOD) => self.node_status(),
-                        ("blockchain_module", BEDROCK_NODE_ACTION_METHOD) => {
-                            self.node_action(&call)
+                    match call.method() {
+                        "nodeStatus" if call.module() == self.module => self.node_status(),
+                        "nodeAction" if call.module() == self.module => self.node_action(&call),
+                        "get_cryptarchia_info" if self.module == "blockchain_module" => {
+                            bail!(
+                                "recording {} V1 transport must not use legacy liveness",
+                                self.label
+                            )
                         }
-                        ("blockchain_module", "get_cryptarchia_info") => {
-                            bail!("recording Bedrock V1 transport must not use legacy liveness")
+                        "getNodeInfo" if self.module == "delivery_module" => {
+                            bail!(
+                                "recording {} V1 transport must not use legacy liveness",
+                                self.label
+                            )
                         }
-                        _ => bail!("recording Bedrock V1 transport received an unexpected call"),
+                        _ => bail!(
+                            "recording {} V1 transport received an unexpected call",
+                            self.label
+                        ),
                     }
                 });
             Box::pin(async move { result })
@@ -3030,8 +3199,9 @@ mod tests {
             event: &str,
         ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
             anyhow::ensure!(
-                module == "blockchain_module" && event == BEDROCK_NODE_CHANGED_EVENT,
-                "recording Bedrock V1 transport received an unexpected event subscription"
+                module == self.module && event == "nodeChanged",
+                "recording {} V1 transport received an unexpected event subscription",
+                self.label
             );
             let (sender, receiver) = mpsc::sync_channel(8);
             self.event_subscribers
@@ -3052,19 +3222,26 @@ mod tests {
         }
 
         fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
+            let expected_module = self.module;
+            let label = self.label;
+            let event_metadata_available = self.event_metadata_available;
             Box::pin(async move {
-                if module != "blockchain_module" {
-                    bail!("recording Bedrock V1 transport does not host `{module}`")
+                if module != expected_module {
+                    bail!("recording {label} V1 transport does not host `{module}`")
                 }
                 Ok(json!({
-                    "name": "blockchain_module",
+                    "name": expected_module,
                     "methods": [
                         { "name": "nodeStatus", "signature": "nodeStatus()", "isInvokable": true },
                         { "name": "nodeAction", "signature": "nodeAction(QString)", "isInvokable": true }
                     ],
-                    "events": [
-                        { "name": "nodeChanged", "signature": "nodeChanged(QString)" }
-                    ]
+                    "events": if event_metadata_available {
+                        json!([
+                            { "name": "nodeChanged", "signature": "nodeChanged(QString)" }
+                        ])
+                    } else {
+                        json!([])
+                    }
                 }))
             })
         }
@@ -4316,7 +4493,7 @@ mod tests {
         bedrock.package_path = Some("blockchain_module".to_owned());
         bedrock.lifecycle_state = NodeLifecycleState::Running;
         store.save(&state)?;
-        let transport_impl = RecordingBedrockNodeLifecycleTransport::new(true);
+        let transport_impl = RecordingManagedNodeLifecycleTransport::new(true);
         transport_impl.set_state(ManagedNodeLifecycleState::Stopped)?;
         let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
 
@@ -4341,7 +4518,7 @@ mod tests {
     async fn basecamp_bedrock_v1_actions_use_terminal_events() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
-        let transport_impl = RecordingBedrockNodeLifecycleTransport::new(true);
+        let transport_impl = RecordingManagedNodeLifecycleTransport::new(true);
         let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
 
         let initialized = action_with_store(
@@ -4440,7 +4617,7 @@ mod tests {
     async fn basecamp_bedrock_v1_blocks_actions_without_native_event_ingress() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
-        let transport_impl = RecordingBedrockNodeLifecycleTransport::new(false);
+        let transport_impl = RecordingManagedNodeLifecycleTransport::new(false);
         let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
 
         let report = action_with_store(
@@ -4468,6 +4645,210 @@ mod tests {
         {
             bail!(
                 "Basecamp Bedrock V1 accepted an action without native event ingress: {report:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_v1_status_uses_module_state_without_legacy_liveness() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut state = store.load()?;
+        let messaging = state
+            .active_topology_mut("default")
+            .and_then(|topology| {
+                topology
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.kind == NodeKind::Messaging)
+            })
+            .context("default topology omitted Messaging")?;
+        messaging.installed = true;
+        messaging.package_path = Some("delivery_module".to_owned());
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        store.save(&state)?;
+        let transport_impl = RecordingManagedNodeLifecycleTransport::messaging(true);
+        transport_impl.set_state(ManagedNodeLifecycleState::Stopped)?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        let report = status_with_store("default", &transport, &store).await?;
+        let messaging = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted V1 Messaging")?;
+        if messaging.run_state != "stopped"
+            || messaging.available_actions != vec![NodeAction::Start]
+            || transport_impl
+                .calls()?
+                .iter()
+                .any(|call| call.module() == "delivery_module" && call.method() == "getNodeInfo")
+        {
+            bail!("Basecamp Messaging V1 status inferred legacy liveness: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_v1_actions_use_terminal_events() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingManagedNodeLifecycleTransport::messaging(true);
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        let initialized = action_with_store(
+            "default",
+            initialize_request(NodeKind::Messaging),
+            &transport,
+            &store,
+        )
+        .await?;
+        let started = action_with_store(
+            "default",
+            node_action_request(NodeKind::Messaging, NodeAction::Start),
+            &transport,
+            &store,
+        )
+        .await?;
+        let stopped = action_with_store(
+            "default",
+            node_action_request(NodeKind::Messaging, NodeAction::Stop),
+            &transport,
+            &store,
+        )
+        .await?;
+
+        let initialized_messaging = initialized
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging after V1 initialize")?;
+        let started_messaging = started
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging after V1 start")?;
+        let stopped_messaging = stopped
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging after V1 stop")?;
+        let operations = &stopped.operations;
+        let (Some(initialized_operation), Some(started_operation), Some(stopped_operation)) = (
+            operations.iter().rev().nth(2),
+            operations.iter().rev().nth(1),
+            operations.last(),
+        ) else {
+            bail!("Basecamp Messaging V1 actions omitted lifecycle operations: {stopped:?}");
+        };
+        if initialized_messaging.run_state != "stopped"
+            || started_messaging.run_state != "running"
+            || stopped_messaging.run_state != "stopped"
+            || initialized_operation.status != "initialized"
+            || started_operation.status != "running"
+            || stopped_operation.status != "stopped"
+            || !stopped_operation
+                .detail
+                .contains("V1 stop transition settled")
+        {
+            bail!("Basecamp Messaging V1 actions did not settle from terminal events: {stopped:?}");
+        }
+
+        let calls = transport_impl.calls()?;
+        let node_actions = calls
+            .iter()
+            .filter(|call| {
+                call.module() == "delivery_module" && call.method() == MESSAGING_NODE_ACTION_METHOD
+            })
+            .collect::<Vec<_>>();
+        if node_actions.len() != 3
+            || calls.iter().any(|call| {
+                call.module() == "delivery_module"
+                    && matches!(call.method(), "createNode" | "start" | "stop")
+            })
+        {
+            bail!("Basecamp Messaging V1 actions used the legacy lifecycle path: {calls:?}");
+        }
+        let initialize_request = node_actions
+            .first()
+            .context("Basecamp Messaging V1 did not record initialize")?
+            .args()
+            .first()
+            .and_then(Value::as_str)
+            .context("Basecamp Messaging V1 initialize did not send a request")?;
+        let initialize_request: Value = serde_json::from_str(initialize_request)?;
+        let config = initialize_request
+            .get("parameters")
+            .and_then(|parameters| parameters.get("config"))
+            .and_then(Value::as_str)
+            .context("Basecamp Messaging V1 initialize did not send config text")?;
+        if config.starts_with('@') || !serde_json::from_str::<Value>(config)?.is_object() {
+            bail!("Basecamp Messaging V1 initialize leaked a config path instead of config text");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_v1_accepts_empty_host_event_metadata() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl =
+            RecordingManagedNodeLifecycleTransport::messaging_without_event_metadata(true);
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        let report = action_with_store(
+            "default",
+            initialize_request(NodeKind::Messaging),
+            &transport,
+            &store,
+        )
+        .await?;
+        let operation = report
+            .operations
+            .last()
+            .context("Basecamp Messaging V1 initialize was not recorded")?;
+        if operation.status != "initialized"
+            || operation.command.as_deref() != Some("Basecamp host call delivery_module.nodeAction")
+        {
+            bail!("Basecamp Messaging V1 rejected empty host event metadata: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_v1_blocks_actions_without_native_event_ingress() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingManagedNodeLifecycleTransport::messaging(false);
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        let report = action_with_store(
+            "default",
+            initialize_request(NodeKind::Messaging),
+            &transport,
+            &store,
+        )
+        .await?;
+        let messaging = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging after rejected V1 initialize")?;
+        let operation = report
+            .operations
+            .last()
+            .context("Basecamp Messaging V1 initialize was not recorded")?;
+        if messaging.install_state != "needs_configuration"
+            || operation.status != "failed"
+            || !operation.detail.contains("native lifecycle event ingress")
+            || transport_impl.calls()?.iter().any(|call| {
+                call.module() == "delivery_module" && call.method() == MESSAGING_NODE_ACTION_METHOD
+            })
+        {
+            bail!(
+                "Basecamp Messaging V1 accepted an action without native event ingress: {report:?}"
             );
         }
         Ok(())
