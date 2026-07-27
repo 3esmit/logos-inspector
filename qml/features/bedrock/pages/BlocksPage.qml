@@ -28,6 +28,8 @@ ColumnLayout {
         theme: root.theme
         loadCount: root.model.blocksPageLimit
         rangeText: root.slotRangeText()
+        refreshText: root.model.blocksPageViewMode === "finalized"
+            ? qsTr("Latest finalized") : qsTr("Latest")
         canGoNewer: !root.model.blocksLiveEnabled && root.canLoadNewer()
         canGoOlder: !root.model.blocksLiveEnabled && root.model.blocksPageSlotFrom > 0
         busy: root.model.shell.busy || root.model.chainPages.blocksWorkflowRunning
@@ -64,6 +66,19 @@ ColumnLayout {
                 font.pixelSize: root.theme.dataText
                 font.weight: Font.Medium
                 Layout.fillWidth: true
+            }
+
+            ActionButton {
+                visible: !root.model.blocksLiveEnabled
+                theme: root.theme
+                text: root.model.blocksPageViewMode === "finalized"
+                    ? qsTr("Latest") : qsTr("Finalized")
+                primary: root.model.blocksPageViewMode !== "finalized"
+                enabled: !root.model.shell.busy && !root.model.chainPages.blocksWorkflowRunning
+                Layout.preferredWidth: root.model.blocksPageViewMode === "finalized" ? 92 : 110
+                onClicked: root.model.blocksPageViewMode === "finalized"
+                    ? root.model.chainPages.showLatestBlocks()
+                    : root.model.chainPages.showFinalizedBlocks()
             }
 
             ActionButton {
@@ -181,11 +196,15 @@ ColumnLayout {
         if (root.model.blocksPageSlotTo <= 0) {
             return qsTr("No range loaded");
         }
+        if (root.model.blocksPageViewMode === "finalized") {
+            return qsTr("Finalized L1 slots %1-%2").arg(root.numberText(root.model.blocksPageSlotFrom)).arg(root.numberText(root.model.blocksPageSlotTo));
+        }
         return qsTr("L1 slots %1-%2").arg(root.numberText(root.model.blocksPageSlotFrom)).arg(root.numberText(root.model.blocksPageSlotTo));
     }
 
     function canLoadNewer() {
-        const current = root.chainSlot("slot")
+        const current = root.chainSlot(root.model.blocksPageViewMode === "finalized"
+            ? "lib_slot" : "slot")
         return root.model.blocksPageSlotTo > 0 && current > 0 && root.model.blocksPageSlotTo < current
     }
 

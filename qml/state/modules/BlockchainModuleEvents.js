@@ -19,9 +19,11 @@ function handleNewBlock(root, args) {
         if (!block) {
             return false
         }
-        AppModelPages.applyLiveBlockReport(root.chainPages, report, {
-            checkedAt: ModuleEventUtils.eventTimeText(trustedWatch ? trustedWatch.timestamp : "")
-        })
+        if (projectsToLiveBlocksPage(root)) {
+            AppModelPages.applyLiveBlockReport(root.chainPages, report, {
+                checkedAt: ModuleEventUtils.eventTimeText(trustedWatch ? trustedWatch.timestamp : "")
+            })
+        }
         blockchainLastEventText = qsTr("New block %1").arg(
             root.metrics.valueText(root.chainPages.blockSlot(block)))
         blockchainModuleEventRevision += 1
@@ -34,6 +36,12 @@ function handleNewBlock(root, args) {
         }
         return true
     }
+}
+
+function projectsToLiveBlocksPage(root) {
+    const page = root && root.chainPages ? root.chainPages : null
+    return page !== null && page.blocksLiveEnabled === true
+        && String(page.blocksPageViewMode || "") === "latest"
 }
 
 function newBlockEventPayload(args) {

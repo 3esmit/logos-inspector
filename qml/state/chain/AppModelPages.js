@@ -17,12 +17,15 @@ function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
                 || root.operationPending("blocks.live.range")) {
             return null
         }
-        const presentation = root.beginPresentation(qsTr("Blocks"), "blocks")
+        const finalized = blocksPageViewMode === "finalized"
+        const title = finalized ? qsTr("Finalized blocks") : qsTr("Blocks")
+        const method = finalized ? "blockchainFinalizedBlocks" : "blockchainBlocks"
+        const presentation = root.beginPresentation(title, "blocks")
         return root.startOperation("blocks.page.node", "blockchainNode", [],
             qsTr("Blocks node state"), function (node) {
                 if (!node || !node.ok) {
                     blocksPageError = String(node && node.error || qsTr("Blocks node query failed."))
-                    const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                    const presented = root.completePresentation(presentation, title,
                         blocksPageError, true, null)
                     if (onComplete) {
                         onComplete(node, presented)
@@ -32,7 +35,7 @@ function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
                 dashboardNode = node.value
                 if (root.blockchainNodeSyncState(node.value) === "syncing") {
                     root.deferBlocksPageUntilSync()
-                    const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                    const presented = root.completePresentation(presentation, title,
                         root.blockchainSyncMessage(), false, node.value)
                     if (onComplete) {
                         onComplete(node, presented)
@@ -41,26 +44,31 @@ function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
                 }
                 blocksPageAwaitingSync = false
                 const window = ChainPageQuery.slotWindow(anchorSlot,
-                    ChainPageQuery.slotTip(node.value, false), blocksExplorerWindow(root))
+                    ChainPageQuery.slotTip(node.value, finalized), blocksExplorerWindow(root))
                 const slotFrom = window.slotFrom
                 const slotTo = window.slotTo
                 const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
-                root.startOperation("blocks.page.range", "blockchainBlocks",
-                    [slotFrom, slotTo, blockLimit], qsTr("Blocks"), function (blocks) {
+                root.startOperation("blocks.page.range", method,
+                    [slotFrom, slotTo, blockLimit], title, function (blocks) {
                         if (!blocks || !blocks.ok) {
                             blocksPageError = String(blocks && blocks.error || qsTr("Blocks query failed."))
-                            const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                            const presented = root.completePresentation(presentation, title,
                                 blocksPageError, true, null)
                             if (onComplete) {
                                 onComplete(blocks, presented)
                             }
                             return false
                         }
-                        blocksPageSlotFrom = slotFrom
-                        blocksPageSlotTo = slotTo
                         blocksPageRows = sortedBlocks(blocks.value).slice(0, blocksPageLimit)
+                        if (finalized && blocksPageRows.length) {
+                            blocksPageSlotFrom = minBlockSlot(root, blocksPageRows)
+                            blocksPageSlotTo = maxBlockSlot(root, blocksPageRows)
+                        } else {
+                            blocksPageSlotFrom = slotFrom
+                            blocksPageSlotTo = slotTo
+                        }
                         blocksPageError = ""
-                        const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                        const presented = root.completePresentation(presentation, title,
                             BridgeHelpers.formatValue(blocksPageRows), false, blocksPageRows)
                         if (onComplete) {
                             onComplete(blocks, presented)
@@ -74,12 +82,17 @@ function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
 
 function startBlocksLiveMode(root) {
     with (root) {
+        const wasFinalized = blocksPageViewMode === "finalized"
+        blocksPageViewMode = "latest"
         blocksLiveEnabled = true
         blocksLiveError = ""
         blocksLiveSource = ""
         blocksLiveUnknownEvents = 0
         blocksLiveCheckedAt = ""
-        if (!blocksPageRows.length) {
+        if (wasFinalized || !blocksPageRows.length) {
+            if (wasFinalized) {
+                resetBlocksPageResults(root)
+            }
             refreshBlocksPageRequest(root, undefined, function (response, presented) {
                 if (blocksLiveEnabled && blocksPageAwaitingSync) {
                     return
@@ -100,6 +113,45 @@ function startBlocksLiveMode(root) {
     }
 }
 
+function showFinalizedBlocks(root) {
+    with (root) {
+        if (blocksWorkflowRunning) {
+            return false
+        }
+        if (blocksLiveEnabled) {
+            stopBlocksLiveMode(root)
+        }
+        blocksPageViewMode = "finalized"
+        resetBlocksPageResults(root)
+        refreshBlocksPage(root)
+        return true
+    }
+}
+
+function showLatestBlocks(root) {
+    with (root) {
+        if (blocksWorkflowRunning) {
+            return false
+        }
+        if (blocksLiveEnabled) {
+            stopBlocksLiveMode(root)
+        }
+        blocksPageViewMode = "latest"
+        resetBlocksPageResults(root)
+        refreshBlocksPage(root)
+        return true
+    }
+}
+
+function resetBlocksPageResults(root) {
+    with (root) {
+        blocksPageRows = []
+        blocksPageSlotFrom = 0
+        blocksPageSlotTo = 0
+        blocksPageError = ""
+    }
+}
+
 function stopBlocksLiveMode(root) {
     with (root) {
         root.invalidateOperationCaller("blocks.live.node", qsTr("Live blocks stopped."))
@@ -114,7 +166,11 @@ function stopBlocksLiveMode(root) {
 
 function refreshBlocksLivePage(root) {
     with (root) {
-        if (root.operationPending("blocks.live.node")
+        // This function is also reachable from the scheduler. Do not let a
+        // stale timer or a late caller replace a paged/finalized result when
+        // the user has not explicitly enabled the live view.
+        if (blocksLiveEnabled !== true || blocksPageViewMode !== "latest"
+                || root.operationPending("blocks.live.node")
                 || root.operationPending("blocks.live.range")
                 || root.operationPending("blocks.page.node")
                 || root.operationPending("blocks.page.range")) {
@@ -326,7 +382,7 @@ function minBlockSlot(root, blocks) {
 function blocksLiveStatusText(root) {
     with (root) {
         if (!blocksLiveEnabled) {
-            return qsTr("Paged")
+            return blocksPageViewMode === "finalized" ? qsTr("Finalized") : qsTr("Paged")
         }
         if (blocksLiveError.length > 0) {
             return qsTr("Live error")

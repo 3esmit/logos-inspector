@@ -273,6 +273,31 @@ pub(crate) async fn blocks(
     }
 }
 
+pub(crate) async fn finalized_blocks(
+    adapter: BedrockAdapter<'_>,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
+    match adapter {
+        BedrockAdapter::Rpc { endpoint } => {
+            crate::blockchain::blockchain_finalized_blocks(endpoint, slot_from, slot_to, limit)
+                .await
+        }
+        BedrockAdapter::Module { transport } => {
+            adapters::blockchain_finalized_blocks(
+                module_transport,
+                transport,
+                slot_from,
+                slot_to,
+                limit,
+            )
+            .await
+        }
+    }
+}
+
 pub(crate) async fn live_blocks(
     adapter: BedrockAdapter<'_>,
     slot_from: u64,

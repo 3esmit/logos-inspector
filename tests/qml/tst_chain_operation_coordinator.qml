@@ -124,6 +124,7 @@ TestCase {
         }
         switch (request.method) {
         case "blockchainBlocks":
+        case "blockchainFinalizedBlocks":
             context.slotFrom = Number(args[offset])
             context.slotTo = Number(args[offset + 1])
             context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
