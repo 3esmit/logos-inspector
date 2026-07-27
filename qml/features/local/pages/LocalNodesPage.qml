@@ -1201,6 +1201,9 @@ ColumnLayout {
     }
 
     function packageStatusTone() {
+        if (root.model.packageInstallError.length > 0) {
+            return "error"
+        }
         if (root.model.packageCatalogError.length > 0) {
             return "error"
         }
@@ -1218,6 +1221,9 @@ ColumnLayout {
     }
 
     function packageStatusTitle() {
+        if (root.model.packageInstallError.length > 0) {
+            return qsTr("Indexer package installation failed")
+        }
         if (root.model.packageCatalogLoading) {
             return qsTr("Loading official Indexer releases")
         }
@@ -1235,6 +1241,9 @@ ColumnLayout {
     }
 
     function packageStatusMessage() {
+        if (root.model.packageInstallError.length > 0) {
+            return root.model.packageInstallError
+        }
         if (root.model.packageCatalogLoading) {
             return qsTr("Querying exact releases for %1.").arg(root.runtimeModulesDir)
         }

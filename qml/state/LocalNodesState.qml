@@ -24,6 +24,7 @@ QtObject {
     property var devnets: []
     property var packageCatalog: null
     property string packageCatalogError: ""
+    property string packageInstallError: ""
     property bool packageCatalogLoading: false
     property int packageCatalogGeneration: 0
     property var moduleCatalog: null
@@ -81,6 +82,7 @@ QtObject {
         moduleCatalog = null
         moduleCatalogError = ""
         modulePackageInstallError = ""
+        packageInstallError = ""
         attachedRuntimeModulesDir = ""
         attachedRuntimeServiceUnit = ""
         moduleCatalogLoading = false
@@ -426,6 +428,10 @@ QtObject {
         }
 
         const operationLabel = String(label || actionLabel(action));
+        const indexerPackageInstall = nodeKey === "indexer" && action === "install";
+        if (indexerPackageInstall) {
+            packageInstallError = "";
+        }
         invalidateStatusRefresh();
         gateway.setBusy(true, operationLabel);
         return gateway.request("localNodesAction", [networkProfile, request, ConfirmationPolicy.token("local-node-action")], operationLabel, true, function (response) {
@@ -447,6 +453,9 @@ QtObject {
                 const detail = actionDetail(operations, request);
                 const operationStatus = String(operation.status || "completed");
                 const historyStatus = actionHistoryStatus(operationStatus);
+                if (indexerPackageInstall) {
+                    packageInstallError = historyStatus === "failed" ? detail : "";
+                }
                 gateway.appendOperationHistory({
                     domain: "localNodes",
                     method: "localNodesAction",
@@ -468,6 +477,9 @@ QtObject {
                 }
             } else {
                 error = response.error || qsTr("Local node action failed.");
+                if (indexerPackageInstall) {
+                    packageInstallError = error;
+                }
                 appendNodeOperation(action, nodeKey, "failed", error);
             }
             gateway.setBusy(false, "");

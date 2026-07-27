@@ -21,6 +21,7 @@ use crate::support::command_runner::{
     run_command_controlled,
 };
 
+use super::PackageInstallAuthority;
 use super::process::{find_command, process_is_alive};
 
 const RUNTIME_FILE: &str = "logoscore_runtime.json";
@@ -583,6 +584,22 @@ impl LogoscoreRuntimeProfile {
         }
     }
 
+    /// Resolves the only account allowed to mutate an attached service's
+    /// module tree. This is deliberately derived from the live unit rather
+    /// than from editable Inspector configuration.
+    pub(super) fn package_install_authority(&self) -> Result<PackageInstallAuthority> {
+        if !self.is_attached() {
+            return Ok(PackageInstallAuthority::CurrentUser);
+        }
+        let target = self
+            .service_target()
+            .context("local LogosCore daemon has no verified service lifecycle backend")?;
+        match target.scope {
+            LogoscoreServiceScope::User => Ok(PackageInstallAuthority::CurrentUser),
+            LogoscoreServiceScope::System => system_service_install_authority(target),
+        }
+    }
+
     pub(super) fn control_attached_service(
         &self,
         action: LogoscoreServiceAction,
@@ -938,6 +955,45 @@ fn system_service_modules_dir(target: &LogoscoreServiceTarget) -> Option<PathBuf
     )
     .ok()?;
     modules_dir_from_systemd_exec_start_json(&output.stdout)
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_install_authority(
+    target: &LogoscoreServiceTarget,
+) -> Result<PackageInstallAuthority> {
+    let output = run_command_controlled(
+        system_service_user_command(target),
+        CommandRunPolicy {
+            label: "local LogosCore service account",
+            timeout: ATTACHED_SERVICE_STATUS_TIMEOUT,
+            poll_interval: Duration::from_millis(25),
+            redactions: &[],
+            output_limit: 1024,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
+        },
+        attached_service_query_control(),
+    )?;
+    let user = String::from_utf8(output.stdout)
+        .context("local LogosCore service account is not valid UTF-8")?;
+    PackageInstallAuthority::system_service_user(&user)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_service_install_authority(
+    _target: &LogoscoreServiceTarget,
+) -> Result<PackageInstallAuthority> {
+    bail!("system service package installation is only supported on Linux")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_user_command(target: &LogoscoreServiceTarget) -> Command {
+    let mut command = Command::new("systemctl");
+    command
+        .arg("show")
+        .arg("--property=User")
+        .arg("--value")
+        .arg(&target.unit);
+    command
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1857,6 +1913,23 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
             ["--user", "start", "logos-node.service"]
         );
         assert_eq!(display, "systemctl --user start logos-node.service");
+    }
+
+    #[test]
+    fn service_account_query_command_uses_only_the_verified_unit() {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let command = system_service_user_command(&target);
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["show", "--property=User", "--value", "logos-node.service"]
+        );
     }
 
     #[test]

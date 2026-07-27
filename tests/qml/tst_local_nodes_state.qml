@@ -36,6 +36,7 @@ TestCase {
         state.devnets = []
         state.packageCatalog = null
         state.packageCatalogError = ""
+        state.packageInstallError = ""
         state.packageCatalogLoading = false
         state.packageCatalogGeneration = 0
         state.moduleCatalog = null
@@ -592,6 +593,23 @@ TestCase {
         compare(state.operations[0].status, "failed")
         compare(gateway.history.length, 1)
         compare(gateway.history[0].operation.status, "failed")
+    }
+
+    function test_indexer_package_install_failure_stays_visible_in_package_state() {
+        gateway.responses = ({
+            localNodesAction: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "authorization to act as the local LogosCore service account is required"
+            }
+        })
+
+        state.runAction("install", "indexer", "", "", "Install Indexer")
+
+        compare(state.packageInstallError,
+                "authorization to act as the local LogosCore service account is required")
+        compare(state.error, state.packageInstallError)
     }
 
     function test_needs_configuration_action_is_not_reported_as_completed() {

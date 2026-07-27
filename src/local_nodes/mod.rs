@@ -1,6 +1,6 @@
 use std::{any::Any, time::Duration};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 use crate::modules::logos_core::{LogoscoreCliRuntime, SharedModuleTransport};
 use crate::support::command_runner::CommandControl;
@@ -26,6 +26,43 @@ mod runtime;
 mod workflow;
 
 pub(crate) const INDEXER_PACKAGE_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Defines the account which may mutate a local LogosCore module directory.
+///
+/// An attached system service owns its module tree. Running `lgpm` as the
+/// Inspector GUI account cannot safely replace those files, even when that
+/// account can control the service itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PackageInstallAuthority {
+    CurrentUser,
+    SystemServiceUser(String),
+}
+
+impl PackageInstallAuthority {
+    pub(super) fn system_service_user(value: &str) -> Result<Self> {
+        let value = value.trim();
+        let value = if value.is_empty() { "root" } else { value };
+        if !valid_system_service_user(value) {
+            bail!("local LogosCore service account is invalid");
+        }
+        Ok(Self::SystemServiceUser(value.to_owned()))
+    }
+
+    #[must_use]
+    pub(super) fn system_service_user_name(&self) -> Option<&str> {
+        match self {
+            Self::CurrentUser => None,
+            Self::SystemServiceUser(value) => Some(value),
+        }
+    }
+}
+
+fn valid_system_service_user(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(byte) if byte.is_ascii_alphabetic() || byte == b'_')
+        && value.len() <= 32
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
 
 struct LocalNodePackageCommitControl {
     command: CommandControl,

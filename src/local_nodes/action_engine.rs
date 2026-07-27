@@ -27,7 +27,7 @@ use super::workflow::{LocalNodeWorkflow, normalized_profile};
 use super::{
     ChannelIndexerActionRequest, ChannelIndexerConfigRequest, ChannelIndexerConfigSnapshot,
     ChannelIndexerConfigValidation, LocalModuleInstallReport, LocalModuleInstallRequest,
-    LocalNodePackageCommit,
+    LocalNodePackageCommit, PackageInstallAuthority,
 };
 
 const STATE_FILE: &str = "local_nodes.json";
@@ -220,8 +220,13 @@ impl LocalNodeActionEngine {
         let _state_lock = acquire_state_lock()?;
         let runtime = self.runtime_store.load_resolved()?;
         validate_module_install_runtime(runtime.as_ref(), &request.modules_dir)?;
+        let authority = match runtime.as_ref() {
+            Some(runtime) => runtime.package_install_authority()?,
+            None => PackageInstallAuthority::CurrentUser,
+        };
         super::package::install_local_module_with_pre_install_check(
             &request,
+            &authority,
             download_control,
             package_commit,
             || validate_module_install_runtime(runtime.as_ref(), &request.modules_dir),

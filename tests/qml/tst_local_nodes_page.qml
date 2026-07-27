@@ -55,6 +55,7 @@ Item {
             state.devnets = []
             state.packageCatalog = null
             state.packageCatalogError = ""
+            state.packageInstallError = ""
             state.packageCatalogLoading = false
             state.packageCatalogGeneration = 0
             state.moduleCatalog = null
@@ -413,6 +414,19 @@ Item {
             compare(status.title, "Module package installation failed")
             compare(status.message,
                     "stop the local LogosCore runtime before changing installed modules")
+        }
+
+        function test_indexer_package_failure_is_visible_in_its_panel() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const status = findChild(page, "indexerPackageStatus")
+            verify(!!status, "Indexer package status exists")
+
+            state.packageInstallError = "authorization to act as the local LogosCore service account is required"
+
+            compare(status.tone, "error")
+            compare(status.title, "Indexer package installation failed")
+            compare(status.message,
+                    "authorization to act as the local LogosCore service account is required")
         }
 
         function test_install_confirmation_owns_exact_release_and_package_identity() {
