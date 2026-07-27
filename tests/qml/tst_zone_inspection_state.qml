@@ -1369,6 +1369,57 @@ TestCase {
         compare(zoneState.activeZoneId, "")
     }
 
+    function test_accepted_source_mutation_keeps_active_zone_until_summary_refresh() {
+        configure("https://l1.example", 1)
+        const original = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a", 1)
+        const updated = zoneRow("zone-a", "sequencer_zone", "src-b", "idx-a", 2)
+        loadOneZone(original)
+        compare(zoneState.activeZoneId, "zone-a")
+
+        zoneState.acceptSourceMutationReport({
+            source_config_epoch: 2,
+            active_zone_context_fields: updated.active_zone_context_fields,
+            config: {
+                config_revision: 2,
+                selected_sequencer_source_id: "src-b",
+                sequencer_sources: [{
+                    source_id: "src-b",
+                    binding_state: "persisted_attested"
+                }],
+                indexer_source: null
+            },
+            observations: [],
+            agreement: {}
+        })
+        const contextRevisionAfterMutation = zoneState.contextRevision
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            source_config_epoch: 2,
+            summary_revision: 2
+        })))
+
+        compare(zoneState.zoneSummaries.length, 0)
+        verify(zoneState.summaryInFlight)
+        compare(zoneState.activeZoneId, "zone-a")
+        compare(zoneState.activeZoneContext.selected_sequencer_source_id, "src-b")
+        compare(zoneState.contextRevision, contextRevisionAfterMutation)
+
+        gateway.respondNext("zonesSummary", ok(summaryReport(2, {
+            kind: "reset",
+            rows: [updated]
+        }, null, {
+            source_config_epoch: 2
+        })))
+
+        compare(zoneState.activeZoneId, "zone-a")
+        compare(zoneState.activeZoneContext.selected_sequencer_source_id, "src-b")
+        verify(zoneState.summaryRowsUsable)
+    }
+
     function test_network_scope_change_clears_cached_rows_and_context() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")

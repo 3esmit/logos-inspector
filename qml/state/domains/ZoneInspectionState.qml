@@ -86,6 +86,9 @@ QtObject {
     property bool startupAutoSelectionPending: true
     property string pendingZoneRestoreId: ""
     property string pendingZoneRestoreScopeKey: ""
+    // A successful source edit already proves the active Zone route. Keep it
+    // selected until the catalog returns the matching source-config snapshot.
+    property var sourceMutationRefreshContext: null
 
     readonly property bool selectedSequencerReadEligible:
         selectedSequencerSourceReadEligible()
@@ -399,25 +402,31 @@ QtObject {
         const retainCachedSummary = nextVerification !== "mismatch"
             && cachedSummaryCompatible(nextScopeKey, nextSourceConfigEpoch)
         const cachedSummaryIncompatible = !retainCachedSummary
+        const retainAcceptedMutationContext = canRetainAcceptedMutationContext(
+            nextScopeKey, nextSourceConfigEpoch, nextVerification)
         const catalogChanged = catalogStatus !== null
             && numericRevision(report.catalog_revision) !== catalogRevision
         if (scopeChanged || restoreScopeChanged
                 || (summaryLoaded && cachedSummaryIncompatible)) {
-            pendingZoneRestoreId = ""
-            pendingZoneRestoreScopeKey = ""
-            startupAutoSelectionPending = true
-            clearActiveZone()
+            if (!retainAcceptedMutationContext) {
+                pendingZoneRestoreId = ""
+                pendingZoneRestoreScopeKey = ""
+                startupAutoSelectionPending = true
+                clearActiveZone()
+            } else {
+                detailStale = zoneDetail !== null
+            }
             invalidateSummary(true)
         } else if (catalogChanged) {
             evidence.resetEvidenceState(true)
         }
         if (nextVerification !== "verified") {
-            if (activeZoneId.length > 0) {
+            if (activeZoneId.length > 0 && !retainAcceptedMutationContext) {
                 pendingZoneRestoreId = activeZoneId
                 pendingZoneRestoreScopeKey = retainCachedSummary
                     ? summaryNetworkScopeKey : networkScopeKey
             }
-            if (cachedSummaryIncompatible) {
+            if (cachedSummaryIncompatible && !retainAcceptedMutationContext) {
                 clearActiveZone()
             } else {
                 detailStale = zoneDetail !== null
@@ -677,6 +686,11 @@ QtObject {
         }
         summaryInFlight = false
 
+        if (canRetainAcceptedMutationContext(summaryNetworkScopeKey,
+                summarySourceConfigEpoch, "verified")) {
+            sourceMutationRefreshContext = null
+        }
+
         summaryStale = !summaryMatchesStatus()
         if (summaryStale) {
             reconcileSummaries()
@@ -715,6 +729,7 @@ QtObject {
             return true
         }
 
+        sourceMutationRefreshContext = null
         resetDetailState()
         contextRevision += 1
         activeZoneContext = contextFromSummary(row, contextRevision)
@@ -786,6 +801,7 @@ QtObject {
     }
 
     function clearActiveZone() {
+        sourceMutationRefreshContext = null
         if (!activeZoneContext && !zoneDetailReport && !detailInFlight) {
             return false
         }
@@ -1200,6 +1216,19 @@ QtObject {
             }
         }
         updateActiveContextFromFields(report.active_zone_context_fields)
+        const fields = report.active_zone_context_fields || ({})
+        const channelId = String(fields.channel_id || "")
+        const networkScopeKey = scopeKey(fields.network_scope)
+        const sourceConfigEpoch = numericRevision(report.source_config_epoch)
+        if (activeZoneId.length > 0 && activeZoneId === channelId
+                && networkScopeKey.length > 0 && networkScopeKey === root.networkScopeKey
+                && sourceConfigEpoch > 0) {
+            sourceMutationRefreshContext = {
+                network_scope_key: networkScopeKey,
+                channel_id: channelId,
+                source_config_epoch: sourceConfigEpoch
+            }
+        }
         summaryStale = true
         statusRefreshRequested()
     }
@@ -1234,6 +1263,18 @@ QtObject {
         }
         const nextEpoch = numericRevision(nextSourceConfigEpoch)
         return nextEpoch <= 0 || nextEpoch === summarySourceConfigEpoch
+    }
+
+    function canRetainAcceptedMutationContext(nextScopeKey, nextSourceConfigEpoch,
+            nextVerification) {
+        const context = sourceMutationRefreshContext
+        return String(nextVerification || "") !== "mismatch"
+            && context !== null
+            && activeZoneId.length > 0
+            && String(context.channel_id || "") === activeZoneId
+            && String(context.network_scope_key || "") === String(nextScopeKey || "")
+            && numericRevision(context.source_config_epoch)
+                === numericRevision(nextSourceConfigEpoch)
     }
 
     function detailMatchesStatus() {
@@ -1326,6 +1367,7 @@ QtObject {
             startupAutoSelectionPending = true
             pendingZoneRestoreId = ""
             pendingZoneRestoreScopeKey = ""
+            sourceMutationRefreshContext = null
         }
         networkScope = null
         networkScopeKey = ""
