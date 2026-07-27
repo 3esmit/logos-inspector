@@ -640,10 +640,10 @@ impl ManagedNodeSnapshot {
                     .expected_actions()
                     .iter()
                     .all(|expected| actions.contains(expected))
-                && actions
+                && actions.iter().enumerate().all(|(index, action)| !actions
                     .iter()
-                    .enumerate()
-                    .all(|(index, action)| !actions[..index].contains(action)),
+                    .take(index)
+                    .any(|prior| prior == action)),
             "{label} nodeStatus response has actions inconsistent with its lifecycle state"
         );
         let last_error = payload
@@ -963,6 +963,30 @@ mod tests {
         )
         .err()
         .context("inconsistent snapshot unexpectedly parsed")?;
+        anyhow::ensure!(error.to_string().contains("inconsistent"));
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_rejects_duplicate_actions() -> Result<()> {
+        let error = ManagedNodeSnapshot::parse(
+            &json!({
+                "schema": "logos.managed_node_lifecycle.snapshot",
+                "version": 1,
+                "instance_id": "recording-instance",
+                "epoch": 1,
+                "sequence": 1,
+                "scope": { "kind": "bedrock" },
+                "state": "stopped",
+                "health": "unknown",
+                "supported_actions": ["start", "start"],
+                "last_error": null,
+            }),
+            "bedrock",
+            "Bedrock",
+        )
+        .err()
+        .context("duplicate action snapshot unexpectedly parsed")?;
         anyhow::ensure!(error.to_string().contains("inconsistent"));
         Ok(())
     }
