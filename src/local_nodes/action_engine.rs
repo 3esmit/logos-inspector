@@ -52,10 +52,13 @@ impl LocalNodeActionEngine {
     }
 
     pub(super) fn status(&self, profile: &str) -> Result<LocalNodeReport> {
-        let _state_lock = acquire_state_lock()?;
-        let state = self.store.load()?;
-        let runtime = self.runtime_store.load_resolved()?;
-        Ok(self.projector.report(profile, &state, runtime.as_ref()))
+        let (state, runtime) = {
+            let _state_lock = acquire_state_lock()?;
+            (self.store.load()?, self.runtime_store.load_resolved()?)
+        };
+        let mut report = self.projector.report(profile, &state, runtime.as_ref());
+        super::attached::overlay_report(&mut report, runtime.as_ref())?;
+        Ok(report)
     }
 
     pub(super) fn channel_indexer_status(
@@ -257,6 +260,21 @@ impl LocalNodeActionEngine {
         mut package_commit: Option<LocalNodePackageCommit>,
     ) -> Result<LocalNodeReport> {
         ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+
+        let attached_runtime = {
+            let _state_lock = acquire_state_lock()?;
+            self.runtime_store.load_resolved()?
+        };
+        if let Some(operation) =
+            super::attached::apply(attached_runtime.as_ref(), &request, control.as_ref())?
+        {
+            let _state_lock = acquire_state_lock()?;
+            let mut state = self.store.load()?;
+            state.push_operation(operation);
+            self.store.save(&state)?;
+            drop(_state_lock);
+            return self.status(profile);
+        }
 
         let _state_lock = acquire_state_lock()?;
         let mut state = self.store.load()?;

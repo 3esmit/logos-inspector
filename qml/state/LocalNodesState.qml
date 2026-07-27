@@ -684,6 +684,7 @@ QtObject {
         pendingPackageVersion = String(packageVersion || "").trim();
         pendingPackageRootHash = String(packageRootHash || "").trim();
         pendingAllowIdentityRotation = !basecampHost
+            && !localAttachedNode(pendingNode)
             && pendingAction === "stop"
             && pendingNode === "messaging";
     }
@@ -888,6 +889,14 @@ QtObject {
             return qsTr("This stops only the Inspector-managed LogosCore runtime and clears its module contexts. Inspector first verifies persisted Messaging peer identity. A legacy Messaging context without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity.");
         }
         const node = nodeByKind(pendingNode) || {};
+        if (String(node.ownership || "") === "local_attached" && action === "start") {
+            return qsTr("This asks the local LogosCore service to start %1. It keeps the service's existing configuration and data.")
+                .arg(nodeLabel(pendingNode));
+        }
+        if (String(node.ownership || "") === "local_attached" && action === "stop") {
+            return qsTr("This asks the local LogosCore service to stop %1. It keeps the service's existing configuration and data.")
+                .arg(nodeLabel(pendingNode));
+        }
         if (action === "purge") {
             return qsTr("This stops %1 and deletes data directory %2. Config and install record remain.").arg(nodeLabel(pendingNode)).arg(String(node.data_dir || "-"));
         }
@@ -971,6 +980,11 @@ QtObject {
             }
         }
         return null;
+    }
+
+    function localAttachedNode(kind) {
+        const node = nodeByKind(kind)
+        return String(node && node.ownership || "") === "local_attached"
     }
 
     function actionAvailable(kind, action) {
@@ -1381,7 +1395,8 @@ QtObject {
 
     function managedLifecycleRunState(kind) {
         const node = nodeByKind(kind)
-        if (!node || controlState(node) !== "managed") {
+        const control = controlState(node)
+        if (!node || (control !== "managed" && control !== "attached")) {
             return ""
         }
         switch (String(node.run_state || "unknown")) {
@@ -1447,8 +1462,14 @@ QtObject {
             return String(value.install_state || "needs_configuration")
         }
         const ownership = String(value.ownership || "")
+        if (ownership === "inspector_managed") {
+            return "managed"
+        }
+        if (ownership === "local_attached") {
+            return "attached"
+        }
         if (ownership.length) {
-            return ownership === "inspector_managed" ? "managed" : "external"
+            return "external"
         }
         if (String(value.install_state || "") === "installed") {
             return "managed"

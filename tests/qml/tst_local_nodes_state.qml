@@ -774,6 +774,46 @@ TestCase {
         compare(state.observedRunState("indexer"), "online")
     }
 
+    function test_attached_lifecycle_overrides_stale_public_observation() {
+        const report = testnetReport()
+        report.runtime = {
+            ownership: "local_attached",
+            run_state: "running"
+        }
+        report.nodes[0] = Object.assign({}, report.nodes[0], {
+            ownership: "local_attached",
+            install_state: "installed",
+            run_state: "stopped",
+            available_actions: ["start"],
+            detail: "Attached local Bedrock is stopped."
+        })
+        state.report = report
+        state.observedNodes = ({
+            bedrock: { status: "healthy", detail: "Stale public probe" }
+        })
+
+        compare(state.controlState(state.nodeByKind("bedrock")), "attached")
+        verify(state.actionEnabled("bedrock", "start"))
+        compare(state.observedRunState("bedrock"), "unavailable")
+    }
+
+    function test_attached_messaging_stop_keeps_service_identity() {
+        const report = testnetReport()
+        report.nodes[3] = Object.assign({}, report.nodes[3], {
+            ownership: "local_attached",
+            install_state: "installed",
+            run_state: "running",
+            available_actions: ["stop"]
+        })
+        state.report = report
+
+        state.beginNodeAction("stop", "messaging")
+
+        verify(!state.pendingAllowIdentityRotation)
+        compare(state.actionDraftMessage(),
+            "This asks the local LogosCore service to stop Messaging. It keeps the service's existing configuration and data.")
+    }
+
     function test_testnet_summary_counts_configured_channel_indexers_individually() {
         state.report = testnetReport()
         state.observedNodes = ({
