@@ -366,6 +366,14 @@ def main() -> int:
     )
     if "/build/cargo-vendor-dir" in flake:
         errors.append("flake program artifact linker assumes `/build` is the build root")
+    metal_wrapper = flake.find('metalXcrun = pkgs.writeShellScriptBin "xcrun"')
+    metal_cache_bypass = flake.find("export xcrun_nocache=1", metal_wrapper)
+    metal_exec = flake.find("exec /usr/bin/xcrun", metal_wrapper)
+    if not 0 <= metal_wrapper < metal_cache_bypass < metal_exec:
+        errors.append(
+            "Darwin Metal xcrun wrapper must bypass the stale Xcode tool cache "
+            "before invoking the system xcrun"
+        )
 
     try:
         ui_metadata = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))
