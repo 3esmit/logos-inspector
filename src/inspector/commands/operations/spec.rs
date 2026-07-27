@@ -59,6 +59,7 @@ define_operation_methods!(
     LocalWalletAccounts,
     BlockchainNode,
     BlockchainBlocks,
+    BlockchainFinalizedBlocks,
     BlockchainLiveBlocks,
     BlockchainBlock,
     BlockchainTransaction,
@@ -466,6 +467,11 @@ mod tests {
                 "blockchainLiveBlocks",
                 OperationDomain::Blockchain,
                 "Blockchain live blocks",
+            ),
+            (
+                "blockchainFinalizedBlocks",
+                OperationDomain::Blockchain,
+                "Blockchain finalized blocks",
             ),
             (
                 "localWalletDeployProgram",
@@ -982,6 +988,16 @@ mod tests {
                 None,
             ),
             (
+                OperationMethod::BlockchainFinalizedBlocks,
+                OperationCommand::Blockchain(blockchain::BlockchainCommand::FinalizedBlocks),
+                "blockchainFinalizedBlocks",
+                "Blockchain finalized blocks",
+                OperationDomain::Blockchain,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
                 OperationMethod::BlockchainLiveBlocks,
                 OperationCommand::Blockchain(blockchain::BlockchainCommand::LiveBlocks),
                 "blockchainLiveBlocks",
@@ -1203,6 +1219,14 @@ mod tests {
             ),
             (
                 OperationMethod::BlockchainBlocks,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::SlotRange),
+                ],
+            ),
+            (
+                OperationMethod::BlockchainFinalizedBlocks,
                 &[
                     AffectedContextField::required(AffectedContextKey::Source),
                     AffectedContextField::optional(AffectedContextKey::Endpoint),

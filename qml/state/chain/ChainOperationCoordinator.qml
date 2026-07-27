@@ -212,6 +212,7 @@ QtObject {
         case "blockchainNode":
             break
         case "blockchainBlocks":
+        case "blockchainFinalizedBlocks":
             if (command.args.length < 2) {
                 return null
             }
@@ -275,6 +276,7 @@ QtObject {
 
     function commandValidation(command) {
         if (command.method === "blockchainBlocks"
+                || command.method === "blockchainFinalizedBlocks"
                 || command.method === "blockchainLiveBlocks") {
             return BlockchainRangeValidation.validate(command.args[0], command.args[1])
         }
@@ -515,6 +517,7 @@ QtObject {
     function knownMethod(method) {
         const value = String(method || "")
         return value === "blockchainNode" || value === "blockchainBlocks"
+            || value === "blockchainFinalizedBlocks"
             || value === "blockchainLiveBlocks" || value === "blockchainBlock"
             || value === "blockchainTransaction"
     }
@@ -533,7 +536,8 @@ QtObject {
     }
 
     function resultMatchesMethod(method, result) {
-        if (String(method || "") === "blockchainBlocks") {
+        if (String(method || "") === "blockchainBlocks"
+                || String(method || "") === "blockchainFinalizedBlocks") {
             return Array.isArray(result)
         }
         return result !== null && typeof result === "object" && !Array.isArray(result)

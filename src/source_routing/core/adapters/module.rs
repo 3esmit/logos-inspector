@@ -79,6 +79,31 @@ pub(crate) async fn blockchain_blocks(
     )
 }
 
+pub(crate) async fn blockchain_finalized_blocks(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+) -> Result<Value> {
+    crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
+    let limit = limit.clamp(1, 500);
+    let mut blocks = transport_call_value(
+        transport,
+        transport_kind,
+        BLOCKCHAIN_MODULE,
+        "get_finalized_blocks_range",
+        vec![json!(slot_from), json!(slot_to), json!(limit)],
+    )
+    .await?;
+    blocks = crate::blockchain::bedrock::normalize_finalized_blocks_range(blocks)
+        .context("blockchain_module.get_finalized_blocks_range returned an invalid response")?;
+    if transport_kind == ModuleTransportKind::LogoscoreCli {
+        blocks = enrich_cli_mantle_transaction_hashes(blocks);
+    }
+    Ok(blocks)
+}
+
 async fn blockchain_blocks_read(
     transport: &SharedModuleTransport,
     transport_kind: ModuleTransportKind,
@@ -606,12 +631,18 @@ mod tests {
     };
 
     struct TipParentTransport {
+        kind: ModuleTransportKind,
         calls: Mutex<Vec<ModuleCall>>,
     }
 
     impl TipParentTransport {
         const fn new() -> Self {
+            Self::with_kind(ModuleTransportKind::LogoscoreCli)
+        }
+
+        const fn with_kind(kind: ModuleTransportKind) -> Self {
             Self {
+                kind,
                 calls: Mutex::new(Vec::new()),
             }
         }
@@ -623,11 +654,19 @@ mod tests {
             };
             calls.iter().map(|call| call.method().to_owned()).collect()
         }
+
+        fn call_arguments(&self) -> Vec<Vec<Value>> {
+            let calls = match self.calls.lock() {
+                Ok(calls) => calls,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            calls.iter().map(|call| call.args().to_vec()).collect()
+        }
     }
 
     impl ModuleTransport for TipParentTransport {
         fn kind(&self) -> ModuleTransportKind {
-            ModuleTransportKind::LogoscoreCli
+            self.kind
         }
 
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
@@ -643,6 +682,42 @@ mod tests {
                 Err(anyhow::anyhow!("unexpected module `{module}`"))
             } else if method == "get_blocks" && args == vec![json!(100_u64), json!(130_u64)] {
                 Ok(json!([]))
+            } else if method == "get_finalized_blocks_range" {
+                match args.as_slice() {
+                    [_, slot_to, _] => match slot_to.as_u64() {
+                        Some(slot_to) => Ok(json!([
+                            {
+                                "block": {
+                                    "header": { "id": test_hash('p'), "slot": slot_to },
+                                    "transactions": []
+                                },
+                                "tip": test_hash('p'),
+                                "tip_slot": slot_to,
+                                "lib": test_hash('f'),
+                                "lib_slot": slot_to.saturating_sub(1)
+                            },
+                            {
+                                "block": {
+                                    "header": {
+                                        "id": test_hash('f'),
+                                        "slot": slot_to.saturating_sub(1)
+                                    },
+                                    "transactions": []
+                                },
+                                "tip": test_hash('p'),
+                                "tip_slot": slot_to,
+                                "lib": test_hash('f'),
+                                "lib_slot": slot_to.saturating_sub(1)
+                            }
+                        ])),
+                        None => Err(anyhow::anyhow!(
+                            "unexpected finalized block range end {slot_to:?}"
+                        )),
+                    },
+                    _ => Err(anyhow::anyhow!(
+                        "unexpected finalized block range arguments {args:?}"
+                    )),
+                }
             } else if method == "get_cryptarchia_info" && args.is_empty() {
                 Ok(json!({
                     "genesis_id": test_hash('0'),
@@ -758,6 +833,58 @@ mod tests {
                 "get_block",
                 "get_block",
             ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_finalized_block_range_uses_module_api_without_parent_walk() -> Result<()> {
+        let harness = Arc::new(TipParentTransport::new());
+        let transport: SharedModuleTransport = harness.clone();
+
+        let value = blockchain_finalized_blocks(
+            &transport,
+            ModuleTransportKind::LogoscoreCli,
+            100,
+            130,
+            20,
+        )
+        .await?;
+
+        assert_eq!(value.pointer("/0/header/id"), Some(&json!(test_hash('f'))));
+        assert_eq!(value.pointer("/0/_chain/status"), Some(&json!("finalized")));
+        assert_eq!(value.as_array().map(Vec::len), Some(1));
+        assert_eq!(harness.call_methods(), vec!["get_finalized_blocks_range"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finalized_block_range_preserves_u64_slots() -> Result<()> {
+        let harness = Arc::new(TipParentTransport::with_kind(ModuleTransportKind::Module));
+        let transport: SharedModuleTransport = harness.clone();
+        let first_slot = (i32::MAX as u64) + 1;
+
+        let value = blockchain_finalized_blocks(
+            &transport,
+            ModuleTransportKind::Module,
+            first_slot,
+            first_slot + 30,
+            20,
+        )
+        .await?;
+
+        assert_eq!(
+            value.pointer("/0/header/slot"),
+            Some(&json!(first_slot + 29))
+        );
+        assert_eq!(harness.call_methods(), vec!["get_finalized_blocks_range"]);
+        assert_eq!(
+            harness.call_arguments(),
+            vec![vec![
+                json!(first_slot),
+                json!(first_slot + 30),
+                json!(20_u64)
+            ]]
         );
         Ok(())
     }

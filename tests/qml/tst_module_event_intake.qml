@@ -520,6 +520,7 @@ TestCase {
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
         tryVerify(function() { return basecampHost.subscriptions.length === 19 })
         useHostBlockchainModule()
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -541,6 +542,7 @@ TestCase {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
         useHostBlockchainModule()
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -565,6 +567,7 @@ TestCase {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
         useHostBlockchainModule()
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -589,6 +592,7 @@ TestCase {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
         useHostBlockchainModule()
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -732,6 +736,7 @@ TestCase {
 
     function test_ingest_blockchain_event_updates_live_rows() {
         useHostBlockchainModule()
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -751,6 +756,7 @@ TestCase {
 
     function test_ingest_blockchain_wrapped_event_dedupes_live_rows() {
         useHostBlockchainModule()
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
@@ -841,6 +847,7 @@ TestCase {
         })
         model.blockchainSourceMode = "logoscore_cli"
         wait(0)
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30-cli" }, transactions: [] }
         ]
@@ -869,5 +876,30 @@ TestCase {
         compare(model.blocksPageSlotTo, 31)
         compare(model.blocksLiveSource, "logoscore_cli_watch")
         verify(model.blockchainModuleEventRevision > 0)
+    }
+
+    function test_finalized_blocks_ignore_new_block_events_without_losing_event_health() {
+        useHostBlockchainModule()
+        model.blocksLiveEnabled = false
+        model.blocksPageViewMode = "finalized"
+        model.blocksPageRows = [{
+            header: { slot: 20, id: "finalized-slot-20" },
+            transactions: [],
+            _chain: { status: "finalized" }
+        }]
+        model.blocksPageSlotFrom = 20
+        model.blocksPageSlotTo = 20
+
+        verify(intake.ingest(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "pending-slot-31" }, transactions: [] })
+        ]))
+
+        compare(model.blocksPageRows.length, 1)
+        compare(model.blocksPageRows[0].header.id, "finalized-slot-20")
+        compare(model.blocksPageSlotFrom, 20)
+        compare(model.blocksPageSlotTo, 20)
+        compare(model.blocksLiveSource, "")
+        verify(model.blockchainModuleEventRevision > 0)
+        verify(model.blockchainLastEventText.indexOf("31") >= 0)
     }
 }

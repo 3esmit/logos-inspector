@@ -117,6 +117,31 @@ pub async fn blockchain_recent_blocks(
     }
 }
 
+pub(crate) async fn blockchain_finalized_blocks(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+) -> Result<Value> {
+    validate_blockchain_slot_range(slot_from, slot_to)?;
+    let limit = limit.clamp(1, 500);
+    let blocks_limit = NonZeroUsize::new(
+        usize::try_from(limit)
+            .context("finalized block limit does not fit the current platform")?,
+    )
+    .context("finalized block limit must be non-zero")?;
+    let url = finalized_blocks_range_url(endpoint, slot_from, slot_to, blocks_limit)?;
+    let bytes = request_bytes_bounded(
+        reqwest::Client::new().get(url.clone()),
+        url.as_str(),
+        "failed to read finalized block range response body",
+        BLOCK_RANGE_RESPONSE_MAX_BYTES,
+    )
+    .await?;
+    let text = String::from_utf8(bytes).context("finalized block range response was not UTF-8")?;
+    parse_finalized_blocks_range_response(&text)
+}
+
 pub async fn blockchain_live_blocks_snapshot(
     endpoint: &str,
     slot_from: u64,
@@ -579,14 +604,11 @@ fn parse_blocks_range_response(text: &str) -> Result<Value> {
     if trimmed.starts_with('[') {
         let events: Vec<Value> = serde_json::from_str(trimmed)
             .with_context(|| format!("invalid JSON response: {}", response_excerpt(trimmed)))?;
-        return events
-            .into_iter()
-            .map(block_from_processed_event)
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array);
+        return normalize_processed_blocks_range(Value::Array(events));
     }
 
-    text.lines()
+    let events = text
+        .lines()
         .enumerate()
         .filter_map(|(index, line)| {
             let line = line.trim();
@@ -600,10 +622,79 @@ fn parse_blocks_range_response(text: &str) -> Result<Value> {
                     response_excerpt(line)
                 )
             })?;
-            block_from_processed_event(event)
+            Ok(event)
         })
+        .collect::<Result<Vec<_>>>()?;
+    normalize_processed_blocks_range(Value::Array(events))
+}
+
+fn parse_finalized_blocks_range_response(text: &str) -> Result<Value> {
+    normalize_finalized_blocks_range(parse_blocks_range_response(text)?)
+}
+
+pub(crate) fn normalize_processed_blocks_range(value: Value) -> Result<Value> {
+    let Value::Array(events) = value else {
+        bail!("processed block range response must be an array");
+    };
+    events
+        .into_iter()
+        .map(block_from_processed_event)
         .collect::<Result<Vec<_>>>()
         .map(Value::Array)
+}
+
+/// Normalizes a finalized-range response into immutable blocks only.
+///
+/// The node API exposes a snapshot range, but a range taken while its LIB
+/// advances can still contain processed events above the event's LIB. Those
+/// events are provisional and must never leak into an immutable Inspector
+/// view. Responses without an explicit finality marker are accepted because
+/// this function is used only for the finalized endpoint, then labelled with
+/// that endpoint's contract.
+pub(crate) fn normalize_finalized_blocks_range(value: Value) -> Result<Value> {
+    let normalized = normalize_processed_blocks_range(value)?;
+    let blocks = normalized
+        .as_array()
+        .cloned()
+        .context("processed block ranges must normalize to an array")?;
+    Ok(Value::Array(
+        blocks
+            .into_iter()
+            .filter_map(finalized_block_from_range)
+            .collect(),
+    ))
+}
+
+fn finalized_block_from_range(mut block: Value) -> Option<Value> {
+    // QML gives an explicit payload status precedence over `_chain.status`.
+    // Check that same ordering here: range wrappers can derive a finalized
+    // `_chain` state while the payload still explicitly identifies itself as
+    // provisional.
+    let explicit_status = block
+        .get("bedrock_status")
+        .and_then(Value::as_str)
+        .or_else(|| block.get("status").and_then(Value::as_str));
+    let chain_status = block.pointer("/_chain/status").and_then(Value::as_str);
+    if matches!(explicit_status, Some("pending" | "orphaned"))
+        || matches!(chain_status, Some("pending" | "orphaned"))
+    {
+        return None;
+    }
+
+    if let Some(object) = block.as_object_mut() {
+        if object.contains_key("bedrock_status") {
+            object.insert("bedrock_status".to_owned(), json!("finalized"));
+        }
+        if object.contains_key("status") {
+            object.insert("status".to_owned(), json!("finalized"));
+        }
+    }
+    if let Some(chain) = block.get_mut("_chain").and_then(Value::as_object_mut) {
+        chain.insert("status".to_owned(), json!("finalized"));
+    } else if let Some(object) = block.as_object_mut() {
+        object.insert("_chain".to_owned(), json!({ "status": "finalized" }));
+    }
+    Some(block)
 }
 
 fn parse_block_stream_response(text: &str) -> Result<BlockchainLiveBlocksReport> {
@@ -1096,6 +1187,80 @@ mod tests {
         ensure_nested_string(second, &["header", "id"], "lib")?;
         ensure_nested_string(second, &["_chain", "status"], "finalized")?;
         Ok(())
+    }
+
+    #[test]
+    fn processed_blocks_normalizer_preserves_module_header_identity() -> Result<()> {
+        let normalized = normalize_processed_blocks_range(json!([{
+            "block": {
+                "header": { "id": "immutable", "slot": 20 },
+                "transactions": []
+            },
+            "tip": "tip",
+            "tip_slot": 30,
+            "lib": "immutable",
+            "lib_slot": 20
+        }]))?;
+        let blocks = normalized
+            .as_array()
+            .context("normalized finalized range should be an array")?;
+        let block = blocks.first().context("finalized block should exist")?;
+        ensure_nested_string(block, &["header", "id"], "immutable")?;
+        ensure_nested_string(block, &["_chain", "status"], "finalized")?;
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_blocks_normalizer_discards_provisional_processed_events() -> Result<()> {
+        let normalized = normalize_finalized_blocks_range(json!([
+            {
+                "block": {
+                    "header": { "id": "pending", "slot": 30 },
+                    "status": "pending"
+                },
+                "tip": "pending",
+                "tip_slot": 30,
+                "lib": "pending",
+                "lib_slot": 30
+            },
+            {
+                "block": { "header": { "id": "finalized", "slot": 20 } },
+                "tip": "pending",
+                "tip_slot": 30,
+                "lib": "finalized",
+                "lib_slot": 20
+            },
+            { "header": { "id": "contract-final", "slot": 19 } }
+        ]))?;
+        let blocks = normalized
+            .as_array()
+            .context("normalized finalized block range should be an array")?;
+
+        if blocks.len() != 2 {
+            bail!("expected two finalized blocks, got {}", blocks.len());
+        }
+        let finalized = blocks
+            .first()
+            .context("first finalized block should exist")?;
+        let contract_final = blocks
+            .get(1)
+            .context("second finalized block should exist")?;
+        ensure_nested_string(finalized, &["header", "id"], "finalized")?;
+        ensure_nested_string(finalized, &["_chain", "status"], "finalized")?;
+        ensure_nested_string(contract_final, &["header", "id"], "contract-final")?;
+        ensure_nested_string(contract_final, &["_chain", "status"], "finalized")?;
+        Ok(())
+    }
+
+    #[test]
+    fn processed_blocks_normalizer_rejects_non_array_response() {
+        let error = normalize_processed_blocks_range(json!({ "block": {} })).err();
+
+        assert!(error.as_ref().is_some_and(|error| {
+            error
+                .to_string()
+                .contains("processed block range response must be an array")
+        }));
     }
 
     #[test]

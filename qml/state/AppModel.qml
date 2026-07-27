@@ -319,6 +319,7 @@ QtObject {
     property alias blocksPageSlotTo: chainPageState.blocksPageSlotTo
     property alias blocksPageWindow: chainPageState.blocksPageWindow
     property alias blocksPageLimit: chainPageState.blocksPageLimit
+    property alias blocksPageViewMode: chainPageState.blocksPageViewMode
     property alias blocksPageError: chainPageState.blocksPageError
     property alias blocksLiveEnabled: chainPageState.blocksLiveEnabled
     property alias blocksLiveError: chainPageState.blocksLiveError

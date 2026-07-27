@@ -740,6 +740,17 @@ mod tests {
                 }),
             ),
             (
+                "blockchainFinalizedBlocks",
+                json!(["logoscore_cli", 30, 40, 10]),
+                json!({
+                    "source": "logoscore_cli",
+                    "slotFrom": 30,
+                    "slotTo": 40,
+                    "slotRange": "30:40",
+                    "limit": 10
+                }),
+            ),
+            (
                 "blockchainLiveBlocks",
                 json!(["logoscore_cli", 30, 40]),
                 json!({

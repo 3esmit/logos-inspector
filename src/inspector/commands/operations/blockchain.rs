@@ -17,6 +17,7 @@ use super::spec::{
 pub(super) enum BlockchainCommand {
     Node,
     Blocks,
+    FinalizedBlocks,
     LiveBlocks,
     Block,
     Transaction,
@@ -27,6 +28,7 @@ impl BlockchainCommand {
         match self {
             Self::Node => OperationMethod::BlockchainNode,
             Self::Blocks => OperationMethod::BlockchainBlocks,
+            Self::FinalizedBlocks => OperationMethod::BlockchainFinalizedBlocks,
             Self::LiveBlocks => OperationMethod::BlockchainLiveBlocks,
             Self::Block => OperationMethod::BlockchainBlock,
             Self::Transaction => OperationMethod::BlockchainTransaction,
@@ -49,6 +51,17 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         OperationCommand::Blockchain(BlockchainCommand::Blocks),
         "blockchainBlocks",
         "Blockchain blocks",
+        OperationClass::ReadPoll,
+    )
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::SlotRange),
+    ]),
+    OperationDefinition::new(
+        OperationCommand::Blockchain(BlockchainCommand::FinalizedBlocks),
+        "blockchainFinalizedBlocks",
+        "Blockchain finalized blocks",
         OperationClass::ReadPoll,
     )
     .with_context_inputs(&[
@@ -134,6 +147,25 @@ fn operation_context(
                 context.insert("limit".to_owned(), json!(limit));
             }
         }
+        BlockchainCommand::FinalizedBlocks => {
+            let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
+            let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
+            crate::blockchain::validate_blockchain_slot_range(slot_from, slot_to)?;
+            context.insert("slotFrom".to_owned(), json!(slot_from));
+            context.insert("slotTo".to_owned(), json!(slot_to));
+            context.insert(
+                "slotRange".to_owned(),
+                json!(format!("{slot_from}:{slot_to}")),
+            );
+            context.insert(
+                "limit".to_owned(),
+                json!(
+                    args.value(source.next_index + 2)
+                        .and_then(Value::as_u64)
+                        .unwrap_or(50)
+                ),
+            );
+        }
         BlockchainCommand::LiveBlocks => {
             let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
             let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
@@ -175,6 +207,9 @@ pub(super) async fn execute(
     match command {
         BlockchainCommand::Node => execute_blockchain_node(request, &module_transport).await,
         BlockchainCommand::Blocks => execute_blockchain_blocks(request, &module_transport).await,
+        BlockchainCommand::FinalizedBlocks => {
+            execute_blockchain_finalized_blocks(request, &module_transport).await
+        }
         BlockchainCommand::LiveBlocks => {
             execute_blockchain_live_blocks(request, &module_transport).await
         }
@@ -205,6 +240,30 @@ async fn execute_blockchain_blocks(
     let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
     to_value(
         bedrock_layer::blocks(
+            source.adapter(),
+            slot_from,
+            slot_to,
+            limit,
+            module_transport,
+        )
+        .await?,
+    )
+}
+
+async fn execute_blockchain_finalized_blocks(
+    request: &RuntimeOperationRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "node endpoint")?;
+    let slot_from = args.canonical_decimal_u64(source.next_index, "slot from")?;
+    let slot_to = args.canonical_decimal_u64(source.next_index + 1, "slot to")?;
+    let limit = args
+        .value(source.next_index + 2)
+        .and_then(Value::as_u64)
+        .unwrap_or(50);
+    to_value(
+        bedrock_layer::finalized_blocks(
             source.adapter(),
             slot_from,
             slot_to,

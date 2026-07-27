@@ -46,6 +46,7 @@ QtObject {
     property int blocksPageSlotTo: 0
     property int blocksPageWindow: 2000
     property int blocksPageLimit: 20
+    property string blocksPageViewMode: "latest"
     property string blocksPageError: ""
     property bool blocksPageAwaitingSync: false
     property bool blocksLiveEnabled: false
@@ -257,6 +258,7 @@ QtObject {
         blocksPageRows = []
         blocksPageSlotFrom = 0
         blocksPageSlotTo = 0
+        blocksPageViewMode = "latest"
         blocksPageError = ""
         blocksPageAwaitingSync = false
         blocksLiveEnabled = false
@@ -288,6 +290,10 @@ QtObject {
     function refreshBlocksPage(anchorSlot, onComplete) {
         return AppModelPages.refreshBlocksPageRequest(root, anchorSlot, onComplete)
     }
+
+    function showFinalizedBlocks() { return AppModelPages.showFinalizedBlocks(root) }
+
+    function showLatestBlocks() { return AppModelPages.showLatestBlocks(root) }
 
     function startBlocksLiveMode() { return AppModelPages.startBlocksLiveMode(root) }
 

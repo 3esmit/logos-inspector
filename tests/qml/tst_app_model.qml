@@ -188,6 +188,7 @@ TestCase {
         model.blocksPageRows = []
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
+        model.blocksPageViewMode = "latest"
         model.blocksPageError = ""
         model.chainPages.blocksPageAwaitingSync = false
         model.blocksLiveEnabled = false
@@ -509,6 +510,7 @@ TestCase {
         }
         switch (String(request && request.method || "")) {
         case "blockchainBlocks":
+        case "blockchainFinalizedBlocks":
             context.slotFrom = Number(args[offset])
             context.slotTo = Number(args[offset + 1])
             context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
@@ -5961,6 +5963,63 @@ TestCase {
         compare(model.chainPages.blockStatus(model.blocksPageRows[1]), "finalized")
     }
 
+    function test_blocks_page_loads_finalized_window_through_selected_connector() {
+        const nodeResult = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        slot: 1000,
+                        lib_slot: 900
+                    }
+                }
+            }
+        }
+        const finalizedResult = [
+            { header: { slot: 900, id: "lib" }, transactions: [], _chain: { status: "finalized" } },
+            { header: { slot: 899, id: "previous" }, transactions: [], _chain: { status: "finalized" } }
+        ]
+        const latestResult = [
+            { header: { slot: 1000, id: "tip" }, transactions: [], _chain: { status: "pending" } }
+        ]
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: { connector_id: "blockchain_module", provenance: "test" }
+            }
+        })
+        model.blockchainSourceMode = "module"
+        model.blocksPageWindow = 2000
+        model.blocksPageRows = [{ header: { slot: 1000, id: "stale-tip" }, transactions: [] }]
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: nodeResult,
+                blockchainFinalizedBlocks: finalizedResult,
+                blockchainBlocks: latestResult
+            })
+        }
+
+        verify(model.chainPages.showFinalizedBlocks())
+
+        tryCompare(model, "blocksPageRows", finalizedResult)
+        compare(model.blocksPageViewMode, "finalized")
+        compare(fakeHost.lastArgs[0].method, "blockchainFinalizedBlocks")
+        compare(fakeHost.lastArgs[0].args[0], "module")
+        compare(fakeHost.lastArgs[0].args[1], 401)
+        compare(fakeHost.lastArgs[0].args[2], 900)
+        compare(fakeHost.lastArgs[0].args[3], 20)
+        compare(model.blocksPageSlotFrom, 899)
+        compare(model.blocksPageSlotTo, 900)
+        compare(model.chainPages.blockStatus(model.blocksPageRows[0]), "finalized")
+
+        verify(model.chainPages.showLatestBlocks())
+
+        tryCompare(model, "blocksPageRows", latestResult)
+        compare(model.blocksPageViewMode, "latest")
+        compare(fakeHost.lastArgs[0].method, "blockchainBlocks")
+        compare(fakeHost.lastArgs[0].args[1], 501)
+        compare(fakeHost.lastArgs[0].args[2], 1000)
+        compare(model.chainPages.blockStatus(model.blocksPageRows[0]), "pending")
+    }
+
     function test_initial_block_download_defers_blocks_until_ready() {
         const syncingNode = {
             cryptarchia_info: {
@@ -6768,6 +6827,28 @@ TestCase {
         compare(model.blocksLiveUnknownEvents, 1)
         compare(model.shell.resultOwner, "blocks")
         compare(model.shell.resultValue.unknown_events.length, 1)
+    }
+
+    function test_inactive_live_refresh_cannot_replace_finalized_rows() {
+        model.shell.currentView = "blocks"
+        model.blocksLiveEnabled = false
+        model.blocksPageViewMode = "finalized"
+        model.blocksPageRows = [
+            {
+                header: { slot: 20, id: "finalized-slot-20" },
+                transactions: [],
+                _chain: { status: "finalized" }
+            }
+        ]
+        model.blocksPageSlotFrom = 20
+        model.blocksPageSlotTo = 20
+
+        compare(model.chainPages.refreshBlocksLivePage(), null)
+        compare(runtimeOperationCallCount("blockchainNode"), 0)
+        compare(runtimeOperationCallCount("blockchainLiveBlocks"), 0)
+        compare(model.blocksPageRows.length, 1)
+        compare(model.blocksPageRows[0].header.id, "finalized-slot-20")
+        compare(model.chainPages.blockStatus(model.blocksPageRows[0]), "finalized")
     }
 
     function test_blocks_live_mode_clamps_stale_range_to_supported_window() {
@@ -7620,6 +7701,7 @@ TestCase {
         })
         model.blockchainSourceMode = "module"
         wait(0)
+        model.blocksLiveEnabled = true
         model.blocksPageRows = [
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
