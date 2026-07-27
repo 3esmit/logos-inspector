@@ -38,7 +38,7 @@ use super::runtime::{
     LogoscoreRuntimeProfile, LogoscoreServiceAction, LogoscoreServiceStopOutcome,
 };
 use super::workflow::node_set_for_profile;
-use super::{INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit};
+use super::{INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit, PackageInstallAuthority};
 
 const MANIFEST_FILE: &str = "local-network.json";
 const TESTNET_ID: &str = "logos-testnet";
@@ -887,6 +887,10 @@ fn install_indexer_package(
         require_runtime_stopped(runtime)?;
         validate_runtime_modules_dir(runtime, &catalog.modules_dir)?;
     }
+    let authority = match runtime {
+        Some(runtime) => runtime.package_install_authority()?,
+        None => PackageInstallAuthority::CurrentUser,
+    };
     let release = catalog
         .package
         .versions
@@ -935,6 +939,7 @@ fn install_indexer_package(
     let installed = install_official_indexer_module(
         &downloaded,
         Path::new(&catalog.modules_dir),
+        &authority,
         install_control,
     )?;
     record_indexer_package(state, profile, &installed)?;

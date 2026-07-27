@@ -7,6 +7,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use anyhow::{Context as _, Result, bail};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
@@ -18,7 +21,10 @@ use crate::support::command_runner::{
     run_command_controlled,
 };
 
-use super::{LocalNodePackageCommit, action_engine::LocalNodeActionEngine, process::find_command};
+use super::{
+    LocalNodePackageCommit, PackageInstallAuthority, action_engine::LocalNodeActionEngine,
+    process::find_command,
+};
 
 const INDEXER_PACKAGE_NAME: &str = "lez_indexer_module";
 const INDEXER_PACKAGE_TYPE: &str = "core";
@@ -165,6 +171,11 @@ struct PackageToolchain {
     lgpm: Option<PathBuf>,
 }
 
+struct PreparedPackageInstall {
+    package_path: PathBuf,
+    _staging_directory: Option<tempfile::TempDir>,
+}
+
 impl PackageToolchain {
     fn system() -> Self {
         Self {
@@ -203,8 +214,12 @@ impl PackageToolchain {
         Ok(command)
     }
 
-    fn installed_command(&self, modules_dir: &Path) -> Result<Command> {
-        let mut command = Command::new(self.lgpm()?);
+    fn installed_command_as(
+        &self,
+        modules_dir: &Path,
+        authority: &PackageInstallAuthority,
+    ) -> Result<Command> {
+        let mut command = self.lgpm_command(authority)?;
         command
             .arg("--modules-dir")
             .arg(modules_dir)
@@ -250,8 +265,13 @@ impl PackageToolchain {
         Ok(command)
     }
 
-    fn install_command(&self, package_path: &Path, modules_dir: &Path) -> Result<Command> {
-        let mut command = Command::new(self.lgpm()?);
+    fn install_command_as(
+        &self,
+        package_path: &Path,
+        modules_dir: &Path,
+        authority: &PackageInstallAuthority,
+    ) -> Result<Command> {
+        let mut command = self.lgpm_command(authority)?;
         command
             .arg("--modules-dir")
             .arg(modules_dir)
@@ -259,6 +279,39 @@ impl PackageToolchain {
             .arg("--file")
             .arg(package_path);
         Ok(command)
+    }
+
+    fn lgpm_command(&self, authority: &PackageInstallAuthority) -> Result<Command> {
+        let lgpm = self.lgpm()?;
+        match authority.system_service_user_name() {
+            None => Ok(Command::new(lgpm)),
+            Some(user) => {
+                let mut command = Command::new("sudo");
+                command
+                    .arg("-n")
+                    .arg("-H")
+                    .arg("-u")
+                    .arg(user)
+                    .arg("--")
+                    .arg(lgpm);
+                Ok(command)
+            }
+        }
+    }
+
+    fn interactive_lgpm_command(
+        &self,
+        authority: &PackageInstallAuthority,
+    ) -> Result<Option<Command>> {
+        let Some(user) = authority.system_service_user_name() else {
+            return Ok(None);
+        };
+        let Some(pkexec) = find_command("pkexec") else {
+            return Ok(None);
+        };
+        let mut command = Command::new(pkexec);
+        command.arg("--user").arg(user).arg(self.lgpm()?);
+        Ok(Some(command))
     }
 }
 
@@ -303,6 +356,7 @@ pub(crate) fn local_module_catalog(
 
 pub(crate) fn install_local_module_with_pre_install_check(
     request: &LocalModuleInstallRequest,
+    authority: &PackageInstallAuthority,
     download_control: CommandControl,
     package_commit: &mut LocalNodePackageCommit,
     pre_install_check: impl FnOnce() -> Result<()>,
@@ -310,6 +364,7 @@ pub(crate) fn install_local_module_with_pre_install_check(
     install_local_module_with(
         &PackageToolchain::system(),
         request,
+        authority,
         download_control,
         package_commit,
         pre_install_check,
@@ -319,12 +374,13 @@ pub(crate) fn install_local_module_with_pre_install_check(
 fn install_local_module_with(
     toolchain: &PackageToolchain,
     request: &LocalModuleInstallRequest,
+    authority: &PackageInstallAuthority,
     download_control: CommandControl,
     package_commit: &mut LocalNodePackageCommit,
     pre_install_check: impl FnOnce() -> Result<()>,
 ) -> Result<LocalModuleInstallReport> {
     let modules_dir = canonical_modules_dir(Path::new(request.modules_dir.trim()))?;
-    let before = query_installed_modules(toolchain, &modules_dir)?;
+    let before = query_installed_modules_as(toolchain, &modules_dir, authority)?;
     let mut warnings = before.warnings;
     let mut _downloaded_package_directory = None;
     let (package_path, expected_identity) = match &request.source {
@@ -369,9 +425,10 @@ fn install_local_module_with(
         toolchain,
         &package_path,
         &modules_dir,
+        authority,
         package_commit.begin()?,
     )?;
-    let after = query_installed_modules(toolchain, &modules_dir)?;
+    let after = query_installed_modules_as(toolchain, &modules_dir, authority)?;
     warnings.extend(after.warnings);
     warnings.extend(package_manager_warnings(&output));
     normalize_package_warnings(&mut warnings);
@@ -401,9 +458,16 @@ pub(crate) fn download_official_indexer_module(
 pub(crate) fn install_official_indexer_module(
     package: &DownloadedLocalNodePackage,
     modules_dir: &Path,
+    authority: &PackageInstallAuthority,
     control: CommandControl,
 ) -> Result<LocalNodeInstalledPackageReport> {
-    install_official_indexer_module_with(&PackageToolchain::system(), package, modules_dir, control)
+    install_official_indexer_module_with(
+        &PackageToolchain::system(),
+        package,
+        modules_dir,
+        authority,
+        control,
+    )
 }
 
 fn query_catalog(toolchain: &PackageToolchain) -> Result<LocalNodePackageCatalogEntry> {
@@ -439,8 +503,20 @@ fn query_installed(
     toolchain: &PackageToolchain,
     modules_dir: &Path,
 ) -> Result<Option<LocalNodeInstalledPackageReport>> {
+    query_installed_as(
+        toolchain,
+        modules_dir,
+        &PackageInstallAuthority::CurrentUser,
+    )
+}
+
+fn query_installed_as(
+    toolchain: &PackageToolchain,
+    modules_dir: &Path,
+    authority: &PackageInstallAuthority,
+) -> Result<Option<LocalNodeInstalledPackageReport>> {
     let output = run_package_command(
-        toolchain.installed_command(modules_dir)?,
+        toolchain.installed_command_as(modules_dir, authority)?,
         "lgpm list",
         PACKAGE_CATALOG_TIMEOUT,
     )?;
@@ -452,8 +528,20 @@ fn query_installed_modules(
     toolchain: &PackageToolchain,
     modules_dir: &Path,
 ) -> Result<LocalModuleInstalledReport> {
+    query_installed_modules_as(
+        toolchain,
+        modules_dir,
+        &PackageInstallAuthority::CurrentUser,
+    )
+}
+
+fn query_installed_modules_as(
+    toolchain: &PackageToolchain,
+    modules_dir: &Path,
+    authority: &PackageInstallAuthority,
+) -> Result<LocalModuleInstalledReport> {
     let output = run_package_command(
-        toolchain.installed_command(modules_dir)?,
+        toolchain.installed_command_as(modules_dir, authority)?,
         "lgpm list",
         PACKAGE_CATALOG_TIMEOUT,
     )?;
@@ -507,17 +595,22 @@ fn install_official_indexer_module_with(
     toolchain: &PackageToolchain,
     package: &DownloadedLocalNodePackage,
     modules_dir: &Path,
+    authority: &PackageInstallAuthority,
     control: CommandControl,
 ) -> Result<LocalNodeInstalledPackageReport> {
     validate_downloaded_package(package)?;
     validate_absolute_directory(modules_dir, "Logos modules directory", false)?;
-    run_package_command_controlled(
-        toolchain.install_command(&package.file_path, modules_dir)?,
+    let prepared = prepare_package_install(&package.file_path, authority)?;
+    run_package_install_controlled(
+        toolchain,
+        &prepared.package_path,
+        modules_dir,
+        authority,
         "lgpm install lez_indexer_module",
         control.clone(),
     )?;
     let output = run_package_command_controlled(
-        toolchain.installed_command(modules_dir)?,
+        toolchain.installed_command_as(modules_dir, authority)?,
         "lgpm list",
         control,
     )?;
@@ -560,17 +653,125 @@ fn install_module_file_with(
     toolchain: &PackageToolchain,
     package_path: &Path,
     modules_dir: &Path,
+    authority: &PackageInstallAuthority,
     control: CommandControl,
 ) -> Result<Output> {
     validate_absolute_directory(modules_dir, "Logos modules directory", false)?;
-    validate_local_package_path(package_path)?;
+    let prepared = prepare_package_install(package_path, authority)?;
     // Do not pass `--allow-unsigned`: package-manager performs its configured
     // verification policy and returns any unsigned-package warning to the caller.
-    run_package_command_controlled(
-        toolchain.install_command(package_path, modules_dir)?,
+    run_package_install_controlled(
+        toolchain,
+        &prepared.package_path,
+        modules_dir,
+        authority,
         "lgpm install module package",
         control,
     )
+}
+
+fn prepare_package_install(
+    package_path: &Path,
+    authority: &PackageInstallAuthority,
+) -> Result<PreparedPackageInstall> {
+    validate_local_package_path(package_path)?;
+    if authority.system_service_user_name().is_none() {
+        return Ok(PreparedPackageInstall {
+            package_path: package_path.to_path_buf(),
+            _staging_directory: None,
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        // `lgpm` runs as the system service account. Stage the selected public
+        // package under a random, non-listable directory so that account can
+        // read it without changing ownership or permissions of a user file.
+        let staging_directory = tempfile::Builder::new()
+            .prefix("logos-inspector-package-install-")
+            .tempdir_in("/tmp")
+            .context("failed to create package installation staging directory")?;
+        fs::set_permissions(staging_directory.path(), fs::Permissions::from_mode(0o711))
+            .context("failed to grant the local service account access to package staging")?;
+        let staged_path = staging_directory.path().join("module-package.lgx");
+        let copied = fs::copy(package_path, &staged_path).with_context(|| {
+            format!(
+                "failed to stage module package `{}` for local service installation",
+                package_path.display()
+            )
+        })?;
+        if copied != fs::metadata(package_path)?.len() {
+            bail!("staged module package size does not match the selected package");
+        }
+        fs::set_permissions(&staged_path, fs::Permissions::from_mode(0o644)).context(
+            "failed to make staged module package readable by the local service account",
+        )?;
+        validate_local_package_path(&staged_path)?;
+        Ok(PreparedPackageInstall {
+            package_path: staged_path,
+            _staging_directory: Some(staging_directory),
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = package_path;
+        bail!("service-account package installation is unavailable on this platform")
+    }
+}
+
+fn run_package_install_controlled(
+    toolchain: &PackageToolchain,
+    package_path: &Path,
+    modules_dir: &Path,
+    authority: &PackageInstallAuthority,
+    label: &str,
+    control: CommandControl,
+) -> Result<Output> {
+    let primary = run_package_command_controlled(
+        toolchain.install_command_as(package_path, modules_dir, authority)?,
+        label,
+        control.clone(),
+    );
+    let Err(primary_error) = primary else {
+        return primary;
+    };
+    if !requires_interactive_authorization(authority, &primary_error) {
+        return Err(primary_error);
+    }
+    control.check_active()?;
+    let Some(fallback) = toolchain.interactive_lgpm_command(authority)? else {
+        return Err(primary_error).context(
+            "module package installation needs authorization to act as the local LogosCore service account",
+        );
+    };
+    let mut fallback = fallback;
+    fallback
+        .arg("--modules-dir")
+        .arg(modules_dir)
+        .arg("install")
+        .arg("--file")
+        .arg(package_path);
+    let primary_detail = primary_error.to_string();
+    run_package_command_controlled(fallback, label, control).with_context(|| {
+        format!(
+            "module package installation needs authorization to act as the local LogosCore service account; non-interactive authorization failed: {primary_detail}"
+        )
+    })
+}
+
+fn requires_interactive_authorization(
+    authority: &PackageInstallAuthority,
+    error: &anyhow::Error,
+) -> bool {
+    if authority.system_service_user_name().is_none() {
+        return false;
+    }
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("sudo:")
+        && (message.contains("password")
+            || message.contains("not allowed")
+            || message.contains("permission denied"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1981,9 +2182,10 @@ mod tests {
             ],
         )?;
         assert_command(
-            toolchain.install_command(
+            toolchain.install_command_as(
                 Path::new("/tmp/packages/lez_indexer_module-1.0.0.lgx"),
                 Path::new("/opt/logos-node/modules"),
+                &PackageInstallAuthority::CurrentUser,
             )?,
             "/usr/bin/lgpm",
             &[
@@ -1994,6 +2196,90 @@ mod tests {
                 "/tmp/packages/lez_indexer_module-1.0.0.lgx",
             ],
         )?;
+        let service_authority = PackageInstallAuthority::system_service_user("logos")?;
+        assert_command(
+            toolchain.install_command_as(
+                Path::new("/tmp/packages/lez_indexer_module-1.0.0.lgx"),
+                Path::new("/opt/logos-node/modules"),
+                &service_authority,
+            )?,
+            "sudo",
+            &[
+                "-n",
+                "-H",
+                "-u",
+                "logos",
+                "--",
+                "/usr/bin/lgpm",
+                "--modules-dir",
+                "/opt/logos-node/modules",
+                "install",
+                "--file",
+                "/tmp/packages/lez_indexer_module-1.0.0.lgx",
+            ],
+        )?;
+        assert_command(
+            toolchain
+                .installed_command_as(Path::new("/opt/logos-node/modules"), &service_authority)?,
+            "sudo",
+            &[
+                "-n",
+                "-H",
+                "-u",
+                "logos",
+                "--",
+                "/usr/bin/lgpm",
+                "--modules-dir",
+                "/opt/logos-node/modules",
+                "list",
+                "--json",
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_account_install_stages_a_readable_package_without_relaxing_directory_listing()
+    -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("selected-module.lgx");
+        fs::write(&package, b"module package")?;
+        let authority = PackageInstallAuthority::system_service_user("logos")?;
+
+        let prepared = prepare_package_install(&package, &authority)?;
+        let staging = prepared
+            .package_path
+            .parent()
+            .context("staged package has no parent directory")?;
+        let directory_mode = fs::metadata(staging)?.permissions().mode() & 0o777;
+        let file_mode = fs::metadata(&prepared.package_path)?.permissions().mode() & 0o777;
+
+        anyhow::ensure!(
+            directory_mode == 0o711,
+            "unexpected staging mode: {directory_mode:o}"
+        );
+        anyhow::ensure!(file_mode == 0o644, "unexpected package mode: {file_mode:o}");
+        anyhow::ensure!(
+            fs::read(&prepared.package_path)? == b"module package",
+            "staged package contents changed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn service_account_install_rejects_unsafe_account_names() -> Result<()> {
+        for value in ["-root", "logos:wheel", "logos;id", "1000", "logos user"] {
+            anyhow::ensure!(
+                PackageInstallAuthority::system_service_user(value).is_err(),
+                "unsafe service account was accepted: {value}"
+            );
+        }
+        let root = PackageInstallAuthority::system_service_user("")?;
+        anyhow::ensure!(
+            root.system_service_user_name() == Some("root"),
+            "empty system service account did not resolve to root"
+        );
         Ok(())
     }
 
@@ -2093,8 +2379,13 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
         {
             bail!("download report lost verified identity: {downloaded:?}");
         }
-        let installed =
-            install_official_indexer_module_with(&toolchain, &downloaded, &modules_dir, control)?;
+        let installed = install_official_indexer_module_with(
+            &toolchain,
+            &downloaded,
+            &modules_dir,
+            &PackageInstallAuthority::CurrentUser,
+            control,
+        )?;
         if installed.version != downloaded.version
             || installed.root_hash != downloaded.root_hash
             || Path::new(&installed.install_dir) != modules_dir.join(INDEXER_PACKAGE_NAME)
@@ -2182,8 +2473,13 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
         });
 
         let mut pre_install_checked = false;
-        let report =
-            install_local_module_with(&toolchain, &request, control, &mut package_commit, || {
+        let report = install_local_module_with(
+            &toolchain,
+            &request,
+            &PackageInstallAuthority::CurrentUser,
+            control,
+            &mut package_commit,
+            || {
                 pre_install_checked = true;
                 anyhow::ensure!(
                     download_marker.is_file(),
@@ -2194,7 +2490,8 @@ printf 'abc' > "$output/lez_indexer_module-$version.lgx"
                     "pre-install check ran after lgpm mutation"
                 );
                 Ok(())
-            })?;
+            },
+        )?;
         anyhow::ensure!(
             pre_install_checked,
             "module installation did not run its final pre-install check"
