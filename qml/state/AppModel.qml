@@ -293,6 +293,8 @@ QtObject {
 
             function networkConnectionState(kind) { return metricsState.networkConnectionState(kind) }
 
+            function currentView() { return appShellState.currentView }
+
             function valueToString(value) { return metricsState.valueToString(value) }
 
             function canonicalProgramIdHex(value) { return root.canonicalProgramIdHex(value) }

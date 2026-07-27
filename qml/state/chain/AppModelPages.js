@@ -29,12 +29,22 @@ function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
                     }
                     return false
                 }
+                dashboardNode = node.value
+                if (root.blockchainNodeSyncState(node.value) === "syncing") {
+                    root.deferBlocksPageUntilSync()
+                    const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                        root.blockchainSyncMessage(), false, node.value)
+                    if (onComplete) {
+                        onComplete(node, presented)
+                    }
+                    return false
+                }
+                blocksPageAwaitingSync = false
                 const window = ChainPageQuery.slotWindow(anchorSlot,
                     ChainPageQuery.slotTip(node.value, false), blocksExplorerWindow(root))
                 const slotFrom = window.slotFrom
                 const slotTo = window.slotTo
                 const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
-                dashboardNode = node.value
                 root.startOperation("blocks.page.range", "blockchainBlocks",
                     [slotFrom, slotTo, blockLimit], qsTr("Blocks"), function (blocks) {
                         if (!blocks || !blocks.ok) {
@@ -71,6 +81,9 @@ function startBlocksLiveMode(root) {
         blocksLiveCheckedAt = ""
         if (!blocksPageRows.length) {
             refreshBlocksPageRequest(root, undefined, function (response, presented) {
+                if (blocksLiveEnabled && blocksPageAwaitingSync) {
+                    return
+                }
                 if (blocksLiveEnabled && response && response.ok && presented === true) {
                     refreshBlocksLivePage(root)
                 } else if (blocksLiveEnabled && presented === true) {
@@ -117,6 +130,13 @@ function refreshBlocksLivePage(root) {
                     return false
                 }
                 dashboardNode = node.value
+                if (root.blockchainNodeSyncState(node.value) === "syncing") {
+                    root.deferBlocksPageUntilSync()
+                    root.completePresentation(presentation, qsTr("Live blocks"),
+                        root.blockchainSyncMessage(), false, node.value)
+                    return false
+                }
+                blocksPageAwaitingSync = false
                 const window = ChainPageQuery.liveSlotWindow(
                     ChainPageQuery.slotTip(node.value, false), blocksPageSlotTo,
                     blocksExplorerWindow(root))
@@ -464,6 +484,10 @@ function blockchainInfo(root) {
     }
 }
 
+function blockchainNodeSyncState(nodeValue) {
+    return ChainPageQuery.nodeSyncState(nodeValue)
+}
+
 function sourceEmptyText(root, source, error, fallback) {
     with (root) {
         const state = sourceState(root, source, error)
@@ -515,9 +539,7 @@ function blockchainSourceState(root) {
         if (status.known === true && status.ok !== true) {
             return "unavailable"
         }
-        const info = root.cryptarchiaInfo() || {}
-        const state = String(info.mode || info.sync_state || info.syncState || "").toLowerCase()
-        if (state.indexOf("sync") >= 0 || state.indexOf("catch") >= 0 || state.indexOf("start") >= 0) {
+        if (blockchainNodeSyncState(root.dashboardNode) === "syncing") {
             return "syncing"
         }
         return "ready"

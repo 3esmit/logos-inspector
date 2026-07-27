@@ -1,5 +1,6 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
+import "../utils/UiFormat.js" as UiFormat
 import "chain" as Chain
 import "chain/AppModelPages.js" as AppModelPages
 
@@ -26,6 +27,8 @@ QtObject {
 
     property var dashboardOverview: null
     property var dashboardNode: null
+    property string observedBlockchainState: "unknown"
+    property bool blockchainSyncRefreshQueued: false
     property var dashboardL1Blocks: []
     property int dashboardL1BlocksSlotTo: 0
     property var dashboardBlocks: []
@@ -44,6 +47,7 @@ QtObject {
     property int blocksPageWindow: 2000
     property int blocksPageLimit: 20
     property string blocksPageError: ""
+    property bool blocksPageAwaitingSync: false
     property bool blocksLiveEnabled: false
     property string blocksLiveError: ""
     property string blocksLiveSource: ""
@@ -70,6 +74,21 @@ QtObject {
         && transactionsPageBeforeBlock > 0
         && !transactionsPageAtLatest
     property string transactionsPageError: ""
+    property bool transactionsPageAwaitingSync: false
+
+    onDashboardNodeChanged: {
+        const previous = observedBlockchainState
+        const current = blockchainNodeSyncState(dashboardNode)
+        observedBlockchainState = current
+        if (current === "syncing") {
+            deferBlocksPageUntilSync()
+            deferTransactionsPageUntilSync()
+            return
+        }
+        if (previous === "syncing" && current === "ready") {
+            refreshVisibleInspectionAfterSync()
+        }
+    }
 
     function setResult(title, text, isError, value, owner) {
         return gateway.setResult(title, text, isError, value, owner)
@@ -100,6 +119,71 @@ QtObject {
         const report = dashboardNode
         const probe = report ? report.cryptarchia_info : null
         return probe && probe.value ? probe.value.cryptarchia_info : null
+    }
+
+    function blockchainNodeSyncState(value) {
+        return AppModelPages.blockchainNodeSyncState(value)
+    }
+
+    function blockchainSyncMessage() {
+        const info = cryptarchiaInfo() || {}
+        const slot = Number(info.slot)
+        if (Number.isFinite(slot) && slot > 0) {
+            return qsTr("Bedrock is synchronizing at L1 slot %1. Latest data will refresh automatically when ready.")
+                .arg(UiFormat.numberText(slot))
+        }
+        return qsTr("Bedrock is synchronizing. Latest data will refresh automatically when ready.")
+    }
+
+    function deferBlocksPageUntilSync() {
+        blocksPageAwaitingSync = true
+        blocksPageRows = []
+        blocksPageSlotFrom = 0
+        blocksPageSlotTo = 0
+        blocksPageError = ""
+        blocksLiveError = ""
+    }
+
+    function deferTransactionsPageUntilSync() {
+        transactionsPageAwaitingSync = true
+        transactionsPageRows = []
+        transactionsPageBeforeBlock = 0
+        transactionsPageNextBeforeBlock = 0
+        transactionsPageAtLatest = false
+        transactionsPageWindowRows = []
+        transactionsPageRowOffset = 0
+        transactionsPageWindowLoaded = false
+        transactionsPageWindowAtLatest = false
+        transactionsPageSessionTip = 0
+        transactionsPageError = ""
+    }
+
+    function refreshVisibleInspectionAfterSync() {
+        if (blockchainSyncRefreshQueued) {
+            return false
+        }
+        blockchainSyncRefreshQueued = true
+        Qt.callLater(function () {
+            blockchainSyncRefreshQueued = false
+            const currentView = gateway && typeof gateway.currentView === "function"
+                ? String(gateway.currentView() || "") : ""
+            if (currentView === "blocks" && blocksPageAwaitingSync
+                    && !blocksWorkflowRunning) {
+                blocksPageAwaitingSync = false
+                if (blocksLiveEnabled) {
+                    refreshBlocksLivePage()
+                } else {
+                    refreshBlocksPage()
+                }
+                return
+            }
+            if (currentView === "transactions" && transactionsPageAwaitingSync
+                    && !transactionsWorkflowRunning) {
+                transactionsPageAwaitingSync = false
+                refreshTransactionsPage()
+            }
+        })
+        return true
     }
 
     function valueToString(value) { return gateway.valueToString(value) }
@@ -174,6 +258,7 @@ QtObject {
         blocksPageSlotFrom = 0
         blocksPageSlotTo = 0
         blocksPageError = ""
+        blocksPageAwaitingSync = false
         blocksLiveEnabled = false
         blocksLiveError = ""
         blocksLiveSource = ""
@@ -189,6 +274,9 @@ QtObject {
         transactionsPageWindowAtLatest = false
         transactionsPageSessionTip = 0
         transactionsPageError = ""
+        transactionsPageAwaitingSync = false
+        observedBlockchainState = "unknown"
+        blockchainSyncRefreshQueued = false
     }
 
     function invalidateOperationCaller(callerKey, reason) {

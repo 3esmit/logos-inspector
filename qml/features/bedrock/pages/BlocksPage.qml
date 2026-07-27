@@ -105,6 +105,15 @@ ColumnLayout {
     }
 
     StatusMessage {
+        visible: root.model.chainPages.blocksPageAwaitingSync
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Bedrock syncing")
+        message: root.model.chainPages.blockchainSyncMessage()
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
         visible: root.model.blocksPageError.length > 0
         theme: root.theme
         tone: "warning"

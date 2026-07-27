@@ -17,6 +17,14 @@ function refreshTransactionsPage(root, beforeBlock, pagePosition) {
                         transactionsPageError, true, null)
                     return false
                 }
+                dashboardNode = node.value
+                if (root.blockchainNodeSyncState(node.value) === "syncing") {
+                    root.deferTransactionsPageUntilSync()
+                    root.completePresentation(presentation, qsTr("Transactions"),
+                        root.blockchainSyncMessage(), false, node.value)
+                    return false
+                }
+                transactionsPageAwaitingSync = false
                 const observedTipSlot = ChainPageQuery.slotTip(node.value, false)
                 const latestRequest = beforeBlock === undefined
                     || beforeBlock === null

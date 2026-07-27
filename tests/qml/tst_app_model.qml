@@ -189,6 +189,7 @@ TestCase {
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
         model.blocksPageError = ""
+        model.chainPages.blocksPageAwaitingSync = false
         model.blocksLiveEnabled = false
         model.blocksLiveError = ""
         model.blocksLiveSource = ""
@@ -205,6 +206,9 @@ TestCase {
         model.chainPages.transactionsPageWindowAtLatest = false
         model.chainPages.transactionsPageSessionTip = 0
         model.transactionsPageError = ""
+        model.chainPages.transactionsPageAwaitingSync = false
+        model.chainPages.observedBlockchainState = "unknown"
+        model.chainPages.blockchainSyncRefreshQueued = false
         model.blockDetailValue = null
         model.blockDetailError = ""
         model.transactionDetailValue = null
@@ -5957,6 +5961,116 @@ TestCase {
         compare(model.chainPages.blockStatus(model.blocksPageRows[1]), "finalized")
     }
 
+    function test_initial_block_download_defers_blocks_until_ready() {
+        const syncingNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        mode: "InitialBlockDownload",
+                        slot: 435400,
+                        lib_slot: 0
+                    }
+                }
+            }
+        }
+        const readyNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        mode: "Online",
+                        slot: 5000,
+                        lib_slot: 4900
+                    }
+                }
+            }
+        }
+        const blocksResult = [{
+            header: { slot: 5000, id: "ready-block" },
+            transactions: []
+        }]
+        let nodeQueries = 0
+        model.shell.currentView = "blocks"
+        model.blocksPageRows = [{ header: { slot: 1, id: "stale-block" }, transactions: [] }]
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: function () {
+                    nodeQueries += 1
+                    return nodeQueries === 1 ? syncingNode : readyNode
+                },
+                blockchainBlocks: blocksResult
+            })
+        }
+
+        model.chainPages.refreshBlocksPage()
+
+        tryVerify(function () { return model.chainPages.blocksPageAwaitingSync })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 0)
+        compare(model.blocksPageRows.length, 0)
+        compare(model.chainPages.sourceEmptyText("blockchain", "", "No blocks"),
+                "Source reachable; syncing")
+        verify(model.chainPages.blockchainSyncMessage().indexOf("435") >= 0)
+        verify(model.chainPages.blockchainSyncMessage().indexOf("e+") < 0)
+
+        model.dashboardNode = readyNode
+
+        tryVerify(function () {
+            return runtimeOperationCallCount("blockchainBlocks") === 1
+        })
+        tryCompare(model, "blocksPageRows", blocksResult)
+        verify(!model.chainPages.blocksPageAwaitingSync)
+    }
+
+    function test_sync_observation_discards_already_loaded_inspection_rows() {
+        const syncingNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        mode: "Bootstrapping",
+                        slot: 435400,
+                        lib_slot: 0
+                    }
+                }
+            }
+        }
+        model.blocksPageRows = [{ header: { slot: 1, id: "stale-block" }, transactions: [] }]
+        model.blocksPageSlotFrom = 1
+        model.blocksPageSlotTo = 1
+        model.blocksPageError = "obsolete result"
+        model.blocksLiveError = "obsolete live result"
+        model.transactionsPageRows = [{ hash: "stale-transaction" }]
+        model.transactionsPageBeforeBlock = 1
+        model.transactionsPageNextBeforeBlock = 2
+        model.transactionsPageAtLatest = true
+        model.chainPages.transactionsPageWindowRows = [{ hash: "stale-transaction" }]
+        model.chainPages.transactionsPageRowOffset = 1
+        model.chainPages.transactionsPageWindowLoaded = true
+        model.chainPages.transactionsPageWindowAtLatest = true
+        model.chainPages.transactionsPageSessionTip = 1
+        model.transactionsPageError = "obsolete transaction result"
+
+        model.dashboardNode = syncingNode
+
+        tryVerify(function () {
+            return model.chainPages.blocksPageAwaitingSync
+                && model.chainPages.transactionsPageAwaitingSync
+        })
+        compare(model.blocksPageRows.length, 0)
+        compare(model.blocksPageSlotFrom, 0)
+        compare(model.blocksPageSlotTo, 0)
+        compare(model.blocksPageError, "")
+        compare(model.blocksLiveError, "")
+        compare(model.transactionsPageRows.length, 0)
+        compare(model.transactionsPageBeforeBlock, 0)
+        compare(model.transactionsPageNextBeforeBlock, 0)
+        verify(!model.transactionsPageAtLatest)
+        compare(model.chainPages.transactionsPageWindowRows.length, 0)
+        compare(model.chainPages.transactionsPageRowOffset, 0)
+        verify(!model.chainPages.transactionsPageWindowLoaded)
+        verify(!model.chainPages.transactionsPageWindowAtLatest)
+        compare(model.chainPages.transactionsPageSessionTip, 0)
+        compare(model.transactionsPageError, "")
+    }
+
     function test_explorer_window_keeps_module_and_rpc_limits_distinct() {
         compare(ChainPageQuery.explorerWindowForSource("module", 2000), 499)
         compare(ChainPageQuery.explorerWindowForSource("logoscore_cli", 2000), 499)
@@ -7141,6 +7255,66 @@ TestCase {
             }
         }])
         verify(model.transactionsPageAtLatest)
+    }
+
+    function test_initial_block_download_defers_transactions_until_ready() {
+        const syncingNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        mode: "InitialBlockDownload",
+                        slot: 435400,
+                        lib_slot: 0
+                    }
+                }
+            }
+        }
+        const readyNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        mode: "Online",
+                        slot: 5000,
+                        lib_slot: 4900
+                    }
+                }
+            }
+        }
+        const transactionsResult = [{
+            header: { slot: 4999, id: "ready-block" },
+            transactions: [{ mantle_tx: { hash: "ready-transaction", ops: [] } }]
+        }]
+        let nodeQueries = 0
+        model.shell.currentView = "transactions"
+        model.transactionsPageRows = [{ hash: "stale-transaction" }]
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: function () {
+                    nodeQueries += 1
+                    return nodeQueries === 1 ? syncingNode : readyNode
+                },
+                blockchainBlocks: transactionsResult
+            })
+        }
+
+        model.chainPages.refreshTransactionsPage()
+
+        tryVerify(function () { return model.chainPages.transactionsPageAwaitingSync })
+        compare(runtimeOperationCallCount("blockchainBlocks"), 0)
+        compare(model.transactionsPageRows.length, 0)
+        compare(model.chainPages.sourceEmptyText("blockchain", "", "No transactions"),
+                "Source reachable; syncing")
+
+        model.dashboardNode = readyNode
+
+        tryVerify(function () {
+            return runtimeOperationCallCount("blockchainBlocks") === 1
+        })
+        tryVerify(function () {
+            return model.transactionsPageRows.length === 1
+                && model.transactionsPageRows[0].hash === "ready-transaction"
+        })
+        verify(!model.chainPages.transactionsPageAwaitingSync)
     }
 
     function test_transaction_latest_prefers_mutable_tip_over_finalized_lib() {
