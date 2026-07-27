@@ -1907,16 +1907,28 @@ QtObject {
         const scopes = raw && raw.scopes && typeof raw.scopes === "object" ? raw.scopes : ({})
         const defaults = defaultNetworkConnectorConfig().scopes
         const keys = ["l1", "delivery", "storage"]
+        let migrationRequired = false
         for (let i = 0; i < keys.length; ++i) {
             const key = keys[i]
             const entry = scopes[key] && typeof scopes[key] === "object" ? scopes[key] : ({})
+            const requestedConnectorId = String(entry.connector_id || entry.connectorId || entry.id || "")
             const provenance = String(entry.provenance || "")
             if (provenance === "testnet_default" || provenance === "build_default") {
+                const replacement = defaults[key]
+                migrationRequired = migrationRequired
+                    || requestedConnectorId !== String(replacement.connector_id || "")
+                    || String(entry.endpoint || entry.url || entry.rest_endpoint || entry.rpc_endpoint || "")
+                        !== String(replacement.endpoint || "")
+                    || provenance !== String(replacement.provenance || "")
                 normalized.scopes[key] = defaults[key]
+            } else if (requestedConnectorId.length > 0
+                    && !networkConnectorSupported(key, requestedConnectorId)) {
+                migrationRequired = true
             }
         }
         networkConnectorConfig = normalized
         syncSourceModesFromConnectorConfig()
+        return migrationRequired
     }
 
     function normalizedNetworkConnectorConfig(value) {
