@@ -13,6 +13,14 @@ Window {
 
     LogosBridge {
         id: logosBridge
+        Component.onCompleted: activateTerminationHandling()
+    }
+
+    Connections {
+        target: logosBridge
+        function onTerminationRequested() {
+            Qt.quit()
+        }
     }
 
     AppShell {

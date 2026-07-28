@@ -4797,6 +4797,7 @@ dependencies = [
  "logos-inspector",
  "rust-rapidsnark",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

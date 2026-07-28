@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     modules::logos_core::{
-        LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransportEvent,
+        LogoscoreCliRuntime, LogoscoreCliTransport, LogoscoreWatchOwner, ModuleTransportEvent,
         module_transport_event_from_watch_frame, normalize_module_call_value,
     },
     source_routing::{
@@ -82,6 +82,7 @@ pub struct LocalNodeModuleWatcher {
     delivery_worker: Option<thread::JoinHandle<()>>,
     blockchain_worker: Option<thread::JoinHandle<()>>,
     subscribers: Arc<Mutex<SubscriberHub>>,
+    _watch_owner: Arc<LogoscoreWatchOwner>,
 }
 
 type SharedModuleWatchHealth = Arc<Mutex<ModuleWatchHealthObservation>>;
@@ -166,6 +167,7 @@ impl SubscriberSender {
 impl LocalNodeModuleWatcher {
     /// Starts polling before any module is available so later daemon changes are observed.
     pub fn start() -> Result<Self> {
+        let watch_owner = Arc::new(LogoscoreWatchOwner::start()?);
         let cancellation = CancellationToken::new();
         let delivery_watch_health = Arc::new(Mutex::new(ModuleWatchHealthObservation::new(
             ModuleWatchHealth::Unknown,
@@ -192,6 +194,7 @@ impl LocalNodeModuleWatcher {
         let delivery_cancellation = cancellation.clone();
         let delivery_subscribers = Arc::clone(&subscribers);
         let delivery_worker_health = Arc::clone(&delivery_watch_health);
+        let delivery_watch_owner = Arc::clone(&watch_owner);
         let delivery_worker = match thread::Builder::new()
             .name("logoscore-delivery-event-watcher".to_owned())
             .spawn(move || {
@@ -199,6 +202,7 @@ impl LocalNodeModuleWatcher {
                     delivery_cancellation,
                     delivery_subscribers,
                     delivery_worker_health,
+                    delivery_watch_owner,
                 );
             }) {
             Ok(worker) => worker,
@@ -217,6 +221,7 @@ impl LocalNodeModuleWatcher {
         let blockchain_cancellation = cancellation.clone();
         let blockchain_subscribers = Arc::clone(&subscribers);
         let blockchain_worker_health = Arc::clone(&blockchain_watch_health);
+        let blockchain_watch_owner = Arc::clone(&watch_owner);
         let blockchain_worker = match thread::Builder::new()
             .name("logoscore-blockchain-event-watcher".to_owned())
             .spawn(move || {
@@ -224,6 +229,7 @@ impl LocalNodeModuleWatcher {
                     blockchain_cancellation,
                     blockchain_subscribers,
                     blockchain_worker_health,
+                    blockchain_watch_owner,
                 );
             }) {
             Ok(worker) => worker,
@@ -250,6 +256,7 @@ impl LocalNodeModuleWatcher {
             delivery_worker: Some(delivery_worker),
             blockchain_worker: Some(blockchain_worker),
             subscribers,
+            _watch_owner: watch_owner,
         })
     }
 
@@ -581,6 +588,7 @@ fn run_delivery_event_watcher(
     cancellation: CancellationToken,
     subscribers: Arc<Mutex<SubscriberHub>>,
     delivery_watch_health: SharedModuleWatchHealth,
+    watch_owner: Arc<LogoscoreWatchOwner>,
 ) {
     let mut state = DeliveryEventStreamState::Unknown;
     while !cancellation.is_cancelled() {
@@ -589,6 +597,7 @@ fn run_delivery_event_watcher(
             &subscribers,
             &delivery_watch_health,
             &mut state,
+            &watch_owner,
         );
         if cancellation.is_cancelled() {
             break;
@@ -616,10 +625,12 @@ fn watch_delivery_events_once(
     subscribers: &Arc<Mutex<SubscriberHub>>,
     delivery_watch_health: &SharedModuleWatchHealth,
     state: &mut DeliveryEventStreamState,
+    watch_owner: &LogoscoreWatchOwner,
 ) -> Result<()> {
     let runtime = ready_delivery_watch_runtime(cancellation)?;
     let startup_control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
-    let mut watch = runtime.start_all_event_watch(DELIVERY_MODULE, &startup_control)?;
+    let mut watch =
+        runtime.start_all_event_watch_for_owner(DELIVERY_MODULE, &startup_control, watch_owner)?;
     let ready_result = watch.wait_ready(&startup_control);
     if let Err(error) = ready_result {
         let cleanup_result = watch.stop();
@@ -689,6 +700,7 @@ fn run_blockchain_event_watcher(
     cancellation: CancellationToken,
     subscribers: Arc<Mutex<SubscriberHub>>,
     blockchain_watch_health: SharedModuleWatchHealth,
+    watch_owner: Arc<LogoscoreWatchOwner>,
 ) {
     let mut state = DeliveryEventStreamState::Unknown;
     while !cancellation.is_cancelled() {
@@ -697,6 +709,7 @@ fn run_blockchain_event_watcher(
             &subscribers,
             &blockchain_watch_health,
             &mut state,
+            &watch_owner,
         );
         if cancellation.is_cancelled() {
             break;
@@ -724,13 +737,15 @@ fn watch_blockchain_events_once(
     subscribers: &Arc<Mutex<SubscriberHub>>,
     blockchain_watch_health: &SharedModuleWatchHealth,
     state: &mut DeliveryEventStreamState,
+    watch_owner: &LogoscoreWatchOwner,
 ) -> Result<()> {
     let runtime = ready_blockchain_watch_runtime(cancellation)?;
     let startup_control = command_control(cancellation, DAEMON_STATUS_TIMEOUT);
-    let mut watch = runtime.start_event_watch(
+    let mut watch = runtime.start_event_watch_for_owner(
         BLOCKCHAIN_MODULE,
         BLOCKCHAIN_NEW_BLOCK_EVENT,
         &startup_control,
+        watch_owner,
     )?;
     let ready_result = watch.wait_ready(&startup_control);
     if let Err(error) = ready_result {
