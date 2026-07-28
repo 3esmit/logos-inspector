@@ -382,11 +382,11 @@ function buildOpenMetricsIndex(root, value, revision) {
     if (typeof value !== "string") {
         return null
     }
-    const samples = []
     const samplesByName = {}
     const malformedNames = {}
     const invalidSamplesByName = {}
     const lines = value.split(/\r?\n/)
+    let order = 0
     for (let i = 0; i < lines.length; ++i) {
         const line = lines[i].trim()
         if (!line.length || line[0] === "#") {
@@ -420,9 +420,9 @@ function buildOpenMetricsIndex(root, value, revision) {
             name: name,
             labels: labels,
             value: parsed,
-            order: samples.length
+            order: order
         }
-        samples.push(entry)
+        order += 1
         if (samplesByName[name] === undefined) {
             samplesByName[name] = []
         }
@@ -430,7 +430,6 @@ function buildOpenMetricsIndex(root, value, revision) {
     }
     return {
         revision: Number(revision || 0),
-        samples: samples,
         samplesByName: samplesByName,
         malformedNames: malformedNames,
         invalidSamplesByName: invalidSamplesByName
