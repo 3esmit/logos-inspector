@@ -251,14 +251,25 @@ EOF
           # RISC Zero invokes `xcrun --sdk macosx metal` and `metallib` on
           # Darwin. Xcode 26 registers the downloadable Metal component for
           # the invoking user, while Nix builds as an isolated `_nixbld`
-          # account. The release workflow resolves the working host tools
-          # before the build and passes their exact paths via `--impure`; this
-          # wrapper then avoids asking Xcode to discover them under `_nixbld`.
+          # account. The reusable release workflow resolves working host
+          # tools before the build and passes their exact paths through its
+          # `LOGOS_MODULES_RELEASE_*` contract via `--impure`; standalone
+          # releases retain their Inspector-specific inputs. This wrapper
+          # avoids asking Xcode to discover tools under `_nixbld`.
           metalXcrun =
             if pkgs.stdenv.isDarwin then
               let
-                hostMetal = builtins.getEnv "LOGOS_INSPECTOR_METAL";
-                hostMetallib = builtins.getEnv "LOGOS_INSPECTOR_METALLIB";
+                releaseMetal = builtins.getEnv "LOGOS_MODULES_RELEASE_METAL";
+                releaseMetallib = builtins.getEnv "LOGOS_MODULES_RELEASE_METALLIB";
+                useReleaseTools = releaseMetal != "" && releaseMetallib != "";
+                hostMetal =
+                  if useReleaseTools then releaseMetal else builtins.getEnv "LOGOS_INSPECTOR_METAL";
+                hostMetallib =
+                  if useReleaseTools then releaseMetallib else builtins.getEnv "LOGOS_INSPECTOR_METALLIB";
+                hostMetalName =
+                  if useReleaseTools then "LOGOS_MODULES_RELEASE_METAL" else "LOGOS_INSPECTOR_METAL";
+                hostMetallibName =
+                  if useReleaseTools then "LOGOS_MODULES_RELEASE_METALLIB" else "LOGOS_INSPECTOR_METALLIB";
                 requireHostTool = name: path:
                   if path == "" then
                     throw "${name} must name a verified host Metal tool; build with nix --impure"
@@ -271,12 +282,12 @@ EOF
                     metal)
                       shift 3
                       unset DEVELOPER_DIR SDKROOT
-                      exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METAL" hostMetal)} "$@"
+                      exec ${lib.escapeShellArg (requireHostTool hostMetalName hostMetal)} "$@"
                       ;;
                     metallib)
                       shift 3
                       unset DEVELOPER_DIR SDKROOT
-                      exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METALLIB" hostMetallib)} "$@"
+                      exec ${lib.escapeShellArg (requireHostTool hostMetallibName hostMetallib)} "$@"
                       ;;
                   esac
                 fi
