@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0-rc12] - 2026-07-28
+
+### Fixed
+
+- macOS release checks now exclude Linux-only standalone watcher lease helpers.
+
 ## [0.2.0-rc11] - 2026-07-28
 
 ### Added
