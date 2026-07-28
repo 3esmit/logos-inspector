@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -130,6 +130,10 @@ impl ZoneCatalogStore {
         self.commit_batch_with_hook(batch, || Ok(()))
     }
 
+    /// The held snapshot must be a prior validated result from this store.
+    ///
+    /// The catalog worker carries that snapshot across catch-up pages, so this
+    /// avoids rereading and fully revalidating unchanged persisted records.
     pub(super) fn commit_batch_from_snapshot(
         &self,
         snapshot: CatalogSnapshot,
@@ -275,7 +279,7 @@ impl ZoneCatalogStore {
 
         let snapshot = snapshot.map_or_else(
             || snapshot_from_write_transaction(&transaction).map_err(map_staged_error),
-            |snapshot| apply_batch_to_snapshot(snapshot, metadata, batch),
+            |snapshot| apply_batch_to_snapshot(snapshot, metadata, &batch),
         )?;
         before_commit()?;
         transaction.commit().map_err(map_commit_error)?;
@@ -286,7 +290,7 @@ impl ZoneCatalogStore {
 fn apply_batch_to_snapshot(
     mut snapshot: CatalogSnapshot,
     metadata: CatalogMetadata,
-    batch: CatalogBatch,
+    batch: &CatalogBatch,
 ) -> CatalogResult<CatalogSnapshot> {
     if snapshot.metadata.catalog_revision != batch.expected_catalog_revision {
         return Err(CatalogError::RevisionConflict {
@@ -294,57 +298,353 @@ fn apply_batch_to_snapshot(
             current: snapshot.metadata.catalog_revision,
         });
     }
+    let validation = prepare_incremental_validation(&snapshot, batch)?;
     snapshot.metadata = metadata;
     apply_snapshot_records(
         &mut snapshot.zones,
-        batch.upsert_zones,
-        batch.delete_zone_ids,
+        &batch.upsert_zones,
+        &batch.delete_zone_ids,
         |record| record.channel_id.as_str(),
-    );
+    )?;
     apply_snapshot_records(
         &mut snapshot.evidence,
-        batch.upsert_evidence,
-        batch.delete_evidence_ids,
+        &batch.upsert_evidence,
+        &batch.delete_evidence_ids,
         |reference| reference.evidence_id.as_str(),
-    );
+    )?;
     apply_snapshot_records(
         &mut snapshot.segments,
-        batch.upsert_segments,
-        batch.delete_segment_ids,
+        &batch.upsert_segments,
+        &batch.delete_segment_ids,
         |segment| segment.segment_id.as_str(),
-    );
+    )?;
     apply_snapshot_records(
         &mut snapshot.gaps,
-        batch.upsert_gaps,
-        batch.delete_gap_ids,
+        &batch.upsert_gaps,
+        &batch.delete_gap_ids,
         |gap| gap.gap_id.as_str(),
-    );
-    snapshot.frontier = batch.frontier;
-    snapshot.traversal = batch.traversal;
-    validate_snapshot(&snapshot)?;
+    )?;
+    snapshot.frontier = batch.frontier.clone();
+    snapshot.traversal = batch.traversal.clone();
+    validate_incremental_snapshot(&snapshot, batch, &validation)?;
     Ok(snapshot)
+}
+
+struct IncrementalValidation {
+    requires_full_snapshot_validation: bool,
+    changed_segment_ids: HashSet<String>,
+    evidence_deltas: HashMap<String, EvidenceCountDelta>,
+    previous_zone_counts: HashMap<String, u64>,
+}
+
+fn prepare_incremental_validation(
+    previous: &CatalogSnapshot,
+    batch: &CatalogBatch,
+) -> CatalogResult<IncrementalValidation> {
+    let mut requires_full_snapshot_validation = !batch.delete_segment_ids.is_empty();
+    let mut changed_segment_ids = HashSet::new();
+    for segment in &batch.upsert_segments {
+        if let Some(previous_segment) = find_segment(&previous.segments, &segment.segment_id) {
+            if !is_safe_segment_extension(previous_segment, segment) {
+                requires_full_snapshot_validation = true;
+            } else if previous_segment.frontier != segment.frontier {
+                changed_segment_ids.insert(segment.segment_id.clone());
+            }
+        }
+    }
+
+    let evidence_deltas = evidence_count_deltas(previous, batch)?;
+    let mut previous_zone_counts = HashMap::new();
+    for channel_id in evidence_deltas
+        .keys()
+        .chain(batch.upsert_zones.iter().map(|zone| &zone.channel_id))
+        .chain(batch.delete_zone_ids.iter())
+    {
+        previous_zone_counts
+            .entry(channel_id.clone())
+            .or_insert_with(|| {
+                find_zone(&previous.zones, channel_id)
+                    .map(|zone| zone.evidence_count)
+                    .unwrap_or_default()
+            });
+    }
+
+    Ok(IncrementalValidation {
+        requires_full_snapshot_validation,
+        changed_segment_ids,
+        evidence_deltas,
+        previous_zone_counts,
+    })
+}
+
+/// Validates a snapshot assembled from a previously validated snapshot and one
+/// batch. Full persisted-data validation remains at database open/read
+/// boundaries; this path only rechecks the records and relationships that a
+/// batch can change.
+fn validate_incremental_snapshot(
+    snapshot: &CatalogSnapshot,
+    batch: &CatalogBatch,
+    validation: &IncrementalValidation,
+) -> CatalogResult<()> {
+    if validation.requires_full_snapshot_validation {
+        return validate_snapshot(snapshot);
+    }
+    validate_persisted(validate_metadata(&snapshot.metadata), "catalog metadata")?;
+    if snapshot.metadata.updated_at_unix < snapshot.metadata.created_at_unix {
+        return persisted_invariant("catalog update time precedes creation time");
+    }
+    if let Some(frontier) = snapshot.frontier.as_ref() {
+        validate_persisted(validate_frontier(frontier), "catalog frontier")?;
+    }
+    if let Some(traversal) = snapshot.traversal.as_ref() {
+        validate_persisted(validate_traversal(traversal), "catalog traversal")?;
+    }
+
+    for reference in &batch.upsert_evidence {
+        validate_evidence_relationship(reference, snapshot)?;
+    }
+    for gap in &batch.upsert_gaps {
+        validate_gap_relationship(gap, snapshot)?;
+    }
+
+    for gap in &snapshot.gaps {
+        if validation
+            .changed_segment_ids
+            .contains(&gap.lower_segment_id)
+        {
+            validate_gap_relationship(gap, snapshot)?;
+        }
+    }
+
+    for (channel_id, previous_count) in &validation.previous_zone_counts {
+        let expected_count = validation
+            .evidence_deltas
+            .get(channel_id)
+            .map_or(Ok(*previous_count), |delta| {
+                apply_evidence_delta(*previous_count, delta)
+            })?;
+        let zone = find_zone(&snapshot.zones, channel_id);
+        if let Some(zone) = zone {
+            if zone.evidence_count != expected_count {
+                return persisted_invariant(format!(
+                    "Zone {} evidence count is {}, but {} references are persisted",
+                    zone.channel_id, zone.evidence_count, expected_count
+                ));
+            }
+            validate_zone_relationship(zone, snapshot)?;
+        } else if expected_count != 0 {
+            return persisted_invariant(format!("evidence exists for missing Zone {channel_id}"));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct EvidenceCountDelta {
+    removed: u64,
+    added: u64,
+}
+
+fn evidence_count_deltas(
+    previous: &CatalogSnapshot,
+    batch: &CatalogBatch,
+) -> CatalogResult<HashMap<String, EvidenceCountDelta>> {
+    let mut deltas = HashMap::new();
+    for reference in &batch.upsert_evidence {
+        if let Some(previous_reference) = find_evidence(&previous.evidence, &reference.evidence_id)
+        {
+            record_evidence_removal(&mut deltas, &previous_reference.channel_id)?;
+        }
+        record_evidence_addition(&mut deltas, &reference.channel_id)?;
+    }
+    for evidence_id in &batch.delete_evidence_ids {
+        if let Some(previous_reference) = find_evidence(&previous.evidence, evidence_id) {
+            record_evidence_removal(&mut deltas, &previous_reference.channel_id)?;
+        }
+    }
+    Ok(deltas)
+}
+
+fn record_evidence_removal(
+    deltas: &mut HashMap<String, EvidenceCountDelta>,
+    channel_id: &str,
+) -> CatalogResult<()> {
+    let delta = deltas.entry(channel_id.to_owned()).or_default();
+    delta.removed = delta
+        .removed
+        .checked_add(1)
+        .ok_or_else(|| CatalogError::invalid_input("evidence removal count overflow"))?;
+    Ok(())
+}
+
+fn record_evidence_addition(
+    deltas: &mut HashMap<String, EvidenceCountDelta>,
+    channel_id: &str,
+) -> CatalogResult<()> {
+    let delta = deltas.entry(channel_id.to_owned()).or_default();
+    delta.added = delta
+        .added
+        .checked_add(1)
+        .ok_or_else(|| CatalogError::invalid_input("evidence addition count overflow"))?;
+    Ok(())
+}
+
+fn apply_evidence_delta(previous_count: u64, delta: &EvidenceCountDelta) -> CatalogResult<u64> {
+    let remaining = previous_count.checked_sub(delta.removed).ok_or_else(|| {
+        CatalogError::invalid_input("evidence removal exceeds the previous Zone count")
+    })?;
+    remaining
+        .checked_add(delta.added)
+        .ok_or_else(|| CatalogError::invalid_input("Zone evidence count overflow"))
+}
+
+fn validate_evidence_relationship(
+    reference: &ZoneEvidenceReference,
+    snapshot: &CatalogSnapshot,
+) -> CatalogResult<()> {
+    validate_persisted(validate_evidence(reference), "evidence reference")?;
+    let Some(segment) = find_segment(&snapshot.segments, &reference.coverage_segment_id) else {
+        return persisted_invariant(format!(
+            "evidence {} references missing coverage segment {}",
+            reference.evidence_id, reference.coverage_segment_id
+        ));
+    };
+    if reference.l1_slot < segment.floor.slot || reference.l1_slot > segment.frontier.slot {
+        return persisted_invariant(format!(
+            "evidence {} falls outside coverage segment {}",
+            reference.evidence_id, reference.coverage_segment_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_zone_relationship(
+    zone: &ZoneCatalogRecord,
+    snapshot: &CatalogSnapshot,
+) -> CatalogResult<()> {
+    validate_persisted(validate_zone(zone), "Zone")?;
+    let Some(segment) = find_segment(
+        &snapshot.segments,
+        &zone.snapshot_provenance.coverage_segment_id,
+    ) else {
+        return persisted_invariant(format!(
+            "Zone {} references missing coverage segment {}",
+            zone.channel_id, zone.snapshot_provenance.coverage_segment_id
+        ));
+    };
+    if zone.snapshot_provenance.observed_slot < segment.floor.slot
+        || zone.snapshot_provenance.observed_slot > segment.frontier.slot
+    {
+        return persisted_invariant(format!(
+            "Zone {} snapshot falls outside coverage segment {}",
+            zone.channel_id, zone.snapshot_provenance.coverage_segment_id
+        ));
+    }
+    let Some(latest_evidence) = find_evidence(&snapshot.evidence, &zone.latest_evidence_id) else {
+        return persisted_invariant(format!(
+            "Zone {} references missing latest evidence {}",
+            zone.channel_id, zone.latest_evidence_id
+        ));
+    };
+    if latest_evidence.channel_id != zone.channel_id {
+        return persisted_invariant(format!(
+            "Zone {} latest evidence belongs to Channel {}",
+            zone.channel_id, latest_evidence.channel_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gap_relationship(gap: &CoverageGap, snapshot: &CatalogSnapshot) -> CatalogResult<()> {
+    validate_persisted(validate_gap(gap), "coverage gap")?;
+    let Some(lower_segment) = find_segment(&snapshot.segments, &gap.lower_segment_id) else {
+        return persisted_invariant(format!(
+            "coverage gap {} references missing lower segment {}",
+            gap.gap_id, gap.lower_segment_id
+        ));
+    };
+    let Some(upper_segment) = find_segment(&snapshot.segments, &gap.upper_segment_id) else {
+        return persisted_invariant(format!(
+            "coverage gap {} references missing upper segment {}",
+            gap.gap_id, gap.upper_segment_id
+        ));
+    };
+    if lower_segment.frontier != gap.lower_checkpoint
+        || upper_segment.floor.slot != gap.upper_block.slot
+        || upper_segment.floor.block_id != gap.upper_block.block_id
+        || upper_segment.floor.parent_id != gap.required_parent_id
+    {
+        return persisted_invariant(format!(
+            "coverage gap {} does not match its segment boundaries",
+            gap.gap_id
+        ));
+    }
+    Ok(())
+}
+
+fn is_safe_segment_extension(previous: &CoverageSegment, next: &CoverageSegment) -> bool {
+    previous.floor == next.floor
+        && (previous.frontier == next.frontier || next.frontier.slot > previous.frontier.slot)
+}
+
+fn find_zone<'a>(
+    zones: &'a [ZoneCatalogRecord],
+    channel_id: &str,
+) -> Option<&'a ZoneCatalogRecord> {
+    zones
+        .binary_search_by(|zone| zone.channel_id.as_str().cmp(channel_id))
+        .ok()
+        .and_then(|index| zones.get(index))
+}
+
+fn find_evidence<'a>(
+    evidence: &'a [ZoneEvidenceReference],
+    evidence_id: &str,
+) -> Option<&'a ZoneEvidenceReference> {
+    evidence
+        .binary_search_by(|reference| reference.evidence_id.as_str().cmp(evidence_id))
+        .ok()
+        .and_then(|index| evidence.get(index))
+}
+
+fn find_segment<'a>(
+    segments: &'a [CoverageSegment],
+    segment_id: &str,
+) -> Option<&'a CoverageSegment> {
+    segments
+        .binary_search_by(|segment| segment.segment_id.as_str().cmp(segment_id))
+        .ok()
+        .and_then(|index| segments.get(index))
 }
 
 fn apply_snapshot_records<T>(
     records: &mut Vec<T>,
-    upserts: Vec<T>,
-    deletes: Vec<String>,
+    upserts: &[T],
+    deletes: &[String],
     key_of: impl Fn(&T) -> &str,
-) {
+) -> CatalogResult<()>
+where
+    T: Clone,
+{
     if upserts.is_empty() && deletes.is_empty() {
-        return;
+        return Ok(());
     }
-    let mut by_key = std::mem::take(records)
-        .into_iter()
-        .map(|record| (key_of(&record).to_owned(), record))
-        .collect::<BTreeMap<_, _>>();
-    for key in deletes {
-        by_key.remove(key.as_str());
-    }
+    let deleted = deletes.iter().map(String::as_str).collect::<HashSet<_>>();
+    records.retain(|record| !deleted.contains(key_of(record)));
     for record in upserts {
-        by_key.insert(key_of(&record).to_owned(), record);
+        match records.binary_search_by(|candidate| key_of(candidate).cmp(key_of(record))) {
+            Ok(index) => {
+                let existing = records.get_mut(index).ok_or_else(|| {
+                    CatalogError::invalid_input(
+                        "sorted catalog record lookup returned an invalid replacement index",
+                    )
+                })?;
+                *existing = record.clone();
+            }
+            Err(index) => records.insert(index, record.clone()),
+        }
     }
-    *records = by_key.into_values().collect();
+    Ok(())
 }
 
 fn create_empty_table(
@@ -1056,6 +1356,148 @@ mod tests {
         ensure!(
             committed == store.snapshot()?,
             "held snapshot commit diverged from persisted catalog"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_snapshot_rejects_dangling_zone_relation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("catalog.redb");
+        let store = ZoneCatalogStore::create(&path, test_metadata()?)?;
+        let current = store.snapshot()?;
+        let mut batch = test_batch();
+        batch.upsert_evidence.clear();
+
+        let result = store.commit_batch_from_snapshot(current, batch);
+
+        ensure!(
+            matches!(result, Err(CatalogError::Invalidated(_))),
+            "held snapshot commit accepted a Zone without its latest evidence"
+        );
+        let recovered = store.snapshot()?;
+        ensure!(
+            recovered.metadata.catalog_revision == 0,
+            "rejected held snapshot batch mutated the catalog"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_snapshot_revalidates_non_monotonic_segment_change() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("catalog.redb");
+        let store = ZoneCatalogStore::create(&path, test_metadata()?)?;
+        let committed = store.commit_batch(test_batch())?;
+        let mut batch = test_batch();
+        batch.expected_catalog_revision = committed.metadata.catalog_revision;
+        batch.updated_at_unix = 102;
+        let segment = batch
+            .upsert_segments
+            .first_mut()
+            .context("test batch is missing its coverage segment")?;
+        segment.floor = CatalogBlockCheckpoint {
+            slot: 11,
+            block_id: hex_id('5'),
+            parent_id: hex_id('4'),
+        };
+        segment.frontier = CatalogBlockReference {
+            slot: 20,
+            block_id: hex_id('6'),
+        };
+
+        let result = store.commit_batch_from_snapshot(committed.clone(), batch);
+
+        ensure!(
+            matches!(result, Err(CatalogError::Invalidated(_))),
+            "held snapshot commit accepted evidence outside a changed segment"
+        );
+        ensure!(
+            committed == store.snapshot()?,
+            "rejected segment change mutated the catalog"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_snapshot_commits_monotonic_segment_extension() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("catalog.redb");
+        let store = ZoneCatalogStore::create(&path, test_metadata()?)?;
+        let committed = store.commit_batch(test_batch())?;
+        let mut batch = test_batch();
+        batch.expected_catalog_revision = committed.metadata.catalog_revision;
+        batch.updated_at_unix = 102;
+        let segment = batch
+            .upsert_segments
+            .first_mut()
+            .context("test batch is missing its coverage segment")?;
+        segment.frontier = CatalogBlockReference {
+            slot: 11,
+            block_id: hex_id('5'),
+        };
+
+        let extended = store.commit_batch_from_snapshot(committed, batch)?;
+        drop(store);
+
+        let reopened = ZoneCatalogStore::open(&path)?;
+        ensure!(
+            extended == reopened.snapshot()?,
+            "monotonic held snapshot commit did not preserve the durable catalog"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_snapshot_updates_evidence_count_for_new_evidence() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("catalog.redb");
+        let store = ZoneCatalogStore::create(&path, test_metadata()?)?;
+        let committed = store.commit_batch(test_batch())?;
+        let mut batch = test_batch();
+        batch.expected_catalog_revision = committed.metadata.catalog_revision;
+        batch.updated_at_unix = 102;
+        let mut evidence = batch
+            .upsert_evidence
+            .first()
+            .cloned()
+            .context("test batch is missing evidence")?;
+        evidence.evidence_id = "evidence-2".to_owned();
+        batch.upsert_evidence = vec![evidence.clone()];
+        let zone = batch
+            .upsert_zones
+            .first_mut()
+            .context("test batch is missing its Zone")?;
+        zone.evidence_count = 2;
+        zone.latest_evidence_id = evidence.evidence_id;
+
+        let updated = store.commit_batch_from_snapshot(committed, batch)?;
+
+        ensure!(
+            updated.evidence.len() == 2,
+            "new evidence was not retained in the held snapshot"
+        );
+        ensure!(
+            updated
+                .zones
+                .first()
+                .is_some_and(|zone| zone.evidence_count == 2),
+            "held snapshot did not apply the evidence count delta"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn applying_snapshot_records_keeps_records_sorted_and_unique() -> Result<()> {
+        let mut records = vec!["a".to_owned(), "c".to_owned()];
+        let upserts = vec!["b".to_owned(), "c".to_owned()];
+        let deletes = vec!["a".to_owned()];
+
+        apply_snapshot_records(&mut records, &upserts, &deletes, String::as_str)?;
+
+        ensure!(
+            records == ["b", "c"],
+            "snapshot record application lost ordering or uniqueness"
         );
         Ok(())
     }
