@@ -3,7 +3,10 @@ use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -16,7 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     inspection::NetworkScope,
     modules::logos_core::{
-        LogoscoreCliTransport, SharedModuleTransport, normalize_module_call_value,
+        LogoscoreCliRuntime, LogoscoreCliTransport, LogoscoreEventWatch, SharedModuleTransport,
+        module_transport_event_from_watch_frame, normalize_module_call_value,
     },
     source_routing::channel_sources::{
         ChannelSourceConfig, ChannelSourceTarget, indexer, load_channel_source_configs,
@@ -48,6 +52,16 @@ const STATE_FILE: &str = "channel_indexers.json";
 const STATE_VERSION: u32 = 1;
 const OPERATION_HISTORY_LIMIT: usize = 100;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const INDEXER_MODULE: &str = "lez_indexer_module";
+const INDEXER_NODE_STATUS_METHOD: &str = "nodeStatus";
+const INDEXER_NODE_STATUS_SIGNATURE: &str = "nodeStatus()";
+const INDEXER_NODE_ACTION_METHOD: &str = "nodeAction";
+const INDEXER_NODE_ACTION_SIGNATURE: &str = "nodeAction(QString)";
+const INDEXER_NODE_CHANGED_EVENT: &str = "nodeChanged";
+const INDEXER_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
+const INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
+const INDEXER_LIFECYCLE_EVENT_READ_INTERVAL: Duration = Duration::from_millis(250);
+static INDEXER_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CONFIG_BYTES_USIZE: usize = 1024 * 1024;
 const CONFIG_ROLE: &str = "Zone-owned Indexer";
@@ -606,24 +620,26 @@ fn start(
     };
     ensure_valid_indexer_config(context.config_root, record)?;
 
-    let result = start_runtime_and_indexer(record, context.control);
-    if let Err(error) = result {
-        let cleanup_error = stop_runtime(record, None).err();
-        record.state = "stopped".to_owned();
-        record.indexed_block_id = None;
-        record.last_error = Some(match cleanup_error {
-            Some(cleanup_error) => format!("{error}; cleanup failed: {cleanup_error}"),
-            None => error.to_string(),
-        });
-        return Err(error);
-    }
+    let module_detail = match start_runtime_and_indexer(record, context.control) {
+        Ok(detail) => detail,
+        Err(error) => {
+            let cleanup_error = stop_runtime(record, None).err();
+            record.state = "stopped".to_owned();
+            record.indexed_block_id = None;
+            record.last_error = Some(match cleanup_error {
+                Some(cleanup_error) => format!("{error}; cleanup failed: {cleanup_error}"),
+                None => error.to_string(),
+            });
+            return Err(error);
+        }
+    };
 
     record.state = "starting".to_owned();
     record.indexed_block_id = None;
     record.last_error = None;
     Ok(ActionOutcome::starting(format!(
-        "Started isolated Channel Indexer for `{}` bound to Sequencer source `{}`",
-        context.channel_id, record.selected_sequencer_source_id
+        "Started isolated Channel Indexer for `{}` bound to Sequencer source `{}` ({module_detail})",
+        context.channel_id, record.selected_sequencer_source_id,
     )))
 }
 
@@ -649,19 +665,12 @@ fn stop(
     }
 
     let cli = record.runtime.cli_runtime()?;
-    let stop_spec = command_spec_for(
-        NodeKind::Indexer,
-        NodeAction::Stop,
-        &record.config_path(),
-        &record.data_path(),
-        None,
-    )
-    .context("Channel Indexer stop is not implemented")?;
-    let module_detail = match execute_command_spec(&stop_spec, Some(&cli), control) {
-        Ok(value) => operation_detail_from_value(&value),
-        Err(error) if is_control_interruption(&error) => return Err(error),
-        Err(error) => format!("module stop could not be confirmed: {error}"),
-    };
+    let module_detail =
+        match execute_indexer_lifecycle_action(&cli, record, NodeAction::Stop, control) {
+            Ok(detail) => detail,
+            Err(error) if is_control_interruption(&error) => return Err(error),
+            Err(error) => format!("module stop could not be confirmed: {error}"),
+        };
     stop_runtime(record, control)?;
     record.state = "stopped".to_owned();
     record.indexed_block_id = None;
@@ -674,7 +683,7 @@ fn stop(
 fn start_runtime_and_indexer(
     record: &mut ChannelIndexerRecord,
     control: Option<&CommandControl>,
-) -> Result<()> {
+) -> Result<String> {
     if let Some(control) = control {
         control.check_active()?;
     }
@@ -698,8 +707,516 @@ fn start_runtime_and_indexer(
     )
     .context("Channel Indexer start is not implemented")?;
     ensure_module_loaded(&spec, Some(&cli), control)?;
-    execute_command_spec(&spec, Some(&cli), control)?;
+    execute_indexer_lifecycle_action(&cli, record, NodeAction::Start, control)
+}
+
+fn execute_indexer_lifecycle_action(
+    cli: &LogoscoreCliRuntime,
+    record: &ChannelIndexerRecord,
+    action: NodeAction,
+    control: Option<&CommandControl>,
+) -> Result<String> {
+    let lifecycle_control = indexer_lifecycle_control(control);
+    let metadata = cli
+        .module_info_controlled(INDEXER_MODULE, lifecycle_control.clone())
+        .context("failed to inspect the installed Channel Indexer module")?;
+    let use_v1 = supports_indexer_lifecycle_v1(&metadata.value);
+    if use_v1 {
+        return execute_indexer_lifecycle_v1_action(cli, record, action, lifecycle_control);
+    }
+
+    let spec = command_spec_for(
+        NodeKind::Indexer,
+        action,
+        &record.config_path(),
+        &record.data_path(),
+        None,
+    )
+    .with_context(|| format!("Channel Indexer {} is not implemented", action.as_str()))?;
+    let value = execute_command_spec(&spec, Some(cli), control)?;
+    Ok(format!(
+        "legacy {} confirmed: {}",
+        action.as_str(),
+        operation_detail_from_value(&value)
+    ))
+}
+
+fn indexer_lifecycle_control(control: Option<&CommandControl>) -> CommandControl {
+    let now = Instant::now();
+    let deadline = now
+        .checked_add(INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT)
+        .unwrap_or(now);
+    match control {
+        Some(control) => control.with_deadline(deadline),
+        None => CommandControl::new(CancellationToken::new(), deadline),
+    }
+}
+
+fn supports_indexer_lifecycle_v1(metadata: &Value) -> bool {
+    metadata_has_method(
+        metadata,
+        INDEXER_NODE_STATUS_METHOD,
+        INDEXER_NODE_STATUS_SIGNATURE,
+    ) && metadata_has_method(
+        metadata,
+        INDEXER_NODE_ACTION_METHOD,
+        INDEXER_NODE_ACTION_SIGNATURE,
+    ) && metadata_has_event(
+        metadata,
+        INDEXER_NODE_CHANGED_EVENT,
+        INDEXER_NODE_CHANGED_SIGNATURE,
+    )
+}
+
+fn metadata_has_method(metadata: &Value, method: &str, signature: &str) -> bool {
+    metadata
+        .get("methods")
+        .and_then(Value::as_array)
+        .is_some_and(|methods| {
+            methods.iter().any(|candidate| {
+                candidate.get("name").and_then(Value::as_str) == Some(method)
+                    && candidate.get("signature").and_then(Value::as_str) == Some(signature)
+                    && candidate.get("isInvokable").and_then(Value::as_bool) != Some(false)
+            })
+        })
+}
+
+fn metadata_has_event(metadata: &Value, event: &str, signature: &str) -> bool {
+    metadata
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|events| {
+            events.iter().any(|candidate| {
+                candidate.get("name").and_then(Value::as_str) == Some(event)
+                    && candidate.get("signature").and_then(Value::as_str) == Some(signature)
+            })
+        })
+}
+
+fn execute_indexer_lifecycle_v1_action(
+    cli: &LogoscoreCliRuntime,
+    record: &ChannelIndexerRecord,
+    action: NodeAction,
+    control: CommandControl,
+) -> Result<String> {
+    let snapshot = indexer_lifecycle_snapshot(cli, &control)?;
+    let (action_name, expected_transition, expected_terminal, parameters) =
+        indexer_lifecycle_action_parameters(record, action)?;
+    validate_indexer_lifecycle_snapshot_for_action(
+        &snapshot,
+        record,
+        action_name,
+        expected_transition,
+    )?;
+
+    let mut watch = cli.start_event_watch(INDEXER_MODULE, INDEXER_NODE_CHANGED_EVENT, &control)?;
+    let result = (|| {
+        watch.wait_ready(&control)?;
+        let serial = INDEXER_LIFECYCLE_OPERATION_SERIAL.fetch_add(1, Ordering::Relaxed);
+        let operation_id = format!(
+            "logos-inspector-indexer-{action_name}-{}-{serial}",
+            now_millis()
+        );
+        let request = serde_json::json!({
+            "schema": "logos.managed_node_lifecycle.command",
+            "version": 1,
+            "operation_id": operation_id,
+            "action": action_name,
+            "expected": {
+                "instance_id": snapshot.instance_id,
+                "epoch": snapshot.epoch,
+                "sequence": snapshot.sequence,
+            },
+            "parameters": parameters,
+        });
+        let output = cli.call_controlled(
+            INDEXER_MODULE,
+            INDEXER_NODE_ACTION_METHOD,
+            &[request.to_string()],
+            control.clone(),
+        )?;
+        let acknowledgement =
+            normalize_module_call_value(INDEXER_MODULE, INDEXER_NODE_ACTION_METHOD, output.value)?;
+        validate_indexer_lifecycle_acknowledgement(
+            &acknowledgement,
+            &snapshot,
+            &operation_id,
+            expected_transition,
+        )?;
+        let terminal = wait_for_indexer_lifecycle_terminal_event(
+            &mut watch,
+            &control,
+            &snapshot,
+            record,
+            &operation_id,
+            action_name,
+            expected_transition,
+            expected_terminal,
+        )?;
+        Ok(format!(
+            "V1 nodeChanged confirmed {action_name} for Channel `{}` at lifecycle sequence {}",
+            record.channel_id, terminal.sequence
+        ))
+    })();
+    let cleanup = watch.stop();
+    match (result, cleanup) {
+        (Ok(detail), Ok(())) => Ok(detail),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error).context("Indexer lifecycle event watcher cleanup failed"),
+        (Err(error), Err(cleanup_error)) => Err(error).context(format!(
+            "Indexer lifecycle event watcher cleanup failed: {cleanup_error}"
+        )),
+    }
+}
+
+fn indexer_lifecycle_action_parameters(
+    record: &ChannelIndexerRecord,
+    action: NodeAction,
+) -> Result<(&'static str, &'static str, &'static str, Value)> {
+    match action {
+        NodeAction::Start => {
+            let config_path = record.config_path();
+            anyhow::ensure!(
+                Path::new(&config_path).is_absolute(),
+                "Channel Indexer lifecycle configuration path must be absolute"
+            );
+            Ok((
+                "start",
+                "starting",
+                "running",
+                serde_json::json!({ "config_path": config_path }),
+            ))
+        }
+        NodeAction::Stop => Ok(("stop", "stopping", "stopped", serde_json::json!({}))),
+        _ => bail!(
+            "Channel Indexer V1 lifecycle does not support {}",
+            action.as_str()
+        ),
+    }
+}
+
+fn indexer_lifecycle_snapshot(
+    cli: &LogoscoreCliRuntime,
+    control: &CommandControl,
+) -> Result<IndexerLifecycleSnapshot> {
+    let output = cli.call_controlled(
+        INDEXER_MODULE,
+        INDEXER_NODE_STATUS_METHOD,
+        &[],
+        control.clone(),
+    )?;
+    let value =
+        normalize_module_call_value(INDEXER_MODULE, INDEXER_NODE_STATUS_METHOD, output.value)?;
+    IndexerLifecycleSnapshot::parse(&value)
+}
+
+fn validate_indexer_lifecycle_snapshot_for_action(
+    snapshot: &IndexerLifecycleSnapshot,
+    record: &ChannelIndexerRecord,
+    action: &str,
+    expected_transition: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        snapshot.supports_action(action),
+        "Indexer V1 nodeStatus does not allow `{action}` in its current state `{}`",
+        snapshot.state
+    );
+    if let Some(channel_id) = snapshot.channel_id.as_deref() {
+        anyhow::ensure!(
+            channel_id == record.channel_id,
+            "Indexer V1 nodeStatus is scoped to a different Channel"
+        );
+    }
+    anyhow::ensure!(
+        snapshot.state != expected_transition,
+        "Indexer V1 nodeStatus is already transitioning"
+    );
     Ok(())
+}
+
+fn validate_indexer_lifecycle_acknowledgement(
+    value: &Value,
+    snapshot: &IndexerLifecycleSnapshot,
+    operation_id: &str,
+    expected_transition: &str,
+) -> Result<()> {
+    let value = json_string_value(value, "Indexer V1 nodeAction response")?;
+    anyhow::ensure!(
+        value.get("schema").and_then(Value::as_str) == Some("logos.managed_node_lifecycle.ack")
+            && value.get("version").and_then(Value::as_u64) == Some(1),
+        "Indexer V1 nodeAction response has an unsupported schema or version"
+    );
+    anyhow::ensure!(
+        value.get("operation_id").and_then(Value::as_str) == Some(operation_id),
+        "Indexer V1 nodeAction response does not acknowledge the submitted operation"
+    );
+    anyhow::ensure!(
+        value.get("duplicate").and_then(Value::as_bool) == Some(false),
+        "Indexer V1 nodeAction response unexpectedly reused the operation"
+    );
+    anyhow::ensure!(
+        value.get("accepted").and_then(Value::as_bool) == Some(true),
+        "Indexer V1 nodeAction rejected the lifecycle request"
+    );
+    anyhow::ensure!(
+        value.get("instance_id").and_then(Value::as_str) == Some(&snapshot.instance_id)
+            && value.get("epoch").and_then(Value::as_u64) == Some(snapshot.epoch)
+            && value
+                .get("sequence")
+                .and_then(Value::as_u64)
+                .is_some_and(|sequence| sequence > snapshot.sequence),
+        "Indexer V1 nodeAction response has an invalid lifecycle cursor"
+    );
+    anyhow::ensure!(
+        value.get("state").and_then(Value::as_str) == Some(expected_transition),
+        "Indexer V1 nodeAction response has an unexpected lifecycle state"
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wait_for_indexer_lifecycle_terminal_event(
+    watch: &mut LogoscoreEventWatch,
+    control: &CommandControl,
+    snapshot: &IndexerLifecycleSnapshot,
+    record: &ChannelIndexerRecord,
+    operation_id: &str,
+    action: &str,
+    expected_transition: &str,
+    expected_terminal: &str,
+) -> Result<IndexerLifecycleSnapshot> {
+    let mut accepted = false;
+    let mut last_sequence = snapshot.sequence;
+    loop {
+        let Some(frame) =
+            watch.next_value_within(control, INDEXER_LIFECYCLE_EVENT_READ_INTERVAL)?
+        else {
+            continue;
+        };
+        let event = IndexerLifecycleEvent::from_watch_frame(&frame)?;
+        if event.operation_id.as_deref() != Some(operation_id)
+            || event.instance_id != snapshot.instance_id
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            event.sequence > last_sequence && event.epoch >= snapshot.epoch,
+            "Indexer V1 nodeChanged event has a stale lifecycle cursor"
+        );
+        anyhow::ensure!(
+            event.action == action,
+            "Indexer V1 nodeChanged event has an unexpected action"
+        );
+        anyhow::ensure!(
+            event.status.instance_id == event.instance_id
+                && event.status.epoch == event.epoch
+                && event.status.sequence == event.sequence,
+            "Indexer V1 nodeChanged event has an inconsistent status snapshot"
+        );
+        last_sequence = event.sequence;
+        match event.phase.as_str() {
+            "accepted" => {
+                anyhow::ensure!(
+                    !accepted
+                        && event.outcome == "accepted"
+                        && event.status.state == expected_transition,
+                    "Indexer V1 nodeChanged accepted event has an invalid lifecycle state"
+                );
+                if let Some(channel_id) = event.channel_id.as_deref() {
+                    anyhow::ensure!(
+                        channel_id == record.channel_id,
+                        "Indexer V1 nodeChanged accepted event is scoped to a different Channel"
+                    );
+                }
+                accepted = true;
+            }
+            "settled" => {
+                anyhow::ensure!(
+                    accepted
+                        && event.outcome == "succeeded"
+                        && event.status.state == expected_terminal,
+                    "Indexer V1 nodeChanged terminal event did not confirm the requested action"
+                );
+                anyhow::ensure!(
+                    event.channel_id.as_deref() == Some(record.channel_id.as_str())
+                        && event.status.channel_id.as_deref() == Some(record.channel_id.as_str()),
+                    "Indexer V1 nodeChanged terminal event is scoped to a different Channel"
+                );
+                return Ok(event.status);
+            }
+            _ => bail!("Indexer V1 nodeChanged event has an unsupported phase"),
+        }
+    }
+}
+
+fn json_string_value(value: &Value, label: &str) -> Result<Value> {
+    match value {
+        Value::String(text) => {
+            serde_json::from_str(text).with_context(|| format!("{label} is not valid JSON"))
+        }
+        value => Ok(value.clone()),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct IndexerLifecycleSnapshot {
+    instance_id: String,
+    epoch: u64,
+    sequence: u64,
+    state: String,
+    channel_id: Option<String>,
+    supported_actions: Vec<String>,
+}
+
+impl IndexerLifecycleSnapshot {
+    fn parse(value: &Value) -> Result<Self> {
+        let value = json_string_value(value, "Indexer V1 nodeStatus response")?;
+        let payload: IndexerLifecycleSnapshotPayload = serde_json::from_value(value)
+            .context("Indexer V1 nodeStatus response has an invalid shape")?;
+        anyhow::ensure!(
+            payload.schema == "logos.managed_node_lifecycle.snapshot" && payload.version == 1,
+            "Indexer V1 nodeStatus response has an unsupported schema or version"
+        );
+        anyhow::ensure!(
+            !payload.instance_id.trim().is_empty(),
+            "Indexer V1 nodeStatus response has no instance ID"
+        );
+        validate_indexer_lifecycle_scope(&payload.scope, "Indexer V1 nodeStatus response")?;
+        anyhow::ensure!(
+            !payload.state.trim().is_empty(),
+            "Indexer V1 nodeStatus response has invalid lifecycle actions"
+        );
+        let mut seen_actions = BTreeSet::new();
+        anyhow::ensure!(
+            payload.supported_actions.iter().all(|action| {
+                !action.trim().is_empty() && seen_actions.insert(action.as_str())
+            }),
+            "Indexer V1 nodeStatus response has invalid lifecycle actions"
+        );
+        Ok(Self {
+            instance_id: payload.instance_id,
+            epoch: payload.epoch,
+            sequence: payload.sequence,
+            state: payload.state,
+            channel_id: payload.scope.channel_id,
+            supported_actions: payload.supported_actions,
+        })
+    }
+
+    fn supports_action(&self, action: &str) -> bool {
+        self.supported_actions
+            .iter()
+            .any(|candidate| candidate == action)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct IndexerLifecycleSnapshotPayload {
+    schema: String,
+    version: u64,
+    instance_id: String,
+    epoch: u64,
+    sequence: u64,
+    scope: IndexerLifecycleScope,
+    state: String,
+    supported_actions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IndexerLifecycleScope {
+    kind: String,
+    #[serde(default)]
+    channel_id: Option<String>,
+}
+
+fn validate_indexer_lifecycle_scope(scope: &IndexerLifecycleScope, label: &str) -> Result<()> {
+    anyhow::ensure!(scope.kind == "indexer", "{label} has an invalid scope");
+    if let Some(channel_id) = scope.channel_id.as_deref() {
+        let canonical = normalized_channel_id(channel_id)
+            .with_context(|| format!("{label} has an invalid Channel scope"))?;
+        anyhow::ensure!(
+            canonical == channel_id,
+            "{label} has a non-canonical Channel scope"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct IndexerLifecycleEvent {
+    instance_id: String,
+    epoch: u64,
+    sequence: u64,
+    channel_id: Option<String>,
+    operation_id: Option<String>,
+    action: String,
+    phase: String,
+    outcome: String,
+    status: IndexerLifecycleSnapshot,
+}
+
+impl IndexerLifecycleEvent {
+    fn from_watch_frame(frame: &Value) -> Result<Self> {
+        let transport = module_transport_event_from_watch_frame(frame, INDEXER_MODULE)?;
+        anyhow::ensure!(
+            transport.event() == INDEXER_NODE_CHANGED_EVENT,
+            "Indexer lifecycle watch emitted an unexpected event"
+        );
+        let [payload] = transport.args() else {
+            bail!("Indexer V1 nodeChanged event must contain exactly one payload");
+        };
+        let value = json_string_value(payload, "Indexer V1 nodeChanged payload")?;
+        let payload: IndexerLifecycleEventPayload = serde_json::from_value(value)
+            .context("Indexer V1 nodeChanged payload has an invalid shape")?;
+        anyhow::ensure!(
+            payload.schema == "logos.managed_node_lifecycle.event" && payload.version == 1,
+            "Indexer V1 nodeChanged payload has an unsupported schema or version"
+        );
+        anyhow::ensure!(
+            !payload.instance_id.trim().is_empty()
+                && !payload.action.trim().is_empty()
+                && !payload.phase.trim().is_empty()
+                && !payload.outcome.trim().is_empty()
+                && !payload.previous_state.trim().is_empty()
+                && payload.emitted_at_ms >= 0,
+            "Indexer V1 nodeChanged payload has invalid lifecycle fields"
+        );
+        validate_indexer_lifecycle_scope(&payload.scope, "Indexer V1 nodeChanged payload")?;
+        let status = IndexerLifecycleSnapshot::parse(&payload.status)?;
+        anyhow::ensure!(
+            payload.scope.channel_id.as_deref() == status.channel_id.as_deref(),
+            "Indexer V1 nodeChanged payload and status disagree on Channel scope"
+        );
+        Ok(Self {
+            instance_id: payload.instance_id,
+            epoch: payload.epoch,
+            sequence: payload.sequence,
+            channel_id: payload.scope.channel_id,
+            operation_id: payload.operation_id,
+            action: payload.action,
+            phase: payload.phase,
+            outcome: payload.outcome,
+            status,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct IndexerLifecycleEventPayload {
+    schema: String,
+    version: u64,
+    instance_id: String,
+    epoch: u64,
+    sequence: u64,
+    scope: IndexerLifecycleScope,
+    #[serde(default)]
+    operation_id: Option<String>,
+    action: String,
+    phase: String,
+    outcome: String,
+    previous_state: String,
+    status: Value,
+    emitted_at_ms: i64,
 }
 
 fn stop_runtime(record: &mut ChannelIndexerRecord, control: Option<&CommandControl>) -> Result<()> {
@@ -1803,6 +2320,75 @@ mod tests {
         }
     }
 
+    fn indexer_v1_metadata() -> Value {
+        json!({
+            "methods": [
+                { "name": "nodeStatus", "signature": "nodeStatus()", "isInvokable": true },
+                { "name": "nodeAction", "signature": "nodeAction(QString)", "isInvokable": true }
+            ],
+            "events": [
+                { "name": "nodeChanged", "signature": "nodeChanged(QString)" }
+            ]
+        })
+    }
+
+    fn indexer_v1_snapshot(
+        channel_id: Option<&str>,
+        state: &str,
+        supported_actions: &[&str],
+        epoch: u64,
+        sequence: u64,
+    ) -> Value {
+        json!({
+            "schema": "logos.managed_node_lifecycle.snapshot",
+            "version": 1,
+            "instance_id": "indexer-test-instance",
+            "epoch": epoch,
+            "sequence": sequence,
+            "scope": { "kind": "indexer", "channel_id": channel_id },
+            "state": state,
+            "supported_actions": supported_actions,
+            "health": "unknown",
+            "last_error": null,
+            "updated_at_ms": 1
+        })
+    }
+
+    fn indexer_v1_event_frame(
+        channel_id: Option<&str>,
+        state: &str,
+        supported_actions: &[&str],
+        epoch: u64,
+        sequence: u64,
+    ) -> Value {
+        let status = indexer_v1_snapshot(channel_id, state, supported_actions, epoch, sequence);
+        let payload = json!({
+            "schema": "logos.managed_node_lifecycle.event",
+            "version": 1,
+            "instance_id": "indexer-test-instance",
+            "epoch": epoch,
+            "sequence": sequence,
+            "scope": { "kind": "indexer", "channel_id": channel_id },
+            "operation_id": "indexer-test-operation",
+            "action": "start",
+            "phase": "settled",
+            "outcome": "succeeded",
+            "previous_state": "uninitialized",
+            "status": status,
+            "error": null,
+            "emitted_at_ms": 1
+        });
+        json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-28T00:37:20Z",
+            "module": INDEXER_MODULE,
+            "event": INDEXER_NODE_CHANGED_EVENT,
+            "data": { "arg0": payload.to_string() }
+        })
+    }
+
     #[test]
     fn zone_owned_configuration_locks_identity_and_projects_common_fields() -> Result<()> {
         let channel_id = "01".repeat(32);
@@ -2045,6 +2631,145 @@ mod tests {
                 .to_string()
                 .contains("selected Sequencer binding changed")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_v1_metadata_requires_the_complete_exact_contract() -> Result<()> {
+        let metadata = indexer_v1_metadata();
+        anyhow::ensure!(supports_indexer_lifecycle_v1(&metadata));
+
+        let mut missing_event = metadata.clone();
+        missing_event
+            .get_mut("events")
+            .and_then(Value::as_array_mut)
+            .context("fixture must include lifecycle events")?
+            .clear();
+        anyhow::ensure!(!supports_indexer_lifecycle_v1(&missing_event));
+
+        let mut wrong_signature = metadata;
+        let methods = wrong_signature
+            .get_mut("methods")
+            .and_then(Value::as_array_mut)
+            .context("fixture must include lifecycle methods")?;
+        let node_action = methods
+            .iter_mut()
+            .find(|method| method.get("name").and_then(Value::as_str) == Some("nodeAction"))
+            .context("fixture must include nodeAction")?;
+        node_action
+            .as_object_mut()
+            .context("nodeAction fixture must be an object")?
+            .insert("signature".to_owned(), json!("nodeAction(QByteArray)"));
+        anyhow::ensure!(!supports_indexer_lifecycle_v1(&wrong_signature));
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_v1_snapshot_rejects_invalid_or_foreign_channel_scope() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let record = running_record(directory.path(), &source)?;
+        let snapshot = IndexerLifecycleSnapshot::parse(&indexer_v1_snapshot(
+            Some(&channel_id),
+            "stopped",
+            &["start"],
+            1,
+            4,
+        ))?;
+        validate_indexer_lifecycle_snapshot_for_action(&snapshot, &record, "start", "starting")?;
+
+        let foreign = IndexerLifecycleSnapshot::parse(&indexer_v1_snapshot(
+            Some(&"88".repeat(32)),
+            "stopped",
+            &["start"],
+            1,
+            4,
+        ))?;
+        let foreign_error =
+            validate_indexer_lifecycle_snapshot_for_action(&foreign, &record, "start", "starting")
+                .expect_err("foreign Channel scope must be rejected");
+        anyhow::ensure!(foreign_error.to_string().contains("different Channel"));
+
+        let invalid = indexer_v1_snapshot(Some("not-a-channel"), "stopped", &["start"], 1, 4);
+        let invalid_error = IndexerLifecycleSnapshot::parse(&invalid)
+            .expect_err("invalid Channel scope must be rejected");
+        anyhow::ensure!(invalid_error.to_string().contains("invalid Channel scope"));
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_v1_acknowledgement_rejects_reused_operation() -> Result<()> {
+        let snapshot = IndexerLifecycleSnapshot::parse(&indexer_v1_snapshot(
+            None,
+            "uninitialized",
+            &["start"],
+            0,
+            0,
+        ))?;
+        let acknowledgement = json!({
+            "schema": "logos.managed_node_lifecycle.ack",
+            "version": 1,
+            "operation_id": "indexer-test-operation",
+            "accepted": true,
+            "duplicate": false,
+            "instance_id": "indexer-test-instance",
+            "epoch": 0,
+            "sequence": 1,
+            "state": "starting"
+        });
+        validate_indexer_lifecycle_acknowledgement(
+            &acknowledgement,
+            &snapshot,
+            "indexer-test-operation",
+            "starting",
+        )?;
+
+        let mut duplicate = acknowledgement;
+        duplicate
+            .as_object_mut()
+            .context("acknowledgement fixture must be an object")?
+            .insert("duplicate".to_owned(), Value::Bool(true));
+        let error = validate_indexer_lifecycle_acknowledgement(
+            &duplicate,
+            &snapshot,
+            "indexer-test-operation",
+            "starting",
+        )
+        .expect_err("reused operation acknowledgement must be rejected");
+        anyhow::ensure!(error.to_string().contains("reused the operation"));
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_v1_event_parses_watch_frame_and_requires_matching_scope() -> Result<()> {
+        let channel_id = "01".repeat(32);
+        let frame = indexer_v1_event_frame(Some(&channel_id), "running", &["stop"], 1, 2);
+        let event = IndexerLifecycleEvent::from_watch_frame(&frame)?;
+        anyhow::ensure!(event.operation_id.as_deref() == Some("indexer-test-operation"));
+        anyhow::ensure!(event.channel_id.as_deref() == Some(channel_id.as_str()));
+        anyhow::ensure!(event.status.channel_id.as_deref() == Some(channel_id.as_str()));
+        anyhow::ensure!(event.status.state == "running");
+
+        let mut mismatched = frame;
+        let data = mismatched
+            .get_mut("data")
+            .and_then(Value::as_object_mut)
+            .context("watch fixture must contain data")?;
+        let text = data
+            .get("arg0")
+            .and_then(Value::as_str)
+            .context("watch fixture must contain an event payload")?
+            .to_owned();
+        let mut payload: Value = serde_json::from_str(&text)?;
+        payload
+            .pointer_mut("/status/scope/channel_id")
+            .context("event status fixture must include Channel scope")?
+            .clone_from(&Value::Null);
+        data.insert("arg0".to_owned(), Value::String(payload.to_string()));
+        let error = IndexerLifecycleEvent::from_watch_frame(&mismatched)
+            .expect_err("mismatched event and status scopes must be rejected");
+        anyhow::ensure!(error.to_string().contains("disagree on Channel scope"));
         Ok(())
     }
 }
