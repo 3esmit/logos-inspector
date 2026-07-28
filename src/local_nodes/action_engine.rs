@@ -221,7 +221,9 @@ impl LocalNodeActionEngine {
         let runtime = self.runtime_store.load_resolved()?;
         validate_module_install_runtime(runtime.as_ref(), &request.modules_dir)?;
         let authority = match runtime.as_ref() {
-            Some(runtime) => runtime.package_install_authority()?,
+            Some(runtime) => runtime.package_install_authority_for_module_target(
+                &super::package::canonical_modules_dir(Path::new(request.modules_dir.trim()))?,
+            )?,
             None => PackageInstallAuthority::CurrentUser,
         };
         super::package::install_local_module_with_pre_install_check(
