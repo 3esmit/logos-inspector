@@ -6,11 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0-rc11] - 2026-07-28
+
 ### Added
 
 - Independent headless CLI release automation for Linux x86_64 and Apple
   silicon macOS, with source-commit metadata, checksums, and extracted-artifact
   smoke tests.
+
+### Fixed
+
+- Standalone shutdown now terminates its owned LogosCore event-watch processes
+  on normal application exit and reclaims stale watches left by an interrupted
+  prior run.
 
 ## [0.2.0-rc10] - 2026-07-27
 
