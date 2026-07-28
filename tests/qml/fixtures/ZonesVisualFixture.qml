@@ -7,6 +7,8 @@ Window {
     id: window
 
     readonly property string visualTab: argumentValue("--tab", "overview")
+    readonly property bool snapshotRefreshing: argumentValue("--snapshot", "current")
+        === "refreshing"
     readonly property string detailTab: visualTab.indexOf("l2-") === 0
         ? "l2" : (visualTab === "transfers-detail" ? "transfers" : visualTab)
     readonly property string outputPath: argumentValue("--out", "")
@@ -103,6 +105,9 @@ Window {
         interval: 150
         repeat: false
         onTriggered: {
+            if (visualScroll.contentItem) {
+                visualScroll.contentItem.contentY = window.scrollOffset
+            }
             captureRoot.grabToImage(function (result) {
                 if (!result.saveToFile(window.outputPath)) {
                     console.error("failed to save Zones visual fixture")
@@ -125,6 +130,13 @@ Window {
     }
 
     function prepareVisualState() {
+        if (window.snapshotRefreshing) {
+            // Break the fixture's initial binding before advancing the live
+            // epoch so the rendered rows model a retained, stale snapshot.
+            zoneState.summarySourceConfigEpoch = zoneState.sourceConfigEpoch
+            zoneState.sourceConfigEpoch += 1
+            zoneState.summaryInFlight = true
+        }
         if (window.visualTab === "transfers-detail") {
             const transfers = window.findNamed(zonesPage, "zoneL2Transfers")
             if (transfers && zoneState.l2TransferRecipients.length > 0) {

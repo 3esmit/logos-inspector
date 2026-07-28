@@ -7,6 +7,7 @@ QtObject {
     required property var gateway
     required property var activeZoneContext
     required property string verification
+    required property bool catalogSnapshotUsable
     required property bool sequencerSourceReadEligible
     property var appModel: null
     readonly property bool l2Applicable: activeZoneContext !== null
@@ -15,13 +16,15 @@ QtObject {
         && (String(activeZoneContext.indexer_source_id || "").length > 0
             || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
     readonly property bool l2DisplayEnabled: l2Applicable && l2SourceConfigured
-    readonly property bool l2ReadEnabled: verification === "verified"
+    readonly property bool l2ReadEnabled: catalogSnapshotUsable
+        && verification === "verified"
         && l2DisplayEnabled
     readonly property bool l2SequencerConfigured: l2Applicable
         && String(activeZoneContext
             && activeZoneContext.selected_sequencer_source_id || "").length > 0
     readonly property bool l2SequencerDisplayEnabled: l2SequencerConfigured
-        && (l2SequencerReadEnabled || verification !== "verified")
+        && (l2SequencerReadEnabled || catalogSnapshotUsable !== true
+            || verification !== "verified")
     readonly property bool l2IndexerReadEnabled: l2ReadEnabled
         && String(activeZoneContext && activeZoneContext.indexer_source_id || "").length > 0
     readonly property bool l2SequencerReadEnabled: l2ReadEnabled
@@ -206,6 +209,10 @@ QtObject {
         if (!activeZoneContext) {
             return capability(false, "input_required", "select_zone",
                 qsTr("Select an Active Zone."))
+        }
+        if (catalogSnapshotUsable !== true) {
+            return capability(false, "disabled", "refresh_context",
+                qsTr("Zone catalog snapshot is refreshing."))
         }
         if (verification !== "verified") {
             return capability(false, "disabled", "refresh_context",

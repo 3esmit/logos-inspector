@@ -197,9 +197,11 @@ TestCase {
         model.zoneInspection.sourceConfigEpoch = 2
         wait(0)
         verify(!model.zoneInspection.summaryRowsUsable)
-        verify(!model.shell.navRows().some(function (row) {
+        const cachedRows = model.shell.navRows().filter(function (row) {
             return String(row.channelId || "") === channelId
-        }))
+        })
+        compare(cachedRows.length, 1)
+        verify(cachedRows[0].enabled === false)
     }
 
     function test_zones_group_retains_cached_dashboards_during_verification() {

@@ -35,8 +35,6 @@ QtObject {
         && summaryNetworkScopeKey.length > 0
         && (summarySourceKey.length === 0
             || summarySourceKey === desiredSourceKey)
-        && (sourceConfigEpoch <= 0
-            || summarySourceConfigEpoch === sourceConfigEpoch)
     readonly property string retainedNetworkScopeKey: summaryRowsRetainable
         ? summaryNetworkScopeKey : ""
     readonly property bool summaryRowsUsable: verification === "verified"
@@ -134,6 +132,7 @@ QtObject {
         gateway: root.gateway
         activeZoneContext: root.activeZoneContext
         verification: root.verification
+        catalogSnapshotUsable: root.summaryRowsUsable
         sequencerSourceReadEligible: root.selectedSequencerReadEligible
         appModel: root.appModel
     }
@@ -141,6 +140,7 @@ QtObject {
         gateway: root.gateway
         activeZoneContext: root.activeZoneContext
         verification: root.verification
+        catalogSnapshotUsable: root.summaryRowsUsable
         sourceGeneration: root.sourceGeneration
         sourceRevision: root.sourceRevision
         networkScope: root.networkScope
@@ -153,6 +153,7 @@ QtObject {
         sourceDescriptor: root.desiredSource
         activeZoneContext: root.activeZoneContext
         verification: root.verification
+        catalogSnapshotUsable: root.summaryRowsUsable
         networkScope: root.networkScope
         networkScopeKey: root.networkScopeKey
         sourceGeneration: root.sourceGeneration
@@ -404,11 +405,13 @@ QtObject {
         const cachedSummaryIncompatible = !retainCachedSummary
         const retainAcceptedMutationContext = canRetainAcceptedMutationContext(
             nextScopeKey, nextSourceConfigEpoch, nextVerification)
+        const retainReadOnlyContext = canRetainReadOnlyContext(
+            nextScopeKey, nextVerification)
         const catalogChanged = catalogStatus !== null
             && numericRevision(report.catalog_revision) !== catalogRevision
         if (scopeChanged || restoreScopeChanged
                 || (summaryLoaded && cachedSummaryIncompatible)) {
-            if (!retainAcceptedMutationContext) {
+            if (!retainAcceptedMutationContext && !retainReadOnlyContext) {
                 pendingZoneRestoreId = ""
                 pendingZoneRestoreScopeKey = ""
                 startupAutoSelectionPending = true
@@ -416,17 +419,20 @@ QtObject {
             } else {
                 detailStale = zoneDetail !== null
             }
-            invalidateSummary(true)
+            invalidateSummary(scopeChanged || restoreScopeChanged
+                || nextVerification === "mismatch")
         } else if (catalogChanged) {
             evidence.resetEvidenceState(true)
         }
         if (nextVerification !== "verified") {
-            if (activeZoneId.length > 0 && !retainAcceptedMutationContext) {
+            if (activeZoneId.length > 0 && !retainAcceptedMutationContext
+                    && !retainReadOnlyContext) {
                 pendingZoneRestoreId = activeZoneId
                 pendingZoneRestoreScopeKey = retainCachedSummary
                     ? summaryNetworkScopeKey : networkScopeKey
             }
-            if (cachedSummaryIncompatible && !retainAcceptedMutationContext) {
+            if (cachedSummaryIncompatible && !retainAcceptedMutationContext
+                    && !retainReadOnlyContext) {
                 clearActiveZone()
             } else {
                 detailStale = zoneDetail !== null
@@ -712,7 +718,7 @@ QtObject {
 
     function activateZone(channelId, automatic) {
         const normalizedId = String(channelId || "")
-        if (verification !== "verified" || networkScopeKey.length === 0) {
+        if (summaryRowsUsable !== true || networkScopeKey.length === 0) {
             return false
         }
         const row = zoneSummary(normalizedId)
@@ -896,7 +902,7 @@ QtObject {
     }
 
     function refreshManagedIndexerSource() {
-        if (!activeZoneContext || verification !== "verified"
+        if (!activeZoneContext || summaryRowsUsable !== true
                 || !networkScope || activeZoneId.length === 0) {
             return null
         }
@@ -1275,6 +1281,15 @@ QtObject {
             && String(context.network_scope_key || "") === String(nextScopeKey || "")
             && numericRevision(context.source_config_epoch)
                 === numericRevision(nextSourceConfigEpoch)
+    }
+
+    function canRetainReadOnlyContext(nextScopeKey, nextVerification) {
+        return String(nextVerification || "") !== "mismatch"
+            && activeZoneId.length > 0
+            && summaryRowsRetainable
+            && rowFromRows(zoneSummaries, activeZoneId) !== null
+            && (String(nextScopeKey || "").length === 0
+                || String(nextScopeKey || "") === summaryNetworkScopeKey)
     }
 
     function detailMatchesStatus() {

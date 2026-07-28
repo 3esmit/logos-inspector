@@ -8,6 +8,7 @@ QtObject {
     required property var gateway
     required property var activeZoneContext
     required property string verification
+    required property bool catalogSnapshotUsable
     required property var networkScope
     required property string networkScopeKey
     required property int sourceGeneration
@@ -82,8 +83,8 @@ QtObject {
             managedIndexerConfigError = qsTr("A Zone context is required to configure this Channel Indexer.")
             return null
         }
-        if (verification !== "verified") {
-            managedIndexerConfigError = qsTr("A verified active Zone is required to configure Indexer.")
+        if (verification !== "verified" || catalogSnapshotUsable !== true) {
+            managedIndexerConfigError = qsTr("A current verified Zone catalog snapshot is required to configure Indexer.")
             return null
         }
         const sourceRevision = Number(activeZoneContext.source_config_revision || 0)
@@ -399,9 +400,9 @@ QtObject {
                 .arg(actionKey)
             return null
         }
-        if (actionKey === "start"
-                && (!activeZoneContext || verification !== "verified")) {
-            managedIndexerError = qsTr("A verified active Zone is required to start Indexer.")
+        if (actionKey === "start" && (!activeZoneContext
+                || verification !== "verified" || catalogSnapshotUsable !== true)) {
+            managedIndexerError = qsTr("A current verified Zone catalog snapshot is required to start Indexer.")
             return null
         }
         const targetChannel = String(channelId || activeZoneId).trim()
@@ -477,8 +478,9 @@ QtObject {
             }
             return null
         }
-        if (!activeZoneContext || verification !== "verified") {
-            const inactiveResponse = ZoneInspectionContract.failedResponse(qsTr("A verified active Zone is required."))
+        if (!activeZoneContext || verification !== "verified"
+                || catalogSnapshotUsable !== true) {
+            const inactiveResponse = ZoneInspectionContract.failedResponse(qsTr("A current verified Zone catalog snapshot is required."))
             if (callback) {
                 callback(inactiveResponse)
             }
@@ -553,8 +555,9 @@ QtObject {
             }
             return null
         }
-        if (!activeZoneContext || verification !== "verified") {
-            const inactiveResponse = ZoneInspectionContract.failedResponse(qsTr("A verified active Zone is required."))
+        if (!activeZoneContext || verification !== "verified"
+                || catalogSnapshotUsable !== true) {
+            const inactiveResponse = ZoneInspectionContract.failedResponse(qsTr("A current verified Zone catalog snapshot is required."))
             if (callback) {
                 callback(inactiveResponse)
             }

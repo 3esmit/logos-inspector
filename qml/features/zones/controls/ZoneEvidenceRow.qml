@@ -12,6 +12,7 @@ Rectangle {
     required property Theme theme
     required property var evidence
     property bool selected: false
+    property bool interactive: true
     signal activated()
 
     objectName: "zoneEvidenceRow_" + String(root.evidence && root.evidence.reference
@@ -22,18 +23,33 @@ Rectangle {
         : (evidenceMouse.containsMouse ? root.theme.hover : root.theme.field)
     border.width: 1
     border.color: root.selected ? root.theme.accent : root.theme.outlineMuted
-    activeFocusOnTab: true
+    enabled: root.interactive
+    opacity: root.interactive ? 1 : 0.72
+    activeFocusOnTab: root.interactive
 
-    Keys.onEnterPressed: root.activated()
-    Keys.onReturnPressed: root.activated()
-    Keys.onSpacePressed: root.activated()
+    Keys.onEnterPressed: {
+        if (root.interactive) {
+            root.activated()
+        }
+    }
+    Keys.onReturnPressed: {
+        if (root.interactive) {
+            root.activated()
+        }
+    }
+    Keys.onSpacePressed: {
+        if (root.interactive) {
+            root.activated()
+        }
+    }
 
     MouseArea {
         id: evidenceMouse
 
         anchors.fill: parent
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
+        cursorShape: root.interactive ? Qt.PointingHandCursor : Qt.ArrowCursor
+        enabled: root.interactive
         onClicked: root.activated()
     }
 
@@ -98,7 +114,9 @@ Rectangle {
     }
 
     Accessible.role: Accessible.Button
-    Accessible.name: qsTr("Open %1 evidence").arg(Presentation.evidenceKindLabel(
-        root.evidence && root.evidence.reference && root.evidence.reference.evidence_kind
-    ))
+    Accessible.name: root.interactive
+        ? qsTr("Open %1 evidence").arg(Presentation.evidenceKindLabel(
+            root.evidence && root.evidence.reference && root.evidence.reference.evidence_kind
+        ))
+        : qsTr("Evidence unavailable while the catalog snapshot refreshes")
 }

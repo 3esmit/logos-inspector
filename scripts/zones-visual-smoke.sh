@@ -19,7 +19,12 @@ capture() {
   local width="$1"
   local height="$2"
   local tab="$3"
-  local output="$OUTPUT_DIR/zones-${width}x${height}-${tab}.png"
+  local snapshot="${4:-current}"
+  local suffix="$tab"
+  if [[ "$snapshot" != "current" ]]; then
+    suffix+="-$snapshot"
+  fi
+  local output="$OUTPUT_DIR/zones-${width}x${height}-${suffix}.png"
 
   QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" \
     QT_FATAL_WARNINGS=1 \
@@ -30,6 +35,7 @@ capture() {
       --width "$width" \
       --height "$height" \
       --tab "$tab" \
+      --snapshot "$snapshot" \
       --out "$output"
 
   test -s "$output"
@@ -46,6 +52,7 @@ capture() {
 }
 
 capture 1024 720 overview
+capture 1024 720 overview refreshing
 capture 1024 720 l2
 capture 1024 720 accounts
 capture 1024 720 transfers
