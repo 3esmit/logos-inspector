@@ -193,9 +193,9 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          cat > release-notes.md <<EOF
-          # Logos Inspector CLI v$VERSION
-
+          {
+            printf '# Logos Inspector CLI v%s\n\n' "$VERSION"
+            cat <<'EOF'
           **Channel:** Alpha
 
           Headless CLI archives:
@@ -213,6 +213,7 @@ jobs:
           `cli source-policy`; the Linux bundle is also run with the build
           host's Nix store hidden.
           EOF
+          } > release-notes.md
       - name: Create draft release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
