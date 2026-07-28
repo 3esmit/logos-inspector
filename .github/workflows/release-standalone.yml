@@ -176,19 +176,28 @@ jobs:
           set -euo pipefail
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
-          xcode_developer=/Applications/Xcode_26.3.app/Contents/Developer
-          test -x "$xcode_developer/usr/bin/xcodebuild"
-          sudo xcode-select --switch "$xcode_developer"
+          # Prefer the runner's current Xcode.  A separately installed older
+          # Xcode may expose a Metal component that its compiler cannot use.
+          xcode_developer=
+          for candidate in /Applications/Xcode.app/Contents/Developer /Applications/Xcode_*.app/Contents/Developer; do
+            test -x "$candidate/usr/bin/xcodebuild" || continue
+            if ! sudo xcode-select --switch "$candidate"; then
+              continue
+            fi
+            toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help 2>&1)"
+            case "$toolchain_help" in
+              *-downloadComponent*)
+                xcode_developer="$candidate"
+                break
+                ;;
+            esac
+          done
+          if [ -z "$xcode_developer" ]; then
+            echo "no installed Xcode supports Metal component downloads" >&2
+            exit 1
+          fi
           test "$(xcode-select --print-path)" = "$xcode_developer"
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
-          toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help 2>&1)"
-          case "$toolchain_help" in
-            *-downloadComponent*) ;;
-            *)
-              echo "selected Xcode does not support component downloads" >&2
-              exit 1
-              ;;
-          esac
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib

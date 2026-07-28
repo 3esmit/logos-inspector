@@ -182,16 +182,18 @@ def main() -> int:
             ".#standalone-appimage",
             ".#standalone-macos-app",
             "Select and verify macOS Metal Toolchain",
-            "xcode_developer=/Applications/Xcode_26.3.app/Contents/Developer",
-            'test -x "$xcode_developer/usr/bin/xcodebuild"',
-            'sudo xcode-select --switch "$xcode_developer"',
+            "for candidate in /Applications/Xcode.app/Contents/Developer /Applications/Xcode_*.app/Contents/Developer; do",
+            'test -x "$candidate/usr/bin/xcodebuild" || continue',
+            'if ! sudo xcode-select --switch "$candidate"; then',
+            'xcode_developer="$candidate"',
+            'if [ -z "$xcode_developer" ]; then',
             'test "$(xcode-select --print-path)" = "$xcode_developer"',
             'toolchain_help="$(env -u DEVELOPER_DIR -u SDKROOT xcodebuild -help 2>&1)"',
             'case "$toolchain_help" in',
-            "*-downloadComponent*) ;;",
-            "xcodebuild -downloadComponent MetalToolchain",
-            "xcrun --sdk macosx --find metal",
-            "xcrun --sdk macosx --find metallib",
+            "*-downloadComponent*)",
+            "env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain",
+            "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal",
+            "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib",
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
             "Install Linux host graphics runtime for smoke",
@@ -299,19 +301,32 @@ def main() -> int:
             "dependencies, verify the tree, then smoke with the Nix store hidden"
         )
     macos_metal = standalone.find("- name: Select and verify macOS Metal Toolchain")
-    macos_help = standalone.find("toolchain_help=", macos_metal)
-    macos_download = standalone.find(
-        "xcodebuild -downloadComponent MetalToolchain", macos_metal
+    macos_candidates = standalone.find(
+        "for candidate in /Applications/Xcode.app/Contents/Developer "
+        "/Applications/Xcode_*.app/Contents/Developer; do",
+        macos_metal,
     )
-    macos_metal_binary = standalone.find("xcrun --sdk macosx --find metal", macos_metal)
+    macos_help = standalone.find("toolchain_help=", macos_metal)
+    macos_selected = standalone.find('xcode_developer="$candidate"', macos_help)
+    macos_download = standalone.find(
+        "env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain",
+        macos_metal,
+    )
+    macos_metal_binary = standalone.find(
+        "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal",
+        macos_metal,
+    )
     macos_metallib_binary = standalone.find(
-        "xcrun --sdk macosx --find metallib", macos_metal
+        "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib",
+        macos_metal,
     )
     macos_build = standalone.find("- name: Build and archive app")
     if not (
         0
         <= macos_metal
+        < macos_candidates
         < macos_help
+        < macos_selected
         < macos_download
         < macos_metal_binary
         < macos_metallib_binary
@@ -321,6 +336,10 @@ def main() -> int:
             "standalone release workflow must select a Metal-capable Xcode, "
             "verify component-download support, install the Metal Toolchain, "
             "and verify metal and metallib before building"
+        )
+    if '--option build-users-group ""' in standalone:
+        errors.append(
+            "standalone release workflow must retain Nix build-user isolation"
         )
     if "xcodebuild -help " + chr(92) in standalone:
         errors.append(
@@ -432,7 +451,6 @@ def main() -> int:
             "Darwin Metal xcrun wrapper must bypass the stale Xcode tool cache "
             "before invoking the system xcrun"
         )
-
     try:
         ui_metadata = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))
         core_metadata = json.loads(
