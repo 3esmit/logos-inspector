@@ -61,6 +61,7 @@ QtObject {
     property string l2TransactionTraceIdlProgramId: ""
     property int l2TransactionTraceIdlRegistryRevision: -1
     property bool l2TransactionTraceRedecodeQueued: false
+    property bool l2TransactionTraceRedecodePending: false
     property string l2TransactionTraceError: ""
     property var l2TransactionTraceErrorDetails: null
     property bool l2BlocksInFlight: false
@@ -97,7 +98,15 @@ QtObject {
         l2TransactionIdlRegistryRevision += 1
         resetL2SubmittedTransactionLocalDecodeResult()
         queueSubmittedTransactionLocalDecode()
+        l2TransactionTraceRedecodePending = l2TransactionDetail !== null
+            && l2TransactionId.length > 0
         queueL2TransactionTraceRedecode()
+    }
+
+    onL2ReadEnabledChanged: {
+        if (l2ReadEnabled && l2TransactionTraceRedecodePending) {
+            queueL2TransactionTraceRedecode()
+        }
     }
 
     function resetL2BlocksState(clearRows) {
@@ -169,6 +178,7 @@ QtObject {
         l2TransactionTrace = null
         l2TransactionTraceIdlProgramId = ""
         l2TransactionTraceIdlRegistryRevision = -1
+        l2TransactionTraceRedecodePending = false
         l2TransactionTraceError = ""
         l2TransactionTraceErrorDetails = null
     }
@@ -832,15 +842,22 @@ QtObject {
         }
         const programId = automaticL2TransactionIdlProgramId()
         if (!programId.length && !l2TransactionTraceIdlProgramId.length) {
+            l2TransactionTraceRedecodePending = false
             return null
         }
         if (programId === l2TransactionTraceIdlProgramId
                 && l2TransactionIdlRegistryRevision
                     === l2TransactionTraceIdlRegistryRevision) {
+            l2TransactionTraceRedecodePending = false
             return null
         }
         const source = l2TransactionDetail.source || ({})
-        return requestL2TransactionTrace(l2TransactionId, String(source.source_id || ""))
+        const request = requestL2TransactionTrace(l2TransactionId,
+            String(source.source_id || ""))
+        if (request !== null) {
+            l2TransactionTraceRedecodePending = false
+        }
+        return request
     }
 
     function closeL2Transaction() {

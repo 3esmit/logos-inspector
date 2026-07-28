@@ -3050,6 +3050,69 @@ TestCase {
         compare(postRemovalTraceRequest.args[0].query.idl_program_id, null)
     }
 
+    function test_l2_transaction_redecodes_after_catalog_refresh_completes() {
+        zoneState.appModel = decodeAppModel
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("e".repeat(64))
+        transaction.program_id_hex = "cd".repeat(32)
+
+        verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        gateway.respond(detailRequest, ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [{ title: "Message", rows: [] }],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+        const genericTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        gateway.respond(genericTraceRequest, ok(l2Report(genericTraceRequest,
+            "lez.transaction_trace", {
+                outcome: "found",
+                value: {
+                    transaction: transaction,
+                    trace: {
+                        hash: transaction.hash,
+                        kind: transaction.kind,
+                        source: "local_derivation",
+                        capabilities: [],
+                        limitations: [],
+                        steps: [],
+                        inspection: {},
+                        decoded_instruction: null
+                    },
+                    source: l2Source("seq-a", "sequencer", "provisional")
+                }
+            })))
+        compare(l2BlockState.l2TransactionTrace.trace.decoded_instruction, null)
+
+        zoneState.verification = "refreshing"
+        compare(l2State.l2ReadEnabled, false)
+        decodeAppModel.transactionIdlEntries = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        wait(0)
+        compare(gateway.requestCount("zoneL2TransactionTrace"), 1)
+
+        zoneState.verification = "verified"
+        tryVerify(function () {
+            return gateway.requestCount("zoneL2TransactionTrace") === 2
+        })
+        const decodedTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        compare(decodedTraceRequest.args[0].query.idl_program_id, "cd".repeat(32))
+    }
+
     function test_l2_transaction_redecodes_when_registry_reload_keeps_same_count() {
         zoneState.appModel = decodeAppModel
         decodeAppModel.transactionIdlEntries = [{
