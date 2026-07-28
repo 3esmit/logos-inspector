@@ -200,14 +200,38 @@ jobs:
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
           # Xcode 26 scopes this component to the invoking identity. The
           # hosted runner can download it directly, but importing the exported
-          # DMG aborts `xcodebuild` with SIGTRAP. Download it directly for every
-          # identity that might invoke xcrun during the Nix build.
+          # DMG aborts `xcodebuild` with SIGTRAP. Provision the runner first.
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
-          # The recent Metal component is scoped to the invoking user.  Keep
-          # Nix build-user isolation intact, but provision and verify the
-          # component from every account that the Nix daemon can select.
+          # Keep Nix build-user isolation intact. A build identity can already
+          # resolve the runner-provisioned toolchain; only ask Xcode to fetch
+          # its identity-scoped component when that lookup is unavailable.
+          # This avoids a redundant root catalog request on hosted runners.
+          ensure_identity_metal() {
+            local identity="$1"
+            if ! sudo -H -u "$identity" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metal >/dev/null 2>&1 \
+              || ! sudo -H -u "$identity" env \
+                -u DEVELOPER_DIR -u SDKROOT \
+                xcrun_nocache=1 \
+                /usr/bin/xcrun --sdk macosx --find metallib >/dev/null 2>&1; then
+              sudo -H -u "$identity" env \
+                -u DEVELOPER_DIR -u SDKROOT \
+                xcrun_nocache=1 \
+                /usr/bin/xcodebuild -downloadComponent MetalToolchain
+            fi
+            sudo -H -u "$identity" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metal
+            sudo -H -u "$identity" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metallib
+          }
           build_group="$(nix config show --json | python3 -c '
           import json
           import sys
@@ -220,18 +244,7 @@ jobs:
             )"
             test -n "$builder_users"
             for builder in $builder_users; do
-              sudo -H -u "$builder" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                xcrun_nocache=1 \
-                /usr/bin/xcodebuild -downloadComponent MetalToolchain
-              sudo -H -u "$builder" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                xcrun_nocache=1 \
-                /usr/bin/xcrun --sdk macosx --find metal
-              sudo -H -u "$builder" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                xcrun_nocache=1 \
-                /usr/bin/xcrun --sdk macosx --find metallib
+              ensure_identity_metal "$builder"
             done
           else
             # An empty build-users-group makes the Nix daemon build as its
@@ -241,18 +254,7 @@ jobs:
             daemon_user="$(ps -o user= -p "$daemon_pid" | tr -d '[:space:]')"
             test -n "$daemon_user"
             echo "Nix daemon build identity: $daemon_user"
-            sudo -H -u "$daemon_user" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              xcrun_nocache=1 \
-              /usr/bin/xcodebuild -downloadComponent MetalToolchain
-            sudo -H -u "$daemon_user" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metal
-            sudo -H -u "$daemon_user" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metallib
+            ensure_identity_metal "$daemon_user"
           fi
       - name: Build and archive app
         run: |
