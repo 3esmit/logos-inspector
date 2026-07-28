@@ -49,6 +49,11 @@ ColumnLayout {
 
     onVisibleZonesChanged: synchronizeVisibleZoneRows()
 
+    onRowsStaleChanged: {
+        root.captureZoneListScroll(true)
+        Qt.callLater(root.scheduleZoneListScrollRestore)
+    }
+
     onHasDirtyDraftChanged: {
         if (hasDirtyDraft) {
             retainDetailForDraft = true
@@ -248,9 +253,12 @@ ColumnLayout {
             }
 
             Text {
-                visible: root.rowsStale && root.zoneState && root.zoneState.zoneSummaries.length > 0
-                text: qsTr("Cached catalog rows / verification required")
-                color: root.theme.warning
+                objectName: "zoneCatalogSnapshotState"
+                visible: root.zoneState && root.zoneState.zoneSummaries.length > 0
+                text: root.rowsStale
+                    ? qsTr("Refreshing catalog snapshot; cached rows are read-only")
+                    : qsTr("Catalog snapshot current")
+                color: root.rowsStale ? root.theme.warning : root.theme.textMuted
                 textFormat: Text.PlainText
                 font.pixelSize: root.theme.dataText
                 Layout.fillWidth: true

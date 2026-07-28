@@ -566,6 +566,15 @@ TestCase {
     }
 
     function test_pending_selected_sequencer_waits_for_runtime_attestation() {
+        zoneState.desiredSourceKey = "direct_http\nhttps://l1.example\n"
+        zoneState.sourceRevision = 1
+        zoneState.networkScopeKey = zoneState.scopeKey(scope("network-a"))
+        zoneState.sourceConfigEpoch = 1
+        zoneState.summaryLoaded = true
+        zoneState.summarySourceKey = zoneState.desiredSourceKey
+        zoneState.summarySourceRevision = zoneState.sourceRevision
+        zoneState.summaryNetworkScopeKey = zoneState.networkScopeKey
+        zoneState.summarySourceConfigEpoch = zoneState.sourceConfigEpoch
         zoneState.verification = "verified"
         zoneState.activeZoneContext = {
             network_scope: scope("network-a"),
@@ -1348,7 +1357,7 @@ TestCase {
         verify(!zoneState.summaryInFlight)
     }
 
-    function test_source_config_change_does_not_retain_old_summary_rows() {
+    function test_source_config_change_retains_read_only_summary_and_context() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
         loadOneZone(row)
@@ -1362,11 +1371,28 @@ TestCase {
             summary_revision: 2
         })))
 
-        verify(!zoneState.summaryRowsRetainable)
+        verify(zoneState.summaryRowsRetainable)
         verify(zoneState.summaryInFlight)
         verify(!zoneState.summaryRowsUsable)
-        compare(zoneState.zoneSummaries.length, 0)
-        compare(zoneState.activeZoneId, "")
+        compare(zoneState.zoneSummaries.length, 1)
+        compare(zoneState.activeZoneId, "zone-a")
+        verify(!l2State.l2ReadEnabled)
+        compare(l2State.l2Capability("sequencer").recovery, "refresh_context")
+        verify(!evidenceState.loadEvidence("all"))
+        compare(evidenceState.evidenceError, "Zone catalog snapshot is refreshing.")
+        evidenceState.evidencePageContext = { filter: "all" }
+        evidenceState.evidenceNextCursor = "next-page"
+        verify(!evidenceState.loadMoreEvidence())
+        evidenceState.evidenceDetail = {
+            row: { reference: { evidence_id: "evidence-a" } },
+            payload: { session_id: "session-a" }
+        }
+        evidenceState.evidencePayloadDone = false
+        verify(!evidenceState.loadNextEvidencePayloadChunk())
+        compare(gateway.requestCount("zoneEvidencePage"), 0)
+        compare(gateway.requestCount("zoneEvidencePayloadChunk"), 0)
+        compare(sourceEditorState.applyChannelSourceConfig({}), null)
+        compare(gateway.requestCount("channelSourceConfigApply"), 0)
     }
 
     function test_accepted_source_mutation_keeps_active_zone_until_summary_refresh() {
@@ -1402,7 +1428,7 @@ TestCase {
             summary_revision: 2
         })))
 
-        compare(zoneState.zoneSummaries.length, 0)
+        compare(zoneState.zoneSummaries.length, 1)
         verify(zoneState.summaryInFlight)
         compare(zoneState.activeZoneId, "zone-a")
         compare(zoneState.activeZoneContext.selected_sequencer_source_id, "src-b")
@@ -2156,7 +2182,7 @@ TestCase {
         compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
         compare(gateway.requestCount("channelIndexerAction"), 1)
         compare(sourceEditorState.managedIndexerError,
-            "A verified active Zone is required to start Indexer.")
+            "A current verified Zone catalog snapshot is required to start Indexer.")
     }
 
     function test_control_and_resume_request_immediate_status_refresh() {

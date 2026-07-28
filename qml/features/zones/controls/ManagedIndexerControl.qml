@@ -39,7 +39,7 @@ ColumnLayout {
     readonly property bool canStart: !root.actionInFlight
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
-        && root.zoneState.verification === "verified"
+        && root.zoneState.summaryRowsUsable === true
         && root.availableActions.indexOf("start") >= 0
         && root.installed
         && (root.runState === "stopped" || root.runState === "not_initialized")
@@ -51,6 +51,7 @@ ColumnLayout {
     readonly property bool canConfigure: !root.actionInFlight
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
+        && root.zoneState.summaryRowsUsable === true
         && (root.runState === "stopped" || root.runState === "not_initialized")
 
     objectName: "managedIndexerControl"

@@ -704,6 +704,49 @@ TestCase {
         }
     }
 
+    function test_source_config_refresh_preserves_catalog_scroll_and_rows() {
+        const originalRows = zoneState.zoneSummaries
+        const originalEpoch = zoneState.sourceConfigEpoch
+        const rows = expandedZones(24)
+        const channelId = String(rows[0].channel_id || "")
+        const list = findChild(page, "zonesList")
+        const snapshotState = findChild(page, "zoneCatalogSnapshotState")
+        verify(list !== null)
+        verify(snapshotState !== null)
+        try {
+            zoneState.zoneSummaries = rows
+            wait(0)
+            tryVerify(function () {
+                return list.contentHeight > list.height + 100
+            })
+            const maximum = list.originY + list.contentHeight - list.height
+            list.contentY = Math.min(maximum, list.originY + 180)
+            wait(0)
+            const expected = list.contentY
+            const originalRow = findChild(page, "zoneListRow_" + channelId)
+            verify(originalRow !== null)
+            compare(snapshotState.text, "Catalog snapshot current")
+
+            zoneState.sourceConfigEpoch = originalEpoch + 1
+            wait(0)
+
+            verify(page.rowsStale)
+            compare(snapshotState.text,
+                "Refreshing catalog snapshot; cached rows are read-only")
+            compare(list.count, rows.length)
+            const cachedRow = findChild(page, "zoneListRow_" + channelId)
+            compare(cachedRow, originalRow)
+            verify(!cachedRow.interactive)
+            tryVerify(function () {
+                return Math.abs(list.contentY - expected) <= 1
+            })
+        } finally {
+            zoneState.sourceConfigEpoch = originalEpoch
+            zoneState.zoneSummaries = originalRows
+            wait(0)
+        }
+    }
+
     function test_dirty_source_editor_guards_zone_change() {
         const detail = findChild(page, "zoneDetail")
         verify(detail !== null)

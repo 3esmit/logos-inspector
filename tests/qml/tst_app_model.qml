@@ -567,7 +567,16 @@ TestCase {
         const zoneId = String(channelId || "22".repeat(32))
         const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
         model.zoneInspection.networkScope = scope
+        model.zoneInspection.networkScopeKey = model.zoneInspection.scopeKey(scope)
         model.zoneInspection.verification = "verified"
+        model.zoneInspection.sourceRevision = 1
+        model.zoneInspection.sourceConfigEpoch = 1
+        model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summaryStale = false
+        model.zoneInspection.summarySourceKey = ""
+        model.zoneInspection.summarySourceRevision = 1
+        model.zoneInspection.summaryNetworkScopeKey = model.zoneInspection.scopeKey(scope)
+        model.zoneInspection.summarySourceConfigEpoch = 1
         model.zoneInspection.zoneSummaries = [{
             channel_id: zoneId,
             kind: "sequencer_zone",

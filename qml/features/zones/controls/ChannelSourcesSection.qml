@@ -89,7 +89,7 @@ ColumnLayout {
 
             objectName: "addSequencerSourceButton"
             enabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-                && root.zoneState.verification === "verified"
+                && root.zoneState.summaryRowsUsable === true
             text: "+"
             hoverEnabled: true
             focusPolicy: Qt.TabFocus
@@ -148,7 +148,7 @@ ColumnLayout {
             selected: String(root.config.selected_sequencer_source_id || "")
                 === String(modelData.source_id || "")
             actionsEnabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-                && root.zoneState.verification === "verified"
+                && root.zoneState.summaryRowsUsable === true
             Layout.fillWidth: true
             onSelectRequested: root.selectSequencer(modelData)
             onEditRequested: root.beginEditor("sequencer", modelData)
@@ -193,7 +193,7 @@ ColumnLayout {
             objectName: "configureIndexerSourceButton"
             visible: !root.config.indexer_source
             enabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-                && root.zoneState.verification === "verified"
+                && root.zoneState.summaryRowsUsable === true
             text: "+"
             hoverEnabled: true
             focusPolicy: Qt.TabFocus
@@ -247,7 +247,7 @@ ColumnLayout {
         )
         role: "indexer"
         actionsEnabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-            && root.zoneState.verification === "verified"
+            && root.zoneState.summaryRowsUsable === true
         Layout.fillWidth: true
         onEditRequested: root.beginEditor("indexer", root.config.indexer_source)
         onRemoveRequested: root.confirmRemove("indexer", root.config.indexer_source)

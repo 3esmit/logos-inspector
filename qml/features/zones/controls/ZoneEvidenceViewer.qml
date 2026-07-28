@@ -35,6 +35,7 @@ ColumnLayout {
         theme: root.theme
         options: evidenceFilters
         current: root.zoneState.evidenceFilter
+        enabled: root.zoneState.summaryRowsUsable === true
         onSelected: function (value) {
             root.zoneState.loadEvidence(value)
         }
@@ -82,6 +83,7 @@ ColumnLayout {
             theme: root.theme
             evidence: modelData
             selected: root.selectedEvidenceId() === String(modelData.reference.evidence_id || "")
+            interactive: root.zoneState.summaryRowsUsable === true
             onActivated: root.zoneState.openEvidence(modelData)
         }
 
@@ -107,6 +109,7 @@ ColumnLayout {
             theme: root.theme
             text: qsTr("Load more")
             enabled: !root.zoneState.evidenceInFlight
+                && root.zoneState.summaryRowsUsable === true
             onClicked: root.zoneState.loadMoreEvidence()
         }
     }
@@ -204,6 +207,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Load next chunk")
                     enabled: !root.zoneState.evidencePayloadInFlight
+                        && root.zoneState.summaryRowsUsable === true
                     onClicked: root.zoneState.loadNextEvidencePayloadChunk()
                 }
             }
@@ -265,7 +269,7 @@ ColumnLayout {
 
     function ensureLoaded() {
         if (zoneState.activeZoneId.length > 0
-                && zoneState.verification === "verified"
+                && zoneState.summaryRowsUsable === true
                 && !zoneState.evidenceLoaded
                 && !zoneState.evidenceInFlight) {
             zoneState.loadEvidence(zoneState.evidenceFilter)

@@ -7,6 +7,7 @@ QtObject {
     required property var gateway
     required property var activeZoneContext
     required property string verification
+    required property bool catalogSnapshotUsable
     required property int sourceGeneration
     required property double sourceRevision
     required property var networkScope
@@ -64,6 +65,10 @@ QtObject {
             evidenceError = qsTr("A verified active Zone is required.")
             return false
         }
+        if (catalogSnapshotUsable !== true) {
+            evidenceError = qsTr("Zone catalog snapshot is refreshing.")
+            return false
+        }
         if (evidenceInFlight) {
             return false
         }
@@ -86,7 +91,8 @@ QtObject {
     }
 
     function loadMoreEvidence() {
-        if (!evidencePageContext || evidenceInFlight || evidenceNextCursor.length === 0) {
+        if (catalogSnapshotUsable !== true || !evidencePageContext
+                || evidenceInFlight || evidenceNextCursor.length === 0) {
             return false
         }
         requestEvidencePage(evidenceNextCursor)
@@ -143,7 +149,8 @@ QtObject {
 
     function openEvidence(row) {
         if (!row || !row.reference || !activeZoneContext
-                || verification !== "verified" || evidenceDetailInFlight) {
+                || verification !== "verified" || catalogSnapshotUsable !== true
+                || evidenceDetailInFlight) {
             return false
         }
         resetEvidenceDetail(true)
@@ -199,7 +206,7 @@ QtObject {
         const row = evidenceDetail && evidenceDetail.row ? evidenceDetail.row : null
         const reference = row && row.reference ? row.reference : null
         const sessionId = String(payload && payload.session_id || "")
-        if (!activeZoneContext || !reference || sessionId.length === 0
+        if (!activeZoneContext || catalogSnapshotUsable !== true || !reference || sessionId.length === 0
                 || evidencePayloadDone || evidencePayloadInFlight) {
             return false
         }

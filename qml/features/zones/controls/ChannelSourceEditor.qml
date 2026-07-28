@@ -171,8 +171,8 @@ Rectangle {
         }
 
         Text {
-            visible: root.zoneState.verification !== "verified"
-            text: qsTr("Catalog verification changed. Draft retained; saving is disabled.")
+            visible: root.zoneState.summaryRowsUsable !== true
+            text: qsTr("Catalog snapshot is not current. Draft retained; saving is disabled.")
             color: root.theme.warning
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
@@ -238,7 +238,7 @@ Rectangle {
                 enabled: root.validDraft
                     && root.dirty
                     && !root.conflict
-                    && root.zoneState.verification === "verified"
+                    && root.zoneState.summaryRowsUsable === true
                     && root.zoneState.activeZoneId.length > 0
                     && !root.zoneState.sourceMutationInFlight
                 onClicked: root.submit()
