@@ -17,7 +17,9 @@ use std::{
 
 use anyhow::{Context as _, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose};
-use serde::{Deserialize, Serialize, Serializer};
+#[cfg(target_os = "linux")]
+use serde::Deserialize;
+use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tempfile::{NamedTempFile, TempDir};
 use tokio::time::Instant;
@@ -58,7 +60,9 @@ const LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV: &str = "LOGOS_INSPECTOR_WATCH_TOKEN";
 const LOGOSCORE_WATCH_OWNER_PID_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_PID";
 const LOGOSCORE_WATCH_OWNER_START_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_START";
 const LOGOSCORE_WATCH_OWNER_NONCE_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_NONCE";
+#[cfg(target_os = "linux")]
 const LOGOSCORE_WATCH_LEASE_DIRECTORY: &str = "runtime/watch-leases";
+#[cfg(target_os = "linux")]
 const LOGOSCORE_WATCH_LEASE_SCHEMA_VERSION: u8 = 1;
 static LOGOSCORE_WATCH_RECOVERY: LazyLock<
     std::result::Result<mpsc::Sender<LogoscoreWatchRecovery>, String>,
@@ -4093,6 +4097,7 @@ fn new_logoscore_watch_cleanup_token() -> Result<String> {
     ))
 }
 
+#[cfg(target_os = "linux")]
 fn new_logoscore_watch_launch_nonce() -> Result<String> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).context("failed to generate LogosCore watch launch nonce")?;
