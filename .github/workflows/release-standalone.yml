@@ -198,7 +198,17 @@ jobs:
           fi
           test "$(xcode-select --print-path)" = "$xcode_developer"
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
-          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
+          # Xcode 26 registers this component per invoking account. Export
+          # the selected Xcode's exact component once, then import it for
+          # whichever identity Nix actually uses to build.
+          metal_component_dir="$(mktemp -d)"
+          chmod 0755 "$metal_component_dir"
+          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain \
+            -exportPath "$metal_component_dir"
+          metal_component="$(find "$metal_component_dir" -type f -name '*.dmg' -print -quit)"
+          test -n "$metal_component"
+          chmod 0644 "$metal_component"
+          env -u DEVELOPER_DIR -u SDKROOT xcodebuild -importComponent MetalToolchain "$metal_component"
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
           # The recent Metal component is scoped to the invoking user.  Keep
@@ -234,7 +244,7 @@ jobs:
                   -u DEVELOPER_DIR -u SDKROOT \
                   HOME="$builder_home" \
                   xcrun_nocache=1 \
-                  /usr/bin/xcodebuild -downloadComponent MetalToolchain
+                  /usr/bin/xcodebuild -importComponent MetalToolchain "$metal_component"
               fi
               sudo -u "$builder" env \
                 -u DEVELOPER_DIR -u SDKROOT \
@@ -249,8 +259,9 @@ jobs:
             done
           else
             # An empty build-users-group makes the Nix daemon build as its
-            # own identity. Provision that actual account instead of assuming
-            # a nixbld group or the workflow runner account.
+            # own identity. Import the runner-exported component for that
+            # account instead of assuming a nixbld group or asking root to
+            # fetch the Apple catalog again.
             daemon_pid="$(pgrep -x nix-daemon | sed -n '1p')"
             test -n "$daemon_pid"
             daemon_user="$(ps -o user= -p "$daemon_pid" | tr -d '[:space:]')"
@@ -267,7 +278,7 @@ jobs:
               sudo -H -u "$daemon_user" env \
                 -u DEVELOPER_DIR -u SDKROOT \
                 xcrun_nocache=1 \
-                /usr/bin/xcodebuild -downloadComponent MetalToolchain
+                /usr/bin/xcodebuild -importComponent MetalToolchain "$metal_component"
             fi
             sudo -H -u "$daemon_user" env \
               -u DEVELOPER_DIR -u SDKROOT \
