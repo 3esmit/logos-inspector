@@ -198,13 +198,16 @@ def main() -> int:
             'json.load(sys.stdin)["build-users-group"]["value"]',
             'if [ -n "$build_group" ]; then',
             'dscl . -read "/Groups/$build_group" GroupMembership',
-            'sudo -H -u "$builder" env',
+            "ensure_identity_metal() {",
+            'local identity="$1"',
+            'if ! sudo -H -u "$identity" env',
             '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
             '/usr/bin/xcrun --sdk macosx --find metal',
             '/usr/bin/xcrun --sdk macosx --find metallib',
+            'ensure_identity_metal "$builder"',
             'daemon_pid="$(pgrep -x nix-daemon | sed -n \'1p\')"',
             'daemon_user="$(ps -o user= -p "$daemon_pid" | tr -d \'[:space:]\')"',
-            'sudo -H -u "$daemon_user" env',
+            'ensure_identity_metal "$daemon_user"',
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
             "Install Linux host graphics runtime for smoke",
@@ -339,46 +342,43 @@ def main() -> int:
         "nix config show --json | python3 -c",
         macos_metal,
     )
+    macos_identity_helper = standalone.find("ensure_identity_metal() {", macos_metal)
+    macos_identity_probe = standalone.find(
+        'if ! sudo -H -u "$identity" env',
+        macos_identity_helper,
+    )
+    macos_identity_download = standalone.find(
+        '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
+        macos_identity_probe,
+    )
+    macos_identity_metal = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metal',
+        macos_identity_download,
+    )
+    macos_identity_metallib = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metallib',
+        macos_identity_metal,
+    )
     macos_builder_group_branch = standalone.find(
         'if [ -n "$build_group" ]; then',
-        macos_build_group,
+        macos_identity_metallib,
     )
     macos_builder_users = standalone.find(
         'dscl . -read "/Groups/$build_group" GroupMembership',
         macos_builder_group_branch,
     )
-    macos_builder_download = standalone.find(
-        '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
+    macos_builder_probe = standalone.find(
+        'ensure_identity_metal "$builder"',
         macos_builder_users,
     )
-    macos_builder_metal = standalone.find(
-        '/usr/bin/xcrun --sdk macosx --find metal',
-        macos_builder_download,
-    )
-    macos_builder_metallib = standalone.find(
-        '/usr/bin/xcrun --sdk macosx --find metallib',
-        macos_builder_metal,
-    )
-    macos_daemon_branch = standalone.find("          else\n", macos_builder_metallib)
+    macos_daemon_branch = standalone.find("          else\n", macos_builder_probe)
     macos_daemon_identity = standalone.find(
         'daemon_pid="$(pgrep -x nix-daemon | sed -n \'1p\')"',
         macos_daemon_branch,
     )
-    macos_daemon_download_env = standalone.find(
-        'sudo -H -u "$daemon_user" env',
+    macos_daemon_probe = standalone.find(
+        'ensure_identity_metal "$daemon_user"',
         macos_daemon_identity,
-    )
-    macos_daemon_download = standalone.find(
-        '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
-        macos_daemon_download_env,
-    )
-    macos_daemon_metal = standalone.find(
-        '/usr/bin/xcrun --sdk macosx --find metal',
-        macos_daemon_download,
-    )
-    macos_daemon_metallib = standalone.find(
-        '/usr/bin/xcrun --sdk macosx --find metallib',
-        macos_daemon_metal,
     )
     macos_build = standalone.find("- name: Build and archive app")
     if not (
@@ -390,23 +390,23 @@ def main() -> int:
         < macos_download
         < macos_metal_binary
         < macos_metallib_binary
+        < macos_identity_helper
+        < macos_identity_probe
+        < macos_identity_download
+        < macos_identity_metal
+        < macos_identity_metallib
         < macos_build_group
         < macos_builder_group_branch
         < macos_builder_users
-        < macos_builder_download
-        < macos_builder_metal
-        < macos_builder_metallib
+        < macos_builder_probe
         < macos_daemon_branch
         < macos_daemon_identity
-        < macos_daemon_download_env
-        < macos_daemon_download
-        < macos_daemon_metal
-        < macos_daemon_metallib
+        < macos_daemon_probe
         < macos_build
     ):
         errors.append(
             "standalone release workflow must select a Metal-capable Xcode, "
-            "verify component-download support, provision and verify the Metal "
+            "verify component-download support, probe or provision the Metal "
             "Toolchain for grouped Nix builders or the Nix daemon, then build"
         )
     if '--option build-users-group ""' in standalone:
