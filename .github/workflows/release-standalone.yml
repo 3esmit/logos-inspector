@@ -204,62 +204,106 @@ jobs:
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
-          # Keep Nix build-user isolation intact. A build identity can already
-          # resolve the runner-provisioned toolchain; only ask Xcode to fetch
-          # its identity-scoped component when that lookup is unavailable.
-          # This avoids a redundant root catalog request on hosted runners.
-          ensure_identity_metal() {
-            local identity="$1"
-            if ! sudo -H -u "$identity" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metal >/dev/null 2>&1 \
-              || ! sudo -H -u "$identity" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                xcrun_nocache=1 \
-                /usr/bin/xcrun --sdk macosx --find metallib >/dev/null 2>&1; then
-              sudo -H -u "$identity" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                xcrun_nocache=1 \
-                /usr/bin/xcodebuild -downloadComponent MetalToolchain
-            fi
-            sudo -H -u "$identity" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metal
-            sudo -H -u "$identity" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metallib
-          }
+          # The installer creates dedicated Nix users even when the generated
+          # configuration leaves build-users-group empty. Discover that group
+          # and pass it explicitly to the build so Nix never falls back to the
+          # daemon identity for this Metal build.
           build_group="$(nix config show --json | python3 -c '
           import json
           import sys
           print(json.load(sys.stdin)["build-users-group"]["value"])
           ')"
-          if [ -n "$build_group" ]; then
-            builder_users="$(
-              dscl . -read "/Groups/$build_group" GroupMembership \
-                | sed -n 's/^GroupMembership: //p'
+          if [ -z "$build_group" ]; then
+            bootstrap_builder="$(
+              dscl . -list /Users PrimaryGroupID \
+                | awk '$1 ~ /^_?nixbld[0-9]+$/ && $2 ~ /^[0-9]+$/ && !name { name = $1 } END { print name }'
             )"
-            test -n "$builder_users"
-            for builder in $builder_users; do
-              ensure_identity_metal "$builder"
-            done
-          else
-            # An empty build-users-group makes the Nix daemon build as its
-            # own identity. Provision the component for that account too.
-            daemon_pid="$(pgrep -x nix-daemon | sed -n '1p')"
-            test -n "$daemon_pid"
-            daemon_user="$(ps -o user= -p "$daemon_pid" | tr -d '[:space:]')"
-            test -n "$daemon_user"
-            echo "Nix daemon build identity: $daemon_user"
-            ensure_identity_metal "$daemon_user"
+            test -n "$bootstrap_builder"
+            builder_group_id="$(
+              dscl . -read "/Users/$bootstrap_builder" PrimaryGroupID \
+                | awk '/^PrimaryGroupID: / && !group_id { group_id = $2 } END { print group_id }'
+            )"
+            case "$builder_group_id" in
+              "" | *[!0-9]*)
+                echo "could not resolve the dedicated Nix build-user group" >&2
+                exit 1
+                ;;
+            esac
+            build_group="$(
+              dscl . -list /Groups PrimaryGroupID \
+                | awk -v group_id="$builder_group_id" '$2 == group_id && !name { name = $1 } END { print name }'
+            )"
           fi
+          case "$build_group" in
+            "" | *[!A-Za-z0-9_-]*)
+              echo "invalid Nix build-user group: $build_group" >&2
+              exit 1
+              ;;
+          esac
+          builder_group_id="$(
+            dscl . -read "/Groups/$build_group" PrimaryGroupID \
+              | awk '/^PrimaryGroupID: / && !group_id { group_id = $2 } END { print group_id }'
+          )"
+          case "$builder_group_id" in
+            "" | *[!0-9]*)
+              echo "could not read the Nix build-user group id" >&2
+              exit 1
+              ;;
+          esac
+          builder_users="$(
+            dscl . -list /Users PrimaryGroupID \
+              | awk -v group_id="$builder_group_id" \
+                '$2 == group_id && $1 ~ /^_?nixbld[0-9]+$/ { print $1 }'
+          )"
+          test -n "$builder_users"
+          echo "NIX_BUILD_USERS_GROUP=$build_group" >> "$GITHUB_ENV"
+          echo "Nix build-user group: $build_group"
+          # Do not rely on the password-record home of a service account being
+          # writable. Xcode registers the component for the effective build
+          # identity; each invocation gets a private writable cache home.
+          builder_home_root="$(mktemp -d)"
+          chmod 0755 "$builder_home_root"
+          ensure_identity_metal() {
+            local identity="$1"
+            local identity_home="$2"
+            if ! sudo -u "$identity" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              HOME="$identity_home" \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metal >/dev/null 2>&1 \
+              || ! sudo -u "$identity" env \
+                -u DEVELOPER_DIR -u SDKROOT \
+                HOME="$identity_home" \
+                xcrun_nocache=1 \
+                /usr/bin/xcrun --sdk macosx --find metallib >/dev/null 2>&1; then
+              sudo -u "$identity" env \
+                -u DEVELOPER_DIR -u SDKROOT \
+                HOME="$identity_home" \
+                xcrun_nocache=1 \
+                /usr/bin/xcodebuild -downloadComponent MetalToolchain
+            fi
+            sudo -u "$identity" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              HOME="$identity_home" \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metal
+            sudo -u "$identity" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              HOME="$identity_home" \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metallib
+          }
+          for builder in $builder_users; do
+            builder_home="$builder_home_root/$builder"
+            sudo install -d -o "$builder" -g "$build_group" -m 0700 "$builder_home"
+            ensure_identity_metal "$builder" "$builder_home"
+          done
       - name: Build and archive app
         run: |
           set -euo pipefail
-          nix build --option sandbox false --print-build-logs \
+          nix build --option sandbox false \
+            --option build-users-group "$NIX_BUILD_USERS_GROUP" \
+            --print-build-logs \
             .#standalone-macos-app --out-link result-standalone
           app="$(find -L result-standalone -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$app"
