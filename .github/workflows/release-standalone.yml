@@ -201,6 +201,47 @@ jobs:
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
           env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
+          # The recent Metal component is scoped to the invoking user.  Keep
+          # Nix build-user isolation intact, but provision and verify the
+          # component from every account that the Nix daemon can select.
+          build_group="$(nix show-config --json | python3 -c '
+          import json
+          import sys
+          print(json.load(sys.stdin)["build-users-group"]["value"])
+          ')"
+          test -n "$build_group"
+          builder_users="$(
+            dscl . -read "/Groups/$build_group" GroupMembership \
+              | sed -n 's/^GroupMembership: //p'
+          )"
+          test -n "$builder_users"
+          builder_home_root="$(mktemp -d)"
+          chmod 0755 "$builder_home_root"
+          for builder in $builder_users; do
+            builder_home="$builder_home_root/$builder"
+            sudo install -d -o "$builder" -g "$build_group" -m 0700 "$builder_home"
+            if ! sudo -u "$builder" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              HOME="$builder_home" \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metal >/dev/null; then
+              sudo -u "$builder" env \
+                -u DEVELOPER_DIR -u SDKROOT \
+                HOME="$builder_home" \
+                xcrun_nocache=1 \
+                /usr/bin/xcodebuild -downloadComponent MetalToolchain
+            fi
+            sudo -u "$builder" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              HOME="$builder_home" \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metal
+            sudo -u "$builder" env \
+              -u DEVELOPER_DIR -u SDKROOT \
+              HOME="$builder_home" \
+              xcrun_nocache=1 \
+              /usr/bin/xcrun --sdk macosx --find metallib
+          done
       - name: Build and archive app
         run: |
           set -euo pipefail

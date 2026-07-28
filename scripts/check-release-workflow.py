@@ -194,6 +194,13 @@ def main() -> int:
             "env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain",
             "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal",
             "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib",
+            'nix show-config --json | python3 -c',
+            'json.load(sys.stdin)["build-users-group"]["value"]',
+            'dscl . -read "/Groups/$build_group" GroupMembership',
+            'sudo -u "$builder" env',
+            '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
+            '/usr/bin/xcrun --sdk macosx --find metal',
+            '/usr/bin/xcrun --sdk macosx --find metallib',
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
             "Install Linux host graphics runtime for smoke",
@@ -320,6 +327,26 @@ def main() -> int:
         "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib",
         macos_metal,
     )
+    macos_build_group = standalone.find(
+        "nix show-config --json | python3 -c",
+        macos_metal,
+    )
+    macos_builder_users = standalone.find(
+        'dscl . -read "/Groups/$build_group" GroupMembership',
+        macos_build_group,
+    )
+    macos_builder_download = standalone.find(
+        '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
+        macos_builder_users,
+    )
+    macos_builder_metal = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metal',
+        macos_builder_download,
+    )
+    macos_builder_metallib = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metallib',
+        macos_builder_metal,
+    )
     macos_build = standalone.find("- name: Build and archive app")
     if not (
         0
@@ -330,12 +357,17 @@ def main() -> int:
         < macos_download
         < macos_metal_binary
         < macos_metallib_binary
+        < macos_build_group
+        < macos_builder_users
+        < macos_builder_download
+        < macos_builder_metal
+        < macos_builder_metallib
         < macos_build
     ):
         errors.append(
             "standalone release workflow must select a Metal-capable Xcode, "
-            "verify component-download support, install the Metal Toolchain, "
-            "and verify metal and metallib before building"
+            "verify component-download support, install and verify the Metal "
+            "Toolchain for every Nix builder, then build"
         )
     if '--option build-users-group ""' in standalone:
         errors.append(
