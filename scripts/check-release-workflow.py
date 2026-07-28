@@ -16,6 +16,7 @@ WORKFLOWS = {
     "core": ROOT / ".github" / "workflows" / "release-core.yml",
     "ui": ROOT / ".github" / "workflows" / "release-ui.yml",
     "standalone": ROOT / ".github" / "workflows" / "release-standalone.yml",
+    "cli": ROOT / ".github" / "workflows" / "release-cli.yml",
 }
 RELEASE_ACTION_SHA = "81f506530c56e8757e6d99ee7f9d4c092e74411c"
 ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -135,6 +136,7 @@ def main() -> int:
     core = texts["core"]
     ui = texts["ui"]
     standalone = texts["standalone"]
+    cli = texts["cli"]
     release_action = (
         "3esmit/logos-modules-release-action/.github/workflows/release.yml"
         f"@{RELEASE_ACTION_SHA}"
@@ -216,6 +218,43 @@ def main() -> int:
         errors,
     )
     require(
+        cli,
+        (
+            "workflow_dispatch:",
+            "workflow_call:",
+            "cli-v$VERSION",
+            "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
+            ".#cli-bundle",
+            "--bundle-root result-cli",
+            "test \"$(uname -m)\" = arm64",
+            "scripts/cli_release.py package",
+            "scripts/cli_release.py smoke-archive",
+            "scripts/cli_release.py verify",
+            "Smoke extracted Linux CLI bundle without the Nix store",
+            "unshare --mount",
+            "mount -t tmpfs tmpfs /nix/store",
+            "--write-checksums",
+            "draft: true",
+            "prerelease: true",
+            "gh release download",
+            "gh release edit",
+            "target_commitish: ${{ github.sha }}",
+        ),
+        "CLI release workflow",
+        errors,
+    )
+    for forbidden in (
+        "Install Qt",
+        "qt6",
+        "qml",
+        "standalone",
+        "musl",
+    ):
+        if forbidden.lower() in cli.lower():
+            errors.append(
+                f"CLI release workflow must not install or package desktop dependency `{forbidden}`"
+            )
+    require(
         complete,
         (
             "workflow_dispatch:",
@@ -233,6 +272,8 @@ def main() -> int:
         "complete release workflow",
         errors,
     )
+    if "release-cli.yml" in complete:
+        errors.append("complete release workflow must not include the independent CLI stream")
     linux_build = standalone.find("- name: Build AppImage")
     linux_graphics = standalone.find(
         "- name: Install Linux host graphics runtime for smoke"
@@ -360,6 +401,23 @@ def main() -> int:
     )
     require(
         flake,
+        (
+            "mkCliBinary",
+            '"--no-default-features"',
+            '"cli,local-wallet-runtime"',
+            "mkCliPackage",
+            "unset PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE",
+            'export PYTHONHOME="$root/python"',
+            "export PYTHONNOUSERSITE=1",
+            "extraDirs = [ \"python\" ];",
+            "nix-bundle-dir.lib.${system}.mkBundle",
+            "cli-bundle = cliBundles.${system};",
+        ),
+        "flake CLI package",
+        errors,
+    )
+    require(
+        flake,
         ('artifactsLink="$NIX_BUILD_TOP/cargo-vendor-dir/artifacts"',),
         "flake program artifact linker",
         errors,
@@ -395,7 +453,7 @@ def main() -> int:
     process = read(ROOT / "docs" / "release-process.md", errors)
     require(
         changelog,
-        ("source-owned", "AppImage", "Apple silicon"),
+        ("source-owned", "AppImage", "Apple silicon", "CLI"),
         "CHANGELOG.md",
         errors,
     )
@@ -405,11 +463,18 @@ def main() -> int:
             "logos_inspector-v<version>",
             "logos_inspector_ui-v<version>",
             "standalone-v<version>",
+            "cli-v<version>",
             "release.yml",
+            "release-cli.yml",
             "gh workflow run release.yml -f confirm=true --ref main",
+            "gh workflow run release-cli.yml -f confirm=true --ref main",
             "AppImage",
             "Apple silicon",
-            "with `/nix/store` hidden",
+            "x86_64-unknown-linux-gnu",
+            "`bin/logos-inspector`",
+            "embedded Python runtime",
+            "BUILD-INFO.json",
+            "`/nix/store` hidden",
             "`libEGL.so.1`",
             "`libGLX.so.0`",
             "`libOpenGL.so.0`",
@@ -429,6 +494,16 @@ def main() -> int:
     run_check(
         [sys.executable, "scripts/standalone_release.py", "self-test"],
         "standalone artifact fixture",
+        errors,
+    )
+    run_check(
+        [sys.executable, "scripts/cli_release.py", "validate-source", "--root", "."],
+        "CLI source validation",
+        errors,
+    )
+    run_check(
+        [sys.executable, "scripts/cli_release.py", "self-test"],
+        "CLI artifact fixture",
         errors,
     )
 

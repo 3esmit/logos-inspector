@@ -157,6 +157,10 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         ),
     ]
     web = BuildStep("web UI", ("npm", "--prefix", "ui", "run", "check"))
+    headless_cli = BuildStep(
+        "headless CLI",
+        (sys.executable, "scripts/check-cli-headless.py"),
+    )
     qml_static = BuildStep("QML static", ("scripts/qml-static-check.sh",))
     qml_visual = BuildStep("QML visual", ("scripts/zones-visual-smoke.sh",))
 
@@ -182,6 +186,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         ],
         "ci-native": native_steps,
         "ci-web": [web],
+        "ci-cli": [headless_cli],
         "ci-qml-static": [qml_static],
         "ci-qml-visual": [qml_visual],
         "identity": [
@@ -215,6 +220,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
             "ci-rust",
             "ci-native",
             "ci-web",
+            "ci-cli",
             "ci-qml-static",
         ),
         "local": (
@@ -223,6 +229,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
             "ci-rust",
             "ci-native",
             "ci-web",
+            "ci-cli",
             "ci-qml-static",
             "ci-qml-visual",
         ),
@@ -316,6 +323,7 @@ def list_profiles() -> Iterable[str]:
         "artifacts",
         "ci",
         "ci-generated",
+        "ci-cli",
         "ci-main",
         "ci-native",
         "ci-policy",

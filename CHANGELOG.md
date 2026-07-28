@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Independent headless CLI release automation for Linux x86_64 and Apple
+  silicon macOS, with source-commit metadata, checksums, and extracted-artifact
+  smoke tests.
+
 ## [0.2.0-rc10] - 2026-07-27
 
 ### Fixed

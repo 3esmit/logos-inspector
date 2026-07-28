@@ -34,23 +34,70 @@ The flake provides the standalone app for x86_64 Linux, AArch64 Linux, and
 AArch64 macOS.
 
 Source-owned Alpha releases provide a Linux x86_64 AppImage, an unsigned Apple
-silicon macOS app archive, and separate merged Core/UI LGX packages. See the
-[release process](docs/release-process.md) for artifact names and verification
-requirements.
+silicon macOS app archive, and separate merged Core/UI LGX packages. A separate
+headless CLI stream publishes Linux x86_64 and Apple silicon macOS archives.
+See the [release process](docs/release-process.md) for artifact names and
+verification requirements.
 
-For the CLI, Rust `1.94` is required:
+## CLI
+
+CLI releases use independent `cli-v<version>` prerelease tags in
+[GitHub Releases](https://github.com/3esmit/logos-inspector/releases). Each
+archive is a portable directory bundle containing `bin/logos-inspector`, its
+required Python runtime, and `BUILD-INFO.json`; the latter records the source
+version, commit, and target used for the build.
+
+Download the matching archive and `SHA256SUMS`, then verify the exact archive
+before extracting it. On Linux x86_64:
 
 ```bash
-cargo run -- cli --help
+VERSION=0.2.0-rc10
+ASSET="logos-inspector-cli-${VERSION}-linux-amd64.tar.gz"
+grep "  ${ASSET}$" SHA256SUMS | sha256sum --check -
+tar -xzf "$ASSET"
+./logos-inspector-cli-${VERSION}-linux-amd64/bin/logos-inspector --version
+./logos-inspector-cli-${VERSION}-linux-amd64/bin/logos-inspector cli --help
+```
+
+On Apple silicon macOS, use the `darwin-arm64` archive and `shasum`:
+
+```bash
+VERSION=0.2.0-rc10
+ASSET="logos-inspector-cli-${VERSION}-darwin-arm64.tar.gz"
+expected="$(awk '$2 == name { print $1 }' name="$ASSET" SHA256SUMS)"
+actual="$(shasum -a 256 "$ASSET" | awk '{ print $1 }')"
+test "$actual" = "$expected"
+tar -xzf "$ASSET"
+./logos-inspector-cli-${VERSION}-darwin-arm64/bin/logos-inspector --version
+./logos-inspector-cli-${VERSION}-darwin-arm64/bin/logos-inspector cli --help
+```
+
+The Linux archive is a GNU/Linux bundle, and the macOS archive is unsigned.
+Both streams are Alpha prereleases.
+
+For a local Nix-built CLI without Qt or QML:
+
+```bash
+nix run .#cli -- --version
+nix run .#cli -- cli source-policy
+```
+
+To build the CLI from source, Rust `1.94` is required:
+
+```bash
+cargo run --no-default-features --features cli,local-wallet-runtime -- --version
+cargo run --no-default-features --features cli,local-wallet-runtime -- cli --version
+cargo run --no-default-features --features cli,local-wallet-runtime -- cli --help
 ```
 
 For example, inspect a reachable node with an explicit endpoint:
 
 ```bash
-cargo run -- cli blockchain-node --node-url http://127.0.0.1:8080
+cargo run --no-default-features --features cli,local-wallet-runtime -- \
+  cli blockchain-node --node-url http://127.0.0.1:8080
 ```
 
-Commands print JSON. Run `cargo run -- cli --help` to see the supported
+Commands print JSON. Run `logos-inspector cli --help` to see the supported
 inspection, decoding, wallet, backup, and source-diagnostic commands.
 
 ## Documentation
