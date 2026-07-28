@@ -198,111 +198,29 @@ jobs:
           fi
           test "$(xcode-select --print-path)" = "$xcode_developer"
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -version
-          # Xcode 26 scopes this component to the invoking identity. The
-          # hosted runner can download it directly, but importing the exported
-          # DMG aborts `xcodebuild` with SIGTRAP. Provision the runner first.
+          # Xcode 26 scopes this component to the invoking identity. Resolve
+          # the runner's usable tools once, then pass their exact paths into
+          # the Nix expression. Calling xcodebuild as `_nixbld` is invalid:
+          # those accounts have an immutable `/var/empty` home directory.
           env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain
-          env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal
-          env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib
-          # The installer creates dedicated Nix users even when the generated
-          # configuration leaves build-users-group empty. Discover that group
-          # and pass it explicitly to the build so Nix never falls back to the
-          # daemon identity for this Metal build.
-          build_group="$(nix config show --json | python3 -c '
-          import json
-          import sys
-          print(json.load(sys.stdin)["build-users-group"]["value"])
-          ')"
-          if [ -z "$build_group" ]; then
-            bootstrap_builder="$(
-              dscl . -list /Users PrimaryGroupID \
-                | awk '$1 ~ /^_?nixbld[0-9]+$/ && $2 ~ /^[0-9]+$/ && !name { name = $1 } END { print name }'
-            )"
-            test -n "$bootstrap_builder"
-            builder_group_id="$(
-              dscl . -read "/Users/$bootstrap_builder" PrimaryGroupID \
-                | awk '/^PrimaryGroupID: / && !group_id { group_id = $2 } END { print group_id }'
-            )"
-            case "$builder_group_id" in
-              "" | *[!0-9]*)
-                echo "could not resolve the dedicated Nix build-user group" >&2
+          metal_path="$(env -u DEVELOPER_DIR -u SDKROOT xcrun_nocache=1 /usr/bin/xcrun --sdk macosx --find metal)"
+          metallib_path="$(env -u DEVELOPER_DIR -u SDKROOT xcrun_nocache=1 /usr/bin/xcrun --sdk macosx --find metallib)"
+          for tool_path in "$metal_path" "$metallib_path"; do
+            case "$tool_path" in
+              /*) test -x "$tool_path" ;;
+              *)
+                echo "Metal tool path is not absolute and executable: $tool_path" >&2
                 exit 1
                 ;;
             esac
-            build_group="$(
-              dscl . -list /Groups PrimaryGroupID \
-                | awk -v group_id="$builder_group_id" '$2 == group_id && !name { name = $1 } END { print name }'
-            )"
-          fi
-          case "$build_group" in
-            "" | *[!A-Za-z0-9_-]*)
-              echo "invalid Nix build-user group: $build_group" >&2
-              exit 1
-              ;;
-          esac
-          builder_group_id="$(
-            dscl . -read "/Groups/$build_group" PrimaryGroupID \
-              | awk '/^PrimaryGroupID: / && !group_id { group_id = $2 } END { print group_id }'
-          )"
-          case "$builder_group_id" in
-            "" | *[!0-9]*)
-              echo "could not read the Nix build-user group id" >&2
-              exit 1
-              ;;
-          esac
-          builder_users="$(
-            dscl . -list /Users PrimaryGroupID \
-              | awk -v group_id="$builder_group_id" \
-                '$2 == group_id && $1 ~ /^_?nixbld[0-9]+$/ { print $1 }'
-          )"
-          test -n "$builder_users"
-          echo "NIX_BUILD_USERS_GROUP=$build_group" >> "$GITHUB_ENV"
-          echo "Nix build-user group: $build_group"
-          # Do not rely on the password-record home of a service account being
-          # writable. Xcode registers the component for the effective build
-          # identity; each invocation gets a private writable cache home.
-          builder_home_root="$(mktemp -d)"
-          chmod 0755 "$builder_home_root"
-          ensure_identity_metal() {
-            local identity="$1"
-            local identity_home="$2"
-            if ! sudo -u "$identity" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              HOME="$identity_home" \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metal >/dev/null 2>&1 \
-              || ! sudo -u "$identity" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                HOME="$identity_home" \
-                xcrun_nocache=1 \
-                /usr/bin/xcrun --sdk macosx --find metallib >/dev/null 2>&1; then
-              sudo -u "$identity" env \
-                -u DEVELOPER_DIR -u SDKROOT \
-                HOME="$identity_home" \
-                xcrun_nocache=1 \
-                /usr/bin/xcodebuild -downloadComponent MetalToolchain
-            fi
-            sudo -u "$identity" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              HOME="$identity_home" \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metal
-            sudo -u "$identity" env \
-              -u DEVELOPER_DIR -u SDKROOT \
-              HOME="$identity_home" \
-              xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metallib
-          }
-          for builder in $builder_users; do
-            builder_home="$builder_home_root/$builder"
-            sudo install -d -o "$builder" -g "$build_group" -m 0700 "$builder_home"
-            ensure_identity_metal "$builder" "$builder_home"
           done
+          printf 'LOGOS_INSPECTOR_METAL=%s\n' "$metal_path" >> "$GITHUB_ENV"
+          printf 'LOGOS_INSPECTOR_METALLIB=%s\n' "$metallib_path" >> "$GITHUB_ENV"
+          printf 'Metal compiler: %s\nMetal linker: %s\n' "$metal_path" "$metallib_path" >> "$GITHUB_STEP_SUMMARY"
       - name: Build and archive app
         run: |
           set -euo pipefail
-          nix build --option sandbox false \
-            --option build-users-group "$NIX_BUILD_USERS_GROUP" \
+          nix build --impure --option sandbox false \
             --print-build-logs \
             .#standalone-macos-app --out-link result-standalone
           app="$(find -L result-standalone -maxdepth 1 -type d -name '*.app' -print -quit)"
