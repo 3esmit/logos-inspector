@@ -1584,8 +1584,16 @@ QtObject {
 
     function refreshLocalNodes(showResult) { return localNodes.refresh(showResult) }
 
-    function invalidateAttachedRuntimeObservations() {
+    function refreshAttachedRuntimeObservations() {
         if (!localNodes.localAttachedRuntime()) {
+            return false
+        }
+        scheduleAttachedRuntimeObservationRefresh()
+        return true
+    }
+
+    function invalidateAttachedRuntimeObservations() {
+        if (!refreshAttachedRuntimeObservations()) {
             return false
         }
         const reason = qsTr("Local LogosCore service state changed.")
@@ -1594,7 +1602,6 @@ QtObject {
             metricsState.invalidateConfiguration(kinds[index], reason)
         }
         metricsState.invalidateDashboard(reason)
-        scheduleAttachedRuntimeObservationRefresh()
         return true
     }
 
