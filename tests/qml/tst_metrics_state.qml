@@ -368,6 +368,7 @@ TestCase {
         metrics.storageSourceReport = null
         metrics.messagingSourceReport = null
         metrics.messagingMetricsReport = null
+        metrics.messagingMetricsIndex = null
         metrics.messagingMetricsCheckedAtMs = 0
         metrics.messagingMetricsRequestGeneration = 0
         metrics.messagingMetricsRevision = 0
@@ -1014,6 +1015,127 @@ TestCase {
         compare(metrics.dashboardMetricLastSeen[
             "messaging.peer_count"].value, 12)
         compare(metrics.networkConnectionState("messaging").origin, "dashboard")
+    }
+
+    function test_delivery_metrics_cache_indexes_openmetrics_by_revision() {
+        const firstText = [
+            "libp2p_peers{type=\"connected\"} 12",
+            "waku_node_messages_total 7"
+        ].join("\n") + "\n"
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "indexed-first", firstText)))
+
+        const firstIndex = metrics.messagingMetricsIndex
+        verify(firstIndex !== null)
+        compare(firstIndex.revision, metrics.messagingMetricsRevision)
+        compare(metrics.openMetricValue("messaging", {
+            name: "libp2p_peers", labels: { type: "connected" }
+        }), 12)
+        compare(metrics.openMetricSeries("messaging", {
+            name: "waku_node_messages_total"
+        }).length, 1)
+
+        const secondText = [
+            "libp2p_peers{type=\"connected\"} 19",
+            "waku_node_messages_total 8"
+        ].join("\n") + "\n"
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "indexed-second", secondText)))
+
+        verify(metrics.messagingMetricsIndex !== firstIndex)
+        compare(metrics.messagingMetricsIndex.revision,
+            metrics.messagingMetricsRevision)
+        compare(metrics.openMetricValue("messaging", {
+            name: "libp2p_peers", labels: { type: "connected" }
+        }), 19)
+
+        metrics.invalidateConfiguration("messaging", "source changed")
+        compare(metrics.messagingMetricsIndex, null)
+    }
+
+    function test_delivery_metrics_cache_preserves_invalid_series_evidence() {
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "indexed-invalid",
+            "waku_node_messages_total invalid\n")))
+
+        verify(metrics.messagingMetricsIndex !== null)
+        compare(metrics.openMetricSeries("messaging", {
+            name: "waku_node_messages_total"
+        }), null)
+    }
+
+    function test_large_delivery_metrics_index_is_built_off_the_ui_thread() {
+        const lines = []
+        for (let index = 0; index < 420; ++index) {
+            lines.push("delivery_test_metric_" + String(index)
+                + "{topic=\"/test/" + String(index) + "\"} "
+                + String(index))
+        }
+        lines.push("libp2p_peers{type=\"connected\"} 23")
+        const value = lines.join("\n") + "\n" + "#".repeat(8192)
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "worker-index", value)))
+
+        verify(metrics.messagingMetricsIndex !== null)
+        verify(metrics.messagingMetricsIndex.pending)
+        compare(metrics.openMetricValue("messaging", {
+            name: "libp2p_peers", labels: { type: "connected" }
+        }), null)
+
+        tryVerify(function() {
+            return metrics.messagingMetricsIndex !== null
+                && metrics.messagingMetricsIndex.pending !== true
+        })
+        compare(metrics.messagingMetricsIndex.revision,
+            metrics.messagingMetricsRevision)
+        compare(metrics.openMetricValue("messaging", {
+            name: "libp2p_peers", labels: { type: "connected" }
+        }), 23)
+    }
+
+    function test_worker_delivery_metrics_index_rejects_stale_result() {
+        const first = "libp2p_peers 11\n" + "#".repeat(8192)
+        const second = "libp2p_peers 22\n" + "#".repeat(8192)
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "worker-first", first)))
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "scheduler")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "worker-second", second)))
+
+        tryVerify(function() {
+            return metrics.messagingMetricsIndex !== null
+                && metrics.messagingMetricsIndex.pending !== true
+        })
+        compare(metrics.openMetricValue("messaging", "libp2p_peers"), 22)
+    }
+
+    function test_worker_delivery_metrics_index_preserves_invalid_series_evidence() {
+        const value = [
+            "waku_relay_network_bytes_total{type=\"net\",direction=\"in\",topic=\"alpha\"} invalid",
+            "waku_relay_network_bytes_in_total 99"
+        ].join("\n") + "\n" + "#".repeat(8192)
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "source-inspection")
+        gateway.completeRequest(0, success(reportWithMetrics(
+            "messaging", "worker-invalid", value)))
+
+        tryVerify(function() {
+            return metrics.messagingMetricsIndex !== null
+                && metrics.messagingMetricsIndex.pending !== true
+        })
+        compare(metrics.dashboardMetricRawValue(
+            "messaging.relay_ingress_recent"), null)
     }
 
     function test_scheduled_delivery_metrics_use_independent_lease_and_cache() {

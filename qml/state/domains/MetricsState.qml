@@ -1,4 +1,5 @@
 import QtQml
+import QtQml.WorkerScript
 import "../../services/BridgeHelpers.js" as BridgeHelpers
 import "../chain/BlockchainRangeValidation.js" as BlockchainRangeValidation
 import "../chain/ChainPageQuery.js" as ChainPageQuery
@@ -64,11 +65,18 @@ QtObject {
     property var storageSourceReport: null
     property var messagingSourceReport: null
     property var messagingMetricsReport: null
+    property var messagingMetricsIndex: null
+    property int messagingMetricsWorkerGeneration: 0
     property double messagingMetricsCheckedAtMs: 0
     property int messagingMetricsRequestGeneration: 0
     property int messagingMetricsRevision: 0
     property var activeMessagingMetricsLease: null
     property var messagingMetricsAttempt: null
+
+    property WorkerScript messagingMetricsIndexWorker: WorkerScript {
+        source: "../metrics/OpenMetricsIndexWorker.mjs"
+        onMessage: message => root.acceptMessagingMetricsIndex(message)
+    }
 
     property var observationConfigurationGenerations: ({
         blockchain: 0,
@@ -1268,12 +1276,12 @@ QtObject {
             networkConnectionStatusRevision += 1
             incrementStatusRevision("messaging")
         }
-        const metricsCached = probeOk && cacheMessagingMetricsReport(
+        const metricsCache = probeOk ? cacheMessagingMetricsReport(
                 report,
                 checkedAtMs,
                 lease.configurationGeneration,
-                lease.sequence)
-        if (metricsCached) {
+                lease.sequence) : null
+        if (metricsCache && metricsCache.snapshotReady === true) {
             recordDashboardSnapshot(["messaging."])
         }
         observationRevision += 1
@@ -1459,14 +1467,15 @@ QtObject {
         } else if (target === "storage") {
             metricEvidenceUpdated = true
         } else if (target === "messaging") {
-            const metricsCached = cacheMessagingMetricsReport(
+            const metricsCache = cacheMessagingMetricsReport(
                 value,
                 checkedAtMs,
                 lease.configurationGeneration,
                 lease.sequence
             )
-            metricEvidenceUpdated = metricsCached
-            if (metricsCached) {
+            metricEvidenceUpdated = metricsCache
+                && metricsCache.snapshotReady === true
+            if (metricsCache && metricsCache.accepted === true) {
                 messagingMetricsAttempt = {
                     ok: true,
                     transportOk: true,
@@ -1496,15 +1505,55 @@ QtObject {
         if (!probe || probe.ok !== true
                 || probe.value === undefined || probe.value === null
                 || Number(configurationGeneration || 0)
-                    !== familyConfigurationGeneration("messaging")
+                !== familyConfigurationGeneration("messaging")
                 || Number(requestGeneration || 0)
                     < messagingMetricsRequestGeneration) {
-            return false
+            return { accepted: false, snapshotReady: false }
         }
+        const nextRevision = messagingMetricsRevision + 1
         messagingMetricsReport = report
         messagingMetricsCheckedAtMs = Number(checkedAtMs || Date.now())
         messagingMetricsRequestGeneration = Number(requestGeneration || 0)
-        messagingMetricsRevision += 1
+        messagingMetricsRevision = nextRevision
+        if (typeof probe.value !== "string"
+                || probe.value.length < 8192) {
+            messagingMetricsIndex = AppModelMetrics.buildOpenMetricsIndex(
+                root, probe.value, nextRevision)
+            return { accepted: true, snapshotReady: true }
+        }
+        messagingMetricsWorkerGeneration += 1
+        const workerGeneration = messagingMetricsWorkerGeneration
+        messagingMetricsIndex = {
+            revision: nextRevision,
+            workerGeneration: workerGeneration,
+            pending: true
+        }
+        messagingMetricsIndexWorker.sendMessage({
+            revision: nextRevision,
+            workerGeneration: workerGeneration,
+            value: probe.value
+        })
+        return { accepted: true, snapshotReady: false }
+    }
+
+    function acceptMessagingMetricsIndex(message) {
+        const index = message && typeof message === "object" ? message : null
+        const active = messagingMetricsIndex
+        if (!index || !active || active.pending !== true
+                || Number(index.revision || 0)
+                    !== Number(messagingMetricsRevision || 0)
+                || Number(index.workerGeneration || 0)
+                    !== Number(active.workerGeneration || 0)
+                || !index.samplesByName
+                || typeof index.samplesByName !== "object"
+                || !index.malformedNames
+                || typeof index.malformedNames !== "object"
+                || !index.invalidSamplesByName
+                || typeof index.invalidSamplesByName !== "object") {
+            return false
+        }
+        messagingMetricsIndex = index
+        recordDashboardSnapshot(["messaging."])
         return true
     }
 
@@ -1628,6 +1677,7 @@ QtObject {
         if (target === "messaging") {
             activeMessagingMetricsLease = null
             messagingMetricsReport = null
+            messagingMetricsIndex = null
             messagingMetricsCheckedAtMs = 0
             messagingMetricsRequestGeneration = 0
             messagingMetricsAttempt = null
@@ -2043,6 +2093,7 @@ QtObject {
     function moduleLastError(kind) { return AppModelMetrics.moduleLastError(root, kind) }
     function openMetricsText(kind) { return AppModelMetrics.openMetricsText(root, kind) }
     function openMetricsTextFromValue(value) { return AppModelMetrics.openMetricsTextFromValue(root, value) }
+    function cachedOpenMetricsIndex(kind) { return AppModelMetrics.cachedOpenMetricsIndex(root, kind) }
     function openMetricValue(kind, names) { return AppModelMetrics.openMetricValue(root, kind, names) }
     function openMetricSeries(kind, spec) { return AppModelMetrics.openMetricSeries(root, kind, spec) }
     function openMetricLabels(text) { return AppModelMetrics.openMetricLabels(root, text) }
