@@ -343,9 +343,17 @@ def main() -> int:
         'dscl . -read "/Groups/$build_group" GroupMembership',
         macos_builder_group_branch,
     )
+    macos_builder_metal_probe = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metal >/dev/null',
+        macos_builder_users,
+    )
+    macos_builder_metallib_probe = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metallib >/dev/null',
+        macos_builder_metal_probe,
+    )
     macos_builder_download = standalone.find(
         '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
-        macos_builder_users,
+        macos_builder_metallib_probe,
     )
     macos_builder_metal = standalone.find(
         '/usr/bin/xcrun --sdk macosx --find metal',
@@ -364,9 +372,17 @@ def main() -> int:
         'sudo -H -u "$daemon_user" env',
         macos_daemon_identity,
     )
+    macos_daemon_metal_probe = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metal >/dev/null',
+        macos_daemon_metal,
+    )
+    macos_daemon_metallib_probe = standalone.find(
+        '/usr/bin/xcrun --sdk macosx --find metallib >/dev/null',
+        macos_daemon_metal_probe,
+    )
     macos_daemon_download = standalone.find(
         '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
-        macos_daemon_metal,
+        macos_daemon_metallib_probe,
     )
     macos_daemon_metallib = standalone.find(
         '/usr/bin/xcrun --sdk macosx --find metallib',
@@ -385,12 +401,16 @@ def main() -> int:
         < macos_build_group
         < macos_builder_group_branch
         < macos_builder_users
+        < macos_builder_metal_probe
+        < macos_builder_metallib_probe
         < macos_builder_download
         < macos_builder_metal
         < macos_builder_metallib
         < macos_daemon_branch
         < macos_daemon_identity
         < macos_daemon_metal
+        < macos_daemon_metal_probe
+        < macos_daemon_metallib_probe
         < macos_daemon_download
         < macos_daemon_metallib
         < macos_build

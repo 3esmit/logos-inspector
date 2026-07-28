@@ -224,7 +224,12 @@ jobs:
                 -u DEVELOPER_DIR -u SDKROOT \
                 HOME="$builder_home" \
                 xcrun_nocache=1 \
-                /usr/bin/xcrun --sdk macosx --find metal >/dev/null; then
+                /usr/bin/xcrun --sdk macosx --find metal >/dev/null \
+                || ! sudo -u "$builder" env \
+                  -u DEVELOPER_DIR -u SDKROOT \
+                  HOME="$builder_home" \
+                  xcrun_nocache=1 \
+                  /usr/bin/xcrun --sdk macosx --find metallib >/dev/null; then
                 sudo -u "$builder" env \
                   -u DEVELOPER_DIR -u SDKROOT \
                   HOME="$builder_home" \
@@ -254,7 +259,11 @@ jobs:
             if ! sudo -H -u "$daemon_user" env \
               -u DEVELOPER_DIR -u SDKROOT \
               xcrun_nocache=1 \
-              /usr/bin/xcrun --sdk macosx --find metal >/dev/null; then
+              /usr/bin/xcrun --sdk macosx --find metal >/dev/null \
+              || ! sudo -H -u "$daemon_user" env \
+                -u DEVELOPER_DIR -u SDKROOT \
+                xcrun_nocache=1 \
+                /usr/bin/xcrun --sdk macosx --find metallib >/dev/null; then
               sudo -H -u "$daemon_user" env \
                 -u DEVELOPER_DIR -u SDKROOT \
                 xcrun_nocache=1 \
