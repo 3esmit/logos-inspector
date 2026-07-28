@@ -69,7 +69,7 @@ impl LocalNodeActionEngine {
     ) -> Result<LocalNodeReport> {
         let _state_lock = acquire_state_lock()?;
         let state = self.store.load()?;
-        let runtime = self.runtime_store.load()?;
+        let runtime = self.runtime_store.load_resolved()?;
         super::channel_indexer::status(
             self.runtime_store.config_root(),
             profile,
@@ -244,7 +244,7 @@ impl LocalNodeActionEngine {
 
         let _state_lock = acquire_state_lock()?;
         let state = self.store.load()?;
-        let runtime = self.runtime_store.load()?;
+        let runtime = self.runtime_store.load_resolved()?;
         super::channel_indexer::apply(
             self.runtime_store.config_root(),
             profile,

@@ -177,15 +177,12 @@ impl LogoscoreRuntimeProfile {
         channel_id: &str,
         base: &Self,
     ) -> Result<Self> {
-        if !base.is_managed() {
-            bail!("a local attached logoscore runtime cannot provide an isolated Channel Indexer");
-        }
         base.validate_for_config_root(config_root)?;
         validate_runtime_key(network_scope_key, "Channel Indexer network scope")?;
         validate_runtime_key(channel_id, "Channel Indexer ID")?;
 
         let binary_path = canonical_executable(Some(&base.binary_path))?;
-        let modules_dir = canonical_directory(base.modules_dir.as_deref())?;
+        let modules_dir = base.channel_indexer_modules_dir()?;
         let runtime_root = config_root
             .join("channel-indexers")
             .join(network_scope_key)
@@ -202,6 +199,34 @@ impl LogoscoreRuntimeProfile {
             daemon_process_id: None,
             service_target: None,
         })
+    }
+
+    /// Finds the read-only package source from which Inspector creates an
+    /// isolated Channel Indexer runtime. Attached services retain ownership of
+    /// their daemon and data; only their verified executable and module tree
+    /// are reused by the child runtime.
+    pub(super) fn channel_indexer_modules_dir(&self) -> Result<String> {
+        if self.is_managed() {
+            return canonical_directory(self.modules_dir.as_deref());
+        }
+        if !self.is_attached() {
+            bail!("a local LogosCore runtime is required for an isolated Channel Indexer");
+        }
+
+        let running = self.is_running();
+        let observed = running
+            .then_some(self.daemon_process_id)
+            .flatten()
+            .and_then(|process_id| self.modules_dir_for_attached_process(process_id));
+        let configured = (!running)
+            .then(|| self.configured_attached_service_modules_dir())
+            .flatten();
+        let modules_dir =
+            resolve_attached_channel_indexer_modules_dir(running, observed, configured)?;
+        let modules_dir = modules_dir
+            .to_str()
+            .context("local LogosCore modules directory is not valid UTF-8")?;
+        canonical_directory(Some(modules_dir))
     }
 
     pub(super) fn discover_local() -> Result<Option<Self>> {
@@ -801,6 +826,19 @@ fn validate_active_attached_module_install_target(
         bail!("stop the local LogosCore runtime before changing installed modules");
     }
     Ok(())
+}
+
+fn resolve_attached_channel_indexer_modules_dir(
+    running: bool,
+    observed: Option<PathBuf>,
+    configured: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if running {
+        return observed
+            .context("cannot verify the modules directory of the running local LogosCore daemon");
+    }
+    configured
+        .context("cannot determine the modules directory for the stopped local LogosCore service")
 }
 
 #[cfg(target_os = "linux")]
@@ -1596,6 +1634,23 @@ mod tests {
         })?;
         Ok(())
     }
+
+    #[cfg(unix)]
+    fn stop_fixture_child(child: &mut std::process::Child) -> Result<()> {
+        match child.kill() {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotFound
+                ) => {}
+            Err(error) => return Err(error).context("failed to stop attached runtime fixture"),
+        }
+        child
+            .wait()
+            .context("failed to reap attached runtime fixture")?;
+        Ok(())
+    }
     use serde_json::json;
 
     fn attached_profile(
@@ -1691,6 +1746,83 @@ mod tests {
         anyhow::ensure!(first.persistence_path != second.persistence_path);
         first.validate_for_config_root(directory.path())?;
         second.validate_for_config_root(directory.path())?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn attached_runtime_can_source_an_isolated_channel_indexer_from_its_live_modules() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let modules = tempfile::tempdir()?;
+        let daemon = directory.path().join("logoscore");
+        write_executable_script(&daemon, "#!/bin/sh\nwhile :; do sleep 1; done\n")?;
+        let mut child = Command::new(&daemon)
+            .arg("-m")
+            .arg(modules.path())
+            .spawn()
+            .context("failed to start attached runtime fixture")?;
+        let expected_modules = fs::canonicalize(modules.path())?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while running_daemon_modules_dir(child.id()).as_deref() != Some(expected_modules.as_path())
+        {
+            if Instant::now() >= deadline {
+                stop_fixture_child(&mut child)?;
+                anyhow::bail!("attached runtime fixture did not publish its modules directory");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let result = (|| {
+            let mut base = attached_profile(Some(child.id()), None);
+            base.binary_path = fs::canonicalize("/bin/sh")?
+                .to_str()
+                .context("shell path is not UTF-8")?
+                .to_owned();
+            let profile = LogoscoreRuntimeProfile::create_channel_indexer(
+                directory.path(),
+                &"ab".repeat(32),
+                &"01".repeat(32),
+                &base,
+            )?;
+
+            anyhow::ensure!(base.modules_dir.is_none());
+            anyhow::ensure!(base.persistence_path.is_none());
+            anyhow::ensure!(profile.is_managed());
+            anyhow::ensure!(
+                profile.modules_dir.as_deref()
+                    == Some(
+                        expected_modules
+                            .to_str()
+                            .context("modules path is not UTF-8")?
+                    )
+            );
+            profile.validate_for_config_root(directory.path())
+        })();
+        let cleanup = stop_fixture_child(&mut child);
+        match (result, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(error)) | (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(cleanup_error)) => Err(error).context(format!(
+                "attached runtime fixture cleanup also failed: {cleanup_error:#}"
+            )),
+        }
+    }
+
+    #[test]
+    fn attached_channel_indexer_modules_do_not_fall_back_while_live_source_is_unverified()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let configured = directory.path().join("configured-modules");
+        fs::create_dir_all(&configured)?;
+
+        let error =
+            resolve_attached_channel_indexer_modules_dir(true, None, Some(configured.clone()))
+                .expect_err("unverified running runtime used stale service configuration");
+        anyhow::ensure!(error.to_string().contains("running local LogosCore daemon"));
+
+        let stopped = resolve_attached_channel_indexer_modules_dir(false, None, Some(configured))?;
+        anyhow::ensure!(stopped.is_dir());
         Ok(())
     }
 
