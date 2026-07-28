@@ -38,6 +38,7 @@ use super::{
         LocalNodeConfigRecord, LocalNodeOperationReport, LocalNodeReport, LocalNodeStatus,
         LocalNodeSummary, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
     },
+    package,
     process::{process_group_has_live_members, spawn_detached, stop_process},
     runtime::{self, LogoscoreRuntimeProfile},
     workflow::normalized_profile,
@@ -537,9 +538,22 @@ fn start(
             .as_deref()
             .context("Indexer Bedrock endpoint is required")?,
     )?;
-    let base_runtime = context.base_runtime.context(
-        "configure an Inspector-managed LogosCore runtime before starting a Channel Indexer",
-    )?;
+    let base_runtime = context
+        .base_runtime
+        .context("connect a local LogosCore runtime before starting a Channel Indexer")?;
+    if base_runtime.is_attached() {
+        let modules_dir = base_runtime.channel_indexer_modules_dir()?;
+        let authority = base_runtime.package_install_authority()?;
+        if !package::verify_installed_indexer_module(
+            Path::new(&modules_dir),
+            &authority,
+            context.control,
+        )? {
+            return Ok(ActionOutcome::needs_configuration(
+                "install lez_indexer_module into the modules directory used by the local LogosCore service",
+            ));
+        }
+    }
     let scope_key = network_scope_key(&context.request.network_scope)?;
 
     let record = match find_record_mut(
@@ -998,11 +1012,35 @@ fn package_prerequisite(
     profile: &str,
     base_runtime: Option<&LogoscoreRuntimeProfile>,
 ) -> PackagePrerequisite {
-    let Some(base_runtime) = base_runtime.filter(|runtime| runtime.is_managed()) else {
+    let Some(base_runtime) = base_runtime else {
         return PackagePrerequisite::missing(
-            "configure an Inspector-managed LogosCore runtime under System / Local Nodes",
+            "connect a local LogosCore runtime under System / Local Nodes",
         );
     };
+    if base_runtime.is_attached() {
+        let modules_dir = match base_runtime.channel_indexer_modules_dir() {
+            Ok(modules_dir) => modules_dir,
+            Err(error) => {
+                return PackagePrerequisite::missing(format!(
+                    "could not verify modules supplied by the local LogosCore service: {error}"
+                ));
+            }
+        };
+        return match package::installed_indexer_module_on_disk(Path::new(&modules_dir)) {
+            Ok(true) => PackagePrerequisite::available(),
+            Ok(false) => PackagePrerequisite::missing(
+                "install lez_indexer_module into the modules directory used by the local LogosCore service",
+            ),
+            Err(error) => PackagePrerequisite::missing(format!(
+                "could not verify lez_indexer_module in the local LogosCore service modules directory: {error}"
+            )),
+        };
+    }
+    if !base_runtime.is_managed() {
+        return PackagePrerequisite::missing(
+            "connect a local LogosCore runtime under System / Local Nodes",
+        );
+    }
     let Some(config) = indexer_config(state, profile) else {
         return PackagePrerequisite::missing(
             "install an exact lez_indexer_module version under System / Local Nodes",
@@ -1016,11 +1054,7 @@ fn package_prerequisite(
             "install lez_indexer_module for the configured Inspector-managed LogosCore modules directory",
         );
     }
-    PackagePrerequisite {
-        installed: true,
-        detail: "exact lez_indexer_module package is available to isolated Channel runtimes"
-            .to_owned(),
-    }
+    PackagePrerequisite::available()
 }
 
 #[derive(Debug, Clone)]
@@ -1034,6 +1068,14 @@ impl PackagePrerequisite {
         Self {
             installed: false,
             detail: detail.into(),
+        }
+    }
+
+    fn available() -> Self {
+        Self {
+            installed: true,
+            detail: "exact lez_indexer_module package is available to isolated Channel runtimes"
+                .to_owned(),
         }
     }
 }

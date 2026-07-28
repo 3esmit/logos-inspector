@@ -524,6 +524,113 @@ fn query_installed_as(
     Ok(installed.filter(|installed| validate_installed_artifact(installed, modules_dir).is_ok()))
 }
 
+/// Fast, local availability check for status refreshes. Starts use
+/// [`verify_installed_indexer_module`] immediately before launch, so this
+/// never authorizes a package mutation or replaces package-manager validation.
+pub(super) fn installed_indexer_module_on_disk(modules_dir: &Path) -> Result<bool> {
+    let modules_dir = canonical_modules_dir(modules_dir)?;
+    let install_dir = modules_dir.join(INDEXER_PACKAGE_NAME);
+    let install_metadata = match fs::symlink_metadata(&install_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect installed lez_indexer_module directory `{}`",
+                    install_dir.display()
+                )
+            });
+        }
+    };
+    if install_metadata.file_type().is_symlink() || !install_metadata.is_dir() {
+        bail!("installed lez_indexer_module directory must be a regular directory");
+    }
+
+    let manifest_path = install_dir.join("manifest.json");
+    let manifest_metadata = match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect installed lez_indexer_module manifest `{}`",
+                    manifest_path.display()
+                )
+            });
+        }
+    };
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        bail!("installed lez_indexer_module manifest must be a regular file");
+    }
+    if manifest_metadata.len() > MAX_PACKAGE_MANIFEST_SIZE {
+        bail!("installed lez_indexer_module manifest exceeds the inspection size limit");
+    }
+    let manifest = parse_json::<RawInstalledModuleManifest>(
+        &fs::read(&manifest_path).with_context(|| {
+            format!(
+                "failed to read installed lez_indexer_module manifest `{}`",
+                manifest_path.display()
+            )
+        })?,
+        "installed lez_indexer_module manifest",
+    )?;
+    if manifest.name != INDEXER_PACKAGE_NAME || manifest.package_type != INDEXER_PACKAGE_TYPE {
+        bail!("installed manifest is not a lez_indexer_module core package");
+    }
+    validate_version(&manifest.version)?;
+    validate_hash(&manifest.hashes.root, "installed package root hash")?;
+    let platform = installed_module_platform_key()?;
+    let Some(main_file) = manifest.main.get(platform) else {
+        return Ok(false);
+    };
+    let relative_main = Path::new(main_file);
+    if relative_main.is_absolute()
+        || relative_main
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        bail!("installed lez_indexer_module main file path is invalid");
+    }
+    let main_path = install_dir.join(relative_main);
+    let main_metadata = match fs::symlink_metadata(&main_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect installed lez_indexer_module main file `{}`",
+                    main_path.display()
+                )
+            });
+        }
+    };
+    if main_metadata.file_type().is_symlink() || !main_metadata.is_file() {
+        return Ok(false);
+    }
+    let canonical_install_dir = fs::canonicalize(&install_dir)?;
+    let canonical_main_path = fs::canonicalize(&main_path)?;
+    Ok(canonical_main_path.starts_with(&canonical_install_dir))
+}
+
+/// Authoritative package-manager check performed at the start-action boundary.
+pub(super) fn verify_installed_indexer_module(
+    modules_dir: &Path,
+    authority: &PackageInstallAuthority,
+    control: Option<&CommandControl>,
+) -> Result<bool> {
+    let modules_dir = canonical_modules_dir(modules_dir)?;
+    let toolchain = PackageToolchain::system();
+    let command = toolchain.installed_command_as(&modules_dir, authority)?;
+    let output = match control {
+        Some(control) => run_package_command_controlled(command, "lgpm list", control.clone())?,
+        None => run_package_command(command, "lgpm list", PACKAGE_CATALOG_TIMEOUT)?,
+    };
+    let Some(installed) = parse_installed(&output.stdout, &modules_dir)? else {
+        return Ok(false);
+    };
+    Ok(validate_installed_artifact(&installed, &modules_dir).is_ok())
+}
+
 fn query_installed_modules(
     toolchain: &PackageToolchain,
     modules_dir: &Path,
@@ -1398,6 +1505,28 @@ struct RawLgxManifest {
 }
 
 #[derive(Debug, Deserialize)]
+struct RawInstalledModuleManifest {
+    name: String,
+    #[serde(rename = "type")]
+    package_type: String,
+    version: String,
+    hashes: RawPackageHashes,
+    main: BTreeMap<String, String>,
+}
+
+fn installed_module_platform_key() -> Result<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok("linux-amd64"),
+        ("linux", "aarch64") => Ok("linux-arm64"),
+        ("macos", "aarch64") => Ok("darwin-arm64"),
+        ("macos", "x86_64") => Ok("darwin-amd64"),
+        (operating_system, architecture) => {
+            bail!("installed core modules are unsupported on {operating_system}/{architecture}")
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawInstalledPackage {
     name: String,
@@ -2063,6 +2192,46 @@ mod tests {
         }
         fs::write(&main_file_path, b"module")?;
         validate_installed_artifact(&report, &modules_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn on_disk_indexer_package_requires_manifest_identity_and_current_main_file() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let modules_dir = directory.path().join("modules");
+        let install_dir = modules_dir.join(INDEXER_PACKAGE_NAME);
+        fs::create_dir_all(&install_dir)?;
+        let platform = installed_module_platform_key()?;
+        let main_file = install_dir.join("lez_indexer_module_plugin");
+        fs::write(&main_file, b"module")?;
+        let manifest = serde_json::json!({
+            "name": INDEXER_PACKAGE_NAME,
+            "type": INDEXER_PACKAGE_TYPE,
+            "version": "1.0.0",
+            "hashes": { "root": "a".repeat(64) },
+            "main": { platform: "lez_indexer_module_plugin" }
+        });
+        fs::write(
+            install_dir.join("manifest.json"),
+            serde_json::to_vec(&manifest)?,
+        )?;
+
+        anyhow::ensure!(installed_indexer_module_on_disk(&modules_dir)?);
+        fs::remove_file(&main_file)?;
+        anyhow::ensure!(!installed_indexer_module_on_disk(&modules_dir)?);
+
+        let malformed = serde_json::json!({
+            "name": INDEXER_PACKAGE_NAME,
+            "type": INDEXER_PACKAGE_TYPE,
+            "version": "1.0.0",
+            "hashes": { "root": "invalid" },
+            "main": { platform: "lez_indexer_module_plugin" }
+        });
+        fs::write(
+            install_dir.join("manifest.json"),
+            serde_json::to_vec(&malformed)?,
+        )?;
+        anyhow::ensure!(installed_indexer_module_on_disk(&modules_dir).is_err());
         Ok(())
     }
 
