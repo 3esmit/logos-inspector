@@ -1,6 +1,8 @@
 use std::{any::Any, time::Duration};
 
-use anyhow::{Context as _, Result, bail};
+#[cfg(any(target_os = "linux", test))]
+use anyhow::bail;
+use anyhow::{Context as _, Result};
 
 use crate::modules::logos_core::{LogoscoreCliRuntime, SharedModuleTransport};
 use crate::support::command_runner::CommandControl;
@@ -35,10 +37,12 @@ pub(crate) const INDEXER_PACKAGE_INSTALL_TIMEOUT: Duration = Duration::from_secs
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PackageInstallAuthority {
     CurrentUser,
+    #[cfg(any(target_os = "linux", test))]
     SystemServiceUser(String),
 }
 
 impl PackageInstallAuthority {
+    #[cfg(any(target_os = "linux", test))]
     pub(super) fn system_service_user(value: &str) -> Result<Self> {
         let value = value.trim();
         let value = if value.is_empty() { "root" } else { value };
@@ -52,11 +56,13 @@ impl PackageInstallAuthority {
     pub(super) fn system_service_user_name(&self) -> Option<&str> {
         match self {
             Self::CurrentUser => None,
+            #[cfg(any(target_os = "linux", test))]
             Self::SystemServiceUser(value) => Some(value),
         }
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn valid_system_service_user(value: &str) -> bool {
     let mut bytes = value.bytes();
     matches!(bytes.next(), Some(byte) if byte.is_ascii_alphabetic() || byte == b'_')
