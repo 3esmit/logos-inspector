@@ -154,7 +154,8 @@ impl LocalNodeActionEngine {
     ) -> Result<LocalNodeConfigValidation> {
         let _state_lock = acquire_state_lock()?;
         let state = self.store.load()?;
-        super::config::validate(&state, profile, node, text)
+        let runtime = self.runtime_store.load_resolved()?;
+        super::config::validate(&state, runtime.as_ref(), profile, node, text)
     }
 
     pub(super) fn save_config(
@@ -449,6 +450,7 @@ impl LocalNodeReportProjector {
                 .or_else(|| adapter.endpoint(adapter.default_port())),
             data_dir: config.map(|node| node.data_dir.clone()),
             config_path: config.map(|node| node.config_path.clone()),
+            initialization_configuration_ready: None,
             package_path: package_config.and_then(|node| node.package_path.clone()),
             package_version: package_config.and_then(|node| node.package_version.clone()),
             managed_channel_id: config

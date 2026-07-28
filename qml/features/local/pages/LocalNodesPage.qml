@@ -1828,6 +1828,11 @@ ColumnLayout {
     }
 
     function openNodeConfirm(action, node) {
+        if (action === "initialize" && root.model.localAttachedNode(node)
+                && !root.model.attachedInitializationConfigurationReady(node)) {
+            root.openNodeConfiguration(node)
+            return
+        }
         root.model.beginNodeAction(action, node);
         root.showConfirmation();
     }

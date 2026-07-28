@@ -2148,6 +2148,7 @@ fn empty_indexer_status() -> LocalNodeStatus {
         endpoint: None,
         data_dir: None,
         config_path: None,
+        initialization_configuration_ready: None,
         package_path: None,
         package_version: None,
         managed_channel_id: None,
