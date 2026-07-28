@@ -1,10 +1,13 @@
 mod bridge;
 mod runtime;
+mod shutdown;
 
 use anyhow::Result;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() -> Result<()> {
+    let shutdown_signal_monitor = shutdown::ShutdownSignalMonitor::start()?;
+    bridge::install_termination_subscription(shutdown_signal_monitor.subscription())?;
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
     let entry = runtime::qml_entry()?;

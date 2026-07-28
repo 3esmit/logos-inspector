@@ -17,7 +17,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 use tempfile::{NamedTempFile, TempDir};
 use tokio::time::Instant;
@@ -55,6 +55,11 @@ const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(5);
 const LOGOSCORE_WATCH_PROTOCOL: &str = "logoscore.watch";
 const LOGOSCORE_WATCH_PROTOCOL_VERSION: u64 = 1;
 const LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV: &str = "LOGOS_INSPECTOR_WATCH_TOKEN";
+const LOGOSCORE_WATCH_OWNER_PID_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_PID";
+const LOGOSCORE_WATCH_OWNER_START_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_START";
+const LOGOSCORE_WATCH_OWNER_NONCE_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_NONCE";
+const LOGOSCORE_WATCH_LEASE_DIRECTORY: &str = "runtime/watch-leases";
+const LOGOSCORE_WATCH_LEASE_SCHEMA_VERSION: u8 = 1;
 static LOGOSCORE_WATCH_RECOVERY: LazyLock<
     std::result::Result<mpsc::Sender<LogoscoreWatchRecovery>, String>,
 > = LazyLock::new(start_watch_recovery_worker);
@@ -1163,10 +1168,301 @@ impl WatchCleanupAuthority {
     }
 }
 
+/// Per-launch ownership for persistent LogosCore event-watch leases.
+///
+/// A lease is recorded before a watch is spawned, so a later Inspector launch
+/// can distinguish an abandoned watch from one belonging to a live process.
 #[derive(Debug, Clone)]
+pub(crate) struct LogoscoreWatchOwner {
+    #[cfg(target_os = "linux")]
+    lease_directory: PathBuf,
+    #[cfg(target_os = "linux")]
+    process: u32,
+    #[cfg(target_os = "linux")]
+    process_start_marker: u64,
+    #[cfg(target_os = "linux")]
+    launch_nonce: String,
+}
+
+impl LogoscoreWatchOwner {
+    pub(crate) fn start() -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            let lease_directory = watch_lease_directory()?;
+            recover_abandoned_watch_leases(&lease_directory)?;
+            let process = std::process::id();
+            let process_i32 = i32::try_from(process)
+                .context("standalone watcher owner PID does not fit Linux process identity")?;
+            let process_start_marker = linux_process_start_marker(process_i32)?
+                .context("standalone watcher owner process is not live")?;
+            Ok(Self {
+                lease_directory,
+                process,
+                process_start_marker,
+                launch_nonce: new_logoscore_watch_launch_nonce()?,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(Self {})
+        }
+    }
+
+    fn register(
+        &self,
+        token: &str,
+        authority: &WatchCleanupAuthority,
+    ) -> Result<Option<LogoscoreWatchLease>> {
+        #[cfg(target_os = "linux")]
+        {
+            let record = WatchLeaseRecord {
+                schema_version: LOGOSCORE_WATCH_LEASE_SCHEMA_VERSION,
+                token: token.to_owned(),
+                owner_pid: self.process,
+                owner_start_marker: self.process_start_marker,
+                launch_nonce: self.launch_nonce.clone(),
+                cleanup_user: match authority {
+                    WatchCleanupAuthority::Direct => None,
+                    WatchCleanupAuthority::ServiceIdentity { user } => Some(user.clone()),
+                },
+            };
+            let path = write_watch_lease_record(&self.lease_directory, &record)?;
+            Ok(Some(LogoscoreWatchLease { path, record }))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (token, authority);
+            Ok(None)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LogoscoreWatchLease {
+    #[cfg(target_os = "linux")]
+    path: PathBuf,
+    #[cfg(target_os = "linux")]
+    record: WatchLeaseRecord,
+}
+
+impl LogoscoreWatchLease {
+    fn owner_pid(&self) -> u32 {
+        #[cfg(target_os = "linux")]
+        {
+            self.record.owner_pid
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0
+        }
+    }
+
+    fn owner_start_marker(&self) -> u64 {
+        #[cfg(target_os = "linux")]
+        {
+            self.record.owner_start_marker
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0
+        }
+    }
+
+    fn launch_nonce(&self) -> &str {
+        #[cfg(target_os = "linux")]
+        {
+            &self.record.launch_nonce
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            ""
+        }
+    }
+
+    fn release(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            match fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| {
+                    format!(
+                        "failed to remove LogosCore watch lease `{}`",
+                        self.path.display()
+                    )
+                }),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(())
+        }
+    }
+}
+
+fn release_watch_lease(lease: &mut Option<LogoscoreWatchLease>) -> Result<()> {
+    if let Some(current) = lease.as_ref() {
+        current.release()?;
+    }
+    *lease = None;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchLeaseRecord {
+    schema_version: u8,
+    token: String,
+    owner_pid: u32,
+    owner_start_marker: u64,
+    launch_nonce: String,
+    cleanup_user: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+fn watch_lease_directory() -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory =
+        crate::support::config_path::config_dir()?.join(LOGOSCORE_WATCH_LEASE_DIRECTORY);
+    fs::create_dir_all(&directory).with_context(|| {
+        format!(
+            "failed to create LogosCore watch lease directory `{}`",
+            directory.display()
+        )
+    })?;
+    let metadata = fs::symlink_metadata(&directory).with_context(|| {
+        format!(
+            "failed to inspect LogosCore watch lease directory `{}`",
+            directory.display()
+        )
+    })?;
+    anyhow::ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "LogosCore watch lease path is not a directory: `{}`",
+        directory.display()
+    );
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!(
+            "failed to secure LogosCore watch lease directory `{}`",
+            directory.display()
+        )
+    })?;
+    Ok(directory)
+}
+
+#[cfg(target_os = "linux")]
+fn watch_lease_path(directory: &Path, token: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        !token.is_empty()
+            && token
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
+        "LogosCore watch lease token is invalid"
+    );
+    Ok(directory.join(format!("{token}.json")))
+}
+
+#[cfg(target_os = "linux")]
+fn write_watch_lease_record(directory: &Path, record: &WatchLeaseRecord) -> Result<PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let path = watch_lease_path(directory, &record.token)?;
+    let bytes = serde_json::to_vec(record).context("failed to encode LogosCore watch lease")?;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| {
+            format!(
+                "failed to create LogosCore watch lease `{}`",
+                path.display()
+            )
+        })?;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+        let _remove_result = fs::remove_file(&path);
+        return Err(error).with_context(|| {
+            format!("failed to write LogosCore watch lease `{}`", path.display())
+        });
+    }
+    if let Err(error) = file.sync_all() {
+        let _remove_result = fs::remove_file(&path);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to persist LogosCore watch lease `{}`",
+                path.display()
+            )
+        });
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "linux")]
+fn recover_abandoned_watch_leases(directory: &Path) -> Result<()> {
+    for entry in fs::read_dir(directory).with_context(|| {
+        format!(
+            "failed to inspect LogosCore watch lease directory `{}`",
+            directory.display()
+        )
+    })? {
+        let entry = entry.context("failed to read LogosCore watch lease entry")?;
+        let file_type = entry
+            .file_type()
+            .context("failed to inspect LogosCore watch lease entry type")?;
+        if !file_type.is_file() || file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let record = match fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<WatchLeaseRecord>(&bytes).ok())
+        {
+            Some(record) => record,
+            None => continue,
+        };
+        if record.schema_version != LOGOSCORE_WATCH_LEASE_SCHEMA_VERSION
+            || record.launch_nonce.is_empty()
+            || watch_lease_path(directory, &record.token).ok().as_deref() != Some(path.as_path())
+        {
+            continue;
+        }
+        let owner_pid = match i32::try_from(record.owner_pid) {
+            Ok(owner_pid) if owner_pid > 0 => owner_pid,
+            _ => continue,
+        };
+        if linux_process_start_marker(owner_pid)? == Some(record.owner_start_marker) {
+            continue;
+        }
+        let authority = match record.cleanup_user.as_deref() {
+            Some(user) if !user.trim().is_empty() => WatchCleanupAuthority::ServiceIdentity {
+                user: user.to_owned(),
+            },
+            _ => WatchCleanupAuthority::Direct,
+        };
+        stop_tagged_watch_processes(&record.token, &authority, "abandoned logoscore watch")
+            .with_context(|| {
+                format!(
+                    "failed to reap abandoned LogosCore watch lease `{}`",
+                    path.display()
+                )
+            })?;
+        fs::remove_file(&path).with_context(|| {
+            format!(
+                "failed to remove recovered LogosCore watch lease `{}`",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
 struct WatchCleanup {
     token: String,
     authority: WatchCleanupAuthority,
+    lease: Option<LogoscoreWatchLease>,
 }
 
 pub(crate) struct LogoscoreEventWatch {
@@ -1181,6 +1477,7 @@ pub(crate) struct LogoscoreEventWatch {
     recovery: Option<mpsc::Sender<LogoscoreWatchRecovery>>,
     cleanup_token: String,
     cleanup_authority: WatchCleanupAuthority,
+    lease: Option<LogoscoreWatchLease>,
     label: String,
 }
 
@@ -1282,6 +1579,7 @@ impl LogoscoreEventWatch {
         };
         child_result?;
         self.child = None;
+        release_watch_lease(&mut self.lease)?;
         let reader_result = match self.reader.take() {
             Some(reader) => reader
                 .join()
@@ -1320,6 +1618,7 @@ impl LogoscoreEventWatch {
             process_permit: self.process_permit.take(),
             cleanup_token: self.cleanup_token.clone(),
             cleanup_authority: self.cleanup_authority.clone(),
+            lease: self.lease.take(),
             label: self.label.clone(),
         };
         handoff_watch_recovery(self.recovery.take(), recovery);
@@ -1334,6 +1633,7 @@ struct LogoscoreWatchRecovery {
     process_permit: Option<StreamingCommandPermit>,
     cleanup_token: String,
     cleanup_authority: WatchCleanupAuthority,
+    lease: Option<LogoscoreWatchLease>,
     label: String,
 }
 
@@ -1423,6 +1723,7 @@ fn finish_watch_recovery(mut recovery: LogoscoreWatchRecovery) {
         let _join_result = reader.join();
     }
     recovery.process_permit = None;
+    let _lease_release = release_watch_lease(&mut recovery.lease);
 }
 
 impl LogoscoreCliRuntime {
@@ -1942,15 +2243,29 @@ impl LogoscoreCliRuntime {
         if event.trim().is_empty() {
             bail!("module event name is required");
         }
-        self.start_event_watch_inner(module, Some(event), control)
+        self.start_event_watch_inner(module, Some(event), control, None)
     }
 
-    pub(crate) fn start_all_event_watch(
+    pub(crate) fn start_event_watch_for_owner(
+        &self,
+        module: &str,
+        event: &str,
+        control: &CommandControl,
+        owner: &LogoscoreWatchOwner,
+    ) -> Result<LogoscoreEventWatch> {
+        if event.trim().is_empty() {
+            bail!("module event name is required");
+        }
+        self.start_event_watch_inner(module, Some(event), control, Some(owner))
+    }
+
+    pub(crate) fn start_all_event_watch_for_owner(
         &self,
         module: &str,
         control: &CommandControl,
+        owner: &LogoscoreWatchOwner,
     ) -> Result<LogoscoreEventWatch> {
-        self.start_event_watch_inner(module, None, control)
+        self.start_event_watch_inner(module, None, control, Some(owner))
     }
 
     fn start_event_watch_inner(
@@ -1958,6 +2273,7 @@ impl LogoscoreCliRuntime {
         module: &str,
         event: Option<&str>,
         control: &CommandControl,
+        owner: Option<&LogoscoreWatchOwner>,
     ) -> Result<LogoscoreEventWatch> {
         ensure_logoscore_event_watch_supported()?;
         if module.trim().is_empty() {
@@ -1972,7 +2288,32 @@ impl LogoscoreCliRuntime {
         // Some launchers re-exec the real CLI in a separate process group.
         // The inherited token lets shutdown find only this watch's escaped child.
         let cleanup_token = new_logoscore_watch_cleanup_token()?;
-        let watch_environment = [(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV, cleanup_token.as_str())];
+        let mut watch_lease = owner
+            .map(|owner| owner.register(&cleanup_token, &cleanup_authority))
+            .transpose()?
+            .flatten();
+        let owner_pid = watch_lease
+            .as_ref()
+            .map(|lease| lease.owner_pid().to_string());
+        let owner_start_marker = watch_lease
+            .as_ref()
+            .map(|lease| lease.owner_start_marker().to_string());
+        let owner_nonce = watch_lease
+            .as_ref()
+            .map(|lease| lease.launch_nonce().to_owned());
+        let mut watch_environment =
+            vec![(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV, cleanup_token.as_str())];
+        if let (Some(owner_pid), Some(owner_start_marker), Some(owner_nonce)) = (
+            owner_pid.as_deref(),
+            owner_start_marker.as_deref(),
+            owner_nonce.as_deref(),
+        ) {
+            watch_environment.extend([
+                (LOGOSCORE_WATCH_OWNER_PID_ENV, owner_pid),
+                (LOGOSCORE_WATCH_OWNER_START_ENV, owner_start_marker),
+                (LOGOSCORE_WATCH_OWNER_NONCE_ENV, owner_nonce),
+            ]);
+        }
         let mut command = event.map_or_else(
             || {
                 command_for_runner_with_environment(
@@ -2007,15 +2348,28 @@ impl LogoscoreCliRuntime {
 
             command.process_group(0);
         }
-        let mut child = crate::support::command_runner::spawn_command_with_executable_busy_retry(
-            &mut command,
-            Some(control.deadline()),
-            || {
-                control.check_active()?;
-                Ok(())
-            },
-        )
-        .with_context(|| format!("failed to start {label}"))?;
+        let mut child =
+            match crate::support::command_runner::spawn_command_with_executable_busy_retry(
+                &mut command,
+                Some(control.deadline()),
+                || {
+                    control.check_active()?;
+                    Ok(())
+                },
+            )
+            .with_context(|| format!("failed to start {label}"))
+            {
+                Ok(child) => child,
+                Err(error) => {
+                    let lease_result = release_watch_lease(&mut watch_lease);
+                    return match lease_result {
+                        Ok(()) => Err(error),
+                        Err(lease_error) => Err(error.context(format!(
+                            "failed to release rejected LogosCore watch lease: {lease_error:#}"
+                        ))),
+                    };
+                }
+            };
         let Some(stdout) = child.stdout.take() else {
             let error = anyhow::anyhow!("{label} did not expose stdout");
             return Err(cleanup_failed_watch_start(
@@ -2029,6 +2383,7 @@ impl LogoscoreCliRuntime {
                     WatchCleanup {
                         token: cleanup_token,
                         authority: cleanup_authority,
+                        lease: watch_lease,
                     },
                     &label,
                 ),
@@ -2047,6 +2402,7 @@ impl LogoscoreCliRuntime {
                     WatchCleanup {
                         token: cleanup_token,
                         authority: cleanup_authority,
+                        lease: watch_lease,
                     },
                     &label,
                 ),
@@ -2069,6 +2425,7 @@ impl LogoscoreCliRuntime {
                     WatchCleanup {
                         token: cleanup_token,
                         authority: cleanup_authority,
+                        lease: watch_lease,
                     },
                     &label,
                 ),
@@ -2111,6 +2468,7 @@ impl LogoscoreCliRuntime {
                         WatchCleanup {
                             token: cleanup_token,
                             authority: cleanup_authority,
+                            lease: watch_lease,
                         },
                         &label,
                     ),
@@ -2140,6 +2498,7 @@ impl LogoscoreCliRuntime {
                         WatchCleanup {
                             token: cleanup_token,
                             authority: cleanup_authority,
+                            lease: watch_lease,
                         },
                         &label,
                     ),
@@ -2158,6 +2517,7 @@ impl LogoscoreCliRuntime {
             recovery: Some(recovery),
             cleanup_token,
             cleanup_authority,
+            lease: watch_lease,
             label,
         })
     }
@@ -3597,6 +3957,7 @@ struct FailedWatchStart {
     recovery: mpsc::Sender<LogoscoreWatchRecovery>,
     cleanup_token: String,
     cleanup_authority: WatchCleanupAuthority,
+    lease: Option<LogoscoreWatchLease>,
     label: String,
 }
 
@@ -3613,6 +3974,7 @@ impl FailedWatchStart {
         let WatchCleanup {
             token: cleanup_token,
             authority: cleanup_authority,
+            lease,
         } = cleanup;
         Self {
             child,
@@ -3622,6 +3984,7 @@ impl FailedWatchStart {
             recovery,
             cleanup_token,
             cleanup_authority,
+            lease,
             label: label.to_owned(),
         }
     }
@@ -3647,6 +4010,7 @@ where
         recovery,
         cleanup_token,
         cleanup_authority,
+        mut lease,
         label,
     } = state;
     let reader_stop = reader_stop.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
@@ -3663,11 +4027,18 @@ where
                 process_permit: Some(process_permit),
                 cleanup_token,
                 cleanup_authority,
+                lease,
                 label: label.clone(),
             },
         );
         return LogoscoreWatchCleanupUnconfirmed::new(format!(
             "{primary}; failed watch-start process cleanup: {stop:#}"
+        ))
+        .into();
+    }
+    if let Err(lease_error) = release_watch_lease(&mut lease) {
+        return LogoscoreWatchCleanupUnconfirmed::new(format!(
+            "{primary}; failed to release rejected LogosCore watch lease: {lease_error:#}"
         ))
         .into();
     }
@@ -3720,6 +4091,12 @@ fn new_logoscore_watch_cleanup_token() -> Result<String> {
         "logos-inspector-watch-{serial}-{}",
         hex::encode(nonce)
     ))
+}
+
+fn new_logoscore_watch_launch_nonce() -> Result<String> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).context("failed to generate LogosCore watch launch nonce")?;
+    Ok(hex::encode(nonce))
 }
 
 fn stop_watch_child_with_retry(
@@ -4285,17 +4662,36 @@ fn tagged_watch_processes(cleanup_token: &str) -> Result<Vec<i32>> {
 
 #[cfg(target_os = "linux")]
 fn linux_process_is_live(process: i32) -> Result<bool> {
+    Ok(linux_process_start_marker(process)?.is_some())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_start_marker(process: i32) -> Result<Option<u64>> {
     let status_path = PathBuf::from(format!("/proc/{process}/stat"));
     match fs::read_to_string(status_path) {
-        Ok(status) => Ok(status
-            .rsplit_once(')')
-            .and_then(|(_, fields)| fields.split_whitespace().next())
-            .is_none_or(|state| state != "Z")),
+        Ok(status) => {
+            let Some((_, fields)) = status.rsplit_once(')') else {
+                return Ok(None);
+            };
+            let mut fields = fields.split_whitespace();
+            if fields.next() == Some("Z") {
+                return Ok(None);
+            }
+            // `/proc/<pid>/stat` field 22 is process start time. `fields`
+            // begins at field 3 after the parenthesized command name, and the
+            // state field has already been consumed above.
+            let Some(start_marker) = fields.nth(18) else {
+                return Ok(None);
+            };
+            start_marker.parse::<u64>().map(Some).with_context(|| {
+                format!("failed to parse Linux process start marker for {process}")
+            })
+        }
         Err(error)
             if error.kind() == ErrorKind::NotFound
                 || error.raw_os_error() == Some(nix::libc::ESRCH) =>
         {
-            Ok(false)
+            Ok(None)
         }
         Err(error) => Err(error).context("failed to inspect token-tagged logoscore watch process"),
     }
@@ -4653,6 +5049,7 @@ mod tests {
                 process_permit: None,
                 cleanup_token: new_logoscore_watch_cleanup_token()?,
                 cleanup_authority: WatchCleanupAuthority::Direct,
+                lease: None,
                 label: label.to_owned(),
             })
         }
@@ -4711,6 +5108,7 @@ mod tests {
                 WatchCleanup {
                     token: new_logoscore_watch_cleanup_token()?,
                     authority: WatchCleanupAuthority::Direct,
+                    lease: None,
                 },
                 "injected failed watch",
             ),
@@ -5267,6 +5665,7 @@ mod tests {
             recovery: None,
             cleanup_token: new_logoscore_watch_cleanup_token()?,
             cleanup_authority: WatchCleanupAuthority::Direct,
+            lease: None,
             label: "queued terminal watch".to_owned(),
         };
 
@@ -5297,6 +5696,7 @@ mod tests {
             recovery: None,
             cleanup_token: new_logoscore_watch_cleanup_token()?,
             cleanup_authority: WatchCleanupAuthority::Direct,
+            lease: None,
             label: "idle watch".to_owned(),
         };
 
@@ -5520,6 +5920,260 @@ mod tests {
             }
             thread::sleep(LOGOSCORE_POLL_INTERVAL);
         }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_process_start_marker_reads_current_process_start_time() -> Result<()> {
+        let process = i32::try_from(std::process::id())
+            .context("test process PID does not fit Linux process identity")?;
+        let start_marker = linux_process_start_marker(process)?
+            .context("test process did not expose a Linux start marker")?;
+        anyhow::ensure!(
+            start_marker > 0,
+            "Linux process start marker must be the positive field 22 value"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn test_watch_owner(lease_directory: PathBuf) -> Result<LogoscoreWatchOwner> {
+        fs::create_dir_all(&lease_directory)?;
+        let process = std::process::id();
+        let process_i32 = i32::try_from(process)
+            .context("test watcher owner PID does not fit Linux process identity")?;
+        let process_start_marker = linux_process_start_marker(process_i32)?
+            .context("test watcher owner process is not live")?;
+        anyhow::ensure!(
+            process_start_marker > 0,
+            "test watcher owner must use a positive Linux start marker"
+        );
+        Ok(LogoscoreWatchOwner {
+            lease_directory,
+            process,
+            process_start_marker,
+            launch_nonce: new_logoscore_watch_launch_nonce()?,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn stale_watch_lease(token: String) -> WatchLeaseRecord {
+        WatchLeaseRecord {
+            schema_version: LOGOSCORE_WATCH_LEASE_SCHEMA_VERSION,
+            token,
+            // A live PID with a mismatched start marker models PID reuse.
+            owner_pid: std::process::id(),
+            owner_start_marker: 0,
+            launch_nonce: "stale-watch-owner".to_owned(),
+            cleanup_user: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_watch_exit(process: i32) -> Result<()> {
+        let deadline = StdInstant::now() + Duration::from_secs(2);
+        while linux_process_is_live(process)? {
+            if StdInstant::now() >= deadline {
+                bail!("watch process {process} remained live after cleanup");
+            }
+            thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn owner_watch_stop_removes_persisted_lease() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let lease_directory = directory.path().join("watch-leases");
+        let owner = test_watch_owner(lease_directory)?;
+        let program = directory.path().join("logoscore-watch-lease");
+        let owner_marker_path = directory.path().join("watch-owner");
+        write_executable_script(
+            &program,
+            "#!/bin/sh\n\
+             state_dir=$2\n\
+             if [ \"$1\" = \"--config-dir\" ]; then shift 2; fi\n\
+             printf '%s\\n%s\\n%s\\n%s\\n' \"$LOGOS_INSPECTOR_WATCH_TOKEN\" \"$LOGOS_INSPECTOR_WATCH_OWNER_PID\" \"$LOGOS_INSPECTOR_WATCH_OWNER_START\" \"$LOGOS_INSPECTOR_WATCH_OWNER_NONCE\" > \"$state_dir/watch-owner\"\n\
+             printf '%s\\n' '{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDone\"}'\n\
+             while :; do sleep 0.05; done\n",
+        )?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(2),
+        );
+        let mut watch = runtime.start_event_watch_for_owner(
+            "storage_module",
+            "storageDownloadDone",
+            &control,
+            &owner,
+        )?;
+        watch.wait_ready(&control)?;
+        let owner_marker = fs::read_to_string(&owner_marker_path)?;
+        let mut owner_fields = owner_marker.lines();
+        let (
+            Some(cleanup_token),
+            Some(owner_process),
+            Some(owner_start_marker),
+            Some(owner_nonce),
+            None,
+        ) = (
+            owner_fields.next(),
+            owner_fields.next(),
+            owner_fields.next(),
+            owner_fields.next(),
+            owner_fields.next(),
+        )
+        else {
+            bail!(
+                "owner-backed watch did not inherit its complete owner identity: {owner_marker:?}"
+            );
+        };
+        anyhow::ensure!(
+            cleanup_token.starts_with("logos-inspector-watch-")
+                && owner_process == owner.process.to_string()
+                && owner_start_marker == owner.process_start_marker.to_string()
+                && owner_nonce == owner.launch_nonce,
+            "owner-backed watch did not inherit its complete owner identity: {owner_marker:?}"
+        );
+        let lease_path = watch
+            .lease
+            .as_ref()
+            .context("owner-backed watch did not create a persisted lease")?
+            .path
+            .clone();
+        anyhow::ensure!(
+            lease_path.is_file(),
+            "watch lease was not written before spawn"
+        );
+        watch.stop()?;
+        anyhow::ensure!(
+            !lease_path.exists(),
+            "normal watch stop left its persisted lease behind"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_recovery_reaps_stale_direct_watch() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let lease_directory = directory.path().join("watch-leases");
+        fs::create_dir_all(&lease_directory)?;
+        let token = new_logoscore_watch_cleanup_token()?;
+        let lease_path =
+            write_watch_lease_record(&lease_directory, &stale_watch_lease(token.clone()))?;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 0.05; done")
+            .env(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV, &token)
+            .spawn()
+            .context("failed to start stale direct watch fixture")?;
+        let process = i32::try_from(child.id()).context("stale direct watch PID is too large")?;
+        let result = recover_abandoned_watch_leases(&lease_directory);
+        if result.is_err() || linux_process_is_live(process)? {
+            let _kill_result = child.kill();
+        }
+        let _wait_result = child.wait();
+        result?;
+        wait_for_watch_exit(process)?;
+        anyhow::ensure!(
+            !lease_path.exists(),
+            "stale direct watch recovery left its lease behind"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_recovery_reaps_stale_detached_watch_descendant() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let lease_directory = directory.path().join("watch-leases");
+        fs::create_dir_all(&lease_directory)?;
+        let token = new_logoscore_watch_cleanup_token()?;
+        let lease_path =
+            write_watch_lease_record(&lease_directory, &stale_watch_lease(token.clone()))?;
+        let descendant_path = directory.path().join("descendant.pid");
+        let mut launcher = Command::new("sh")
+            .arg("-c")
+            .arg(
+                "setsid sh -c 'printf \"%s\" \"$$\" > \"$1\"; trap \"\" TERM; while :; do sleep 0.05; done' sh \"$1\" &",
+            )
+            .arg("sh")
+            .arg(&descendant_path)
+            .env(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV, &token)
+            .spawn()
+            .context("failed to start stale detached watch launcher")?;
+        let launcher_status = launcher.wait()?;
+        anyhow::ensure!(launcher_status.success(), "stale watch launcher failed");
+        let deadline = StdInstant::now() + Duration::from_secs(1);
+        let descendant = loop {
+            match fs::read_to_string(&descendant_path) {
+                Ok(value) => {
+                    break value
+                        .trim()
+                        .parse::<i32>()
+                        .context("stale detached watch wrote an invalid PID")?;
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("failed to read stale detached watch PID"),
+            }
+            if StdInstant::now() >= deadline {
+                bail!("stale detached watch did not report its PID");
+            }
+            thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        };
+        let result = recover_abandoned_watch_leases(&lease_directory);
+        if result.is_err() || linux_process_is_live(descendant)? {
+            let _kill_result = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(descendant),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        result?;
+        wait_for_watch_exit(descendant)?;
+        anyhow::ensure!(
+            !lease_path.exists(),
+            "stale detached watch recovery left its lease behind"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_recovery_preserves_live_owner_watch() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let lease_directory = directory.path().join("watch-leases");
+        fs::create_dir_all(&lease_directory)?;
+        let owner = test_watch_owner(lease_directory.clone())?;
+        let token = new_logoscore_watch_cleanup_token()?;
+        let lease = owner
+            .register(&token, &WatchCleanupAuthority::Direct)?
+            .context("live owner did not create a watch lease")?;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 0.05; done")
+            .env(LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV, &token)
+            .spawn()
+            .context("failed to start live owner watch fixture")?;
+        let process = i32::try_from(child.id()).context("live owner watch PID is too large")?;
+        let result = recover_abandoned_watch_leases(&lease_directory);
+        let retained = linux_process_is_live(process)? && lease.path.exists();
+        let cleanup_result = stop_direct_tagged_watch_processes(&token, "live owner watch fixture");
+        let _wait_result = child.wait();
+        let release_result = lease.release();
+        result?;
+        cleanup_result?;
+        release_result?;
+        anyhow::ensure!(
+            retained,
+            "startup recovery interrupted a watch belonging to a live owner"
+        );
         Ok(())
     }
 

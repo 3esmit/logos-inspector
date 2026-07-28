@@ -31,6 +31,7 @@ rust-rapidsnark = { git = "https://github.com/logos-blockchain/logos-blockchain-
     "static-rapidsnark",
 ], optional = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "signal", "time"] }
 
 [build-dependencies]
 cxx-qt-build = { workspace = true, features = ["link_qt_object_files"] }

@@ -17,9 +17,12 @@ use logos_inspector::{
     module_transport::ModuleTransportEvent,
 };
 
+use crate::shutdown::ShutdownSignalSubscription;
+
 static BRIDGE: OnceLock<InspectorBridge> = OnceLock::new();
 static CALL_LIFECYCLE: OnceLock<Arc<CallLifecycle>> = OnceLock::new();
 static MODULE_WATCHER: OnceLock<Mutex<Option<ModuleWatcherRuntime>>> = OnceLock::new();
+static TERMINATION_SUBSCRIPTION: OnceLock<ShutdownSignalSubscription> = OnceLock::new();
 
 const MODULE_WATCHER_DELIVERY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -165,6 +168,14 @@ pub mod qobject {
         #[cxx_name = "backendOwnsRuntimeModuleEvents"]
         fn backend_owns_runtime_module_events(self: &LogosBridge) -> bool;
 
+        #[qinvokable]
+        #[cxx_name = "activateTerminationHandling"]
+        fn activate_termination_handling(self: Pin<&mut LogosBridge>) -> bool;
+
+        #[qsignal]
+        #[cxx_name = "terminationRequested"]
+        fn termination_requested(self: Pin<&mut LogosBridge>);
+
         #[qsignal]
         #[cxx_name = "moduleCallFinished"]
         fn module_call_finished(
@@ -246,6 +257,26 @@ impl qobject::LogosBridge {
     pub fn backend_owns_runtime_module_events(&self) -> bool {
         module_watcher_is_running()
     }
+
+    pub fn activate_termination_handling(self: Pin<&mut Self>) -> bool {
+        let qt_thread = self.qt_thread();
+        let notifier = Arc::new(move || {
+            let _queue_result = qt_thread.queue(move |mut qobject| {
+                qobject.as_mut().termination_requested();
+            });
+        });
+        TERMINATION_SUBSCRIPTION
+            .get()
+            .is_some_and(|subscription| subscription.register(notifier).is_ok())
+    }
+}
+
+pub(crate) fn install_termination_subscription(
+    subscription: ShutdownSignalSubscription,
+) -> anyhow::Result<()> {
+    TERMINATION_SUBSCRIPTION
+        .set(subscription)
+        .map_err(|_| anyhow::anyhow!("standalone termination subscription is already installed"))
 }
 
 fn start_module_watcher_runtime(qt_thread: qobject::LogosBridgeCxxQtThread) -> anyhow::Result<()> {
