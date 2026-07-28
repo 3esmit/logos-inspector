@@ -12,9 +12,9 @@ being completed. Every workflow creates a GitHub prerelease and never marks it
 as the latest stable release. A version bump must update Cargo, Core metadata,
 UI metadata, and this changelog in one issue and pull request.
 
-## Complete release entry point
+## Desktop and Basecamp release entry point
 
-One confirmed dispatch from `main` publishes every Inspector-owned product
+One confirmed dispatch from `main` publishes every desktop and Basecamp
 artifact for the current source version:
 
 | Product | Tag | Assets |
@@ -34,6 +34,10 @@ existing Core/UI/standalone tag or release for the current version, then
 publishes all three streams in parallel. A final job downloads every published
 asset and verifies the complete set before the run succeeds.
 
+The headless CLI is intentionally excluded from this workflow. It has no Qt,
+QML, desktop bundle, or Basecamp dependency and is released through its own
+independent stream.
+
 Catalog tags remain independent so Basecamp can resolve each package by its
 source-owned release URL. The catalog indexes those immutable URLs after the
 source assets exist; publication does not require a catalog URL or prior
@@ -41,19 +45,21 @@ Basecamp install result.
 
 ## Independent stream republish
 
-Each stream also keeps a dedicated workflow for isolated republish after a
-partial failure or for targeted recovery:
+Each product stream also keeps a dedicated workflow for isolated republish
+after a partial failure or for targeted recovery:
 
 | Stream | Workflow |
 | --- | --- |
 | Inspector Core | `release-core.yml` |
 | Inspector UI | `release-ui.yml` |
 | Standalone app | `release-standalone.yml` |
+| Headless CLI | `release-cli.yml` |
 
 ```bash
 gh workflow run release-core.yml -f confirm=true --ref main
 gh workflow run release-ui.yml -f confirm=true --ref main
 gh workflow run release-standalone.yml -f confirm=true --ref main
+gh workflow run release-cli.yml -f confirm=true --ref main
 ```
 
 Core and UI use the immutable shared release workflow. Both request exactly
@@ -62,6 +68,17 @@ catalog dispatch, and publish separate prereleases in this repository. Core
 enables the host Metal toolchain because its proof dependency graph compiles
 Metal kernels. UI does not. Standalone builds and smokes native packages on
 Linux and macOS, including a Linux GUI smoke with `/nix/store` hidden.
+
+The CLI stream publishes `cli-v<version>` independently of those desktop and
+Basecamp tags. Its Linux AMD64 bundle targets `x86_64-unknown-linux-gnu`; its
+Apple silicon bundle targets `aarch64-apple-darwin`. Each archive contains
+`bin/logos-inspector`, the required embedded Python runtime, and
+`BUILD-INFO.json` with its source version, commit, platform, and target. The
+native build job extracts and smokes its archive with `--version`,
+`cli --version`, `cli --help`, and `cli source-policy`; Linux repeats that
+smoke with `/nix/store` hidden. The publish job then downloads the draft
+release, validates both archive layouts and checksums, and checks that its tag
+targets the built commit before making the prerelease visible.
 
 ## Standalone portability contract
 
@@ -114,10 +131,11 @@ check removes its draft and tag.
 2. Run source identity, static workflow, Rust, native, QML, and available
    native packaging checks.
 3. Merge only after CI and review pass.
-4. From `main`, dispatch the complete release workflow with
-   `confirm=true`. Use a stream-specific workflow only for isolated
-   republish after a partial failure.
-5. Verify all three published release tags, merged LGX variants, standalone
+4. From `main`, dispatch `release.yml` with `confirm=true` for the desktop
+   and Basecamp set. Dispatch `release-cli.yml` separately for the headless
+   CLI. Use another stream-specific workflow only for isolated republish after
+   a partial failure.
+5. Verify published release tags, merged LGX variants, standalone or CLI
    checksums, and target commit.
 6. Index source release URLs in the package catalog.
 7. Install the exact Inspector UI dependency closure into a fresh Basecamp

@@ -1,0 +1,260 @@
+name: Publish Logos Inspector CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Publish the current main version as a headless CLI alpha prerelease.
+        required: true
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      confirm:
+        description: Publish the current main version as a headless CLI alpha prerelease.
+        required: true
+        type: boolean
+
+concurrency:
+  group: release-inspector-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require an explicit release from main
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = true
+          test "$GITHUB_REF" = refs/heads/main
+      - name: Validate release contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/check-build-pipeline.py identity
+          python3 scripts/cli_release.py validate-source --root .
+      - name: Read source version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(python3 scripts/cli_release.py validate-source --root .)"
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          tag="cli-v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "refusing to overwrite existing tag $tag" >&2
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing to overwrite existing release $tag" >&2
+            exit 1
+          fi
+
+  build-linux:
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+      - name: Build portable Linux CLI bundle
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          nix build --print-build-logs .#cli-bundle --out-link result-cli
+          test -d result-cli
+          mkdir release-artifact
+          python3 scripts/cli_release.py package \
+            --bundle-root result-cli \
+            --output "release-artifact/logos-inspector-cli-${{ needs.validate.outputs.version }}-linux-amd64.tar.gz" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --platform linux-amd64 \
+            --commit "$GITHUB_SHA"
+          python3 scripts/cli_release.py smoke-archive \
+            --archive "release-artifact/logos-inspector-cli-${{ needs.validate.outputs.version }}-linux-amd64.tar.gz" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --platform linux-amd64 \
+            --commit "$GITHUB_SHA"
+      - name: Smoke extracted Linux CLI bundle without the Nix store
+        run: |
+          set -euo pipefail
+          archive="release-artifact/logos-inspector-cli-${{ needs.validate.outputs.version }}-linux-amd64.tar.gz"
+          extract="$RUNNER_TEMP/logos-inspector-cli-linux"
+          mkdir "$extract"
+          tar -xzf "$archive" -C "$extract"
+          launcher="$extract/logos-inspector-cli-${{ needs.validate.outputs.version }}-linux-amd64/bin/logos-inspector"
+          test -x "$launcher"
+          sudo --preserve-env=RUNNER_TEMP unshare --mount bash -s -- "$launcher" <<'EOF'
+          set -euo pipefail
+          launcher="$1"
+          mount --make-rprivate /
+          mount -t tmpfs tmpfs /nix/store
+          export HOME
+          HOME="$(mktemp -d)"
+          test "$("$launcher" --version)" = "logos-inspector ${{ needs.validate.outputs.version }}"
+          test "$("$launcher" cli --version)" = "logos-inspector ${{ needs.validate.outputs.version }}"
+          "$launcher" cli --help | grep -F 'Usage: logos-inspector cli'
+          "$launcher" cli source-policy | grep -F '"source_modes"'
+          EOF
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-linux-amd64
+          path: release-artifact/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    needs: validate
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+      - name: Build portable Apple silicon CLI bundle
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          nix build --option sandbox false --print-build-logs .#cli-bundle --out-link result-cli
+          test -d result-cli
+          mkdir release-artifact
+          python3 scripts/cli_release.py package \
+            --bundle-root result-cli \
+            --output "release-artifact/logos-inspector-cli-${{ needs.validate.outputs.version }}-darwin-arm64.tar.gz" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --platform darwin-arm64 \
+            --commit "$GITHUB_SHA"
+          python3 scripts/cli_release.py smoke-archive \
+            --archive "release-artifact/logos-inspector-cli-${{ needs.validate.outputs.version }}-darwin-arm64.tar.gz" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --platform darwin-arm64 \
+            --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-darwin-arm64
+          path: release-artifact/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs:
+      - validate
+      - build-linux
+      - build-macos
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: cli-*
+          path: release-artifact
+          merge-multiple: true
+      - name: Verify complete artifact set
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/cli_release.py verify \
+            --input-dir release-artifact --version "$VERSION" \
+            --commit "$GITHUB_SHA" --write-checksums
+          python3 scripts/cli_release.py verify \
+            --input-dir release-artifact --version "$VERSION" \
+            --commit "$GITHUB_SHA"
+      - name: Write release notes
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          {
+            printf '# Logos Inspector CLI v%s\n\n' "$VERSION"
+            cat <<'EOF'
+          **Channel:** Alpha
+
+          Headless CLI archives:
+
+          - portable Linux x86_64 GNU bundle
+          - unsigned Apple silicon macOS bundle
+
+          Each archive contains `bin/logos-inspector`, its required embedded
+          Python runtime, and `BUILD-INFO.json`, which records the source
+          version, commit, and target. Verify the archive with SHA256SUMS
+          before extracting it.
+
+          Both native artifacts are built and smoke-tested after extraction
+          with `--version`, `cli --version`, `cli --help`, and
+          `cli source-policy`; the Linux bundle is also run with the build
+          host's Nix store hidden.
+          EOF
+          } > release-notes.md
+      - name: Create draft release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: cli-v${{ needs.validate.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Logos Inspector CLI v${{ needs.validate.outputs.version }} (Alpha)
+          body_path: release-notes.md
+          draft: true
+          prerelease: true
+          make_latest: false
+          files: |
+            release-artifact/*.tar.gz
+            release-artifact/SHA256SUMS
+      - name: Verify uploaded draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="cli-v$VERSION"
+          mkdir published-artifact
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir published-artifact
+          python3 scripts/cli_release.py verify \
+            --input-dir published-artifact --version "$VERSION" \
+            --commit "$GITHUB_SHA"
+          target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json targetCommitish --jq .targetCommitish)"
+          test "$target" = "$GITHUB_SHA"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease --latest=false
+      - name: Remove failed draft
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="cli-v$VERSION"
+          state="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,targetCommitish \
+            --jq '[.isDraft, .targetCommitish] | @tsv' 2>/dev/null || true)"
+          if test "$state" = "$(printf 'true\t%s' "$GITHUB_SHA")"; then
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi

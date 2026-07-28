@@ -154,6 +154,32 @@ jobs:
       - name: Run web UI checks
         run: python3 scripts/check-build-pipeline.py ci-web
 
+  headless_cli:
+    name: Headless CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Activate Rust toolchain
+        run: rustup show
+
+      - name: Cache Cargo registry and git
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build and smoke-test the headless CLI
+        run: python3 scripts/check-build-pipeline.py ci-cli
+
   qml_static:
     name: QML static and unit checks
     runs-on: ubuntu-24.04
@@ -262,6 +288,7 @@ jobs:
       - rust
       - native
       - web
+      - headless_cli
       - qml_static
       - qml_visual
     runs-on: ubuntu-24.04
@@ -274,12 +301,13 @@ jobs:
           RUST: ${{ needs.rust.result }}
           NATIVE: ${{ needs.native.result }}
           WEB: ${{ needs.web.result }}
+          HEADLESS_CLI: ${{ needs.headless_cli.result }}
           QML_STATIC: ${{ needs.qml_static.result }}
           QML_VISUAL: ${{ needs.qml_visual.result }}
         run: |
           set -euo pipefail
           failed=0
-          for gate in POLICY GENERATED RUST NATIVE WEB QML_STATIC; do
+          for gate in POLICY GENERATED RUST NATIVE WEB HEADLESS_CLI QML_STATIC; do
             printf '%s: %s\n' "$gate" "${!gate}"
             if [[ "${!gate}" != "success" ]]; then
               failed=1

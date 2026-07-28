@@ -72,6 +72,8 @@
         "aarch64-darwin"
       ];
 
+      cliReleaseSystems = standaloneReleaseSystems;
+
       coreSystems = standaloneSystems;
 
       circuitsRelease = buildArtifacts.circuits.release;
@@ -349,6 +351,70 @@ EOF
         };
       };
 
+      mkCliBinary = pkgs:
+        let
+          circuitBuild = mkCircuitBuildContext pkgs { };
+        in
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "logos-inspector-cli-bin";
+          version = packageVersion;
+          src = standaloneRustSource;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            allowBuiltinFetchGit = true;
+          };
+          cargoBuildFlags = [
+            "--package"
+            "logos-inspector"
+            "--no-default-features"
+            "--features"
+            "cli,local-wallet-runtime"
+            "--bin"
+            "logos-inspector"
+          ];
+          nativeBuildInputs = [ pkgs.python3 ];
+          buildInputs = [ pkgs.python3 ];
+          env = circuitBuild.env // {
+            PYO3_PYTHON = "${pkgs.python3}/bin/python3";
+          };
+          preBuild = linkLezArtifacts circuitBuild.lezSource;
+          doCheck = false;
+          meta.mainProgram = "logos-inspector";
+        };
+
+      mkCliPackage = pkgs: binary:
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "logos-inspector-cli";
+          version = packageVersion;
+          dontUnpack = true;
+          nativeBuildInputs = [ pkgs.findutils ];
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out/bin" "$out/python/lib"
+            cp ${binary}/bin/logos-inspector "$out/bin/logos-inspector-bin"
+            cat > "$out/bin/logos-inspector" <<'EOF'
+            #!/bin/sh
+            set -eu
+            root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+            unset PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE
+            export PYTHONHOME="$root/python"
+            export PYTHONNOUSERSITE=1
+            exec "$root/bin/logos-inspector-bin" "$@"
+            EOF
+            chmod +x "$out/bin/logos-inspector"
+
+            python_lib="$(find ${pkgs.python3}/lib -maxdepth 1 -type d -name 'python3.*' -print -quit)"
+            test -n "$python_lib"
+            cp -a "$python_lib" "$out/python/lib/"
+
+            runHook postInstall
+          '';
+          extraDirs = [ "python" ];
+          extraClosurePaths = [ binary pkgs.python3 ];
+          meta.mainProgram = "logos-inspector";
+        };
+
       mkStandaloneBinary = pkgs: { buildType, staticRapidsnarkFeature }:
         let
           circuitBuild = mkCircuitBuildContext pkgs { };
@@ -535,6 +601,22 @@ EOF
           version = packageVersion;
         });
 
+      cliPackages = forSystems cliReleaseSystems (pkgs:
+        mkCliPackage pkgs (mkCliBinary pkgs));
+
+      cliBundles = forSystems cliReleaseSystems (pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          cli = cliPackages.${system};
+        in
+        nix-bundle-dir.lib.${system}.mkBundle {
+          drv = cli;
+          name = "logos-inspector-cli";
+          extraDirs = cli.extraDirs;
+          extraClosurePaths = cli.extraClosurePaths;
+          warnOnBinaryData = true;
+        });
+
       testnetV02HelperPackages = forSystems standaloneSystems mkTestnetV02HelperBinary;
 
       mkRenamedLgxPackage = pkgs: { source, outputName }:
@@ -586,6 +668,9 @@ EOF
             standalone-appimage = standaloneAppImages.${system};
           } // lib.optionalAttrs (builtins.hasAttr system standaloneMacApps) {
             standalone-macos-app = standaloneMacApps.${system};
+          } // lib.optionalAttrs (builtins.hasAttr system cliPackages) {
+            cli = cliPackages.${system};
+            cli-bundle = cliBundles.${system};
           } // lib.optionalAttrs (builtins.elem system coreSystems) {
             core = coreModule.packages.${system}.default;
             core-ffi = coreFfiPackages.${system}.default;
@@ -608,6 +693,11 @@ EOF
             standalone-dev = {
               type = "app";
               program = "${standaloneDevPackages.${system}}/bin/logos-inspector-standalone-gui";
+            };
+          } // lib.optionalAttrs (builtins.hasAttr system cliPackages) {
+            cli = {
+              type = "app";
+              program = "${cliPackages.${system}}/bin/logos-inspector";
             };
           })
         qmlModule.apps;

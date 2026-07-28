@@ -7,6 +7,7 @@ use crate::source_routing::{NetworkEndpoints, resolve_network_endpoints};
 #[derive(Debug, Parser)]
 #[command(name = "logos-inspector")]
 #[command(about = "Inspect Logos networks")]
+#[command(version, propagate_version = true)]
 pub struct Args {
     #[command(subcommand)]
     pub mode: Option<Mode>,
@@ -19,6 +20,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, ClapArgs)]
+#[command(display_name = "logos-inspector")]
 pub struct CliArgs {
     #[command(subcommand)]
     command: CliCommand,
@@ -229,9 +231,29 @@ impl WalletProfileArgs {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Result, bail};
+    use anyhow::{Result, bail, ensure};
+    use clap::error::ErrorKind;
 
     use super::*;
+
+    #[test]
+    fn root_and_cli_version_flags_report_the_package_version() -> Result<()> {
+        for arguments in [
+            vec!["logos-inspector", "--version"],
+            vec!["logos-inspector", "cli", "--version"],
+        ] {
+            let output = match Args::try_parse_from(arguments) {
+                Err(error) if error.kind() == ErrorKind::DisplayVersion => error.to_string(),
+                Ok(_) => bail!("version flag completed parsing instead of reporting a version"),
+                Err(error) => bail!("version flag was rejected: {error}"),
+            };
+            ensure!(
+                output.trim() == format!("logos-inspector {}", env!("CARGO_PKG_VERSION")),
+                "version output drifted: {output:?}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn backup_subcommands_parse_scriptable_workflow() -> Result<()> {
