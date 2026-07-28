@@ -70,10 +70,14 @@ QtObject {
             args,
             root.forwardsRuntimeOperationEvents()
         )
-        if (root.daemonRuntimeEvent(moduleName, eventName)
-                && root.model
-                && typeof root.model.invalidateAttachedRuntimeObservations === "function") {
-            root.model.invalidateAttachedRuntimeObservations()
+        if (root.daemonRuntimeEvent(moduleName, eventName) && root.model) {
+            if (String(eventName || "") === "daemonStopped"
+                    && typeof root.model.invalidateAttachedRuntimeObservations === "function") {
+                root.model.invalidateAttachedRuntimeObservations()
+            } else if (String(eventName || "") === "daemonStarted"
+                    && typeof root.model.refreshAttachedRuntimeObservations === "function") {
+                root.model.refreshAttachedRuntimeObservations()
+            }
         }
         if (root.refreshesLocalNodeStatus(moduleName, eventName)) {
             root.queueLocalNodeRefresh()

@@ -1331,6 +1331,27 @@ TestCase {
         })
         tryCompare(model.metrics, "dashboardRefreshing", false)
 
+        model.metrics.storageSourceReport = {
+            health: { ready: true, detail: "Storage ready" }
+        }
+        const unavailableGeneration = model.metrics.familyConfigurationGeneration("storage")
+        const unavailableDashboardSerial = model.metrics.dashboardRefreshSerial
+        moduleEventIntake.ingest("logoscore_runtime", "daemonUnavailable", [])
+        compare(model.metrics.familyConfigurationGeneration("storage"), unavailableGeneration)
+        compare(model.metrics.sourceReport("storage").health.ready, true)
+        wait(0)
+        compare(model.metrics.dashboardRefreshSerial, unavailableDashboardSerial)
+
+        const startedGeneration = model.metrics.familyConfigurationGeneration("storage")
+        const startedDashboardSerial = model.metrics.dashboardRefreshSerial
+        moduleEventIntake.ingest("logoscore_runtime", "daemonStarted", [])
+        compare(model.metrics.familyConfigurationGeneration("storage"), startedGeneration)
+        compare(model.metrics.sourceReport("storage").health.ready, true)
+        tryVerify(function () {
+            return model.metrics.dashboardRefreshSerial >= startedDashboardSerial + 1
+        })
+        tryCompare(model.metrics, "dashboardRefreshing", false)
+
         model.localNodesReport = {
             runtime: { ownership: "external", run_state: "not_configured" },
             nodes: []
