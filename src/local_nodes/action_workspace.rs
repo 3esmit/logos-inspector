@@ -888,7 +888,9 @@ fn install_indexer_package(
         validate_runtime_modules_dir(runtime, &catalog.modules_dir)?;
     }
     let authority = match runtime {
-        Some(runtime) => runtime.package_install_authority()?,
+        Some(runtime) => {
+            runtime.package_install_authority_for_module_target(Path::new(&catalog.modules_dir))?
+        }
         None => PackageInstallAuthority::CurrentUser,
     };
     let release = catalog

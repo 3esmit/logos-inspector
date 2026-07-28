@@ -625,6 +625,40 @@ impl LogoscoreRuntimeProfile {
         }
     }
 
+    /// Resolves the account allowed to mutate one validated module target.
+    ///
+    /// A local system service owns only its verified module tree. Inspector
+    /// permits a distinct target while that service is running because the
+    /// daemon cannot load from it; that independent target remains owned by
+    /// the caller rather than the service account.
+    pub(super) fn package_install_authority_for_module_target(
+        &self,
+        requested_modules_dir: &Path,
+    ) -> Result<PackageInstallAuthority> {
+        if !self.is_attached() {
+            return Ok(PackageInstallAuthority::CurrentUser);
+        }
+        let target = self
+            .service_target()
+            .context("local LogosCore daemon has no verified service lifecycle backend")?;
+        if target.scope != LogoscoreServiceScope::System {
+            return Ok(PackageInstallAuthority::CurrentUser);
+        }
+        let service_modules_dir = if self.attached_service_is_terminally_stopped() {
+            self.configured_attached_service_modules_dir()
+        } else {
+            self.observed_attached_modules_dir()
+        };
+        if !service_owns_module_target(
+            target,
+            service_modules_dir.as_deref(),
+            requested_modules_dir,
+        ) {
+            return Ok(PackageInstallAuthority::CurrentUser);
+        }
+        system_service_install_authority(target)
+    }
+
     pub(super) fn control_attached_service(
         &self,
         action: LogoscoreServiceAction,
@@ -826,6 +860,15 @@ fn validate_active_attached_module_install_target(
         bail!("stop the local LogosCore runtime before changing installed modules");
     }
     Ok(())
+}
+
+fn service_owns_module_target(
+    target: &LogoscoreServiceTarget,
+    service_modules_dir: Option<&Path>,
+    requested_modules_dir: &Path,
+) -> bool {
+    target.scope == LogoscoreServiceScope::System
+        && service_modules_dir.is_some_and(|modules_dir| modules_dir == requested_modules_dir)
 }
 
 fn resolve_attached_channel_indexer_modules_dir(
@@ -2401,6 +2444,39 @@ exit 9
             Some(&active_modules_dir),
             &other_modules_dir,
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn system_service_module_authority_is_limited_to_the_verified_target() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let service_modules = directory.path().join("service-modules");
+        let distinct_modules = directory.path().join("distinct-modules");
+        let system = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let user = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::User,
+            unit: "logos-node.service".to_owned(),
+        };
+
+        anyhow::ensure!(
+            service_owns_module_target(&system, Some(&service_modules), &service_modules),
+            "system service did not own its verified module target"
+        );
+        anyhow::ensure!(
+            !service_owns_module_target(&system, Some(&service_modules), &distinct_modules),
+            "system service claimed a distinct module target"
+        );
+        anyhow::ensure!(
+            !service_owns_module_target(&user, Some(&service_modules), &service_modules),
+            "user service unexpectedly required system-service authority"
+        );
+        anyhow::ensure!(
+            !service_owns_module_target(&system, None, &service_modules),
+            "unverified service module target required system-service authority"
+        );
         Ok(())
     }
 
