@@ -18,7 +18,7 @@ WORKFLOWS = {
     "standalone": ROOT / ".github" / "workflows" / "release-standalone.yml",
     "cli": ROOT / ".github" / "workflows" / "release-cli.yml",
 }
-RELEASE_ACTION_SHA = "81f506530c56e8757e6d99ee7f9d4c092e74411c"
+RELEASE_ACTION_SHA = "99b1c62a16172e0570b512762fb8138a6472b15c"
 ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
 FORK_INPUTS = {
     "blockchain_module": (
@@ -481,21 +481,47 @@ def main() -> int:
     if "/build/cargo-vendor-dir" in flake:
         errors.append("flake program artifact linker assumes `/build` is the build root")
     metal_wrapper = flake.find("metalXcrun =")
-    metal_env = flake.find('builtins.getEnv "LOGOS_INSPECTOR_METAL"', metal_wrapper)
-    metallib_env = flake.find('builtins.getEnv "LOGOS_INSPECTOR_METALLIB"', metal_env)
+    release_metal_env = flake.find(
+        'builtins.getEnv "LOGOS_MODULES_RELEASE_METAL"', metal_wrapper
+    )
+    release_metallib_env = flake.find(
+        'builtins.getEnv "LOGOS_MODULES_RELEASE_METALLIB"', release_metal_env
+    )
+    release_pair = flake.find(
+        'useReleaseTools = releaseMetal != "" && releaseMetallib != "";',
+        release_metallib_env,
+    )
+    inspector_metal_env = flake.find(
+        'builtins.getEnv "LOGOS_INSPECTOR_METAL"', release_pair
+    )
+    inspector_metallib_env = flake.find(
+        'builtins.getEnv "LOGOS_INSPECTOR_METALLIB"', inspector_metal_env
+    )
     metal_direct = flake.find(
-        'exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METAL" hostMetal)}',
-        metallib_env,
+        'exec ${lib.escapeShellArg (requireHostTool hostMetalName hostMetal)}',
+        inspector_metallib_env,
     )
     metallib_direct = flake.find(
-        'exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METALLIB" hostMetallib)}',
+        'exec ${lib.escapeShellArg (requireHostTool hostMetallibName hostMetallib)}',
         metal_direct,
     )
     metal_fallback = flake.find("exec /usr/bin/xcrun", metallib_direct)
-    if not 0 <= metal_wrapper < metal_env < metallib_env < metal_direct < metallib_direct < metal_fallback:
+    if not (
+        0
+        <= metal_wrapper
+        < release_metal_env
+        < release_metallib_env
+        < release_pair
+        < inspector_metal_env
+        < inspector_metallib_env
+        < metal_direct
+        < metallib_direct
+        < metal_fallback
+    ):
         errors.append(
-            "Darwin Metal xcrun wrapper must use verified host tool paths "
-            "before falling back to the system xcrun"
+            "Darwin Metal xcrun wrapper must prefer the reusable release "
+            "tool contract, retain standalone inputs, and fall back only "
+            "after verified host tool paths"
         )
     try:
         ui_metadata = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))
