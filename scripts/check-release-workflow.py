@@ -192,28 +192,13 @@ def main() -> int:
             'case "$toolchain_help" in',
             "*-downloadComponent*)",
             "env -u DEVELOPER_DIR -u SDKROOT xcodebuild -downloadComponent MetalToolchain",
-            "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal",
-            "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib",
-            'nix config show --json | python3 -c',
-            'json.load(sys.stdin)["build-users-group"]["value"]',
-            'if [ -z "$build_group" ]; then',
-            "dscl . -list /Users PrimaryGroupID",
-            "^_?nixbld[0-9]+$",
-            "dscl . -list /Groups PrimaryGroupID",
-            'dscl . -read "/Groups/$build_group" PrimaryGroupID',
-            "NIX_BUILD_USERS_GROUP=$build_group",
-            'builder_home_root="$(mktemp -d)"',
-            "ensure_identity_metal() {",
-            'local identity="$1"',
-            'local identity_home="$2"',
-            'if ! sudo -u "$identity" env',
-            'HOME="$identity_home"',
-            '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
-            '/usr/bin/xcrun --sdk macosx --find metal',
-            '/usr/bin/xcrun --sdk macosx --find metallib',
-            'sudo install -d -o "$builder" -g "$build_group" -m 0700 "$builder_home"',
-            'ensure_identity_metal "$builder" "$builder_home"',
-            '--option build-users-group "$NIX_BUILD_USERS_GROUP"',
+            'metal_path="$(env -u DEVELOPER_DIR -u SDKROOT xcrun_nocache=1 /usr/bin/xcrun --sdk macosx --find metal)"',
+            'metallib_path="$(env -u DEVELOPER_DIR -u SDKROOT xcrun_nocache=1 /usr/bin/xcrun --sdk macosx --find metallib)"',
+            'case "$tool_path" in',
+            '/*) test -x "$tool_path" ;;',
+            "printf 'LOGOS_INSPECTOR_METAL=%s\\n' \"$metal_path\" >> \"$GITHUB_ENV\"",
+            "printf 'LOGOS_INSPECTOR_METALLIB=%s\\n' \"$metallib_path\" >> \"$GITHUB_ENV\"",
+            "nix build --impure --option sandbox false",
             "unshare --mount",
             "mount -t tmpfs tmpfs /nix/store",
             "Install Linux host graphics runtime for smoke",
@@ -337,73 +322,25 @@ def main() -> int:
         macos_metal,
     )
     macos_metal_binary = standalone.find(
-        "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metal",
+        'metal_path="$(env -u DEVELOPER_DIR -u SDKROOT xcrun_nocache=1 /usr/bin/xcrun --sdk macosx --find metal)"',
         macos_download,
     )
     macos_metallib_binary = standalone.find(
-        "env -u DEVELOPER_DIR -u SDKROOT xcrun --sdk macosx --find metallib",
+        'metallib_path="$(env -u DEVELOPER_DIR -u SDKROOT xcrun_nocache=1 /usr/bin/xcrun --sdk macosx --find metallib)"',
         macos_metal,
     )
-    macos_build_group = standalone.find(
-        "nix config show --json | python3 -c",
-        macos_metal,
+    macos_path_validation = standalone.find('case "$tool_path" in', macos_metallib_binary)
+    macos_metal_env = standalone.find(
+        "printf 'LOGOS_INSPECTOR_METAL=%s\\n' \"$metal_path\" >> \"$GITHUB_ENV\"",
+        macos_path_validation,
     )
-    macos_builder_group_branch = standalone.find(
-        'if [ -z "$build_group" ]; then',
-        macos_build_group,
-    )
-    macos_bootstrap_users = standalone.find(
-        "dscl . -list /Users PrimaryGroupID",
-        macos_builder_group_branch,
-    )
-    macos_group_lookup = standalone.find(
-        "dscl . -list /Groups PrimaryGroupID",
-        macos_bootstrap_users,
-    )
-    macos_builder_group_id = standalone.find(
-        'dscl . -read "/Groups/$build_group" PrimaryGroupID',
-        macos_group_lookup,
-    )
-    macos_builder_users = standalone.find(
-        "dscl . -list /Users PrimaryGroupID",
-        macos_builder_group_id + 1,
-    )
-    macos_build_group_env = standalone.find(
-        "NIX_BUILD_USERS_GROUP=$build_group",
-        macos_builder_users,
-    )
-    macos_builder_home_root = standalone.find(
-        'builder_home_root="$(mktemp -d)"',
-        macos_build_group_env,
-    )
-    macos_identity_helper = standalone.find("ensure_identity_metal() {", macos_metal)
-    macos_identity_probe = standalone.find(
-        'if ! sudo -u "$identity" env',
-        macos_identity_helper,
-    )
-    macos_identity_home = standalone.find(
-        'HOME="$identity_home"',
-        macos_identity_probe,
-    )
-    macos_identity_download = standalone.find(
-        '/usr/bin/xcodebuild -downloadComponent MetalToolchain',
-        macos_identity_probe,
-    )
-    macos_identity_metal = standalone.find(
-        '/usr/bin/xcrun --sdk macosx --find metal',
-        macos_identity_download,
-    )
-    macos_identity_metallib = standalone.find(
-        '/usr/bin/xcrun --sdk macosx --find metallib',
-        macos_identity_metal,
-    )
-    macos_builder_probe = standalone.find(
-        'ensure_identity_metal "$builder" "$builder_home"',
-        macos_identity_metallib,
+    macos_metallib_env = standalone.find(
+        "printf 'LOGOS_INSPECTOR_METALLIB=%s\\n' \"$metallib_path\" >> \"$GITHUB_ENV\"",
+        macos_metal_env,
     )
     macos_build = standalone.find("- name: Build and archive app")
-    macos_build_group_option = standalone.find(
-        '--option build-users-group "$NIX_BUILD_USERS_GROUP"',
+    macos_impure_build = standalone.find(
+        "nix build --impure --option sandbox false",
         macos_build,
     )
     if not (
@@ -415,37 +352,31 @@ def main() -> int:
         < macos_download
         < macos_metal_binary
         < macos_metallib_binary
-        < macos_build_group
-        < macos_builder_group_branch
-        < macos_bootstrap_users
-        < macos_group_lookup
-        < macos_builder_group_id
-        < macos_builder_users
-        < macos_build_group_env
-        < macos_builder_home_root
-        < macos_identity_helper
-        < macos_identity_probe
-        < macos_identity_home
-        < macos_identity_download
-        < macos_identity_metal
-        < macos_identity_metallib
-        < macos_builder_probe
+        < macos_path_validation
+        < macos_metal_env
+        < macos_metallib_env
         < macos_build
-        < macos_build_group_option
+        < macos_impure_build
     ):
         errors.append(
             "standalone release workflow must select a Metal-capable Xcode, "
-            "verify component-download support, provision dedicated Nix build "
-            "users, and pass that group to the macOS build"
+            "resolve verified host Metal tools, and pass their paths through "
+            "an impure Nix evaluation"
         )
-    if '--option build-users-group ""' in standalone:
+    if '--option build-users-group' in standalone:
         errors.append(
-            "standalone release workflow must retain Nix build-user isolation"
+            "standalone release workflow must retain Nix's default build-user isolation"
         )
-    for forbidden in ("daemon_pid=", "daemon_user=", 'ensure_identity_metal "$daemon_user"'):
+    for forbidden in (
+        "nix config show --json",
+        "dscl . -list /Users PrimaryGroupID",
+        "ensure_identity_metal() {",
+        "sudo -u \"$identity\"",
+        "/usr/bin/xcodebuild -downloadComponent MetalToolchain",
+    ):
         if forbidden in standalone:
             errors.append(
-                "standalone release workflow must not provision Metal for the Nix daemon identity"
+                "standalone release workflow must not provision Metal for a Nix build identity"
             )
     if "xcodebuild -help " + chr(92) in standalone:
         errors.append(
@@ -549,13 +480,22 @@ def main() -> int:
     )
     if "/build/cargo-vendor-dir" in flake:
         errors.append("flake program artifact linker assumes `/build` is the build root")
-    metal_wrapper = flake.find('metalXcrun = pkgs.writeShellScriptBin "xcrun"')
-    metal_cache_bypass = flake.find("export xcrun_nocache=1", metal_wrapper)
-    metal_exec = flake.find("exec /usr/bin/xcrun", metal_wrapper)
-    if not 0 <= metal_wrapper < metal_cache_bypass < metal_exec:
+    metal_wrapper = flake.find("metalXcrun =")
+    metal_env = flake.find('builtins.getEnv "LOGOS_INSPECTOR_METAL"', metal_wrapper)
+    metallib_env = flake.find('builtins.getEnv "LOGOS_INSPECTOR_METALLIB"', metal_env)
+    metal_direct = flake.find(
+        'exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METAL" hostMetal)}',
+        metallib_env,
+    )
+    metallib_direct = flake.find(
+        'exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METALLIB" hostMetallib)}',
+        metal_direct,
+    )
+    metal_fallback = flake.find("exec /usr/bin/xcrun", metallib_direct)
+    if not 0 <= metal_wrapper < metal_env < metallib_env < metal_direct < metallib_direct < metal_fallback:
         errors.append(
-            "Darwin Metal xcrun wrapper must bypass the stale Xcode tool cache "
-            "before invoking the system xcrun"
+            "Darwin Metal xcrun wrapper must use verified host tool paths "
+            "before falling back to the system xcrun"
         )
     try:
         ui_metadata = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))

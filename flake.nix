@@ -248,20 +248,42 @@ EOF
           circuitBuild = mkCircuitBuildContext pkgs { };
           testnetV02LezSource = mkTestnetV02LezSource pkgs;
           risc0RecursionArtifact = mkRisc0RecursionArtifact pkgs;
-          # RISC Zero invokes `xcrun metal` and `xcrun metallib` on Darwin.
-          # Nix's SDK variables hide the host Metal toolchain, so clear them
-          # only for those calls while preserving the regular Nix environment.
-          metalXcrun = pkgs.writeShellScriptBin "xcrun" ''
-            tool=
-            for argument in "$@"; do
-              case "$argument" in metal|metallib) tool=1 ;; esac
-            done
-            if [ -n "$tool" ]; then
-              unset DEVELOPER_DIR SDKROOT
-              export xcrun_nocache=1
-            fi
-            exec /usr/bin/xcrun "$@"
-          '';
+          # RISC Zero invokes `xcrun --sdk macosx metal` and `metallib` on
+          # Darwin. Xcode 26 registers the downloadable Metal component for
+          # the invoking user, while Nix builds as an isolated `_nixbld`
+          # account. The release workflow resolves the working host tools
+          # before the build and passes their exact paths via `--impure`; this
+          # wrapper then avoids asking Xcode to discover them under `_nixbld`.
+          metalXcrun =
+            if pkgs.stdenv.isDarwin then
+              let
+                hostMetal = builtins.getEnv "LOGOS_INSPECTOR_METAL";
+                hostMetallib = builtins.getEnv "LOGOS_INSPECTOR_METALLIB";
+                requireHostTool = name: path:
+                  if path == "" then
+                    throw "${name} must name a verified host Metal tool; build with nix --impure"
+                  else
+                    path;
+              in
+              pkgs.writeShellScriptBin "xcrun" ''
+                if [ "$#" -ge 3 ] && [ "$1" = "--sdk" ] && [ "$2" = "macosx" ]; then
+                  case "$3" in
+                    metal)
+                      shift 3
+                      unset DEVELOPER_DIR SDKROOT
+                      exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METAL" hostMetal)} "$@"
+                      ;;
+                    metallib)
+                      shift 3
+                      unset DEVELOPER_DIR SDKROOT
+                      exec ${lib.escapeShellArg (requireHostTool "LOGOS_INSPECTOR_METALLIB" hostMetallib)} "$@"
+                      ;;
+                  esac
+                fi
+                exec /usr/bin/xcrun "$@"
+              ''
+            else
+              null;
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = testnetV02HelperBinaryName;
