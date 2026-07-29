@@ -97,6 +97,22 @@ cargo run --no-default-features --features cli,local-wallet-runtime -- \
   cli blockchain-node --node-url http://127.0.0.1:8080
 ```
 
+For a Bedrock node managed by LogosCore, select its CLI transport. Inspector
+then calls `blockchain_module` through LogosCore instead of opening a direct
+RPC connection:
+
+```bash
+cargo run --no-default-features --features cli,local-wallet-runtime -- \
+  cli blockchain-node --source-mode logoscore_cli
+cargo run --no-default-features --features cli,local-wallet-runtime -- \
+  cli blockchain-blocks --source-mode logoscore_cli --slot-from 1 --slot-to 10
+cargo run --no-default-features --features cli,local-wallet-runtime -- \
+  cli channels --source-mode logoscore_cli --slot-from 1 --slot-to 10
+```
+
+`--profile` and `--node-url` apply only to `--source-mode rpc`; module-based
+sources intentionally reject them rather than silently falling back to RPC.
+
 Commands print JSON. Run `logos-inspector cli --help` to see the supported
 inspection, decoding, wallet, backup, and source-diagnostic commands.
 

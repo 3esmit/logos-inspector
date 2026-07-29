@@ -64,14 +64,14 @@ pub(super) enum CliCommand {
     ProgramFile {
         path: String,
     },
-    BlockchainNode(EndpointArgs),
+    BlockchainNode(BedrockSourceArgs),
     BlockchainBlocks {
         #[arg(long)]
         slot_from: u64,
         #[arg(long)]
         slot_to: u64,
         #[command(flatten)]
-        endpoints: EndpointArgs,
+        source: BedrockSourceArgs,
     },
     LogoscoreStatus,
     SourcePolicy,
@@ -105,7 +105,7 @@ pub(super) enum CliCommand {
         #[arg(long)]
         slot_to: u64,
         #[command(flatten)]
-        endpoints: EndpointArgs,
+        source: BedrockSourceArgs,
     },
     SpelIdl {
         idl: String,
@@ -211,6 +211,15 @@ pub struct EndpointArgs {
     pub(super) profile: Option<String>,
     #[arg(long)]
     pub(super) node_url: Option<String>,
+}
+
+#[derive(Debug, Clone, ClapArgs)]
+pub(super) struct BedrockSourceArgs {
+    /// Bedrock transport: `rpc`, `module`, or `logoscore_cli`.
+    #[arg(long, default_value = "rpc", value_name = "SOURCE")]
+    pub(super) source_mode: String,
+    #[command(flatten)]
+    pub(super) endpoints: EndpointArgs,
 }
 
 impl EndpointArgs {
