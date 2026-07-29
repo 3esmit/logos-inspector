@@ -4,7 +4,6 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::bedrock::blockchain_blocks;
 use super::channel_operations::{
     DecodedChannelOperation, DecodedChannelOperationKind, decode_channel_operation,
 };
@@ -68,17 +67,17 @@ struct ChannelScanContext {
     tx_hash: Option<String>,
 }
 
-pub async fn channel_scan(
+pub(crate) fn channel_scan_from_blocks(
     endpoint: &str,
     slot_from: u64,
     slot_to: u64,
-) -> anyhow::Result<ChannelScanReport> {
-    let blocks = blockchain_blocks(endpoint, slot_from, slot_to).await?;
+    blocks: Value,
+) -> ChannelScanReport {
     let block_count = count_blocks(&blocks);
     let mut matches = Vec::new();
     scan_value(&blocks, "$", &ChannelScanContext::default(), &mut matches);
     let summaries = summarize_channel_operations(&matches);
-    Ok(ChannelScanReport {
+    ChannelScanReport {
         endpoint: endpoint.to_owned(),
         slot_from,
         slot_to,
@@ -86,7 +85,7 @@ pub async fn channel_scan(
         summaries,
         matches,
         raw_blocks: blocks,
-    })
+    }
 }
 
 pub async fn channel_state(endpoint: &str, channel_id: &str) -> Result<Value> {

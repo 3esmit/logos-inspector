@@ -1,11 +1,11 @@
 use std::{fs, path::Path};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
-use super::args::{BackupCommand, BackupImportArgs, CliCommand, WalletCommand};
+use super::args::{BackupCommand, BackupImportArgs, BedrockSourceArgs, CliCommand, WalletCommand};
 use crate::source_routing::{
-    DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
+    CoreSourceMode, DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
     DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily,
     source_mode_is_token, source_mode_policy,
 };
@@ -132,24 +132,18 @@ impl CliCommand {
             CliCommand::ProgramFile { path } => {
                 Ok(CliInvocation::json("programFile", json!([path])))
             }
-            CliCommand::BlockchainNode(endpoints) => {
-                let endpoints = endpoints.endpoints()?;
-                Ok(CliInvocation::json(
-                    "blockchainNode",
-                    json!([endpoints.node_endpoint]),
-                ))
-            }
+            CliCommand::BlockchainNode(source) => Ok(CliInvocation::json(
+                "blockchainNode",
+                bedrock_source_args(&source, vec![])?,
+            )),
             CliCommand::BlockchainBlocks {
                 slot_from,
                 slot_to,
-                endpoints,
-            } => {
-                let endpoints = endpoints.endpoints()?;
-                Ok(CliInvocation::json(
-                    "blockchainBlocks",
-                    json!([endpoints.node_endpoint, slot_from, slot_to]),
-                ))
-            }
+                source,
+            } => Ok(CliInvocation::json(
+                "blockchainBlocks",
+                bedrock_source_args(&source, vec![json!(slot_from), json!(slot_to)])?,
+            )),
             CliCommand::LogoscoreStatus => Ok(CliInvocation::json("logoscoreStatus", json!([]))),
             CliCommand::SourcePolicy => Ok(CliInvocation::json("sourcePolicy", json!([]))),
             CliCommand::Modules => Ok(CliInvocation::json("modules", json!([]))),
@@ -187,14 +181,11 @@ impl CliCommand {
             CliCommand::Channels {
                 slot_from,
                 slot_to,
-                endpoints,
-            } => {
-                let endpoints = endpoints.endpoints()?;
-                Ok(CliInvocation::json(
-                    "channelScan",
-                    json!([endpoints.node_endpoint, slot_from, slot_to]),
-                ))
-            }
+                source,
+            } => Ok(CliInvocation::json(
+                "channelScan",
+                bedrock_source_args(&source, vec![json!(slot_from), json!(slot_to)])?,
+            )),
             CliCommand::SpelIdl { idl } => {
                 Ok(CliInvocation::json("spelIdl", json!([read_idl(&idl)?])))
             }
@@ -210,6 +201,34 @@ impl CliCommand {
             CliCommand::Backup { command } => command.invocation(),
         }
     }
+}
+
+fn bedrock_source_args(source: &BedrockSourceArgs, trailing: Vec<Value>) -> Result<Value> {
+    let Some(source_mode) = CoreSourceMode::from_token(&source.source_mode) else {
+        bail!(
+            "unsupported Bedrock source mode `{}`; expected rpc, module, or logoscore_cli",
+            source.source_mode
+        );
+    };
+
+    let mut args = Vec::with_capacity(trailing.len() + 1);
+    match source_mode {
+        CoreSourceMode::Rpc => {
+            let endpoints = source.endpoints.endpoints()?;
+            args.push(json!(endpoints.node_endpoint));
+        }
+        CoreSourceMode::Module | CoreSourceMode::LogoscoreCli => {
+            if source.endpoints.profile.is_some() || source.endpoints.node_url.is_some() {
+                bail!(
+                    "--profile and --node-url are only valid with --source-mode rpc; `{}` selects its configured module transport",
+                    source_mode.normalized()
+                );
+            }
+            args.push(json!(source_mode.normalized()));
+        }
+    }
+    args.extend(trailing);
+    Ok(Value::Array(args))
 }
 
 impl BackupCommand {
@@ -568,7 +587,76 @@ mod tests {
     use anyhow::{Result, ensure};
 
     use super::*;
-    use crate::cli::args::WalletProfileArgs;
+    use crate::cli::args::{BedrockSourceArgs, EndpointArgs, WalletProfileArgs};
+
+    fn bedrock_source(source_mode: &str) -> BedrockSourceArgs {
+        BedrockSourceArgs {
+            source_mode: source_mode.to_owned(),
+            endpoints: EndpointArgs {
+                profile: None,
+                node_url: None,
+            },
+        }
+    }
+
+    #[test]
+    fn bedrock_commands_plan_logoscore_cli_without_an_rpc_endpoint() -> Result<()> {
+        let node = CliCommand::BlockchainNode(bedrock_source("logoscore cli")).invocation()?;
+        let blocks = CliCommand::BlockchainBlocks {
+            slot_from: 10,
+            slot_to: 20,
+            source: bedrock_source("logoscore_cli"),
+        }
+        .invocation()?;
+        let channels = CliCommand::Channels {
+            slot_from: 10,
+            slot_to: 20,
+            source: bedrock_source("logoscore-cli"),
+        }
+        .invocation()?;
+
+        ensure!(
+            node.method == "blockchainNode" && node.args == json!(["logoscore_cli"]),
+            "node invocation lost LogosCore CLI transport: {node:?}"
+        );
+        ensure!(
+            blocks.method == "blockchainBlocks" && blocks.args == json!(["logoscore_cli", 10, 20]),
+            "block invocation lost LogosCore CLI transport: {blocks:?}"
+        );
+        ensure!(
+            channels.method == "channelScan" && channels.args == json!(["logoscore_cli", 10, 20]),
+            "channel invocation lost LogosCore CLI transport: {channels:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bedrock_module_sources_reject_direct_rpc_options() -> Result<()> {
+        let mut source = bedrock_source("logoscore_cli");
+        source.endpoints.node_url = Some("http://127.0.0.1:9".to_owned());
+        let result = CliCommand::BlockchainNode(source).invocation();
+        let Err(error) = result else {
+            anyhow::bail!("LogosCore CLI source accepted a direct RPC endpoint");
+        };
+        ensure!(
+            error
+                .to_string()
+                .contains("only valid with --source-mode rpc"),
+            "unexpected direct-RPC rejection: {error:#}"
+        );
+
+        let result = CliCommand::BlockchainNode(bedrock_source("missing")).invocation();
+        let Err(error) = result else {
+            anyhow::bail!("unknown Bedrock source mode was accepted");
+        };
+        ensure!(
+            error
+                .to_string()
+                .contains("unsupported Bedrock source mode"),
+            "unexpected source-mode rejection: {error:#}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn decode_instruction_command_plans_runtime_decode_method() -> Result<()> {

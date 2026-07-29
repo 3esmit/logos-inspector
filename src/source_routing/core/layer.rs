@@ -371,11 +371,19 @@ pub(crate) async fn transaction(
 }
 
 pub(crate) async fn channel_scan(
-    endpoint: &str,
+    adapter: BedrockAdapter<'_>,
     slot_from: u64,
     slot_to: u64,
+    module_transport: &SharedModuleTransport,
 ) -> Result<ChannelScanReport> {
-    crate::blockchain::channels::channel_scan(endpoint, slot_from, slot_to).await
+    let endpoint = match adapter {
+        BedrockAdapter::Rpc { endpoint } => endpoint,
+        BedrockAdapter::Module { .. } => BLOCKCHAIN_MODULE,
+    };
+    let blocks = blocks(adapter, slot_from, slot_to, None, module_transport).await?;
+    Ok(crate::blockchain::channels::channel_scan_from_blocks(
+        endpoint, slot_from, slot_to, blocks,
+    ))
 }
 
 pub(crate) async fn channel_state(endpoint: &str, channel_id: &str) -> Result<Value> {
@@ -538,6 +546,25 @@ mod tests {
                     && report.blocks.len() == 2
                     && report.unknown_events.is_empty(),
                 "unexpected module live block report: {report:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_adapters_scan_channels_through_get_blocks() -> Result<()> {
+        for kind in [
+            ModuleTransportKind::Module,
+            ModuleTransportKind::LogoscoreCli,
+        ] {
+            let transport: SharedModuleTransport = Arc::new(LiveBlocksTransport { kind });
+            let report = channel_scan(BedrockAdapter::module(kind), 40, 50, &transport).await?;
+            anyhow::ensure!(
+                report.endpoint == BLOCKCHAIN_MODULE
+                    && report.slot_from == 40
+                    && report.slot_to == 50
+                    && report.block_count == 2,
+                "unexpected module channel scan report: {report:?}"
             );
         }
         Ok(())
