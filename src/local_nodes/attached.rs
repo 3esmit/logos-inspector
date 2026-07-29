@@ -92,7 +92,16 @@ pub(super) fn overlay_report(
             continue;
         };
         let observation = inspect_node(&client, spec);
-        overlay_node(node, spec, version, observation);
+        let (config_path, initialization_configuration_ready) =
+            attached_initialization_configuration(runtime, spec.kind);
+        overlay_node(
+            node,
+            spec,
+            version,
+            observation,
+            config_path,
+            initialization_configuration_ready,
+        );
     }
     refresh_summary(report);
     Ok(())
@@ -132,13 +141,14 @@ pub(super) fn apply(
     } else {
         let client = RuntimeClient::new(runtime.cli_runtime()?);
         match request.action {
-            NodeAction::Start | NodeAction::Stop => {
-                execute_lifecycle_action(&client, spec, request.action, control)
+            NodeAction::Initialize => {
+                let config =
+                    super::config::load_attached_initialization_config(runtime, spec.kind)?;
+                execute_lifecycle_action(&client, spec, request.action, Some(&config), control)
             }
-            NodeAction::Initialize => Err(anyhow::anyhow!(
-                "{} initialization is unavailable for an attached service because Inspector has no verified editable configuration; use the service's configuration workflow first",
-                spec.label()
-            )),
+            NodeAction::Start | NodeAction::Stop => {
+                execute_lifecycle_action(&client, spec, request.action, None, control)
+            }
             NodeAction::Uninstall | NodeAction::Purge => Err(anyhow::anyhow!(
                 "{} destructive actions remain unavailable for an attached service",
                 spec.label()
@@ -194,11 +204,14 @@ fn overlay_node(
     spec: AttachedNodeSpec,
     version: &str,
     observation: Result<Option<ManagedNodeSnapshot>>,
+    config_path: Option<String>,
+    initialization_configuration_ready: Option<bool>,
 ) {
     node.ownership = "local_attached".to_owned();
     node.endpoint = None;
     node.data_dir = None;
-    node.config_path = None;
+    node.config_path = config_path;
+    node.initialization_configuration_ready = initialization_configuration_ready;
     node.package_path = Some(spec.module.to_owned());
     node.package_version = Some(version.to_owned());
     node.process_id = None;
@@ -215,12 +228,17 @@ fn overlay_node(
                 .supported_actions
                 .iter()
                 .filter_map(|action| match action.as_str() {
+                    "initialize" => Some(NodeAction::Initialize),
                     "start" => Some(NodeAction::Start),
                     "stop" => Some(NodeAction::Stop),
                     _ => None,
                 })
                 .collect();
-            node.detail = attached_detail(spec, &snapshot);
+            node.detail = attached_detail(
+                spec,
+                &snapshot,
+                node.initialization_configuration_ready == Some(true),
+            );
         }
         Ok(None) => {
             node.install_state = "needs_configuration".to_owned();
@@ -243,13 +261,21 @@ fn overlay_node(
     }
 }
 
-fn attached_detail(spec: AttachedNodeSpec, snapshot: &ManagedNodeSnapshot) -> String {
+fn attached_detail(
+    spec: AttachedNodeSpec,
+    snapshot: &ManagedNodeSnapshot,
+    initialization_configuration_ready: bool,
+) -> String {
     if let Some(error) = snapshot.last_error.as_deref() {
         return format!("Attached local {} reported: {error}", spec.label());
     }
     match snapshot.state {
+        ManagedNodeState::Uninitialized if initialization_configuration_ready => format!(
+            "Attached local {} has no initialized context. Its saved Inspector-owned initialization configuration is ready.",
+            spec.label()
+        ),
         ManagedNodeState::Uninitialized => format!(
-            "Attached local {} has no initialized context. Inspector will not guess or overwrite its configuration.",
+            "Attached local {} has no initialized context. Save an Inspector-owned initialization configuration before initializing; Inspector will not read or overwrite an unknown service configuration.",
             spec.label()
         ),
         ManagedNodeState::Initializing => {
@@ -266,6 +292,17 @@ fn attached_detail(spec: AttachedNodeSpec, snapshot: &ManagedNodeSnapshot) -> St
             format!("Attached local {} is destroying its context.", spec.label())
         }
     }
+}
+
+fn attached_initialization_configuration(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+) -> (Option<String>, Option<bool>) {
+    let Ok(path) = super::config::attached_initialization_config_path(runtime, kind) else {
+        return (None, None);
+    };
+    let ready = super::config::attached_initialization_config_ready(runtime, kind).unwrap_or(false);
+    (Some(path.display().to_string()), Some(ready))
 }
 
 fn refresh_summary(report: &mut LocalNodeReport) {
@@ -293,6 +330,7 @@ fn execute_lifecycle_action(
     client: &impl AttachedModuleClient,
     spec: AttachedNodeSpec,
     action: NodeAction,
+    initialization_config: Option<&str>,
     control: Option<&CommandControl>,
 ) -> Result<String> {
     let metadata = client.module_info(spec.module)?;
@@ -303,6 +341,7 @@ fn execute_lifecycle_action(
     );
     let snapshot = node_snapshot(client, spec, control)?;
     let (action_name, expected_transition, expected_terminal) = match action {
+        NodeAction::Initialize => ("initialize", "initializing", ManagedNodeState::Stopped),
         NodeAction::Start => ("start", "starting", ManagedNodeState::Running),
         NodeAction::Stop => ("stop", "stopping", ManagedNodeState::Stopped),
         _ => bail!("{} is not an attached V1 lifecycle action", action.as_str()),
@@ -319,6 +358,15 @@ fn execute_lifecycle_action(
         spec.kind.as_str(),
         now_millis()
     );
+    let parameters = match action {
+        NodeAction::Initialize => json!({
+            "config": initialization_config.context(
+                "attached initialization requires a saved Inspector-owned initialization configuration",
+            )?,
+        }),
+        NodeAction::Start | NodeAction::Stop => json!({}),
+        _ => bail!("{} is not an attached V1 lifecycle action", action.as_str()),
+    };
     let request = json!({
         "schema": "logos.managed_node_lifecycle.command",
         "version": 1,
@@ -329,7 +377,7 @@ fn execute_lifecycle_action(
             "epoch": snapshot.epoch,
             "sequence": snapshot.sequence,
         },
-        "parameters": {},
+        "parameters": parameters,
     });
     let response = client.call(
         spec.module,
@@ -774,6 +822,15 @@ mod tests {
             }
         }
 
+        fn uninitialized() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                state: Mutex::new(ManagedNodeState::Uninitialized),
+                sequence: Mutex::new(0),
+                v1: true,
+            }
+        }
+
         fn calls(&self) -> Result<Vec<(String, String, Vec<String>)>> {
             self.calls
                 .lock()
@@ -861,6 +918,10 @@ mod tests {
                         .get("action")
                         .and_then(Value::as_str)
                         .context("recording lifecycle command has no action")?;
+                    let parameters = request
+                        .get("parameters")
+                        .and_then(Value::as_object)
+                        .context("recording lifecycle command has no parameters")?;
                     let expected = request
                         .get("expected")
                         .and_then(Value::as_object)
@@ -880,10 +941,28 @@ mod tests {
                         "recording lifecycle command has an invalid expected cursor"
                     );
                     let (transition, terminal) = match (action, previous) {
+                        ("initialize", ManagedNodeState::Uninitialized) => {
+                            anyhow::ensure!(
+                                parameters
+                                    .get("config")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|config| !config.trim().is_empty()),
+                                "recording initialize command has no configuration"
+                            );
+                            (ManagedNodeState::Initializing, ManagedNodeState::Stopped)
+                        }
                         ("start", ManagedNodeState::Stopped) => {
+                            anyhow::ensure!(
+                                parameters.is_empty(),
+                                "recording start command unexpectedly has parameters"
+                            );
                             (ManagedNodeState::Starting, ManagedNodeState::Running)
                         }
                         ("stop", ManagedNodeState::Running) => {
+                            anyhow::ensure!(
+                                parameters.is_empty(),
+                                "recording stop command unexpectedly has parameters"
+                            );
                             (ManagedNodeState::Stopping, ManagedNodeState::Stopped)
                         }
                         _ => bail!("recording lifecycle command is invalid for current state"),
@@ -909,11 +988,11 @@ mod tests {
     }
 
     #[test]
-    fn v1_start_uses_only_node_action_and_confirms_by_polling() -> Result<()> {
+    fn v1_stop_uses_only_node_action_and_confirms_by_polling() -> Result<()> {
         let client = RecordingClient::running();
         let spec = AttachedNodeSpec::for_kind(NodeKind::Messaging).context("missing spec")?;
 
-        let detail = execute_lifecycle_action(&client, spec, NodeAction::Stop, None)?;
+        let detail = execute_lifecycle_action(&client, spec, NodeAction::Stop, None, None)?;
 
         anyhow::ensure!(detail.contains("confirmed by V1 nodeStatus polling"));
         let calls = client.calls()?;
@@ -927,6 +1006,45 @@ mod tests {
                         || method == NODE_ACTION_METHOD),
             "attached lifecycle used a legacy module method: {calls:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn v1_initialize_sends_saved_configuration_and_confirms_stopped() -> Result<()> {
+        let client = RecordingClient::uninitialized();
+        let spec = AttachedNodeSpec::for_kind(NodeKind::Storage).context("missing spec")?;
+        let config = r#"{"data-dir":"/var/lib/logos/storage","listen-ip":"0.0.0.0"}"#;
+
+        let detail =
+            execute_lifecycle_action(&client, spec, NodeAction::Initialize, Some(config), None)?;
+
+        anyhow::ensure!(detail.contains("confirmed by V1 nodeStatus polling"));
+        let calls = client.calls()?;
+        let command = calls
+            .iter()
+            .find(|(_, method, _)| method == NODE_ACTION_METHOD)
+            .context("recording client received no nodeAction call")?;
+        let request: Value = serde_json::from_str(
+            command
+                .2
+                .first()
+                .context("recording nodeAction call has no request")?,
+        )?;
+        anyhow::ensure!(
+            request.get("action").and_then(Value::as_str) == Some("initialize")
+                && request
+                    .pointer("/parameters/config")
+                    .and_then(Value::as_str)
+                    == Some(config),
+            "attached initialize did not forward its saved configuration"
+        );
+        anyhow::ensure!(
+            calls
+                .iter()
+                .all(|(_, method, _)| method == NODE_STATUS_METHOD || method == NODE_ACTION_METHOD),
+            "attached initialize used a legacy module method: {calls:?}"
+        );
+        anyhow::ensure!(node_snapshot(&client, spec, None)?.state == ManagedNodeState::Stopped);
         Ok(())
     }
 
@@ -1014,8 +1132,8 @@ mod tests {
     }
 
     #[test]
-    fn attached_report_marks_loaded_v1_nodes_as_local_attached() -> Result<()> {
-        let client = RecordingClient::running();
+    fn attached_report_exposes_v1_initialize_with_owned_configuration_state() -> Result<()> {
+        let client = RecordingClient::uninitialized();
         let mut report = LocalNodeReport {
             profile: "default".to_owned(),
             mode: "testnet".to_owned(),
@@ -1042,6 +1160,7 @@ mod tests {
                     endpoint: None,
                     data_dir: None,
                     config_path: None,
+                    initialization_configuration_ready: None,
                     package_path: None,
                     package_version: None,
                     managed_channel_id: None,
@@ -1099,6 +1218,11 @@ mod tests {
                     .get(spec.module)
                     .context("missing module version")?,
                 inspect_node(&client, spec),
+                Some(format!(
+                    "/var/lib/logoscore/inspector/attached-node-configs/{}.json",
+                    spec.kind.as_str()
+                )),
+                Some(false),
             );
         }
         refresh_summary(&mut report);
@@ -1114,8 +1238,11 @@ mod tests {
             .find(|node| node.kind == NodeKind::Messaging)
             .context("missing messaging node")?;
         anyhow::ensure!(
-            messaging.run_state == "running"
-                && messaging.available_actions == vec![NodeAction::Stop]
+            messaging.run_state == "uninitialized"
+                && messaging.available_actions == vec![NodeAction::Initialize]
+                && messaging.initialization_configuration_ready == Some(false)
+                && messaging.config_path.as_deref()
+                    == Some("/var/lib/logoscore/inspector/attached-node-configs/messaging.json")
         );
         Ok(())
     }

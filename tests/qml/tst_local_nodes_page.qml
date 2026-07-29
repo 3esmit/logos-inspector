@@ -580,17 +580,56 @@ Item {
             popup.close()
         }
 
+        function test_attached_initialize_opens_configuration_until_input_is_saved() {
+            const page = createPage(attachedInitializeReport(false), samplePackageCatalog(null))
+            const initialize = findVisibleAccessibleByName(page, "Initialize Bedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            const popup = findChild(page, "localNodesConfirmPopup")
+            verify(!!initialize, "Initialize control exists")
+            verify(!!panel, "Configuration panel exists")
+            verify(!!popup, "Confirmation exists")
+
+            mouseClick(initialize, initialize.width / 2, initialize.height / 2)
+
+            tryCompare(panel, "activeNode", "bedrock")
+            verify(!popup.opened)
+            compare(state.pendingAction, "")
+            compare(gateway.calls.filter(function (call) {
+                return call.method === "localNodeConfig"
+            }).length, 1)
+        }
+
+        function test_attached_initialize_confirms_only_with_saved_input() {
+            const page = createPage(attachedInitializeReport(true), samplePackageCatalog(null))
+            const initialize = findVisibleAccessibleByName(page, "Initialize Bedrock")
+            const popup = findChild(page, "localNodesConfirmPopup")
+            verify(!!initialize, "Initialize control exists")
+            verify(!!popup, "Confirmation exists")
+
+            mouseClick(initialize, initialize.width / 2, initialize.height / 2)
+
+            tryCompare(popup, "opened", true)
+            compare(popup.title, "Initialize Bedrock")
+            compare(
+                popup.message,
+                "This initializes Bedrock using the saved Inspector-owned configuration at /var/lib/logoscore/inspector/attached-node-configs/bedrock.json. Inspector does not read or overwrite an unknown service configuration.")
+            popup.close()
+        }
+
         function test_node_configuration_forces_save_or_undo_before_tab_switch() {
             const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
             const configure = findChild(page, "nodeConfigurebedrock")
             const panel = findChild(page, "nodeConfigurationPanel")
+            const close = findChild(page, "nodeConfigCloseButton")
             verify(!!configure, "Configuration control exists")
             verify(!!panel, "Configuration panel exists")
+            verify(!!close, "Back to nodes control exists")
             verify(configure.enabled)
 
             mouseClick(configure, configure.width / 2, configure.height / 2)
             tryCompare(panel, "visible", true)
             tryCompare(panel, "activeNode", "bedrock")
+            verify(close.enabled)
             compare(panel.currentTab, "common")
             compare(panel.nodeLabel(), "Bedrock")
             verify(panel.editable)
@@ -603,6 +642,7 @@ Item {
             }, "127.0.0.1:9090")
             verify(panel.dirty)
             verify(panel.draftText.indexOf("127.0.0.1:9090") >= 0)
+            verify(!close.enabled)
 
             panel.requestTab("raw")
             compare(panel.currentTab, "common")
@@ -610,6 +650,7 @@ Item {
 
             panel.undoDraft()
             verify(!panel.dirty)
+            verify(close.enabled)
             panel.requestTab("raw")
             compare(panel.currentTab, "raw")
             const raw = findChild(panel, "nodeConfigRawInput")
@@ -621,6 +662,25 @@ Item {
             panel.setDraftText("{")
             verify(panel.validationError.length > 0)
             verify(!save.enabled)
+        }
+
+        function test_node_configuration_returns_to_actions_after_clean_close() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            const close = findChild(page, "nodeConfigCloseButton")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+            verify(!!close, "Back to nodes control exists")
+
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "activeNode", "bedrock")
+            verify(close.enabled)
+
+            mouseClick(close, close.width / 2, close.height / 2)
+
+            compare(panel.activeNode, "")
+            verify(!panel.visible)
         }
 
         function test_node_configuration_common_field_accepts_full_text() {
@@ -884,6 +944,22 @@ Item {
                 modules_dir: "/opt/logos-node/modules",
                 service_unit: "logos-node.service",
                 detail: "local LogosCore daemon is running under system service `logos-node.service`"
+            }
+            return report
+        }
+
+        function attachedInitializeReport(configurationReady) {
+            const report = attachedServiceReport("running")
+            report.nodes[0] = {
+                key: "bedrock",
+                kind: "bedrock",
+                label: "Bedrock",
+                available_actions: ["initialize"],
+                install_state: "needs_configuration",
+                run_state: "uninitialized",
+                ownership: "local_attached",
+                config_path: "/var/lib/logoscore/inspector/attached-node-configs/bedrock.json",
+                initialization_configuration_ready: configurationReady === true
             }
             return report
         }

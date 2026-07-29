@@ -2286,6 +2286,7 @@ fn project_node(
         endpoint: config.endpoint.clone(),
         data_dir: Some(config.data_dir.clone()),
         config_path: Some(config.config_path.clone()),
+        initialization_configuration_ready: None,
         package_path: config.package_path.clone(),
         package_version: config.package_version.clone(),
         managed_channel_id: None,

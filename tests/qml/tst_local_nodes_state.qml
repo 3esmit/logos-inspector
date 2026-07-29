@@ -832,6 +832,32 @@ TestCase {
             "This asks the local LogosCore service to stop Messaging. It keeps the service's existing configuration and data.")
     }
 
+    function test_attached_initialize_requires_saved_inspector_configuration() {
+        const report = testnetReport()
+        report.nodes[0] = Object.assign({}, report.nodes[0], {
+            ownership: "local_attached",
+            install_state: "needs_configuration",
+            run_state: "uninitialized",
+            available_actions: ["initialize"],
+            config_path: "/var/lib/logoscore/inspector/attached-node-configs/bedrock.json",
+            initialization_configuration_ready: false
+        })
+        state.report = report
+
+        verify(state.actionAvailable("bedrock", "initialize"))
+        verify(!state.attachedInitializationConfigurationReady("bedrock"))
+        state.beginNodeAction("initialize", "bedrock")
+        compare(state.actionDraftMessage(),
+            "Save an Inspector-owned initialization configuration before initializing Bedrock. Inspector does not read or overwrite an unknown service configuration.")
+
+        report.nodes[0].initialization_configuration_ready = true
+        state.report = report
+        verify(state.attachedInitializationConfigurationReady("bedrock"))
+        state.beginNodeAction("initialize", "bedrock")
+        compare(state.actionDraftMessage(),
+            "This initializes Bedrock using the saved Inspector-owned configuration at /var/lib/logoscore/inspector/attached-node-configs/bedrock.json. Inspector does not read or overwrite an unknown service configuration.")
+    }
+
     function test_testnet_summary_counts_configured_channel_indexers_individually() {
         state.report = testnetReport()
         state.observedNodes = ({

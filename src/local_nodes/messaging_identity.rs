@@ -103,6 +103,31 @@ pub(super) fn write_editor_config(
     write_private_config(config_path, &replacement)
 }
 
+pub(super) fn write_attached_editor_config(
+    config_root: &Path,
+    config_path: &Path,
+    editor_config: Value,
+    existing_config: Option<&Value>,
+) -> Result<()> {
+    validate_attached_config_path(config_root, config_path)?;
+    if editor_config
+        .as_object()
+        .context("attached Messaging config must be a JSON object")?
+        .contains_key(NODE_KEY_FIELD)
+    {
+        bail!("Messaging peer identity is protected and cannot be edited here");
+    }
+    let nodekey = existing_config
+        .map(validated_nodekey)
+        .transpose()?
+        .flatten()
+        .map(ToOwned::to_owned)
+        .map_or_else(generate_nodekey, Ok)?;
+    let mut replacement = editor_config;
+    insert_nodekey(&mut replacement, nodekey)?;
+    write_private_config(config_path, &replacement)
+}
+
 fn read_optional_config(path: &Path) -> Result<Option<Value>> {
     match fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text)
@@ -184,6 +209,33 @@ fn validate_config_path(workspace: &Path, config_path: &Path) -> Result<()> {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).context("failed to inspect managed Messaging config"),
+    }
+}
+
+fn validate_attached_config_path(config_root: &Path, config_path: &Path) -> Result<()> {
+    if !path_is_inside(config_root, config_path) {
+        bail!("attached Messaging config is outside the LogosCore configuration directory");
+    }
+    let parent = config_path
+        .parent()
+        .context("attached Messaging config path has no parent directory")?;
+    let canonical_root = fs::canonicalize(config_root)
+        .context("failed to resolve attached LogosCore configuration directory")?;
+    let canonical_parent = fs::canonicalize(parent)
+        .context("failed to resolve attached Messaging config directory")?;
+    if canonical_parent != canonical_root && !canonical_parent.starts_with(&canonical_root) {
+        bail!("attached Messaging config directory escapes the LogosCore configuration directory");
+    }
+    match fs::symlink_metadata(config_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("attached Messaging config must not be a symbolic link")
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            bail!("attached Messaging config must be a regular file")
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("failed to inspect attached Messaging config"),
     }
 }
 

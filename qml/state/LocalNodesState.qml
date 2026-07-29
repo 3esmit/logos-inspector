@@ -901,6 +901,16 @@ QtObject {
             return qsTr("This stops only the Inspector-managed LogosCore runtime and clears its module contexts. Inspector first verifies persisted Messaging peer identity. A legacy Messaging context without one will use a new Peer ID after the next Initialize; this one-time rotation is unavoidable, and later lifecycle cycles preserve that identity.");
         }
         const node = nodeByKind(pendingNode) || {};
+        if (String(node.ownership || "") === "local_attached" && action === "initialize"
+                && !attachedInitializationConfigurationReady(pendingNode)) {
+            return qsTr("Save an Inspector-owned initialization configuration before initializing %1. Inspector does not read or overwrite an unknown service configuration.")
+                .arg(nodeLabel(pendingNode));
+        }
+        if (String(node.ownership || "") === "local_attached" && action === "initialize") {
+            return qsTr("This initializes %1 using the saved Inspector-owned configuration at %2. Inspector does not read or overwrite an unknown service configuration.")
+                .arg(nodeLabel(pendingNode))
+                .arg(String(node.config_path || "-"));
+        }
         if (String(node.ownership || "") === "local_attached" && action === "start") {
             return qsTr("This asks the local LogosCore service to start %1. It keeps the service's existing configuration and data.")
                 .arg(nodeLabel(pendingNode));
@@ -997,6 +1007,12 @@ QtObject {
     function localAttachedNode(kind) {
         const node = nodeByKind(kind)
         return String(node && node.ownership || "") === "local_attached"
+    }
+
+    function attachedInitializationConfigurationReady(kind) {
+        const node = nodeByKind(kind)
+        return localAttachedNode(kind)
+            && node && node.initialization_configuration_ready === true
     }
 
     function actionAvailable(kind, action) {

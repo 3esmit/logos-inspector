@@ -13,6 +13,7 @@ use crate::support::time::now_millis;
 
 use super::{
     NodeKind, NodeLifecycleState,
+    adapters::{NodeConfigContext, adapter_for},
     model::{LocalDevnetRecord, LocalNodeConfigRecord, LocalNodesState},
     paths::path_is_inside,
     process::process_group_has_live_members,
@@ -26,7 +27,9 @@ const VALIDATION_SCOPE: &str = "JSON syntax and Inspector-managed field checks";
 const INDEXER_CONFIGURATION_OWNERSHIP: &str =
     "Channel Indexer configuration is owned by its Zone. Open Zone Sources for that Zone.";
 const MESSAGING_IDENTITY_REQUIRED: &str = "Messaging has no persisted peer identity. Initialize Messaging to create one before editing this configuration.";
-const UNADOPTED_LOCAL_SERVICE: &str = "The local LogosCore service configuration has not been adopted. Inspector will not read or edit its files.";
+const ATTACHED_CONFIGURATION_ROLE: &str = "Attached service initialization configuration";
+const ATTACHED_VALIDATION_SCOPE: &str = "JSON syntax and module initialization fields; used only when Inspector initializes the attached module";
+const ATTACHED_CONFIG_DIRECTORY: &[&str] = &["inspector", "attached-node-configs"];
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct LocalNodeConfigSnapshot {
@@ -87,7 +90,6 @@ pub(super) struct LocalNodeConfigSave {
 }
 
 struct ConfigSaveRequest<'a> {
-    runtime: Option<&'a LogoscoreRuntimeProfile>,
     profile: &'a str,
     kind: NodeKind,
     text: &'a str,
@@ -380,8 +382,9 @@ pub(super) fn snapshot(
 ) -> Result<LocalNodeConfigSnapshot> {
     require_configuration_editor_node(kind)?;
     let record = state.active_topology(normalized_profile(profile));
-    if attached_service_blocks_configuration(runtime, state, record) {
-        return Ok(unadopted_service_snapshot(profile, kind));
+    if attached_service_requires_owned_configuration(runtime, state, record, kind) {
+        let runtime = runtime.context("attached local LogosCore runtime is unavailable")?;
+        return attached_initialization_snapshot(runtime, profile, kind);
     }
     let record = record.context("active local node topology is required")?;
     let node = node_record(record, kind)?;
@@ -416,12 +419,18 @@ pub(super) fn snapshot(
 
 pub(super) fn validate(
     state: &LocalNodesState,
+    runtime: Option<&LogoscoreRuntimeProfile>,
     profile: &str,
     kind: NodeKind,
     text: &str,
 ) -> Result<LocalNodeConfigValidation> {
     let result: Result<Vec<LocalNodeConfigField>> = (|| {
         require_configuration_editor_node(kind)?;
+        let record = state.active_topology(normalized_profile(profile));
+        if attached_service_requires_owned_configuration(runtime, state, record, kind) {
+            let runtime = runtime.context("attached local LogosCore runtime is unavailable")?;
+            return validate_attached_initialization_config(runtime, kind, text);
+        }
         let record = active_record(state, profile)?;
         let node = node_record(record, kind)?;
         let value = parse_editor_text(text)?;
@@ -454,10 +463,14 @@ pub(super) fn save<F>(
 where
     F: FnMut(&LocalNodesState) -> Result<()>,
 {
+    let record = state.active_topology(normalized_profile(profile));
+    if attached_service_requires_owned_configuration(runtime, state, record, kind) {
+        let runtime = runtime.context("attached local LogosCore runtime is unavailable")?;
+        return save_attached_initialization_config(runtime, kind, text, expected_revision);
+    }
     save_with_writer(
         state,
         ConfigSaveRequest {
-            runtime,
             profile,
             kind,
             text,
@@ -468,22 +481,373 @@ where
     )
 }
 
-fn unadopted_service_snapshot(profile: &str, kind: NodeKind) -> LocalNodeConfigSnapshot {
-    LocalNodeConfigSnapshot {
+#[derive(Debug, Clone)]
+struct AttachedInitializationTarget {
+    config_root: PathBuf,
+    path: PathBuf,
+    bedrock_runtime_path: PathBuf,
+}
+
+pub(super) fn attached_initialization_config_path(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+) -> Result<PathBuf> {
+    Ok(attached_initialization_target(runtime, kind)?.path)
+}
+
+pub(super) fn attached_initialization_config_ready(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+) -> Result<bool> {
+    let target = attached_initialization_target(runtime, kind)?;
+    let Some(bytes) = read_attached_config_bytes(&target)? else {
+        return Ok(false);
+    };
+    let value = parse_json(&bytes)?;
+    validate_attached_stored_value(&target, kind, &value)?;
+    Ok(true)
+}
+
+pub(super) fn load_attached_initialization_config(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+) -> Result<String> {
+    let target = attached_initialization_target(runtime, kind)?;
+    let bytes = read_attached_config_bytes(&target)?.with_context(|| {
+        format!(
+            "configure {} and save its initialization configuration before initializing the attached local service",
+            node_label(kind)
+        )
+    })?;
+    let value = parse_json(&bytes)?;
+    validate_attached_stored_value(&target, kind, &value)?;
+    String::from_utf8(bytes).context("attached initialization configuration is not UTF-8")
+}
+
+fn attached_initialization_snapshot(
+    runtime: &LogoscoreRuntimeProfile,
+    profile: &str,
+    kind: NodeKind,
+) -> Result<LocalNodeConfigSnapshot> {
+    let target = attached_initialization_target(runtime, kind)?;
+    let bytes = match read_attached_config_bytes(&target)? {
+        Some(bytes) => bytes,
+        None => serde_json::to_vec_pretty(&attached_default_value(&target, kind)?)
+            .context("failed to serialize attached initialization configuration")?,
+    };
+    let raw_value = parse_json(&bytes)?;
+    if kind == NodeKind::Messaging
+        && raw_value
+            .as_object()
+            .is_some_and(|value| value.contains_key("nodekey"))
+    {
+        let _ = super::messaging_identity::has_persisted_identity(&raw_value)?;
+    }
+    let editor_value = redact_for_editor(kind, &raw_value)?;
+    validate_attached_editor_value(&target, kind, &editor_value)?;
+    let raw_text = serde_json::to_string_pretty(&editor_value)
+        .context("failed to format attached initialization configuration for editing")?;
+    Ok(LocalNodeConfigSnapshot {
         profile: normalized_profile(profile).to_owned(),
         topology_id: String::new(),
         node: kind,
         node_label: node_label(kind).to_owned(),
-        config_path: String::new(),
-        config_role: "Unadopted local service".to_owned(),
+        config_path: target.path.display().to_string(),
+        config_role: ATTACHED_CONFIGURATION_ROLE.to_owned(),
         format: JSON_FORMAT.to_owned(),
-        raw_text: String::new(),
-        revision: String::new(),
-        editable: false,
-        blocked_reason: Some(UNADOPTED_LOCAL_SERVICE.to_owned()),
-        validation_scope: VALIDATION_SCOPE.to_owned(),
-        common_fields: Vec::new(),
-        protected_fields: Vec::new(),
+        raw_text,
+        revision: revision_for(&bytes),
+        editable: true,
+        blocked_reason: None,
+        validation_scope: ATTACHED_VALIDATION_SCOPE.to_owned(),
+        common_fields: project_fields(kind, &editor_value),
+        protected_fields: protected_fields(kind),
+    })
+}
+
+fn validate_attached_initialization_config(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+    text: &str,
+) -> Result<Vec<LocalNodeConfigField>> {
+    let target = attached_initialization_target(runtime, kind)?;
+    let value = parse_editor_text(text)?;
+    validate_attached_editor_value(&target, kind, &value)?;
+    Ok(project_fields(kind, &value))
+}
+
+fn save_attached_initialization_config(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+    text: &str,
+    expected_revision: &str,
+) -> Result<()> {
+    let target = attached_initialization_target(runtime, kind)?;
+    ensure_attached_config_directory(&target, true)?;
+    let existing_bytes = read_attached_config_bytes(&target)?;
+    let baseline_bytes = match existing_bytes.as_deref() {
+        Some(bytes) => bytes.to_vec(),
+        None => serde_json::to_vec_pretty(&attached_default_value(&target, kind)?)
+            .context("failed to serialize attached initialization configuration")?,
+    };
+    if revision_for(&baseline_bytes) != expected_revision {
+        bail!("configuration changed on disk; reload it before saving");
+    }
+    let existing_value = existing_bytes.as_deref().map(parse_json).transpose()?;
+    if let Some(existing_value) = existing_value.as_ref()
+        && kind == NodeKind::Messaging
+        && existing_value
+            .as_object()
+            .is_some_and(|value| value.contains_key("nodekey"))
+    {
+        let _ = super::messaging_identity::has_persisted_identity(existing_value)?;
+    }
+    let editor_value = parse_editor_text(text)?;
+    validate_attached_editor_value(&target, kind, &editor_value)?;
+    if kind == NodeKind::Messaging {
+        return super::messaging_identity::write_attached_editor_config(
+            &target.config_root,
+            &target.path,
+            editor_value,
+            existing_value.as_ref(),
+        );
+    }
+    let bytes = serde_json::to_vec_pretty(&editor_value)
+        .context("failed to serialize attached initialization configuration")?;
+    replace_config_bytes(&target.path, &bytes)
+}
+
+fn attached_initialization_target(
+    runtime: &LogoscoreRuntimeProfile,
+    kind: NodeKind,
+) -> Result<AttachedInitializationTarget> {
+    anyhow::ensure!(
+        runtime.is_attached(),
+        "attached initialization configuration requires a local attached LogosCore runtime"
+    );
+    anyhow::ensure!(
+        matches!(
+            kind,
+            NodeKind::Bedrock | NodeKind::Storage | NodeKind::Messaging
+        ),
+        "{} has no attached module initialization configuration",
+        node_label(kind)
+    );
+    let configured_root = Path::new(&runtime.config_dir);
+    anyhow::ensure!(
+        configured_root.is_absolute(),
+        "attached local LogosCore configuration directory must be absolute"
+    );
+    let metadata = fs::symlink_metadata(configured_root).with_context(|| {
+        format!(
+            "failed to inspect attached LogosCore configuration directory {}",
+            configured_root.display()
+        )
+    })?;
+    anyhow::ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "attached LogosCore configuration directory must be a real directory"
+    );
+    let config_root = fs::canonicalize(configured_root).with_context(|| {
+        format!(
+            "failed to resolve attached LogosCore configuration directory {}",
+            configured_root.display()
+        )
+    })?;
+    let directory = ATTACHED_CONFIG_DIRECTORY
+        .iter()
+        .fold(config_root.clone(), |path, component| path.join(component));
+    let path = directory.join(format!("{}.json", kind.as_str()));
+    let bedrock_runtime_path = directory.join("bedrock.runtime.yaml");
+    Ok(AttachedInitializationTarget {
+        config_root,
+        path,
+        bedrock_runtime_path,
+    })
+}
+
+fn attached_default_value(target: &AttachedInitializationTarget, kind: NodeKind) -> Result<Value> {
+    let adapter = adapter_for(kind);
+    let port = adapter.default_port();
+    let endpoint = adapter.endpoint(port);
+    let data_dir = target
+        .config_root
+        .join("data")
+        .join("inspector-attached")
+        .join(kind.as_str());
+    let data_dir = data_dir
+        .to_str()
+        .context("attached node data directory is not valid UTF-8")?;
+    let runtime_config_path = target
+        .bedrock_runtime_path
+        .to_str()
+        .context("attached Bedrock runtime configuration path is not valid UTF-8")?;
+    Ok(adapter.build_config(NodeConfigContext {
+        network_id: "logos-testnet",
+        config_path: runtime_config_path,
+        data_dir,
+        endpoint: endpoint.as_deref(),
+        port,
+        public_testnet: true,
+    }))
+}
+
+fn read_attached_config_bytes(target: &AttachedInitializationTarget) -> Result<Option<Vec<u8>>> {
+    ensure_attached_config_directory(target, false)?;
+    let metadata = match fs::symlink_metadata(&target.path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect attached initialization configuration {}",
+                    target.path.display()
+                )
+            });
+        }
+    };
+    anyhow::ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "attached initialization configuration must be a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= MAX_CONFIG_BYTES,
+        "node configuration exceeds the 1 MiB editor limit"
+    );
+    fs::read(&target.path)
+        .with_context(|| format!("failed to read {}", target.path.display()))
+        .map(Some)
+}
+
+fn ensure_attached_config_directory(
+    target: &AttachedInitializationTarget,
+    create: bool,
+) -> Result<()> {
+    let mut current = target.config_root.clone();
+    for component in ATTACHED_CONFIG_DIRECTORY {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => anyhow::ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "attached initialization configuration directory must be a real directory"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+                fs::create_dir(&current).with_context(|| {
+                    format!(
+                        "failed to create attached initialization configuration directory {}",
+                        current.display()
+                    )
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect attached initialization configuration directory {}",
+                        current.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_attached_editor_value(
+    target: &AttachedInitializationTarget,
+    kind: NodeKind,
+    value: &Value,
+) -> Result<()> {
+    let object = value
+        .as_object()
+        .context("attached initialization configuration must be a JSON object")?;
+    if kind == NodeKind::Messaging && object.contains_key("nodekey") {
+        bail!("Messaging peer identity is protected and cannot be edited here");
+    }
+    for field in fields_for(kind) {
+        let field_value = value.pointer(field.path);
+        if field.required && field_value.is_none() {
+            bail!("{} is required", field.label);
+        }
+        if let Some(field_value) = field_value {
+            validate_attached_field(field, field_value)?;
+        }
+    }
+    if kind == NodeKind::Bedrock {
+        let output = value
+            .pointer("/output")
+            .and_then(Value::as_str)
+            .context("Bedrock generated runtime output is required")?;
+        let expected = target
+            .bedrock_runtime_path
+            .to_str()
+            .context("attached Bedrock runtime configuration path is not valid UTF-8")?;
+        if output != expected {
+            bail!("Bedrock generated runtime output must remain {expected}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_attached_stored_value(
+    target: &AttachedInitializationTarget,
+    kind: NodeKind,
+    value: &Value,
+) -> Result<()> {
+    if kind == NodeKind::Messaging && !super::messaging_identity::has_persisted_identity(value)? {
+        bail!(
+            "Messaging initialization configuration has no persisted peer identity; save it before initializing"
+        );
+    }
+    let editor_value = redact_for_editor(kind, value)?;
+    validate_attached_editor_value(target, kind, &editor_value)
+}
+
+fn validate_attached_field(field: &FieldSpec, value: &Value) -> Result<()> {
+    match field.kind {
+        FieldKind::LocalPath => {
+            let path = require_nonempty_string(value, field.label)?;
+            if !Path::new(path).is_absolute() || path.contains('\0') {
+                bail!("{} must be an absolute local path", field.label);
+            }
+            Ok(())
+        }
+        FieldKind::String => require_nonempty_string(value, field.label).map(|_| ()),
+        FieldKind::Port => {
+            let port = value
+                .as_u64()
+                .with_context(|| format!("{} must be a whole port number", field.label))?;
+            if !(1..=u64::from(u16::MAX)).contains(&port) {
+                bail!("{} must be between 1 and {}", field.label, u16::MAX);
+            }
+            Ok(())
+        }
+        FieldKind::Boolean => value
+            .as_bool()
+            .with_context(|| format!("{} must be true or false", field.label))
+            .map(|_| ()),
+        FieldKind::StringList => {
+            let values = value
+                .as_array()
+                .with_context(|| format!("{} must be a JSON array", field.label))?;
+            for entry in values {
+                require_nonempty_string(entry, field.label)?;
+            }
+            Ok(())
+        }
+        FieldKind::ChannelId => {
+            let channel_id = require_nonempty_string(value, field.label)?;
+            if channel_id.len() != 64 || !channel_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!(
+                    "{} must be a 64-character hexadecimal channel ID",
+                    field.label
+                );
+            }
+            Ok(())
+        }
+        FieldKind::Endpoint => {
+            validate_endpoint(require_nonempty_string(value, field.label)?, field.label)
+        }
     }
 }
 
@@ -498,13 +862,6 @@ where
     W: FnMut(NodeKind, &str, &Path, &Value, &Value) -> Result<()>,
 {
     require_configuration_editor_node(request.kind)?;
-    let attached_service_blocks_configuration = {
-        let record = state.active_topology(normalized_profile(request.profile));
-        attached_service_blocks_configuration(request.runtime, state, record)
-    };
-    if attached_service_blocks_configuration {
-        bail!(UNADOPTED_LOCAL_SERVICE);
-    }
     let previous_state = state.clone();
     let (workspace, node, target, manifest_path) = {
         let record = active_record(state, request.profile)?;
@@ -798,13 +1155,20 @@ fn edit_blocked_reason(
     None
 }
 
-fn attached_service_blocks_configuration(
+fn attached_service_requires_owned_configuration(
     runtime: Option<&LogoscoreRuntimeProfile>,
     state: &LocalNodesState,
     record: Option<&LocalDevnetRecord>,
+    kind: NodeKind,
 ) -> bool {
-    runtime.is_some_and(LogoscoreRuntimeProfile::is_attached)
-        && record.is_none_or(|record| !topology_workspace_is_managed(state, record))
+    if !runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
+        return false;
+    }
+    let Some(record) = record else {
+        return true;
+    };
+    !topology_workspace_is_managed(state, record)
+        || state.module_context_topology_id(kind) != Some(record.id.as_str())
 }
 
 fn topology_workspace_is_managed(state: &LocalNodesState, record: &LocalDevnetRecord) -> bool {
@@ -1296,11 +1660,11 @@ mod tests {
         Ok(())
     }
 
-    fn attached_runtime() -> LogoscoreRuntimeProfile {
+    fn attached_runtime(config_dir: &Path) -> LogoscoreRuntimeProfile {
         LogoscoreRuntimeProfile {
             id: "local-attached".to_owned(),
             binary_path: "/bin/sh".to_owned(),
-            config_dir: "/tmp/logoscore".to_owned(),
+            config_dir: config_dir.display().to_string(),
             modules_dir: None,
             persistence_path: None,
             ownership: LogoscoreRuntimeOwnership::LocalAttached,
@@ -1337,6 +1701,7 @@ mod tests {
         replacement["nodekey"] = Value::String("replacement-is-not-allowed".to_owned());
         let rejected = validate(
             &state,
+            None,
             "local",
             NodeKind::Messaging,
             &serde_json::to_string(&replacement)?,
@@ -1550,7 +1915,6 @@ mod tests {
         let error = save_with_writer(
             &mut state,
             ConfigSaveRequest {
-                runtime: None,
                 profile: "local",
                 kind: NodeKind::Storage,
                 text: &replacement_text,
@@ -1588,6 +1952,7 @@ mod tests {
         let _keep = directory;
         let result = validate(
             &state,
+            None,
             "local",
             NodeKind::Storage,
             &serde_json::to_string(&json!({
@@ -1667,7 +2032,10 @@ mod tests {
         let mut original: Value = serde_json::from_slice(&fs::read(&config_path)?)?;
         original["data-dir"] = Value::String(workspace.join("data/storage").display().to_string());
         fs::write(&config_path, serde_json::to_vec_pretty(&original)?)?;
-        let runtime = attached_runtime();
+        state
+            .module_context_topology_by_kind
+            .insert(NodeKind::Storage, "devnet".to_owned());
+        let runtime = attached_runtime(directory.path());
 
         let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
         assert!(snapshot.editable);
@@ -1689,73 +2057,114 @@ mod tests {
     }
 
     #[test]
-    fn attached_service_never_reads_or_writes_unmanaged_configuration() -> Result<()> {
+    fn attached_service_uses_separate_owned_initialization_configuration() -> Result<()> {
         let (directory, mut state) = state_for(NodeKind::Storage, json!({}))?;
         let config_path = directory.path().join("devnet/configs/storage.json");
         let before = fs::read(&config_path)?;
-        state.managed_workspace_root = directory
-            .path()
-            .join("unmanaged-workspace")
-            .display()
-            .to_string();
-        let runtime = attached_runtime();
+        let runtime_root = directory.path().join("logoscore");
+        fs::create_dir(&runtime_root)?;
+        let runtime = attached_runtime(&runtime_root);
 
         let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
-        assert!(!snapshot.editable);
+        assert!(snapshot.editable);
         assert!(snapshot.topology_id.is_empty());
-        assert!(snapshot.raw_text.is_empty());
-        assert!(snapshot.config_path.is_empty());
-        assert_eq!(snapshot.config_role, "Unadopted local service");
-        assert_eq!(
-            snapshot.blocked_reason.as_deref(),
-            Some(UNADOPTED_LOCAL_SERVICE)
-        );
-        let error = save(
+        assert_eq!(snapshot.config_role, ATTACHED_CONFIGURATION_ROLE);
+        assert!(snapshot.blocked_reason.is_none());
+        let attached_path = PathBuf::from(&snapshot.config_path);
+        assert!(path_is_inside(&runtime_root, &attached_path));
+        assert!(!attached_path.exists());
+        save(
             &mut state,
             Some(&runtime),
             "local",
             NodeKind::Storage,
-            "{}",
-            "revision",
+            &snapshot.raw_text,
+            &snapshot.revision,
             persist_success,
-        )
-        .expect_err("an attached service must not write an unmanaged configuration");
-        assert_eq!(error.to_string(), UNADOPTED_LOCAL_SERVICE);
+        )?;
         assert_eq!(fs::read(config_path)?, before);
+        assert!(attached_initialization_config_ready(
+            &runtime,
+            NodeKind::Storage
+        )?);
+        assert!(
+            load_attached_initialization_config(&runtime, NodeKind::Storage)?
+                .contains("logos.test")
+        );
         Ok(())
     }
 
     #[test]
-    fn attached_service_without_topology_never_reads_or_writes_configuration() -> Result<()> {
-        let (directory, mut state) = state_for(NodeKind::Storage, json!({}))?;
-        let config_path = directory.path().join("devnet/configs/storage.json");
+    fn attached_testnet_without_context_association_uses_owned_configuration() -> Result<()> {
+        let (directory, mut state) = state_for(NodeKind::Messaging, json!({}))?;
+        let mut testnet = state
+            .devnets
+            .pop()
+            .context("test fixture has no local topology")?;
+        testnet.deployment = LocalNodeDeployment::PublicTestnet;
+        testnet.id = "logos-testnet".to_owned();
+        testnet.label = "Logos Testnet".to_owned();
+        state.active_devnet = None;
+        state.testnet = Some(testnet);
+        let runtime_root = directory.path().join("logoscore");
+        fs::create_dir(&runtime_root)?;
+        let runtime = attached_runtime(&runtime_root);
+
+        let snapshot = snapshot(&state, Some(&runtime), "default", NodeKind::Messaging)?;
+
+        assert!(snapshot.topology_id.is_empty());
+        assert_eq!(snapshot.config_role, ATTACHED_CONFIGURATION_ROLE);
+        assert!(path_is_inside(
+            &runtime_root,
+            Path::new(&snapshot.config_path)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn attached_service_without_topology_saves_private_messaging_identity() -> Result<()> {
+        let (directory, mut state) = state_for(NodeKind::Messaging, json!({}))?;
+        let config_path = directory.path().join("devnet/configs/messaging.json");
         let before = fs::read(&config_path)?;
         state.active_devnet = None;
         state.devnets.clear();
-        let runtime = attached_runtime();
+        let runtime_root = directory.path().join("logoscore");
+        fs::create_dir(&runtime_root)?;
+        let runtime = attached_runtime(&runtime_root);
 
-        let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
-        assert!(!snapshot.editable);
+        let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Messaging)?;
+        assert!(snapshot.editable);
         assert!(snapshot.topology_id.is_empty());
-        assert!(snapshot.raw_text.is_empty());
-        assert!(snapshot.config_path.is_empty());
-        assert_eq!(snapshot.config_role, "Unadopted local service");
-        assert_eq!(
-            snapshot.blocked_reason.as_deref(),
-            Some(UNADOPTED_LOCAL_SERVICE)
-        );
-        let error = save(
+        assert_eq!(snapshot.config_role, ATTACHED_CONFIGURATION_ROLE);
+        assert!(!snapshot.raw_text.contains("nodekey"));
+        let attached_path = PathBuf::from(&snapshot.config_path);
+        save(
             &mut state,
             Some(&runtime),
             "local",
-            NodeKind::Storage,
-            "{}",
-            "revision",
+            NodeKind::Messaging,
+            &snapshot.raw_text,
+            &snapshot.revision,
             persist_success,
-        )
-        .expect_err("an attached service without a topology must not write a configuration");
-        assert_eq!(error.to_string(), UNADOPTED_LOCAL_SERVICE);
+        )?;
         assert_eq!(fs::read(config_path)?, before);
+        let stored: Value = serde_json::from_slice(&fs::read(&attached_path)?)?;
+        assert!(super::super::messaging_identity::has_persisted_identity(
+            &stored
+        )?);
+        assert!(attached_initialization_config_ready(
+            &runtime,
+            NodeKind::Messaging
+        )?);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            assert_eq!(
+                fs::metadata(attached_path)?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
         Ok(())
     }
 
