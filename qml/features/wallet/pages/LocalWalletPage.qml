@@ -859,6 +859,7 @@ ColumnLayout {
                             theme: root.theme
                             columns: [modelData.time, modelData.label, modelData.status, modelData.detail]
                             status: modelData.status
+                            transactionId: String(modelData.transaction_id || modelData.transactionId || "")
                         }
                     }
                 }
@@ -1062,7 +1063,10 @@ ColumnLayout {
         required property Theme theme
         property var columns: []
         property string status: ""
+        property string transactionId: ""
         property bool header: false
+        readonly property bool transactionIdCopyable: !rowRoot.header
+            && rowRoot.transactionId.length > 0
         readonly property int verticalPadding: rowRoot.header ? 0 : rowRoot.theme.gapSmall
         readonly property int maxDetailLines: 3
         readonly property int contentHeight: rowRoot.header
@@ -1117,6 +1121,7 @@ ColumnLayout {
                 id: detailCell
                 objectName: "walletOperationDetail"
 
+                visible: !rowRoot.transactionIdCopyable
                 text: rowRoot.columnText(3)
                 color: rowRoot.textColor(3)
                 textFormat: Text.PlainText
@@ -1127,6 +1132,25 @@ ColumnLayout {
                 font.pixelSize: rowRoot.header ? rowRoot.theme.labelText : rowRoot.theme.dataText
                 font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
                 font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
+                Layout.preferredWidth: rowRoot.columnWidth(3)
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+            }
+
+            LinkCell {
+                id: transactionDetailCell
+                objectName: "walletOperationTransactionDetail"
+
+                visible: rowRoot.transactionIdCopyable
+                theme: rowRoot.theme
+                text: rowRoot.columnText(3)
+                copyable: true
+                copyText: rowRoot.transactionId
+                copyAccessibleName: qsTr("Copy full submitted transaction ID %1")
+                    .arg(rowRoot.transactionId)
+                copyAccessibleDescription: qsTr("Copies the complete submitted transaction ID.")
+                monospace: true
+                wrap: false
                 Layout.preferredWidth: rowRoot.columnWidth(3)
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop

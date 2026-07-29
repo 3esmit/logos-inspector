@@ -179,7 +179,7 @@ WalletState {
 
     function commandOperationDetail(value) {
         const report = value || {}
-        const tx = String(report.tx_hash || report.txHash || "")
+        const tx = submittedTransactionId(report)
         if (tx.length) {
             return qsTr("tx %1").arg(UiFormat.shortHash(tx))
         }
@@ -192,6 +192,12 @@ WalletState {
             return command
         }
         return String(report.status || qsTr("completed"))
+    }
+
+    function submittedTransactionId(value) {
+        const report = value || {}
+        return String(report.tx_hash || report.txHash || report.transaction_id
+            || report.transactionId || "").trim()
     }
 
     function privateSyncOperationDetail(value) {
@@ -253,8 +259,10 @@ WalletState {
                     response.ok ? draft.publicKey : (response.error || draft.failureMessage))
                 return
             }
+            const value = response.value || ({})
             appendHistory(draft.historyLabel, response.ok ? draft.successStatus : "down",
-                response.ok ? operationDetail(response.value, draft.fallback) : (response.error || draft.failureMessage))
+                response.ok ? operationDetail(value, draft.fallback) : (response.error || draft.failureMessage),
+                response.ok ? submittedTransactionId(value) : "")
         }, undefined, acceptResponse)
     }
 
@@ -274,11 +282,12 @@ WalletState {
         }
     }
 
-    function appendHistory(label, statusText, detail) {
+    function appendHistory(label, statusText, detail, transactionId) {
         const labelText = String(label || "")
         const statusValue = String(statusText || "")
         const detailText = String(detail || "")
-        const record = appendOperation(labelText, statusValue, detailText)
+        const transactionIdText = String(transactionId || "").trim()
+        const record = appendOperation(labelText, statusValue, detailText, transactionIdText)
         const historyStatus = operationStatus(statusValue)
         if (gateway) {
             let appendHistoryCallback = typeof gateway.appendOperationHistory === "function"
@@ -291,15 +300,19 @@ WalletState {
                 appendHistoryCallback = gateway.appendNodeOperationHistory
             }
             if (appendHistoryCallback) {
+                const historyResult = {
+                    status: record.status,
+                    detail: record.detail
+                }
+                if (transactionIdText.length > 0) {
+                    historyResult.transaction_id = transactionIdText
+                }
                 appendHistoryCallback({
                     domain: "wallet",
                     method: labelText,
                     status: historyStatus,
                     label: labelText,
-                    result: {
-                        status: record.status,
-                        detail: record.detail
-                    },
+                    result: historyResult,
                     error: historyStatus === "failed" ? detailText : ""
                 }, detailText)
             }

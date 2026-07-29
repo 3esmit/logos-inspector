@@ -156,13 +156,17 @@ QtObject {
         return OperationHistoryVocabulary.syntheticHistoryStatus(statusText)
     }
 
-    function appendOperation(label, statusText, detail) {
+    function appendOperation(label, statusText, detail, transactionId) {
         const rows = Array.isArray(operations) ? operations.slice(-49) : []
         const record = {
             time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
             label: String(label || qsTr("Local wallet")),
             status: String(statusText || "unknown"),
             detail: String(detail || "")
+        }
+        const normalizedTransactionId = String(transactionId || "").trim()
+        if (normalizedTransactionId.length > 0) {
+            record.transaction_id = normalizedTransactionId
         }
         rows.push(record)
         operations = rows

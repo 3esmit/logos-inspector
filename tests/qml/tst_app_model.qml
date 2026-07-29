@@ -5887,6 +5887,9 @@ TestCase {
         compare(calls[0].args[2], "confirm-send-transaction")
         compare(model.localWalletOperations[0].label, "Send transaction")
         compare(model.localWalletOperations[0].status, "submitted")
+        compare(model.localWalletOperations[0].transaction_id, "tx123")
+        compare(model.wallet.payload(model.networkProfile, false).operations[0].transaction_id,
+            "tx123")
     }
 
     function test_read_incoming_wallet_transactions_uses_private_sync_confirmation() {
