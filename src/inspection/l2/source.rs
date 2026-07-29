@@ -653,7 +653,9 @@ mod tests {
         let calls = calls
             .lock()
             .map_err(|_| anyhow::anyhow!("recorded module calls lock poisoned"))?;
-        ensure!(calls.len() == 2, "expected exactly two Indexer reads");
+        let [first_call, second_call] = calls.as_slice() else {
+            return Err(anyhow::anyhow!("expected exactly two Indexer reads"));
+        };
         for (call, channel_id) in calls.iter().zip([&first_channel, &second_channel]) {
             ensure!(
                 call.module() == MODULE_ID,
@@ -673,7 +675,7 @@ mod tests {
             );
         }
         ensure!(
-            calls[0].instance_id() != calls[1].instance_id(),
+            first_call.instance_id() != second_call.instance_id(),
             "two Zone Channels shared one Basecamp Indexer instance"
         );
         Ok(())

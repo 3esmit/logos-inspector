@@ -17131,17 +17131,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1785298655,
-        "narHash": "sha256-NzRVU6EBjwisE00PXOTBXBsyufiNSVmCpK2fNQ7tzDc=",
+        "lastModified": 1785355127,
+        "narHash": "sha256-elgmkSKq9IDK+T6zZxlnmazTq/yZhixn5ToXSQtXW+g=",
         "owner": "3esmit",
         "repo": "logos-protocol",
-        "rev": "e71e759261a1ddbf5bfb490aac3623b94d4e39bb",
+        "rev": "6f75e612d7ed71510a9f9a84f36ede2fe687d1fe",
         "type": "github"
       },
       "original": {
         "owner": "3esmit",
         "repo": "logos-protocol",
-        "rev": "e71e759261a1ddbf5bfb490aac3623b94d4e39bb",
+        "rev": "6f75e612d7ed71510a9f9a84f36ede2fe687d1fe",
         "type": "github"
       }
     },

@@ -7,7 +7,7 @@
     # The scoped C client API is part of the protocol source. Keep the module
     # builder and every Inspector target on the same published ABI, rather
     # than maintaining a second local protocol facade.
-    logos-protocol.url = "github:3esmit/logos-protocol/e71e759261a1ddbf5bfb490aac3623b94d4e39bb";
+    logos-protocol.url = "github:3esmit/logos-protocol/6f75e612d7ed71510a9f9a84f36ede2fe687d1fe";
     logos-protocol.inputs.logos-nix.follows = "logos-module-builder/logos-nix";
     logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
     blockchain_module = {
