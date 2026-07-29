@@ -12,7 +12,8 @@ use super::{
     LEGACY_LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_ACCOUNTS_OUTPUT_LIMIT, LOCAL_WALLET_DEPLOY_TIMEOUT,
     LOCAL_WALLET_ENV_ALLOWLIST, LOCAL_WALLET_HOME_ENV, LOCAL_WALLET_LIST_TIMEOUT,
     LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT, LOCAL_WALLET_POLL_INTERVAL,
-    LOCAL_WALLET_PROFILE_TIMEOUT, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
+    LOCAL_WALLET_PROFILE_TIMEOUT, LOCAL_WALLET_SUBMIT_TIMEOUT, LOCAL_WALLET_SYNC_TIMEOUT,
+    LOCAL_WALLET_VERSION_TIMEOUT,
 };
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, DEFAULT_COMMAND_CAPTURE_LIMIT, output_text, run_command,
@@ -21,10 +22,12 @@ use crate::support::command_runner::{
 
 pub(super) enum LocalWalletInvocation<'a> {
     Version,
+    SubmitOnlySupport,
     ProfileHomeProbe,
     DeployProgram { program_path: &'a Path },
     SyncPrivate,
     Accounts,
+    SubmitPublicTransfer { args: &'a [String] },
     Args { args: &'a [String], label: &'a str },
 }
 
@@ -141,6 +144,13 @@ fn configure_invocation<'a>(
             command.arg("--version");
             ("wallet --version", LOCAL_WALLET_VERSION_TIMEOUT)
         }
+        LocalWalletInvocation::SubmitOnlySupport => {
+            command.args(["auth-transfer", "send", "--help"]);
+            (
+                "wallet auth-transfer send --help",
+                LOCAL_WALLET_VERSION_TIMEOUT,
+            )
+        }
         LocalWalletInvocation::ProfileHomeProbe => {
             command.arg("account").arg("list");
             ("wallet account list", LOCAL_WALLET_PROFILE_TIMEOUT)
@@ -156,6 +166,10 @@ fn configure_invocation<'a>(
         LocalWalletInvocation::Accounts => {
             command.arg("account").arg("list").arg("--long");
             ("wallet account list --long", LOCAL_WALLET_LIST_TIMEOUT)
+        }
+        LocalWalletInvocation::SubmitPublicTransfer { args } => {
+            command.args(args);
+            ("wallet auth-transfer send", LOCAL_WALLET_SUBMIT_TIMEOUT)
         }
         LocalWalletInvocation::Args { args, label } => {
             command.args(args);
@@ -224,5 +238,23 @@ fn normalize_output(output: Output) -> LocalWalletOutput {
         exit_status: output.status.to_string(),
         stdout: output.stdout,
         stderr: output.stderr,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submit_public_transfer_uses_a_bounded_deadline() {
+        let args = vec!["auth-transfer".to_owned(), "send".to_owned()];
+        let mut command = Command::new("wallet");
+        let (label, timeout) = configure_invocation(
+            &mut command,
+            LocalWalletInvocation::SubmitPublicTransfer { args: &args },
+        );
+
+        assert_eq!(label, "wallet auth-transfer send");
+        assert_eq!(timeout, LOCAL_WALLET_SUBMIT_TIMEOUT);
     }
 }

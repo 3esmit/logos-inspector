@@ -220,6 +220,45 @@ TestCase {
         )
     }
 
+    function test_submitted_transaction_row_keeps_full_id_copyable() {
+        const transactionId = "ab".repeat(32)
+        model.localWalletOperations = [{
+            time: "12:34:56",
+            label: qsTr("Send transaction"),
+            status: "submitted",
+            detail: "tx abcd...wxyz",
+            transaction_id: transactionId
+        }]
+        model.localWalletTab = "operations"
+
+        let row = null
+        tryVerify(function () {
+            row = findChild(page, "walletOperationRow")
+            return row !== null && row.visible
+        })
+        verify(!!row, "Operation row exists")
+        compare(row.transactionId, transactionId)
+
+        let detail = null
+        tryVerify(function () {
+            detail = findObjectByName(row, "walletOperationTransactionDetail")
+            return detail !== null && detail.visible
+        })
+        verify(!!detail, "Transaction detail exists")
+        compare(detail.copyText, transactionId)
+
+        let copy = null
+        tryVerify(function () {
+            copy = findAccessibleByName(row,
+                qsTr("Copy full submitted transaction ID %1").arg(transactionId))
+            return copy !== null
+        })
+        verify(!!copy, "Copy action exists")
+        compare(copy.Accessible.role, Accessible.Button)
+        compare(copy.Accessible.description,
+            qsTr("Copies the complete submitted transaction ID."))
+    }
+
     function test_accepting_create_account_popup_calls_model_command() {
         model.walletCreatePrivacy = "private"
         model.walletCreateLabel = "receiver"
@@ -368,6 +407,23 @@ TestCase {
         const children = item.children || []
         for (let index = 0; index < children.length; ++index) {
             const match = findAccessibleByName(children[index], expectedName)
+            if (match) {
+                return match
+            }
+        }
+        return null
+    }
+
+    function findObjectByName(item, expectedName) {
+        if (!item) {
+            return null
+        }
+        if (String(item.objectName || "") === expectedName) {
+            return item
+        }
+        const children = item.children || []
+        for (let index = 0; index < children.length; ++index) {
+            const match = findObjectByName(children[index], expectedName)
             if (match) {
                 return match
             }

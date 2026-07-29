@@ -41,6 +41,7 @@ pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LEGACY_LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_MUTATION_TIMEOUT: Duration = Duration::from_secs(300);
+const LOCAL_WALLET_SUBMIT_TIMEOUT: Duration = Duration::from_secs(45);
 const LOCAL_WALLET_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_WALLET_PROFILE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -452,10 +453,12 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
     validate_wallet_send_recipient(to, to_keys, to_npk, to_vpk)?;
 
     let wallet = resolve_local_wallet_send_profile(profile)?;
+    ensure_wallet_supports_submit_only(runner, &wallet)?;
     let from = resolve_owned_public_wallet_sender(runner, &wallet, from)?;
     let mut args = vec![
         "auth-transfer".to_owned(),
         "send".to_owned(),
+        "--submit-only".to_owned(),
         "--from".to_owned(),
         from.clone(),
         "--amount".to_owned(),
@@ -489,10 +492,7 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
     let output = runner.run(
         &wallet.wallet_binary,
         &wallet.wallet_home,
-        LocalWalletInvocation::Args {
-            args: &args,
-            label: "wallet auth-transfer send",
-        },
+        LocalWalletInvocation::SubmitPublicTransfer { args: &args },
         &redactions,
     )?;
     let stdout = local_wallet_output_text(&output.stdout, &redactions);
@@ -521,6 +521,27 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
         stdout,
         stderr,
     })
+}
+
+fn ensure_wallet_supports_submit_only<R: LocalWalletRunner>(
+    runner: &R,
+    wallet: &profile::ResolvedLocalWalletProfile,
+) -> Result<()> {
+    let redactions = wallet.redactions();
+    let output = runner.run(
+        &wallet.wallet_binary,
+        &wallet.wallet_home,
+        LocalWalletInvocation::SubmitOnlySupport,
+        &redactions,
+    )?;
+    let stdout = local_wallet_output_text(&output.stdout, &redactions);
+    let stderr = local_wallet_output_text(&output.stderr, &redactions);
+    if format!("{stdout}\n{stderr}").contains("--submit-only") {
+        return Ok(());
+    }
+    bail!(
+        "wallet binary does not support non-blocking public transaction submission; install a wallet release with `auth-transfer send --submit-only`"
+    )
 }
 
 fn resolve_owned_public_wallet_sender<R: LocalWalletRunner>(
@@ -1595,6 +1616,7 @@ exit 12
 
     #[derive(Debug)]
     struct WalletSendRunner {
+        submit_only_output: LocalWalletOutput,
         accounts_output: LocalWalletOutput,
         send_output: LocalWalletOutput,
         expected_wallet_home: String,
@@ -1617,15 +1639,16 @@ exit 12
                 bail!("unexpected wallet home: {wallet_home}");
             }
             match invocation {
+                LocalWalletInvocation::SubmitOnlySupport => {
+                    self.invocations.borrow_mut().push("submit-only support");
+                    Ok(self.submit_only_output.clone())
+                }
                 LocalWalletInvocation::ProfileHomeProbe => {
                     self.invocations.borrow_mut().push("account list");
                     Ok(self.accounts_output.clone())
                 }
-                LocalWalletInvocation::Args { args, label } => {
+                LocalWalletInvocation::SubmitPublicTransfer { args } => {
                     self.invocations.borrow_mut().push("auth-transfer send");
-                    if label != "wallet auth-transfer send" {
-                        bail!("unexpected label: {label}");
-                    }
                     if args != self.expected_send_args {
                         bail!("unexpected args: {args:?}");
                     }
@@ -1882,6 +1905,11 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let runner = WalletSendRunner {
+            submit_only_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"      --submit-only\n".to_vec(),
+                stderr: Vec::new(),
+            },
             accounts_output: LocalWalletOutput {
                 exit_status: "exit status: 0".to_owned(),
                 stdout: b"m/0 Public/owned-sender [primary]\n".to_vec(),
@@ -1896,6 +1924,7 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
             expected_send_args: vec![
                 "auth-transfer".to_owned(),
                 "send".to_owned(),
+                "--submit-only".to_owned(),
                 "--from".to_owned(),
                 "Public/owned-sender".to_owned(),
                 "--amount".to_owned(),
@@ -1924,7 +1953,7 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
         assert_eq!(report.tx_hash.as_deref(), Some("submitted-tx"));
         assert_eq!(
             runner.invocations.into_inner(),
-            vec!["account list", "auth-transfer send"]
+            vec!["submit-only support", "account list", "auth-transfer send"]
         );
         Ok(())
     }
@@ -1937,6 +1966,11 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
         std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
         std::fs::write(wallet_home.join("storage.json"), b"{}")?;
         let runner = WalletSendRunner {
+            submit_only_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"      --submit-only\n".to_vec(),
+                stderr: Vec::new(),
+            },
             accounts_output: LocalWalletOutput {
                 exit_status: "exit status: 0".to_owned(),
                 stdout: b"m/0 Public/owned-sender [primary]\n".to_vec(),
@@ -1972,7 +2006,62 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
             format!("{error:#}"),
             "sender must be an owned Public wallet account"
         );
-        assert_eq!(runner.invocations.into_inner(), vec!["account list"]);
+        assert_eq!(
+            runner.invocations.into_inner(),
+            vec!["submit-only support", "account list"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_send_requires_submit_only_wallet_support() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        std::fs::write(wallet_home.join("storage.json"), b"{}")?;
+        let runner = WalletSendRunner {
+            submit_only_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"Send native tokens from one account to another\n".to_vec(),
+                stderr: Vec::new(),
+            },
+            accounts_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            send_output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            expected_wallet_home: wallet_home.display().to_string(),
+            expected_send_args: Vec::new(),
+            invocations: RefCell::new(Vec::new()),
+        };
+
+        let error = local_wallet_send_transaction_with_runner(
+            &runner,
+            json!({
+                "wallet_binary": "wallet",
+                "wallet_home": wallet_home,
+                "network_profile": "testnet"
+            }),
+            json!({
+                "from": "primary",
+                "to": "Public/recipient",
+                "amount": "1"
+            }),
+        )
+        .err()
+        .context("legacy wallet unexpectedly submitted a transaction")?;
+
+        assert_eq!(
+            format!("{error:#}"),
+            "wallet binary does not support non-blocking public transaction submission; install a wallet release with `auth-transfer send --submit-only`"
+        );
+        assert_eq!(runner.invocations.into_inner(), vec!["submit-only support"]);
         Ok(())
     }
 
