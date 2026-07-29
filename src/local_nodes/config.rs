@@ -382,7 +382,7 @@ pub(super) fn snapshot(
 ) -> Result<LocalNodeConfigSnapshot> {
     require_configuration_editor_node(kind)?;
     let record = state.active_topology(normalized_profile(profile));
-    if attached_service_blocks_configuration(runtime, state, record) {
+    if attached_service_requires_owned_configuration(runtime, state, record, kind) {
         let runtime = runtime.context("attached local LogosCore runtime is unavailable")?;
         return attached_initialization_snapshot(runtime, profile, kind);
     }
@@ -427,7 +427,7 @@ pub(super) fn validate(
     let result: Result<Vec<LocalNodeConfigField>> = (|| {
         require_configuration_editor_node(kind)?;
         let record = state.active_topology(normalized_profile(profile));
-        if attached_service_blocks_configuration(runtime, state, record) {
+        if attached_service_requires_owned_configuration(runtime, state, record, kind) {
             let runtime = runtime.context("attached local LogosCore runtime is unavailable")?;
             return validate_attached_initialization_config(runtime, kind, text);
         }
@@ -464,7 +464,7 @@ where
     F: FnMut(&LocalNodesState) -> Result<()>,
 {
     let record = state.active_topology(normalized_profile(profile));
-    if attached_service_blocks_configuration(runtime, state, record) {
+    if attached_service_requires_owned_configuration(runtime, state, record, kind) {
         let runtime = runtime.context("attached local LogosCore runtime is unavailable")?;
         return save_attached_initialization_config(runtime, kind, text, expected_revision);
     }
@@ -1155,13 +1155,20 @@ fn edit_blocked_reason(
     None
 }
 
-fn attached_service_blocks_configuration(
+fn attached_service_requires_owned_configuration(
     runtime: Option<&LogoscoreRuntimeProfile>,
     state: &LocalNodesState,
     record: Option<&LocalDevnetRecord>,
+    kind: NodeKind,
 ) -> bool {
-    runtime.is_some_and(LogoscoreRuntimeProfile::is_attached)
-        && record.is_none_or(|record| !topology_workspace_is_managed(state, record))
+    if !runtime.is_some_and(LogoscoreRuntimeProfile::is_attached) {
+        return false;
+    }
+    let Some(record) = record else {
+        return true;
+    };
+    !topology_workspace_is_managed(state, record)
+        || state.module_context_topology_id(kind) != Some(record.id.as_str())
 }
 
 fn topology_workspace_is_managed(state: &LocalNodesState, record: &LocalDevnetRecord) -> bool {
@@ -2025,6 +2032,9 @@ mod tests {
         let mut original: Value = serde_json::from_slice(&fs::read(&config_path)?)?;
         original["data-dir"] = Value::String(workspace.join("data/storage").display().to_string());
         fs::write(&config_path, serde_json::to_vec_pretty(&original)?)?;
+        state
+            .module_context_topology_by_kind
+            .insert(NodeKind::Storage, "devnet".to_owned());
         let runtime = attached_runtime(directory.path());
 
         let snapshot = snapshot(&state, Some(&runtime), "local", NodeKind::Storage)?;
@@ -2051,11 +2061,6 @@ mod tests {
         let (directory, mut state) = state_for(NodeKind::Storage, json!({}))?;
         let config_path = directory.path().join("devnet/configs/storage.json");
         let before = fs::read(&config_path)?;
-        state.managed_workspace_root = directory
-            .path()
-            .join("unmanaged-workspace")
-            .display()
-            .to_string();
         let runtime_root = directory.path().join("logoscore");
         fs::create_dir(&runtime_root)?;
         let runtime = attached_runtime(&runtime_root);
@@ -2086,6 +2091,33 @@ mod tests {
             load_attached_initialization_config(&runtime, NodeKind::Storage)?
                 .contains("logos.test")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn attached_testnet_without_context_association_uses_owned_configuration() -> Result<()> {
+        let (directory, mut state) = state_for(NodeKind::Messaging, json!({}))?;
+        let mut testnet = state
+            .devnets
+            .pop()
+            .context("test fixture has no local topology")?;
+        testnet.deployment = LocalNodeDeployment::PublicTestnet;
+        testnet.id = "logos-testnet".to_owned();
+        testnet.label = "Logos Testnet".to_owned();
+        state.active_devnet = None;
+        state.testnet = Some(testnet);
+        let runtime_root = directory.path().join("logoscore");
+        fs::create_dir(&runtime_root)?;
+        let runtime = attached_runtime(&runtime_root);
+
+        let snapshot = snapshot(&state, Some(&runtime), "default", NodeKind::Messaging)?;
+
+        assert!(snapshot.topology_id.is_empty());
+        assert_eq!(snapshot.config_role, ATTACHED_CONFIGURATION_ROLE);
+        assert!(path_is_inside(
+            &runtime_root,
+            Path::new(&snapshot.config_path)
+        ));
         Ok(())
     }
 
