@@ -23,6 +23,7 @@ struct LogosInspectorAsyncBridgeLimits
 struct LogosInspectorCoreApi
 {
     using NewWithHostTransportFn = LogosInspectorCore* (*)(const LogosInspectorHostTransportV1*);
+    using NewWithHostTransportV2Fn = LogosInspectorCore* (*)(const LogosInspectorHostTransportV2*);
     using CloseFn = void (*)(LogosInspectorCore*);
     using FreeFn = void (*)(LogosInspectorCore*);
     using CallFn = char* (*)(LogosInspectorCore*, const char*, const char*);
@@ -41,11 +42,18 @@ struct LogosInspectorCoreApi
         const char*,
         const char*,
         const char*);
+    using IngestModuleInstanceEventFn = int32_t (*)(
+        LogosInspectorCore*,
+        const char*,
+        const char*,
+        const char*,
+        const char*);
     using SetRuntimeModuleEventHealthFn = int32_t (*)(
         LogosInspectorCore*,
         int32_t);
 
     NewWithHostTransportFn newWithHostTransport = nullptr;
+    NewWithHostTransportV2Fn newWithHostTransportV2 = nullptr;
     CloseFn close = nullptr;
     FreeFn free = nullptr;
     CallFn call = nullptr;
@@ -53,6 +61,7 @@ struct LogosInspectorCoreApi
     CallModuleAsyncFn callModuleAsync = nullptr;
     CancelFn cancel = nullptr;
     IngestModuleEventFn ingestModuleEvent = nullptr;
+    IngestModuleInstanceEventFn ingestModuleEventInstance = nullptr;
     SetRuntimeModuleEventHealthFn setRuntimeModuleEventHealth = nullptr;
 
     static LogosInspectorCoreApi production();

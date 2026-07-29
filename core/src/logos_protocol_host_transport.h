@@ -15,6 +15,12 @@ struct LogosProtocolApi
         const char*,
         const char*,
         const char*);
+    using ClientCreateInstanceFn = lp_client* (*)(
+        const char*,
+        const char*,
+        const char*,
+        const char*,
+        const char*);
     using ClientDestroyFn = void (*)(lp_client*);
     using InvokeAsyncFn = int (*)(
         lp_client*,
@@ -31,6 +37,7 @@ struct LogosProtocolApi
     using UnsubscribeFn = void (*)(lp_subscription*);
 
     ClientCreateFn clientCreate = nullptr;
+    ClientCreateInstanceFn clientCreateInstance = nullptr;
     ClientDestroyFn clientDestroy = nullptr;
     InvokeAsyncFn invokeAsync = nullptr;
     SubscribeFn subscribe = nullptr;
@@ -46,6 +53,8 @@ struct LogosProtocolHostTransportLimits
     std::size_t maxRetainedRequestBytes = std::size_t { 8 } * 1024 * 1024;
     std::size_t maxSingleResultBytes = std::size_t { 16 } * 1024 * 1024;
     std::size_t maxQueuedEvents = 256;
+    std::size_t maxScopedClients = 32;
+    std::size_t maxScopedSubscriptions = 64;
     // `blockchain_module.newBlock` carries escaped full-block JSON inside the
     // protocol argument array. A valid 2 MiB block can therefore exceed 4 MiB
     // on the wire; retain a bounded envelope that accepts that representation.
@@ -75,11 +84,20 @@ public:
         IngestModuleEventFn ingest,
         SetRuntimeModuleEventHealthFn setEventHealth) noexcept override;
 
+    bool bindCoreV2(
+        LogosInspectorCore* core,
+        IngestModuleEventFn ingest,
+        IngestModuleInstanceEventFn ingestInstance,
+        SetRuntimeModuleEventHealthFn setEventHealth) noexcept override;
+
     /// Creates all allowlisted clients and atomically arms the event catalog.
     bool activate() noexcept override;
 
     /// Stable C transport interface. Its context remains valid until destruction.
     LogosInspectorHostTransportV1 vtable() noexcept override;
+
+    /// Additive V2 transport with explicit module-instance routing.
+    LogosInspectorHostTransportV2 vtableV2() noexcept override;
 
     /// True only while every native subscription and retry policy is healthy.
     bool ownsRuntimeModuleEvents() const noexcept override;

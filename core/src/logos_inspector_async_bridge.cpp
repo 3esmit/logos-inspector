@@ -501,6 +501,7 @@ LogosInspectorCoreApi LogosInspectorCoreApi::production()
 {
     LogosInspectorCoreApi api;
     api.newWithHostTransport = &logos_inspector_core_new_with_host_transport;
+    api.newWithHostTransportV2 = &logos_inspector_core_new_with_host_transport_v2;
     api.close = &logos_inspector_core_close;
     api.free = &logos_inspector_core_free;
     api.call = &logos_inspector_core_call;
@@ -508,6 +509,7 @@ LogosInspectorCoreApi LogosInspectorCoreApi::production()
     api.callModuleAsync = &logos_inspector_core_call_module_async;
     api.cancel = &logos_inspector_core_cancel;
     api.ingestModuleEvent = &logos_inspector_core_ingest_module_event;
+    api.ingestModuleEventInstance = &logos_inspector_core_ingest_module_event_instance;
     api.setRuntimeModuleEventHealth =
         &logos_inspector_core_set_runtime_module_event_health;
     return api;
@@ -533,14 +535,24 @@ public:
         if (hostTransport_ == nullptr) {
             throw std::invalid_argument("Logos Inspector host transport is required");
         }
-        transport_ = hostTransport_->vtable();
-        core_ = coreApi_.newWithHostTransport(&transport_);
+        const LogosInspectorHostTransportV2 v2 = hostTransport_->vtableV2();
+        if (coreApi_.newWithHostTransportV2 != nullptr
+            && coreApi_.ingestModuleEventInstance != nullptr
+            && v2.v1.abi_version == LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION_V2) {
+            transportV2_ = v2;
+            core_ = coreApi_.newWithHostTransportV2(&transportV2_);
+            usesV2_ = core_ != nullptr;
+        } else {
+            transport_ = hostTransport_->vtable();
+            core_ = coreApi_.newWithHostTransport(&transport_);
+        }
         if (core_ == nullptr) {
             throw std::runtime_error("could not construct Logos Inspector asynchronous core");
         }
-        if (!hostTransport_->bindCore(
+        if (!hostTransport_->bindCoreV2(
                 core_,
                 coreApi_.ingestModuleEvent,
+                usesV2_ ? coreApi_.ingestModuleEventInstance : nullptr,
                 coreApi_.setRuntimeModuleEventHealth)
             || !hostTransport_->activate()) {
             coreApi_.close(core_);
@@ -796,6 +808,10 @@ private:
             || api.setRuntimeModuleEventHealth == nullptr) {
             throw std::invalid_argument("incomplete Logos Inspector core API");
         }
+        if ((api.newWithHostTransportV2 == nullptr)
+            != (api.ingestModuleEventInstance == nullptr)) {
+            throw std::invalid_argument("incomplete Logos Inspector core V2 API");
+        }
     }
 
     std::string start(
@@ -976,6 +992,8 @@ private:
     std::shared_ptr<BridgeState> state_;
     std::unique_ptr<LogosInspectorHostTransport> hostTransport_;
     LogosInspectorHostTransportV1 transport_ {};
+    LogosInspectorHostTransportV2 transportV2_ {};
+    bool usesV2_ = false;
     LogosInspectorCore* core_ = nullptr;
 };
 

@@ -111,6 +111,7 @@ TestCase {
         property var openedInspectionCandidate: null
         property var openedSettings: null
         property bool openInspectionCandidateSucceeds: true
+        property bool basecampModules: false
 
         function idlEntryAt(index) {
             return null
@@ -135,6 +136,10 @@ TestCase {
         function openInspectionCandidate(candidate, recordHistory) {
             openedInspectionCandidate = candidate
             return openInspectionCandidateSucceeds
+        }
+
+        function prefersBasecampModules() {
+            return basecampModules
         }
     }
 
@@ -250,6 +255,7 @@ TestCase {
         zoneState.closeL2Transaction()
         zoneState.l2TransactionRequestedSourceId = ""
         zoneState.appModel = appModel
+        appModel.basecampModules = false
         registeredIdlRegistry.clear()
         appModel.selectedView = ""
         appModel.programTab = ""
@@ -1078,6 +1084,36 @@ TestCase {
         verify(hasVisibleText(control, "1.0.0"))
 
         compare(control.selectedChannelId, zoneState.activeZoneId)
+    }
+
+    function test_basecamp_channel_indexer_describes_hosted_instance() {
+        appModel.basecampModules = true
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        try {
+            verify(control.basecampHosted)
+            verify(hasVisibleText(control,
+                "Each Channel uses an isolated Basecamp-hosted Indexer instance. The selected Sequencer source is recorded as its configuration binding; Indexer follows finalized Bedrock data."))
+            verify(hasVisibleText(control, "Basecamp"))
+            const popup = findChild(control, "managedIndexerActionConfirmation")
+            verify(popup !== null)
+            control.confirmAction("stop", zoneState.activeZoneId)
+            tryVerify(function () { return popup.visible })
+            compare(popup.message,
+                "Stop the Basecamp-hosted Indexer instance for Channel " + zoneState.activeZoneId + "?")
+            popup.close()
+        } finally {
+            const popup = findChild(control, "managedIndexerActionConfirmation")
+            if (popup !== null)
+                popup.close()
+            appModel.basecampModules = false
+        }
     }
 
     function test_stopped_channel_indexer_configuration_guards_lifecycle_and_navigation() {

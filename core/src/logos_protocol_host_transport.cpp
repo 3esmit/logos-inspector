@@ -29,11 +29,12 @@ constexpr char kPayloadRetentionError[] =
 constexpr int kOwnerEventPumpSliceMs = 10;
 constexpr auto kOwnerEventPumpPause = std::chrono::milliseconds(1);
 
-constexpr std::array<std::string_view, 6> kModules = {
+constexpr std::array<std::string_view, 7> kModules = {
     "blockchain_module",
     "storage_module",
     "delivery_module",
     "capability_module",
+    "core_service",
     "lez_indexer_module",
     "lez_core",
 };
@@ -188,6 +189,7 @@ LogosProtocolApi LogosProtocolApi::production() noexcept
 {
     LogosProtocolApi api;
     api.clientCreate = &lp_client_create;
+    api.clientCreateInstance = &lp_client_create_instance;
     api.clientDestroy = &lp_client_destroy;
     api.invokeAsync = &lp_invoke_async;
     api.subscribe = &lp_subscribe;
@@ -212,6 +214,7 @@ public:
     bool bindCore(
         LogosInspectorCore* core,
         IngestModuleEventFn ingest,
+        IngestModuleInstanceEventFn ingestInstance,
         SetRuntimeModuleEventHealthFn setEventHealth) noexcept
     {
         if (core == nullptr || ingest == nullptr || setEventHealth == nullptr) {
@@ -220,11 +223,12 @@ public:
         try {
             std::lock_guard<std::mutex> lock(mutex_);
             if (lifecycle_ != Lifecycle::dormant || core_ != nullptr || ingest_ != nullptr
-                || setEventHealth_ != nullptr) {
+                || ingestInstance_ != nullptr || setEventHealth_ != nullptr) {
                 return false;
             }
             core_ = core;
             ingest_ = ingest;
+            ingestInstance_ = ingestInstance;
             setEventHealth_ = setEventHealth;
             return true;
         } catch (...) {
@@ -344,6 +348,20 @@ public:
         return result;
     }
 
+    LogosInspectorHostTransportV2 vtableV2() noexcept
+    {
+        LogosInspectorHostTransportV2 result {};
+        result.v1 = vtable();
+        if (api_.clientCreateInstance == nullptr) {
+            return result;
+        }
+        result.v1.abi_version = LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION_V2;
+        result.v1.struct_size = static_cast<uint32_t>(sizeof(result));
+        result.dispatch_instance = &dispatchInstanceCallback;
+        result.subscribe_instance = &subscribeInstanceCallback;
+        return result;
+    }
+
     bool ownsRuntimeModuleEvents() const noexcept
     {
         try {
@@ -414,6 +432,7 @@ private:
     struct ClientRecord
     {
         std::string module;
+        std::string instanceId;
         lp_client* handle = nullptr;
     };
 
@@ -421,6 +440,7 @@ private:
     {
         Impl* owner = nullptr;
         std::string module;
+        std::string instanceId;
         std::string event;
         lp_subscription* handle = nullptr;
     };
@@ -445,6 +465,7 @@ private:
     struct QueuedEvent
     {
         std::string module;
+        std::string instanceId;
         std::string event;
         std::string argsJson;
         std::size_t retainedBytes = 0;
@@ -512,10 +533,56 @@ private:
             return static_cast<Impl*>(context)->dispatch(
                 moduleRequestId,
                 module,
+                nullptr,
                 method,
                 argsJson,
                 reply,
                 replyContext);
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static int32_t dispatchInstanceCallback(
+        void* context,
+        uint64_t moduleRequestId,
+        const char* module,
+        const char* instanceId,
+        const char* method,
+        const char* argsJson,
+        LogosInspectorHostReplyFn reply,
+        void* replyContext) noexcept
+    {
+        if (context == nullptr) {
+            return 0;
+        }
+        try {
+            return static_cast<Impl*>(context)->dispatch(
+                moduleRequestId,
+                module,
+                instanceId,
+                method,
+                argsJson,
+                reply,
+                replyContext);
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static int32_t subscribeInstanceCallback(
+        void* context,
+        const char* module,
+        const char* instanceId,
+        const char* event) noexcept
+    {
+        if (context == nullptr) {
+            return 0;
+        }
+        try {
+            return static_cast<Impl*>(context)->subscribeInstance(module, instanceId, event)
+                ? 1
+                : 0;
         } catch (...) {
             return 0;
         }
@@ -584,6 +651,7 @@ private:
         return limits_.maxPendingRequests > 0 && limits_.maxSingleRequestBytes > 0
             && limits_.maxRetainedRequestBytes >= limits_.maxSingleRequestBytes
             && limits_.maxSingleResultBytes > 0 && limits_.maxQueuedEvents > 0
+            && limits_.maxScopedClients > 0 && limits_.maxScopedSubscriptions > 0
             && limits_.maxSingleEventBytes > 0
             && limits_.maxQueuedEventBytes >= limits_.maxSingleEventBytes
             && limits_.invokeTimeoutMs > 0 && limits_.retryDelay.count() >= 0;
@@ -608,7 +676,7 @@ private:
             }
             try {
                 std::lock_guard<std::mutex> lock(mutex_);
-                clients_.push_back(ClientRecord { std::string(module), handle });
+                clients_.push_back(ClientRecord { std::string(module), {}, handle });
                 if (lifecycle_ != Lifecycle::activating) {
                     return false;
                 }
@@ -637,7 +705,7 @@ private:
                 if (lifecycle_ != Lifecycle::activating) {
                     return false;
                 }
-                client = clientForModuleLocked(event.module);
+                client = clientForModuleLocked(event.module, {});
                 if (client == nullptr) {
                     return false;
                 }
@@ -716,19 +784,177 @@ private:
         }
     }
 
-    lp_client* clientForModuleLocked(std::string_view module) const noexcept
+    lp_client* clientForModuleLocked(
+        std::string_view module,
+        std::string_view instanceId) const noexcept
     {
         for (const ClientRecord& client : clients_) {
-            if (client.module == module) {
+            if (client.module == module && client.instanceId == instanceId) {
                 return client.handle;
             }
         }
         return nullptr;
     }
 
+    lp_client* ensureScopedClient(std::string_view module, std::string_view instanceId)
+    {
+        if (instanceId.empty() || api_.clientCreateInstance == nullptr) {
+            return nullptr;
+        }
+        std::lock_guard<std::mutex> creationLock(clientCreationMutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (lifecycle_ != Lifecycle::open || !workerLive_) {
+                return nullptr;
+            }
+            if (lp_client* const existing = clientForModuleLocked(module, instanceId)) {
+                return existing;
+            }
+            std::size_t scopedClients = 0;
+            for (const ClientRecord& client : clients_) {
+                scopedClients += !client.instanceId.empty() ? 1U : 0U;
+            }
+            if (scopedClients >= limits_.maxScopedClients) {
+                return nullptr;
+            }
+        }
+
+        const std::string moduleText(module);
+        const std::string instanceText(instanceId);
+        lp_client* const handle = api_.clientCreateInstance(
+            moduleText.c_str(),
+            instanceText.c_str(),
+            kOriginModule.data(),
+            nullptr,
+            nullptr);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+
+        bool retain = false;
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (lifecycle_ == Lifecycle::open && workerLive_) {
+                clients_.push_back(ClientRecord { moduleText, instanceText, handle });
+                retain = true;
+            }
+        } catch (...) {
+        }
+        if (!retain) {
+            try {
+                api_.clientDestroy(handle);
+            } catch (...) {
+            }
+            return nullptr;
+        }
+        return handle;
+    }
+
+    bool subscribeInstance(
+        const char* moduleValue,
+        const char* instanceValue,
+        const char* eventValue)
+    {
+        std::size_t moduleLength = 0;
+        std::size_t instanceLength = 0;
+        std::size_t eventLength = 0;
+        if (!boundedCStringLength(moduleValue, kMaxIdentifierBytes, moduleLength)
+            || moduleLength == 0
+            || !boundedCStringLength(instanceValue, kMaxIdentifierBytes, instanceLength)
+            || instanceLength == 0
+            || !boundedCStringLength(eventValue, kMaxIdentifierBytes, eventLength)
+            || eventLength == 0) {
+            return false;
+        }
+        const std::string_view module(moduleValue, moduleLength);
+        const std::string_view instanceId(instanceValue, instanceLength);
+        const std::string_view event(eventValue, eventLength);
+        if (!allowedModule(module)
+            || module != "lez_indexer_module" || event != "nodeChanged") {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> creationLock(subscriptionCreationMutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (lifecycle_ != Lifecycle::open || !workerLive_ || ingestInstance_ == nullptr) {
+                return false;
+            }
+            for (const auto& subscription : subscriptions_) {
+                if (subscription->module == module && subscription->instanceId == instanceId
+                    && subscription->event == event) {
+                    return true;
+                }
+            }
+            std::size_t scopedSubscriptions = 0;
+            for (const auto& subscription : subscriptions_) {
+                scopedSubscriptions += !subscription->instanceId.empty() ? 1U : 0U;
+            }
+            if (scopedSubscriptions >= limits_.maxScopedSubscriptions) {
+                return false;
+            }
+        }
+
+        lp_client* const client = ensureScopedClient(module, instanceId);
+        if (client == nullptr) {
+            return false;
+        }
+
+        auto record = std::make_unique<SubscriptionRecord>();
+        record->owner = this;
+        record->module.assign(module);
+        record->instanceId.assign(instanceId);
+        record->event.assign(event);
+        SubscriptionRecord* const rawRecord = record.get();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (lifecycle_ != Lifecycle::open || !workerLive_ || ingestInstance_ == nullptr) {
+                return false;
+            }
+            subscriptions_.push_back(std::move(record));
+        }
+
+        lp_subscription* handle = nullptr;
+        try {
+            handle = api_.subscribe(
+                client,
+                rawRecord->event.c_str(),
+                &eventCallback,
+                rawRecord);
+        } catch (...) {
+            handle = nullptr;
+        }
+
+        bool retained = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = std::find_if(
+                subscriptions_.begin(),
+                subscriptions_.end(),
+                [rawRecord](const std::unique_ptr<SubscriptionRecord>& entry) {
+                    return entry.get() == rawRecord;
+                });
+            if (found != subscriptions_.end() && lifecycle_ == Lifecycle::open && workerLive_
+                && handle != nullptr) {
+                rawRecord->handle = handle;
+                retained = true;
+            } else if (found != subscriptions_.end()) {
+                subscriptions_.erase(found);
+            }
+        }
+        if (!retained && handle != nullptr) {
+            try {
+                api_.unsubscribe(handle);
+            } catch (...) {
+            }
+        }
+        return retained;
+    }
+
     int32_t dispatch(
         uint64_t requestId,
         const char* moduleValue,
+        const char* instanceValue,
         const char* methodValue,
         const char* argsValue,
         LogosInspectorHostReplyFn reply,
@@ -739,10 +965,14 @@ private:
         }
 
         std::size_t moduleLength = 0;
+        std::size_t instanceLength = 0;
         std::size_t methodLength = 0;
         std::size_t argsLength = 0;
         if (!boundedCStringLength(moduleValue, kMaxIdentifierBytes, moduleLength)
             || moduleLength == 0
+            || (instanceValue != nullptr
+                && (!boundedCStringLength(instanceValue, kMaxIdentifierBytes, instanceLength)
+                    || instanceLength == 0))
             || !boundedCStringLength(methodValue, kMaxIdentifierBytes, methodLength)
             || methodLength == 0
             || !boundedCStringLength(
@@ -756,13 +986,25 @@ private:
         if (!allowedModule(moduleView)) {
             return 0;
         }
+        const std::string_view instanceView = instanceValue == nullptr
+            ? std::string_view {}
+            : std::string_view(instanceValue, instanceLength);
 
         std::size_t retainedBytes = 0;
         if (!checkedAdd(retainedBytes, moduleLength)
+            || !checkedAdd(retainedBytes, instanceLength)
             || !checkedAdd(retainedBytes, methodLength)
             || !checkedAdd(retainedBytes, argsLength)
             || retainedBytes > limits_.maxSingleRequestBytes) {
             return 0;
+        }
+
+        lp_client* scopedClient = nullptr;
+        if (!instanceView.empty()) {
+            scopedClient = ensureScopedClient(moduleView, instanceView);
+            if (scopedClient == nullptr) {
+                return 0;
+            }
         }
 
         auto request = std::make_unique<PendingRequest>();
@@ -784,7 +1026,9 @@ private:
                 || retainedBytes > limits_.maxRetainedRequestBytes - retainedRequestBytes_) {
                 return 0;
             }
-            request->client = clientForModuleLocked(request->module);
+            request->client = instanceView.empty()
+                ? clientForModuleLocked(request->module, {})
+                : scopedClient;
             if (request->client == nullptr) {
                 return 0;
             }
@@ -974,13 +1218,16 @@ private:
                 dataLength);
 
         std::size_t retainedBytes = subscription->module.size();
-        const bool validSize = valid && checkedAdd(retainedBytes, subscription->event.size())
+        const bool validSize = valid
+            && checkedAdd(retainedBytes, subscription->instanceId.size())
+            && checkedAdd(retainedBytes, subscription->event.size())
             && checkedAdd(retainedBytes, dataLength)
             && retainedBytes <= limits_.maxSingleEventBytes;
 
         std::unique_lock<std::mutex> lock(mutex_);
         if ((lifecycle_ != Lifecycle::activating && lifecycle_ != Lifecycle::open)
-            || !ownsEvents_) {
+            || (subscription->instanceId.empty() && !ownsEvents_)
+            || (!subscription->instanceId.empty() && ingestInstance_ == nullptr)) {
             return;
         }
         if (!validSize) {
@@ -990,6 +1237,7 @@ private:
 
         QueuedEvent event;
         event.module = subscription->module;
+        event.instanceId = subscription->instanceId;
         event.event = subscription->event;
         event.argsJson.assign(dataJson, dataLength);
         event.retainedBytes = retainedBytes;
@@ -1001,11 +1249,7 @@ private:
 
         int32_t status = LOGOS_INSPECTOR_EVENT_REJECTED;
         try {
-            status = ingest_(
-                core_,
-                event.module.c_str(),
-                event.event.c_str(),
-                event.argsJson.c_str());
+            status = ingestQueuedEvent(event);
         } catch (...) {
             status = LOGOS_INSPECTOR_EVENT_REJECTED;
         }
@@ -1017,6 +1261,30 @@ private:
             return;
         }
         requestFaultLocked();
+    }
+
+    int32_t ingestQueuedEvent(const QueuedEvent& event) noexcept
+    {
+        try {
+            if (!event.instanceId.empty()) {
+                if (ingestInstance_ == nullptr) {
+                    return LOGOS_INSPECTOR_EVENT_REJECTED;
+                }
+                return ingestInstance_(
+                    core_,
+                    event.module.c_str(),
+                    event.instanceId.c_str(),
+                    event.event.c_str(),
+                    event.argsJson.c_str());
+            }
+            return ingest_(
+                core_,
+                event.module.c_str(),
+                event.event.c_str(),
+                event.argsJson.c_str());
+        } catch (...) {
+            return LOGOS_INSPECTOR_EVENT_REJECTED;
+        }
     }
 
     void enqueueEventLocked(QueuedEvent event)
@@ -1036,14 +1304,16 @@ private:
 
     bool coalesceQueuedBlockBurstLocked(QueuedEvent& event)
     {
-        if (!isLatestBlockEvent(event.module, event.event) || eventQueue_.empty()) {
+        if (!event.instanceId.empty() || !isLatestBlockEvent(event.module, event.event)
+            || eventQueue_.empty()) {
             return false;
         }
         if (queuedEventBytes_ > limits_.maxQueuedEventBytes) {
             return false;
         }
         for (const QueuedEvent& queued : eventQueue_) {
-            if (!isLatestBlockEvent(queued.module, queued.event)) {
+            if (!queued.instanceId.empty()
+                || !isLatestBlockEvent(queued.module, queued.event)) {
                 return false;
             }
         }
@@ -1165,15 +1435,7 @@ private:
                 int32_t status = LOGOS_INSPECTOR_EVENT_REJECTED;
                 {
                     const QueuedEvent& event = eventQueue_.front();
-                    try {
-                        status = ingest_(
-                            core_,
-                            event.module.c_str(),
-                            event.event.c_str(),
-                            event.argsJson.c_str());
-                    } catch (...) {
-                        status = LOGOS_INSPECTOR_EVENT_REJECTED;
-                    }
+                    status = ingestQueuedEvent(event);
                 }
                 if (status == LOGOS_INSPECTOR_EVENT_ACCEPTED) {
                     const std::size_t retainedBytes = eventQueue_.front().retainedBytes;
@@ -1204,18 +1466,30 @@ private:
         std::vector<std::unique_ptr<SubscriptionRecord>> subscriptions;
         std::vector<ClientRecord> clients;
         try {
+            bool waitForExistingTeardown = false;
             {
-                std::unique_lock<std::mutex> lock(mutex_);
+                // Scoped subscription creation takes these locks in this
+                // order. Join in-flight creation before detaching records,
+                // then release them before protocol teardown: unsubscribe and
+                // destroy can synchronously marshal work back to the owner.
+                std::lock_guard<std::mutex> subscriptionCreationLock(subscriptionCreationMutex_);
+                std::lock_guard<std::mutex> clientCreationLock(clientCreationMutex_);
+                std::lock_guard<std::mutex> lock(mutex_);
                 if (lifecycle_ == Lifecycle::closed) {
                     return;
                 }
-                if (teardownStarted_) {
-                    waitWithOwnerEventPumpingLocked(lock, [this] {
-                        return lifecycle_ == Lifecycle::closed;
-                    });
-                    return;
-                }
+                waitForExistingTeardown = teardownStarted_;
                 teardownStarted_ = true;
+            }
+            if (waitForExistingTeardown) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                waitWithOwnerEventPumpingLocked(lock, [this] {
+                    return lifecycle_ == Lifecycle::closed;
+                });
+                return;
+            }
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
                 waitWithOwnerEventPumpingLocked(lock, [this] {
                     return activeInvokes_ == 0;
                 });
@@ -1408,11 +1682,14 @@ private:
     LogosProtocolApi api_;
     LogosProtocolHostTransportLimits limits_;
     mutable std::mutex mutex_;
+    std::mutex clientCreationMutex_;
+    std::mutex subscriptionCreationMutex_;
     std::mutex joinMutex_;
     std::condition_variable changed_;
     Lifecycle lifecycle_ = Lifecycle::dormant;
     LogosInspectorCore* core_ = nullptr;
     IngestModuleEventFn ingest_ = nullptr;
+    IngestModuleInstanceEventFn ingestInstance_ = nullptr;
     SetRuntimeModuleEventHealthFn setEventHealth_ = nullptr;
     bool setupComplete_ = true;
     bool activationInProgress_ = false;
@@ -1454,7 +1731,16 @@ bool LogosProtocolHostTransport::bindCore(
     IngestModuleEventFn ingest,
     SetRuntimeModuleEventHealthFn setEventHealth) noexcept
 {
-    return impl_->bindCore(core, ingest, setEventHealth);
+    return impl_->bindCore(core, ingest, nullptr, setEventHealth);
+}
+
+bool LogosProtocolHostTransport::bindCoreV2(
+    LogosInspectorCore* core,
+    IngestModuleEventFn ingest,
+    IngestModuleInstanceEventFn ingestInstance,
+    SetRuntimeModuleEventHealthFn setEventHealth) noexcept
+{
+    return impl_->bindCore(core, ingest, ingestInstance, setEventHealth);
 }
 
 bool LogosProtocolHostTransport::activate() noexcept
@@ -1465,6 +1751,11 @@ bool LogosProtocolHostTransport::activate() noexcept
 LogosInspectorHostTransportV1 LogosProtocolHostTransport::vtable() noexcept
 {
     return impl_->vtable();
+}
+
+LogosInspectorHostTransportV2 LogosProtocolHostTransport::vtableV2() noexcept
+{
+    return impl_->vtableV2();
 }
 
 bool LogosProtocolHostTransport::ownsRuntimeModuleEvents() const noexcept

@@ -250,6 +250,15 @@ extern "C" LogosInspectorCore* logos_inspector_core_new_with_host_transport(
     return core;
 }
 
+extern "C" LogosInspectorCore* logos_inspector_core_new_with_host_transport_v2(
+    const LogosInspectorHostTransportV2* transport)
+{
+    if (transport == nullptr) {
+        return nullptr;
+    }
+    return logos_inspector_core_new_with_host_transport(&transport->v1);
+}
+
 extern "C" void logos_inspector_core_close(LogosInspectorCore* core)
 {
     if (core == nullptr) {
@@ -451,6 +460,21 @@ extern "C" int32_t logos_inspector_core_ingest_module_event(
 {
     if (core == nullptr || core->closed || module == nullptr || *module == '\0'
         || event == nullptr || *event == '\0' || argsJson == nullptr) {
+        return LOGOS_INSPECTOR_EVENT_REJECTED;
+    }
+    return LOGOS_INSPECTOR_EVENT_ACCEPTED;
+}
+
+extern "C" int32_t logos_inspector_core_ingest_module_event_instance(
+    LogosInspectorCore* core,
+    const char* module,
+    const char* instanceId,
+    const char* event,
+    const char* argsJson)
+{
+    if (core == nullptr || core->closed || module == nullptr || *module == '\0'
+        || instanceId == nullptr || *instanceId == '\0' || event == nullptr || *event == '\0'
+        || argsJson == nullptr) {
         return LOGOS_INSPECTOR_EVENT_REJECTED;
     }
     return LOGOS_INSPECTOR_EVENT_ACCEPTED;

@@ -8,7 +8,9 @@ use crate::{
     local_nodes::local_module_catalog as local_module_catalog_report,
     local_nodes::local_node_package_catalog as local_node_package_catalog_report,
     local_nodes::{
-        ChannelIndexerConfigRequest, NodeKind, basecamp_local_nodes_status,
+        ChannelIndexerConfigRequest, NodeKind, basecamp_channel_indexer_config,
+        basecamp_channel_indexer_status, basecamp_local_nodes_status,
+        basecamp_save_channel_indexer_config,
         channel_indexer_config as channel_indexer_config_report,
         channel_indexer_status as channel_indexer_status_report,
         local_node_config as local_node_config_report,
@@ -30,13 +32,16 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("localNodeConfig", local_node_config),
     RuntimeMethodEntry::sync("localNodeConfigValidate", local_node_config_validate),
     RuntimeMethodEntry::sync("localNodeConfigSave", local_node_config_save),
-    RuntimeMethodEntry::sync("channelIndexerConfig", channel_indexer_config),
+    RuntimeMethodEntry::with_module_transport("channelIndexerConfig", channel_indexer_config),
     RuntimeMethodEntry::sync(
         "channelIndexerConfigValidate",
         channel_indexer_config_validate,
     ),
-    RuntimeMethodEntry::sync("channelIndexerConfigSave", channel_indexer_config_save),
-    RuntimeMethodEntry::sync("channelIndexerStatus", channel_indexer_status),
+    RuntimeMethodEntry::with_module_transport(
+        "channelIndexerConfigSave",
+        channel_indexer_config_save,
+    ),
+    RuntimeMethodEntry::with_module_transport("channelIndexerStatus", channel_indexer_status),
     RuntimeMethodEntry::sync("localDevnetList", local_devnet_list),
     RuntimeMethodEntry::with_runtime("localNodePackageCatalog", local_node_package_catalog),
     RuntimeMethodEntry::with_module_transport("localModuleCatalog", local_module_catalog),
@@ -85,12 +90,22 @@ pub(super) fn local_node_config_save(args: Value) -> Result<Value> {
     )?)
 }
 
-pub(super) fn channel_indexer_config(args: Value) -> Result<Value> {
+pub(super) fn channel_indexer_config(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(channel_indexer_config_report(
-        args.optional_string(0).unwrap_or("default"),
-        channel_indexer_config_request(&args, 1)?,
-    )?)
+    let profile = args.optional_string(0).unwrap_or("default");
+    let request = channel_indexer_config_request(&args, 1)?;
+    if module_transport.kind() == ModuleTransportKind::Module {
+        return to_value(runtime.block_on(basecamp_channel_indexer_config(
+            profile,
+            &request,
+            &module_transport,
+        ))?);
+    }
+    to_value(channel_indexer_config_report(profile, request)?)
 }
 
 pub(super) fn channel_indexer_config_validate(args: Value) -> Result<Value> {
@@ -102,14 +117,33 @@ pub(super) fn channel_indexer_config_validate(args: Value) -> Result<Value> {
     )?)
 }
 
-pub(super) fn channel_indexer_config_save(args: Value) -> Result<Value> {
+pub(super) fn channel_indexer_config_save(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
+    let profile = args.optional_string(0).unwrap_or("default");
+    let request = channel_indexer_config_request(&args, 1)?;
+    let text = args.string(2, "Channel Indexer configuration text")?;
+    let revision = args.string(3, "Channel Indexer configuration revision")?;
+    let confirmation = args.optional_string(4);
+    if module_transport.kind() == ModuleTransportKind::Module {
+        return to_value(runtime.block_on(basecamp_save_channel_indexer_config(
+            profile,
+            &request,
+            text,
+            revision,
+            confirmation,
+            &module_transport,
+        ))?);
+    }
     to_value(save_channel_indexer_config_report(
-        args.optional_string(0).unwrap_or("default"),
-        channel_indexer_config_request(&args, 1)?,
-        args.string(2, "Channel Indexer configuration text")?,
-        args.string(3, "Channel Indexer configuration revision")?,
-        args.optional_string(4),
+        profile,
+        request,
+        text,
+        revision,
+        confirmation,
     )?)
 }
 
@@ -134,7 +168,11 @@ fn channel_indexer_config_request(
     .context("Channel Indexer configuration request is invalid")
 }
 
-pub(super) fn channel_indexer_status(args: Value) -> Result<Value> {
+pub(super) fn channel_indexer_status(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let network_scope = serde_json::from_value::<NetworkScope>(
         args.value(1)
@@ -142,10 +180,20 @@ pub(super) fn channel_indexer_status(args: Value) -> Result<Value> {
             .context("Channel Indexer network scope is required")?,
     )
     .context("Channel Indexer network scope is invalid")?;
+    let profile = args.optional_string(0).unwrap_or("default");
+    let channel_id = args.string(2, "Channel Indexer Channel ID")?;
+    if module_transport.kind() == ModuleTransportKind::Module {
+        return to_value(runtime.block_on(basecamp_channel_indexer_status(
+            profile,
+            &module_transport,
+            &network_scope,
+            channel_id,
+        ))?);
+    }
     to_value(channel_indexer_status_report(
-        args.optional_string(0).unwrap_or("default"),
+        profile,
         &network_scope,
-        args.string(2, "Channel Indexer Channel ID")?,
+        channel_id,
     )?)
 }
 

@@ -35,6 +35,9 @@ ColumnLayout {
         || root.zoneState.managedIndexerRefreshInFlight === true
         || root.configurationBusy
     readonly property bool runtimeRunning: String(root.runtime.run_state || "") === "running"
+    readonly property bool basecampHosted: root.zoneState && root.zoneState.appModel
+        && typeof root.zoneState.appModel.prefersBasecampModules === "function"
+        && root.zoneState.appModel.prefersBasecampModules() === true
     readonly property bool installed: root.installedState === "installed"
     readonly property bool canStart: !root.actionInFlight
         && !root.interactionBlocked
@@ -80,7 +83,9 @@ ColumnLayout {
     }
 
     Text {
-        text: qsTr("Each Channel uses an isolated Inspector-managed LogosCore runtime. The selected Sequencer source is recorded as its configuration binding; Indexer follows finalized Bedrock data.")
+        text: root.basecampHosted
+            ? qsTr("Each Channel uses an isolated Basecamp-hosted Indexer instance. The selected Sequencer source is recorded as its configuration binding; Indexer follows finalized Bedrock data.")
+            : qsTr("Each Channel uses an isolated Inspector-managed LogosCore runtime. The selected Sequencer source is recorded as its configuration binding; Indexer follows finalized Bedrock data.")
         color: root.theme.textMuted
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
@@ -111,7 +116,7 @@ ColumnLayout {
         StatusChip {
             objectName: "managedIndexerRuntimeStatus"
             theme: root.theme
-            label: qsTr("LogosCore")
+            label: root.basecampHosted ? qsTr("Basecamp") : qsTr("LogosCore")
             value: root.statusLabel(String(root.runtime.run_state || "not configured"))
             detail: String(root.runtime.detail || "")
             tone: root.runtimeRunning ? "success" : "warning"
@@ -168,8 +173,12 @@ ColumnLayout {
         visible: root.installed && !root.runtimeRunning
         theme: root.theme
         tone: "info"
-        title: qsTr("Isolated runtime starts on demand")
-        message: qsTr("Starting this Channel starts only its own Inspector-managed LogosCore runtime.")
+        title: root.basecampHosted
+            ? qsTr("Basecamp instance starts on demand")
+            : qsTr("Isolated runtime starts on demand")
+        message: root.basecampHosted
+            ? qsTr("Starting this Channel loads and starts only its own Basecamp-hosted Indexer instance.")
+            : qsTr("Starting this Channel starts only its own Inspector-managed LogosCore runtime.")
         Layout.fillWidth: true
     }
 
@@ -274,9 +283,13 @@ ColumnLayout {
         title: root.pendingAction === "start"
             ? qsTr("Start Channel Indexer") : qsTr("Stop Channel Indexer")
         message: root.pendingAction === "start"
-            ? qsTr("Start an isolated lez_indexer_module runtime for Channel %1 using Bedrock %2?")
+            ? (root.basecampHosted
+                ? qsTr("Start the Basecamp-hosted lez_indexer_module instance for Channel %1 using Bedrock %2?")
+                : qsTr("Start an isolated lez_indexer_module runtime for Channel %1 using Bedrock %2?"))
                 .arg(root.pendingChannelId).arg(root.zoneState.bedrockEndpoint())
-            : qsTr("Stop the isolated managed Indexer for Channel %1?")
+            : (root.basecampHosted
+                ? qsTr("Stop the Basecamp-hosted Indexer instance for Channel %1?")
+                : qsTr("Stop the isolated managed Indexer for Channel %1?"))
                 .arg(root.pendingChannelId)
         confirmText: root.pendingAction === "start" ? qsTr("Start") : qsTr("Stop")
         confirmEnabled: root.pendingAction.length > 0 && !root.actionInFlight

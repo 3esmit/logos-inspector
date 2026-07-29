@@ -39,6 +39,7 @@ struct lp_client
     FakeProtocol* owner = nullptr;
     std::size_t id = 0;
     std::string module;
+    std::string instanceId;
     std::thread::id ownerThread;
     bool destroyed = false;
 };
@@ -67,6 +68,16 @@ struct LogosInspectorCore
 };
 
 extern "C" lp_client* lp_client_create(
+    const char*,
+    const char*,
+    const char*,
+    const char*)
+{
+    return nullptr;
+}
+
+extern "C" lp_client* lp_client_create_instance(
+    const char*,
     const char*,
     const char*,
     const char*,
@@ -104,11 +115,12 @@ extern "C" void lp_unsubscribe(lp_subscription*)
 }
 
 namespace {
-constexpr std::array<std::string_view, 6> kExpectedModules = {
+constexpr std::array<std::string_view, 7> kExpectedModules = {
     "blockchain_module",
     "storage_module",
     "delivery_module",
     "capability_module",
+    "core_service",
     "lez_indexer_module",
     "lez_core",
 };
@@ -176,6 +188,7 @@ public:
     struct CreatedClient
     {
         std::string module;
+        std::string instanceId;
         std::string origin;
         std::thread::id thread;
     };
@@ -183,6 +196,7 @@ public:
     struct CreatedSubscription
     {
         std::string module;
+        std::string instanceId;
         std::string event;
         std::thread::id thread;
     };
@@ -191,6 +205,7 @@ public:
     {
         std::size_t clientId = 0;
         std::string module;
+        std::string instanceId;
         std::string method;
         std::string argsJson;
         int timeoutMs = 0;
@@ -203,6 +218,7 @@ public:
     {
         LogosProtocolApi result;
         result.clientCreate = &createClient;
+        result.clientCreateInstance = &createInstanceClient;
         result.clientDestroy = &destroyClient;
         result.invokeAsync = &invokeAsync;
         result.subscribe = &subscribe;
@@ -364,6 +380,45 @@ public:
             for (const auto& subscription : subscriptions_) {
                 if (subscription->active && !subscription->client->destroyed
                     && subscription->client->module == module
+                    && subscription->client->instanceId.empty()
+                    && subscription->event == event) {
+                    callback = subscription->callback;
+                    userData = subscription->userData;
+                    break;
+                }
+            }
+        }
+        if (callback == nullptr) {
+            return false;
+        }
+        if (foreignThread) {
+            std::thread thread([callback, userData, event, payload] {
+                const std::string eventCopy(event);
+                callback(eventCopy.c_str(), payload.c_str(), userData);
+            });
+            thread.join();
+        } else {
+            const std::string eventCopy(event);
+            callback(eventCopy.c_str(), payload.c_str(), userData);
+        }
+        return true;
+    }
+
+    bool emitInstanceEvent(
+        std::string_view module,
+        std::string_view instanceId,
+        std::string_view event,
+        const std::string& payload,
+        bool foreignThread = false)
+    {
+        lp_event_cb callback = nullptr;
+        void* userData = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& subscription : subscriptions_) {
+                if (subscription->active && !subscription->client->destroyed
+                    && subscription->client->module == module
+                    && subscription->client->instanceId == instanceId
                     && subscription->event == event) {
                     callback = subscription->callback;
                     userData = subscription->userData;
@@ -414,10 +469,32 @@ private:
         if (factory == nullptr || target == nullptr || origin == nullptr) {
             return nullptr;
         }
-        return factory->createClientImpl(target, origin);
+        return factory->createClientImpl(target, origin, {});
     }
 
-    lp_client* createClientImpl(const char* target, const char* origin)
+    static lp_client* createInstanceClient(
+        const char* target,
+        const char* instanceId,
+        const char* origin,
+        const char*,
+        const char*)
+    {
+        FakeProtocol* factory = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(factoryMutex());
+            factory = activeFactory();
+        }
+        if (factory == nullptr || target == nullptr || instanceId == nullptr || *instanceId == '\0'
+            || origin == nullptr) {
+            return nullptr;
+        }
+        return factory->createClientImpl(target, origin, instanceId);
+    }
+
+    lp_client* createClientImpl(
+        const char* target,
+        const char* origin,
+        std::string_view instanceId)
     {
         std::unique_lock<std::mutex> lock(mutex_);
         if (blockClientCreate_) {
@@ -433,11 +510,12 @@ private:
         client->owner = this;
         client->id = clients_.size() + 1;
         client->module = target;
+        client->instanceId = instanceId;
         client->ownerThread = std::this_thread::get_id();
         lp_client* const raw = client.get();
         clients_.push_back(std::move(client));
         createdClients_.push_back(
-            CreatedClient { target, origin, std::this_thread::get_id() });
+            CreatedClient { target, std::string(instanceId), origin, std::this_thread::get_id() });
         return raw;
     }
 
@@ -510,6 +588,7 @@ private:
                 invocations_.push_back(Invocation {
                     client->id,
                     client->module,
+                    client->instanceId,
                     method,
                     argsJson,
                     timeoutMs,
@@ -576,7 +655,12 @@ private:
         lp_subscription* const raw = subscription.get();
         subscriptions_.push_back(std::move(subscription));
         createdSubscriptions_.push_back(
-            CreatedSubscription { client->module, event, std::this_thread::get_id() });
+            CreatedSubscription {
+                client->module,
+                client->instanceId,
+                event,
+                std::this_thread::get_id(),
+            });
         return raw;
     }
 
@@ -688,6 +772,14 @@ public:
         std::string argsJson;
     };
 
+    struct ScopedEvent
+    {
+        std::string module;
+        std::string instanceId;
+        std::string event;
+        std::string argsJson;
+    };
+
     void setMode(Mode mode)
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -698,6 +790,25 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         calls_.push_back(Event { module, event, argsJson });
+        switch (mode_) {
+        case Mode::accept:
+            return LOGOS_INSPECTOR_EVENT_ACCEPTED;
+        case Mode::backpressure:
+            return LOGOS_INSPECTOR_EVENT_BACKPRESSURE;
+        case Mode::reject:
+            return LOGOS_INSPECTOR_EVENT_REJECTED;
+        }
+        return LOGOS_INSPECTOR_EVENT_REJECTED;
+    }
+
+    int32_t ingestInstance(
+        const char* module,
+        const char* instanceId,
+        const char* event,
+        const char* argsJson)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        scopedCalls_.push_back(ScopedEvent { module, instanceId, event, argsJson });
         switch (mode_) {
         case Mode::accept:
             return LOGOS_INSPECTOR_EVENT_ACCEPTED;
@@ -721,10 +832,17 @@ public:
         return calls_.size();
     }
 
+    std::vector<ScopedEvent> scopedCalls() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return scopedCalls_;
+    }
+
 private:
     mutable std::mutex mutex_;
     Mode mode_ = Mode::accept;
     std::vector<Event> calls_;
+    std::vector<ScopedEvent> scopedCalls_;
 };
 
 int32_t ingestModuleEvent(
@@ -738,6 +856,20 @@ int32_t ingestModuleEvent(
         return LOGOS_INSPECTOR_EVENT_REJECTED;
     }
     return core->ingress->ingest(module, event, argsJson);
+}
+
+int32_t ingestModuleInstanceEvent(
+    LogosInspectorCore* core,
+    const char* module,
+    const char* instanceId,
+    const char* event,
+    const char* argsJson)
+{
+    if (core == nullptr || core->ingress == nullptr || module == nullptr || instanceId == nullptr
+        || event == nullptr || argsJson == nullptr) {
+        return LOGOS_INSPECTOR_EVENT_REJECTED;
+    }
+    return core->ingress->ingestInstance(module, instanceId, event, argsJson);
 }
 
 int32_t setRuntimeModuleEventHealth(LogosInspectorCore* core, int32_t ready)
@@ -1175,6 +1307,97 @@ bool dispatchEnforcesAllowlistAndBounds()
     REQUIRE(captured[0].ok == 0);
     REQUIRE(captured[0].payload
         == R"({"code":"object_unavailable","message":"target module/object could not be acquired","origin":"delivery_module"})");
+    return true;
+}
+
+bool scopedIndexerDispatchAndEventsStayWithinInstance()
+{
+    Fixture fixture;
+    REQUIRE(fixture.transport.bindCoreV2(
+        &fixture.core,
+        &ingestModuleEvent,
+        &ingestModuleInstanceEvent,
+        &setRuntimeModuleEventHealth));
+    REQUIRE(fixture.transport.activate());
+    const LogosInspectorHostTransportV2 vtable = fixture.transport.vtableV2();
+    REQUIRE(vtable.v1.abi_version == LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION_V2);
+    REQUIRE(vtable.v1.struct_size == sizeof(LogosInspectorHostTransportV2));
+    REQUIRE(vtable.dispatch_instance != nullptr);
+    REQUIRE(vtable.subscribe_instance != nullptr);
+
+    fixture.protocol.setInvokeMode(FakeProtocol::InvokeMode::inlineNull);
+    ReplyCollector replies;
+    REQUIRE(vtable.dispatch_instance(
+                vtable.v1.context,
+                201,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeStatus",
+                "[]",
+                &ReplyCollector::callback,
+                &replies)
+        == 1);
+    REQUIRE(vtable.dispatch_instance(
+                vtable.v1.context,
+                202,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeStatus",
+                "[]",
+                &ReplyCollector::callback,
+                &replies)
+        == 1);
+    REQUIRE(waitUntil([&replies] { return replies.replies().size() == 2; }));
+
+    const auto invocations = fixture.protocol.invocations();
+    REQUIRE(invocations.size() == 2);
+    REQUIRE(invocations[0].module == "lez_indexer_module");
+    REQUIRE(invocations[0].instanceId == "indexer-testnet-0101");
+    REQUIRE(invocations[1].instanceId == "indexer-testnet-8888");
+
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "untrustedEvent")
+        == 0);
+
+    const auto subscriptions = fixture.protocol.createdSubscriptions();
+    REQUIRE(subscriptions.size() == kExpectedEvents.size() + 2);
+    REQUIRE(subscriptions[kExpectedEvents.size()].instanceId == "indexer-testnet-0101");
+    REQUIRE(subscriptions[kExpectedEvents.size() + 1].instanceId == "indexer-testnet-8888");
+
+    REQUIRE(fixture.protocol.emitInstanceEvent(
+        "lez_indexer_module",
+        "indexer-testnet-0101",
+        "nodeChanged",
+        R"(["zone-a"])",
+        true));
+    REQUIRE(waitUntil([&fixture] { return fixture.ingress.scopedCalls().size() == 1; }));
+    const auto events = fixture.ingress.scopedCalls();
+    REQUIRE(events[0].module == "lez_indexer_module");
+    REQUIRE(events[0].instanceId == "indexer-testnet-0101");
+    REQUIRE(events[0].event == "nodeChanged");
+    REQUIRE(events[0].argsJson == R"(["zone-a"])");
+    REQUIRE(!fixture.protocol.emitEvent("lez_indexer_module", "nodeChanged", R"(["default"] )"));
     return true;
 }
 
@@ -1808,7 +2031,7 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 22> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 23> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
         { "missingRequiredSubscriptionKeepsDispatchOpen", missingRequiredSubscriptionKeepsDispatchOpen },
@@ -1818,6 +2041,7 @@ int main(int argc, char* argv[])
         { "closeWaitsForAdmittedActivationStartup", closeWaitsForAdmittedActivationStartup },
         { "faultDuringReadyHealthPublicationCannotRestoreStaleHealth", faultDuringReadyHealthPublicationCannotRestoreStaleHealth },
         { "dispatchEnforcesAllowlistAndBounds", dispatchEnforcesAllowlistAndBounds },
+        { "scopedIndexerDispatchAndEventsStayWithinInstance", scopedIndexerDispatchAndEventsStayWithinInstance },
         { "pendingAdmissionIsBoundedAndIdsStayReserved", pendingAdmissionIsBoundedAndIdsStayReserved },
         { "foreignResultsPreserveSuccessNullAndCanonicalFailure", foreignResultsPreserveSuccessNullAndCanonicalFailure },
         { "malformedResultStillCompletesAcceptedDispatch", malformedResultStillCompletesAcceptedDispatch },

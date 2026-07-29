@@ -12,14 +12,16 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     inspection::NetworkScope,
     modules::logos_core::{
-        LogoscoreCliRuntime, LogoscoreCliTransport, LogoscoreEventWatch, SharedModuleTransport,
+        BoxedModuleEventSubscription, LogoscoreCliRuntime, LogoscoreCliTransport,
+        LogoscoreEventWatch, ModuleCall, ModuleTransportEvent, ModuleTransportKind,
+        ScopedModuleTransport, SharedModuleTransport, dispatch_module_call,
         module_transport_event_from_watch_frame, normalize_module_call_value,
     },
     source_routing::channel_sources::{
@@ -27,6 +29,8 @@ use crate::{
     },
     support::{
         command_runner::{CommandControl, CommandTerminated},
+        confirmation::ConfirmationPolicy,
+        state_store::config_dir,
         time::now_millis,
     },
 };
@@ -40,7 +44,8 @@ use super::{
     },
     model::{
         LocalNodeConfigRecord, LocalNodeOperationReport, LocalNodeReport, LocalNodeStatus,
-        LocalNodeSummary, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
+        LocalNodeSummary, LocalNodeTools, LocalNodesState, NodeAction, NodeKind,
+        NodeLifecycleState, ToolStatus,
     },
     package,
     process::{process_group_has_live_members, spawn_detached, stop_process},
@@ -62,6 +67,11 @@ const INDEXER_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
 const INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
 const INDEXER_LIFECYCLE_EVENT_READ_INTERVAL: Duration = Duration::from_millis(250);
 static INDEXER_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
+const BASECAMP_CORE_SERVICE_MODULE: &str = "core_service";
+const BASECAMP_HOST_CAPABILITIES_METHOD: &str = "getHostCapabilities";
+const BASECAMP_LOAD_INSTANCE_METHOD: &str = "loadModuleInstance";
+const BASECAMP_INSTANCE_LOADED_METHOD: &str = "isModuleInstanceLoaded";
+const BASECAMP_INDEXER_INSTANCE_PREFIX: &str = "indexer";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CONFIG_BYTES_USIZE: usize = 1024 * 1024;
 const CONFIG_ROLE: &str = "Zone-owned Indexer";
@@ -249,14 +259,23 @@ pub(super) fn config_snapshot(
     request: &ChannelIndexerConfigRequest,
 ) -> Result<ChannelIndexerConfigSnapshot> {
     let context = config_context(request)?;
+    config_snapshot_with_context(config_root, profile, request, &context)
+}
+
+fn config_snapshot_with_context(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    context: &ChannelIndexerConfigContext,
+) -> Result<ChannelIndexerConfigSnapshot> {
     let path =
         channel_indexer_config_path(config_root, &request.network_scope, &context.channel_id)?;
     let state = ChannelIndexerStore::for_config_dir(config_root).load()?;
     let bytes = match read_optional_indexer_config(config_root, &path)? {
         Some(bytes) => bytes,
-        None => default_indexer_config_bytes(&context)?,
+        None => default_indexer_config_bytes(context)?,
     };
-    snapshot_from_config_bytes(profile, request, &context, path, &state, &bytes)
+    snapshot_from_config_bytes(profile, request, context, path, &state, &bytes)
 }
 
 pub(super) fn config_validate(
@@ -291,6 +310,24 @@ pub(super) fn save_config(
     expected_revision: &str,
 ) -> Result<ChannelIndexerConfigSnapshot> {
     let context = config_context(request)?;
+    save_config_with_context(
+        config_root,
+        profile,
+        request,
+        &context,
+        text,
+        expected_revision,
+    )
+}
+
+fn save_config_with_context(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    context: &ChannelIndexerConfigContext,
+    text: &str,
+    expected_revision: &str,
+) -> Result<ChannelIndexerConfigSnapshot> {
     let store = ChannelIndexerStore::for_config_dir(config_root);
     let state = store.load()?;
     if config_is_active(&state, &request.network_scope, &context.channel_id) {
@@ -300,17 +337,17 @@ pub(super) fn save_config(
         channel_indexer_config_path(config_root, &request.network_scope, &context.channel_id)?;
     let current = match read_optional_indexer_config(config_root, &path)? {
         Some(bytes) => bytes,
-        None => default_indexer_config_bytes(&context)?,
+        None => default_indexer_config_bytes(context)?,
     };
     if revision_for(&current) != expected_revision {
         bail!("configuration changed on disk; reload it before saving");
     }
     let value = parse_indexer_config_text(text)?;
-    validate_indexer_config_value(&value, &context)?;
+    validate_indexer_config_value(&value, context)?;
     let bytes = serde_json::to_vec_pretty(&value)
         .context("failed to serialize Channel Indexer configuration")?;
     write_indexer_config_bytes(config_root, &path, &bytes)?;
-    config_snapshot(config_root, profile, request)
+    config_snapshot_with_context(config_root, profile, request, context)
 }
 
 fn snapshot_from_config_bytes(
@@ -412,6 +449,916 @@ pub(super) fn module_transport(
         source_id,
     )?;
     Ok(Arc::new(LogoscoreCliTransport::fixed_runtime(runtime)))
+}
+
+/// Returns a transport that can address exactly one Basecamp Indexer instance.
+///
+/// The stable instance name is derived only from the network scope and Channel
+/// ID. Source revision is intentionally excluded: configuration changes must
+/// not redirect reads or lifecycle calls to another Zone instance.
+pub(super) fn basecamp_module_transport(
+    module_transport: SharedModuleTransport,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<SharedModuleTransport> {
+    anyhow::ensure!(
+        module_transport.kind() == ModuleTransportKind::Module,
+        "Basecamp Channel Indexer requires the host module transport"
+    );
+    let channel_id = normalized_channel_id(channel_id)?;
+    let instance_id = basecamp_instance_id(network_scope, &channel_id)?;
+    Ok(Arc::new(ScopedModuleTransport::new(
+        module_transport,
+        INDEXER_MODULE,
+        instance_id,
+    )?))
+}
+
+pub(super) async fn basecamp_status(
+    profile: &str,
+    module_transport: &SharedModuleTransport,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<LocalNodeReport> {
+    let config_root = config_dir()?;
+    let configs = load_channel_source_configs()?;
+    basecamp_status_with_configs(
+        profile,
+        &config_root,
+        &configs,
+        module_transport,
+        network_scope,
+        channel_id,
+    )
+    .await
+}
+
+/// Reads Channel Indexer configuration with Basecamp lifecycle editability.
+///
+/// The configuration is local Inspector state, but an active Basecamp instance
+/// consumes it. Do not allow a user to rewrite it while that exact instance is
+/// transitioning or running.
+pub(super) async fn basecamp_config_snapshot(
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let config_root = config_dir()?;
+    let configs = load_channel_source_configs()?;
+    basecamp_config_snapshot_with_configs(
+        &config_root,
+        profile,
+        request,
+        &configs,
+        module_transport,
+    )
+    .await
+}
+
+async fn basecamp_config_snapshot_with_configs(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let context = config_context_from_configs(request, configs)?;
+    let mut snapshot = config_snapshot_with_context(config_root, profile, request, &context)?;
+    let status = basecamp_status_with_configs(
+        profile,
+        config_root,
+        configs,
+        module_transport,
+        &request.network_scope,
+        &snapshot.channel_id,
+    )
+    .await?;
+    if snapshot.blocked_reason.is_none() && basecamp_config_is_active(&status)? {
+        snapshot.editable = false;
+        snapshot.blocked_reason = Some(CONFIG_ACTIVE_RUNTIME_REASON.to_owned());
+    }
+    Ok(snapshot)
+}
+
+/// Saves a Channel Indexer configuration after checking its exact Basecamp
+/// instance is inactive. This never consults an unscoped/default module.
+pub(super) async fn basecamp_save_config(
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+    confirmation: Option<&str>,
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+    let config_root = config_dir()?;
+    let configs = load_channel_source_configs()?;
+    basecamp_save_config_with_configs(
+        &config_root,
+        profile,
+        request,
+        text,
+        expected_revision,
+        &configs,
+        module_transport,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn basecamp_save_config_with_configs(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let context = config_context_from_configs(request, configs)?;
+    let before = basecamp_config_snapshot_with_configs(
+        config_root,
+        profile,
+        request,
+        configs,
+        module_transport,
+    )
+    .await?;
+    if !before.editable {
+        bail!(
+            "{}",
+            before
+                .blocked_reason
+                .as_deref()
+                .unwrap_or("Channel Indexer configuration cannot be edited")
+        );
+    }
+    let saved = {
+        let _state_lock = super::lifecycle::acquire_state_lock()?;
+        save_config_with_context(
+            config_root,
+            profile,
+            request,
+            &context,
+            text,
+            expected_revision,
+        )?
+    };
+    let mut snapshot = saved;
+    let status = basecamp_status_with_configs(
+        profile,
+        config_root,
+        configs,
+        module_transport,
+        &request.network_scope,
+        &snapshot.channel_id,
+    )
+    .await?;
+    if basecamp_config_is_active(&status)? {
+        snapshot.editable = false;
+        snapshot.blocked_reason = Some(CONFIG_ACTIVE_RUNTIME_REASON.to_owned());
+    }
+    Ok(snapshot)
+}
+
+fn basecamp_config_is_active(status: &LocalNodeReport) -> Result<bool> {
+    let node = status
+        .nodes
+        .first()
+        .context("Basecamp Channel Indexer status did not include its node")?;
+    Ok(matches!(
+        node.run_state.as_str(),
+        "initializing" | "starting" | "running" | "stopping" | "destroying"
+    ))
+}
+
+async fn basecamp_status_with_configs(
+    profile: &str,
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<LocalNodeReport> {
+    let channel_id = normalized_channel_id(channel_id)?;
+    let config_path = channel_indexer_config_path(config_root, network_scope, &channel_id)?;
+    let instance_id = basecamp_instance_id(network_scope, &channel_id)?;
+    let binding = source_binding_from_configs(configs, network_scope, &channel_id);
+    let indexer_source = basecamp_indexer_source_configured(configs, network_scope, &channel_id);
+    let source_ready = binding.is_ok() && indexer_source.is_ok();
+    let source_detail = basecamp_source_detail(&binding, &indexer_source);
+
+    if let Err(error) = ensure_basecamp_host_capabilities(module_transport).await {
+        return Ok(basecamp_report(
+            profile,
+            config_root,
+            &channel_id,
+            &config_path,
+            "needs_configuration",
+            "unknown",
+            format!(
+                "Basecamp cannot host a scoped Channel Indexer instance: {error}; {source_detail}"
+            ),
+            Some(error.to_string()),
+            Vec::new(),
+            None,
+        ));
+    }
+
+    let loaded = match basecamp_instance_loaded(module_transport, &instance_id).await {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            return Ok(basecamp_report(
+                profile,
+                config_root,
+                &channel_id,
+                &config_path,
+                "needs_configuration",
+                "unknown",
+                format!(
+                    "Basecamp could not inspect Channel Indexer instance `{instance_id}`: {error}; {source_detail}"
+                ),
+                Some(error.to_string()),
+                Vec::new(),
+                None,
+            ));
+        }
+    };
+    if !loaded {
+        let actions = source_ready
+            .then_some(NodeAction::Start)
+            .into_iter()
+            .collect();
+        return Ok(basecamp_report(
+            profile,
+            config_root,
+            &channel_id,
+            &config_path,
+            "installed",
+            "stopped",
+            format!(
+                "Basecamp Channel Indexer instance `{instance_id}` is not loaded; {source_detail}"
+            ),
+            None,
+            actions,
+            None,
+        ));
+    }
+
+    let scoped =
+        basecamp_module_transport(Arc::clone(module_transport), network_scope, &channel_id)?;
+    match basecamp_indexer_snapshot(&scoped, &channel_id).await {
+        Ok(snapshot) => Ok(basecamp_report(
+            profile,
+            config_root,
+            &channel_id,
+            &config_path,
+            "installed",
+            &snapshot.state,
+            format!(
+                "Basecamp Channel Indexer instance `{instance_id}` is {}; {source_detail}",
+                snapshot.state
+            ),
+            None,
+            basecamp_available_actions(&snapshot, source_ready),
+            None,
+        )),
+        Err(error) => Ok(basecamp_report(
+            profile,
+            config_root,
+            &channel_id,
+            &config_path,
+            "installed",
+            "unknown",
+            format!(
+                "Basecamp Channel Indexer instance `{instance_id}` is loaded, but its lifecycle state is unavailable: {error}; {source_detail}"
+            ),
+            Some(error.to_string()),
+            Vec::new(),
+            None,
+        )),
+    }
+}
+
+fn basecamp_indexer_source_configured(
+    configs: &[ChannelSourceConfig],
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<()> {
+    let config = configs
+        .iter()
+        .find(|config| config.network_scope == *network_scope && config.channel_id == channel_id)
+        .context("Channel source configuration is unavailable for this Channel")?;
+    let source = config
+        .indexer_source
+        .as_ref()
+        .context("configure the Channel-owned Indexer source before starting Indexer")?;
+    anyhow::ensure!(
+        matches!(&source.target, ChannelSourceTarget::Module { module_id } if module_id == indexer::MODULE_ID),
+        "the configured Indexer source is not the Channel-owned Indexer module"
+    );
+    Ok(())
+}
+
+fn basecamp_source_detail(binding: &Result<SourceBinding>, indexer_source: &Result<()>) -> String {
+    match (binding, indexer_source) {
+        (Ok(binding), Ok(())) => binding_detail(binding),
+        (Err(binding), Ok(())) => format!("Selected Sequencer binding unavailable: {binding}"),
+        (Ok(_), Err(indexer_source)) => format!("Indexer source unavailable: {indexer_source}"),
+        (Err(binding), Err(indexer_source)) => {
+            format!(
+                "Selected Sequencer binding unavailable: {binding}; Indexer source unavailable: {indexer_source}"
+            )
+        }
+    }
+}
+
+fn basecamp_instance_id(network_scope: &NetworkScope, channel_id: &str) -> Result<String> {
+    let scope_key = network_scope_key(network_scope)?;
+    let channel_id = normalized_channel_id(channel_id)?;
+    Ok(format!(
+        "{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_key}-{channel_id}"
+    ))
+}
+
+async fn ensure_basecamp_host_capabilities(module_transport: &SharedModuleTransport) -> Result<()> {
+    let capabilities = basecamp_core_service_value(
+        module_transport,
+        BASECAMP_HOST_CAPABILITIES_METHOD,
+        Vec::new(),
+    )
+    .await?;
+    anyhow::ensure!(
+        capabilities.get("schema").and_then(Value::as_str) == Some("logos.basecamp_host")
+            && capabilities.get("version").and_then(Value::as_u64) == Some(1),
+        "Basecamp host returned an unsupported scoped-instance capability schema"
+    );
+    for capability in [
+        "scoped_module_instances",
+        "direct_scoped_clients",
+        "direct_scoped_events",
+    ] {
+        anyhow::ensure!(
+            capabilities.get(capability).and_then(Value::as_bool) == Some(true),
+            "Basecamp host does not support `{capability}`"
+        );
+    }
+    Ok(())
+}
+
+async fn basecamp_instance_loaded(
+    module_transport: &SharedModuleTransport,
+    instance_id: &str,
+) -> Result<bool> {
+    let value = basecamp_core_service_value(
+        module_transport,
+        BASECAMP_INSTANCE_LOADED_METHOD,
+        vec![json!(INDEXER_MODULE), json!(instance_id)],
+    )
+    .await?;
+    validate_basecamp_instance_response(&value, BASECAMP_INSTANCE_LOADED_METHOD, instance_id)?;
+    value
+        .get("loaded")
+        .and_then(Value::as_bool)
+        .context("Basecamp host did not report whether the Channel Indexer instance is loaded")
+}
+
+async fn load_basecamp_instance(
+    module_transport: &SharedModuleTransport,
+    instance_id: &str,
+) -> Result<()> {
+    let value = basecamp_core_service_value(
+        module_transport,
+        BASECAMP_LOAD_INSTANCE_METHOD,
+        vec![json!(INDEXER_MODULE), json!(instance_id)],
+    )
+    .await?;
+    validate_basecamp_instance_response(&value, BASECAMP_LOAD_INSTANCE_METHOD, instance_id)
+}
+
+async fn basecamp_core_service_value(
+    module_transport: &SharedModuleTransport,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Value> {
+    anyhow::ensure!(
+        module_transport.kind() == ModuleTransportKind::Module,
+        "Basecamp scoped Channel Indexer requires the host module transport"
+    );
+    let call = ModuleCall::new(
+        ModuleTransportKind::Module,
+        BASECAMP_CORE_SERVICE_MODULE,
+        method,
+        args,
+    )?;
+    let value = dispatch_module_call(module_transport.as_ref(), call)
+        .await?
+        .into_value();
+    normalize_module_call_value(BASECAMP_CORE_SERVICE_MODULE, method, value)
+}
+
+fn validate_basecamp_instance_response(
+    value: &Value,
+    method: &str,
+    instance_id: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        value.get("status").and_then(Value::as_str) == Some("ok")
+            && value.get("module_name").and_then(Value::as_str) == Some(INDEXER_MODULE)
+            && value.get("instance_id").and_then(Value::as_str) == Some(instance_id),
+        "Basecamp core_service.{method} returned an invalid Channel Indexer instance response"
+    );
+    Ok(())
+}
+
+async fn basecamp_indexer_snapshot(
+    scoped_transport: &SharedModuleTransport,
+    channel_id: &str,
+) -> Result<IndexerLifecycleSnapshot> {
+    let call = ModuleCall::new(
+        ModuleTransportKind::Module,
+        INDEXER_MODULE,
+        INDEXER_NODE_STATUS_METHOD,
+        Vec::new(),
+    )?;
+    let value = dispatch_module_call(scoped_transport.as_ref(), call)
+        .await?
+        .into_value();
+    let value = normalize_module_call_value(INDEXER_MODULE, INDEXER_NODE_STATUS_METHOD, value)?;
+    let snapshot = IndexerLifecycleSnapshot::parse(&value)?;
+    if let Some(scoped_channel_id) = snapshot.channel_id.as_deref() {
+        anyhow::ensure!(
+            scoped_channel_id == channel_id,
+            "Basecamp Indexer nodeStatus is scoped to a different Channel"
+        );
+    }
+    Ok(snapshot)
+}
+
+fn basecamp_available_actions(
+    snapshot: &IndexerLifecycleSnapshot,
+    source_ready: bool,
+) -> Vec<NodeAction> {
+    let mut actions = Vec::new();
+    if source_ready && snapshot.supports_action("start") {
+        actions.push(NodeAction::Start);
+    }
+    if snapshot.supports_action("stop") {
+        actions.push(NodeAction::Stop);
+    }
+    actions
+}
+
+#[allow(clippy::too_many_arguments)]
+fn basecamp_report(
+    profile: &str,
+    config_root: &Path,
+    channel_id: &str,
+    config_path: &Path,
+    install_state: &str,
+    run_state: &str,
+    detail: String,
+    indexer_error: Option<String>,
+    available_actions: Vec<NodeAction>,
+    operation: Option<LocalNodeOperationReport>,
+) -> LocalNodeReport {
+    let mut node = empty_indexer_status();
+    node.label = "Channel Indexer".to_owned();
+    node.install_state = install_state.to_owned();
+    node.run_state = run_state.to_owned();
+    node.ownership = "inspector_managed".to_owned();
+    node.config_path = Some(config_path.display().to_string());
+    node.managed_channel_id = Some(channel_id.to_owned());
+    node.indexer_state = Some(run_state.to_owned());
+    node.indexer_error = indexer_error;
+    node.available_actions = available_actions;
+    node.detail = detail;
+    node.last_action = operation.clone();
+    let installed = usize::from(install_state == "installed");
+    let running = usize::from(run_state == "running");
+    let needs_configuration = usize::from(install_state == "needs_configuration");
+    LocalNodeReport {
+        profile: normalized_profile(profile).to_owned(),
+        mode: super::presentation::mode_for_profile(profile).to_owned(),
+        available_network_actions: Vec::new(),
+        available_runtime_actions: Vec::new(),
+        primary_problem: None,
+        active_devnet: None,
+        workspace_root: config_root.display().to_string(),
+        summary: LocalNodeSummary {
+            total: 1,
+            installed,
+            running,
+            needs_configuration,
+        },
+        nodes: vec![node],
+        operations: operation.into_iter().collect(),
+        tools: LocalNodeTools {
+            logoscore: ToolStatus {
+                available: true,
+                command: "Basecamp host".to_owned(),
+                path: None,
+            },
+            lgpd: ToolStatus {
+                available: false,
+                command: "lgpd".to_owned(),
+                path: None,
+            },
+            lgpm: ToolStatus {
+                available: false,
+                command: "lgpm".to_owned(),
+                path: None,
+            },
+        },
+        runtime: super::runtime::LogoscoreRuntimeStatus {
+            ownership: "basecamp_host".to_owned(),
+            run_state: "running".to_owned(),
+            id: Some("basecamp".to_owned()),
+            binary_path: None,
+            config_dir: None,
+            modules_dir: None,
+            persistence_path: None,
+            process_id: None,
+            service_unit: None,
+            detail: "Channel Indexers are owned by Basecamp".to_owned(),
+        },
+    }
+}
+
+pub(super) async fn basecamp_action(
+    profile: &str,
+    request: ChannelIndexerActionRequest,
+    confirmation: Option<&str>,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
+    let config_root = config_dir()?;
+    let configs = load_channel_source_configs()?;
+    basecamp_action_with_configs(profile, &config_root, &configs, request, module_transport).await
+}
+
+async fn basecamp_action_with_configs(
+    profile: &str,
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    request: ChannelIndexerActionRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    let channel_id = normalized_channel_id(&request.channel_id)?;
+    if !matches!(request.action, NodeAction::Start | NodeAction::Stop) {
+        bail!("Channel Indexer only supports Start and Stop actions");
+    }
+
+    let result = match request.action {
+        NodeAction::Start => {
+            basecamp_start_indexer(
+                config_root,
+                configs,
+                &request,
+                &channel_id,
+                module_transport,
+            )
+            .await
+        }
+        NodeAction::Stop => basecamp_stop_indexer(&request, &channel_id, module_transport).await,
+        _ => unreachable!("Channel Indexer action was validated"),
+    };
+    let (status, detail) = match result {
+        Ok(detail) => (
+            match request.action {
+                NodeAction::Start => "running",
+                NodeAction::Stop => "stopped",
+                _ => unreachable!("Channel Indexer action was validated"),
+            },
+            detail,
+        ),
+        Err(error) => ("failed", error.to_string()),
+    };
+    let operation = operation_report(request.action, status, detail);
+    let mut report = basecamp_status_with_configs(
+        profile,
+        config_root,
+        configs,
+        module_transport,
+        &request.network_scope,
+        &channel_id,
+    )
+    .await?;
+    report.operations = vec![operation.clone()];
+    if let Some(node) = report.nodes.first_mut() {
+        node.last_action = Some(operation);
+    }
+    Ok(report)
+}
+
+async fn basecamp_start_indexer(
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    request: &ChannelIndexerActionRequest,
+    channel_id: &str,
+    module_transport: &SharedModuleTransport,
+) -> Result<String> {
+    basecamp_indexer_source_configured(configs, &request.network_scope, channel_id)?;
+    let binding = requested_source_binding_from_configs(request, channel_id, configs)?;
+    let endpoint = normalized_bedrock_endpoint(
+        request
+            .bedrock_endpoint
+            .as_deref()
+            .context("Indexer Bedrock endpoint is required")?,
+    )?;
+    let context = ChannelIndexerConfigContext {
+        channel_id: channel_id.to_owned(),
+        bedrock_endpoint: endpoint,
+        binding,
+    };
+    let config_path =
+        ensure_basecamp_indexer_config(config_root, &request.network_scope, &context)?;
+    ensure_basecamp_host_capabilities(module_transport).await?;
+    let instance_id = basecamp_instance_id(&request.network_scope, channel_id)?;
+    if !basecamp_instance_loaded(module_transport, &instance_id).await? {
+        load_basecamp_instance(module_transport, &instance_id).await?;
+    }
+    let scoped = basecamp_module_transport(
+        Arc::clone(module_transport),
+        &request.network_scope,
+        channel_id,
+    )?;
+    execute_basecamp_indexer_lifecycle_action(
+        &scoped,
+        &instance_id,
+        channel_id,
+        NodeAction::Start,
+        Some(&config_path),
+    )
+    .await
+}
+
+async fn basecamp_stop_indexer(
+    request: &ChannelIndexerActionRequest,
+    channel_id: &str,
+    module_transport: &SharedModuleTransport,
+) -> Result<String> {
+    ensure_basecamp_host_capabilities(module_transport).await?;
+    let instance_id = basecamp_instance_id(&request.network_scope, channel_id)?;
+    if !basecamp_instance_loaded(module_transport, &instance_id).await? {
+        return Ok(format!(
+            "Basecamp Channel Indexer instance `{instance_id}` is already stopped"
+        ));
+    }
+    let scoped = basecamp_module_transport(
+        Arc::clone(module_transport),
+        &request.network_scope,
+        channel_id,
+    )?;
+    execute_basecamp_indexer_lifecycle_action(
+        &scoped,
+        &instance_id,
+        channel_id,
+        NodeAction::Stop,
+        None,
+    )
+    .await
+}
+
+fn ensure_basecamp_indexer_config(
+    config_root: &Path,
+    network_scope: &NetworkScope,
+    context: &ChannelIndexerConfigContext,
+) -> Result<String> {
+    let path = channel_indexer_config_path(config_root, network_scope, &context.channel_id)?;
+    anyhow::ensure!(
+        path.is_absolute(),
+        "Basecamp Channel Indexer configuration path must be absolute"
+    );
+    match read_optional_indexer_config(config_root, &path)? {
+        Some(bytes) => {
+            let text = std::str::from_utf8(&bytes)
+                .context("Channel Indexer configuration is not valid UTF-8")?;
+            let value = parse_indexer_config_text(text)?;
+            validate_indexer_config_value(&value, context).context(
+                "Channel Indexer configuration is invalid; open Zone Sources and repair it before starting",
+            )?;
+        }
+        None => {
+            write_indexer_config_bytes(config_root, &path, &default_indexer_config_bytes(context)?)?
+        }
+    }
+    Ok(path.display().to_string())
+}
+
+async fn execute_basecamp_indexer_lifecycle_action(
+    scoped_transport: &SharedModuleTransport,
+    scoped_instance_id: &str,
+    channel_id: &str,
+    action: NodeAction,
+    config_path: Option<&str>,
+) -> Result<String> {
+    let snapshot = basecamp_indexer_snapshot(scoped_transport, channel_id).await?;
+    let (action_name, expected_transition, expected_terminal, parameters) =
+        basecamp_indexer_lifecycle_action_parameters(action, config_path)?;
+    validate_basecamp_indexer_snapshot_for_action(
+        &snapshot,
+        channel_id,
+        action_name,
+        expected_transition,
+    )?;
+    let subscription = scoped_transport
+        .subscribe_module_event(INDEXER_MODULE, INDEXER_NODE_CHANGED_EVENT)
+        .context("Basecamp host cannot subscribe to Channel Indexer nodeChanged confirmation")?;
+    let serial = INDEXER_LIFECYCLE_OPERATION_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let operation_id = format!(
+        "logos-inspector-indexer-{action_name}-{}-{serial}",
+        now_millis()
+    );
+    let request = json!({
+        "schema": "logos.managed_node_lifecycle.command",
+        "version": 1,
+        "operation_id": operation_id,
+        "action": action_name,
+        "expected": {
+            "instance_id": snapshot.instance_id,
+            "epoch": snapshot.epoch,
+            "sequence": snapshot.sequence,
+        },
+        "parameters": parameters,
+    });
+    let call = ModuleCall::new(
+        ModuleTransportKind::Module,
+        INDEXER_MODULE,
+        INDEXER_NODE_ACTION_METHOD,
+        vec![Value::String(request.to_string())],
+    )?;
+    let value = dispatch_module_call(scoped_transport.as_ref(), call)
+        .await?
+        .into_value();
+    let acknowledgement =
+        normalize_module_call_value(INDEXER_MODULE, INDEXER_NODE_ACTION_METHOD, value)?;
+    validate_indexer_lifecycle_acknowledgement(
+        &acknowledgement,
+        &snapshot,
+        &operation_id,
+        expected_transition,
+    )?;
+    let terminal = wait_for_basecamp_indexer_lifecycle_terminal_event(
+        subscription,
+        scoped_instance_id,
+        &snapshot,
+        channel_id,
+        &operation_id,
+        action_name,
+        expected_transition,
+        expected_terminal,
+    )
+    .await?;
+    Ok(format!(
+        "Basecamp V1 nodeChanged confirmed {action_name} for Channel `{channel_id}` at lifecycle sequence {}",
+        terminal.sequence
+    ))
+}
+
+fn basecamp_indexer_lifecycle_action_parameters(
+    action: NodeAction,
+    config_path: Option<&str>,
+) -> Result<(&'static str, &'static str, &'static str, Value)> {
+    match action {
+        NodeAction::Start => {
+            let config_path =
+                config_path.context("Channel Indexer start configuration is required")?;
+            anyhow::ensure!(
+                Path::new(config_path).is_absolute(),
+                "Basecamp Channel Indexer configuration path must be absolute"
+            );
+            Ok((
+                "start",
+                "starting",
+                "running",
+                json!({ "config_path": config_path }),
+            ))
+        }
+        NodeAction::Stop => Ok(("stop", "stopping", "stopped", json!({}))),
+        _ => bail!(
+            "Basecamp Channel Indexer V1 lifecycle does not support {}",
+            action.as_str()
+        ),
+    }
+}
+
+fn validate_basecamp_indexer_snapshot_for_action(
+    snapshot: &IndexerLifecycleSnapshot,
+    channel_id: &str,
+    action: &str,
+    expected_transition: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        snapshot.supports_action(action),
+        "Basecamp Indexer nodeStatus does not allow `{action}` in its current state `{}`",
+        snapshot.state
+    );
+    if let Some(snapshot_channel_id) = snapshot.channel_id.as_deref() {
+        anyhow::ensure!(
+            snapshot_channel_id == channel_id,
+            "Basecamp Indexer nodeStatus is scoped to a different Channel"
+        );
+    }
+    anyhow::ensure!(
+        snapshot.state != expected_transition,
+        "Basecamp Indexer nodeStatus is already transitioning"
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn wait_for_basecamp_indexer_lifecycle_terminal_event(
+    mut subscription: BoxedModuleEventSubscription,
+    scoped_instance_id: &str,
+    snapshot: &IndexerLifecycleSnapshot,
+    channel_id: &str,
+    operation_id: &str,
+    action: &str,
+    expected_transition: &str,
+    expected_terminal: &str,
+) -> Result<IndexerLifecycleSnapshot> {
+    let scoped_instance_id = scoped_instance_id.to_owned();
+    let initial_instance_id = snapshot.instance_id.clone();
+    let initial_epoch = snapshot.epoch;
+    let initial_sequence = snapshot.sequence;
+    let channel_id = channel_id.to_owned();
+    let operation_id = operation_id.to_owned();
+    let action = action.to_owned();
+    let expected_transition = expected_transition.to_owned();
+    let expected_terminal = expected_terminal.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let deadline = Instant::now() + INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT;
+        let mut accepted = false;
+        let mut last_sequence = initial_sequence;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let transport = subscription.next_within(remaining)?.with_context(|| {
+                "Basecamp Channel Indexer did not emit nodeChanged before lifecycle confirmation timeout"
+            })?;
+            anyhow::ensure!(
+                transport.module() == INDEXER_MODULE
+                    && transport.event() == INDEXER_NODE_CHANGED_EVENT
+                    && transport.instance_id() == Some(scoped_instance_id.as_str()),
+                "Basecamp Channel Indexer lifecycle subscription received an unexpected module instance event"
+            );
+            let event = IndexerLifecycleEvent::from_transport_event(&transport)?;
+            if event.operation_id.as_deref() != Some(operation_id.as_str())
+                || event.instance_id != initial_instance_id
+            {
+                continue;
+            }
+            anyhow::ensure!(
+                event.sequence > last_sequence && event.epoch >= initial_epoch,
+                "Basecamp Indexer nodeChanged event has a stale lifecycle cursor"
+            );
+            anyhow::ensure!(
+                event.action == action,
+                "Basecamp Indexer nodeChanged event has an unexpected action"
+            );
+            anyhow::ensure!(
+                event.status.instance_id == event.instance_id
+                    && event.status.epoch == event.epoch
+                    && event.status.sequence == event.sequence,
+                "Basecamp Indexer nodeChanged event has an inconsistent status snapshot"
+            );
+            last_sequence = event.sequence;
+            match event.phase.as_str() {
+                "accepted" => {
+                    anyhow::ensure!(
+                        !accepted
+                            && event.outcome == "accepted"
+                            && event.status.state == expected_transition,
+                        "Basecamp Indexer nodeChanged accepted event has an invalid lifecycle state"
+                    );
+                    if let Some(event_channel_id) = event.channel_id.as_deref() {
+                        anyhow::ensure!(
+                            event_channel_id == channel_id,
+                            "Basecamp Indexer nodeChanged accepted event is scoped to a different Channel"
+                        );
+                    }
+                    accepted = true;
+                }
+                "settled" => {
+                    anyhow::ensure!(
+                        accepted
+                            && event.outcome == "succeeded"
+                            && event.status.state == expected_terminal,
+                        "Basecamp Indexer nodeChanged terminal event did not confirm the requested action"
+                    );
+                    anyhow::ensure!(
+                        event.channel_id.as_deref() == Some(channel_id.as_str())
+                            && event.status.channel_id.as_deref() == Some(channel_id.as_str()),
+                        "Basecamp Indexer nodeChanged terminal event is scoped to a different Channel"
+                    );
+                    return Ok(event.status);
+                }
+                _ => bail!("Basecamp Indexer nodeChanged event has an unsupported phase"),
+            }
+        }
+    })
+    .await
+    .context("Basecamp Channel Indexer lifecycle event worker failed")?
 }
 
 fn runtime_for_module_source(
@@ -1162,6 +2109,14 @@ impl IndexerLifecycleEvent {
             transport.event() == INDEXER_NODE_CHANGED_EVENT,
             "Indexer lifecycle watch emitted an unexpected event"
         );
+        Self::from_transport_event(&transport)
+    }
+
+    fn from_transport_event(transport: &ModuleTransportEvent) -> Result<Self> {
+        anyhow::ensure!(
+            transport.module() == INDEXER_MODULE && transport.event() == INDEXER_NODE_CHANGED_EVENT,
+            "Indexer lifecycle event has an unexpected module or event name"
+        );
         let [payload] = transport.args() else {
             bail!("Indexer V1 nodeChanged event must contain exactly one payload");
         };
@@ -1470,6 +2425,15 @@ fn requested_source_binding(
     request: &ChannelIndexerActionRequest,
     channel_id: &str,
 ) -> Result<SourceBinding> {
+    let configs = load_channel_source_configs()?;
+    requested_source_binding_from_configs(request, channel_id, &configs)
+}
+
+fn requested_source_binding_from_configs(
+    request: &ChannelIndexerActionRequest,
+    channel_id: &str,
+    configs: &[ChannelSourceConfig],
+) -> Result<SourceBinding> {
     let expected_revision = request
         .source_config_revision
         .filter(|value| *value > 0)
@@ -1480,7 +2444,7 @@ fn requested_source_binding(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .context("selected Sequencer source is required")?;
-    let binding = current_source_binding(&request.network_scope, channel_id)?;
+    let binding = source_binding_from_configs(configs, &request.network_scope, channel_id)?;
     if binding.config_revision != expected_revision {
         bail!("Channel source configuration changed; refresh Zone Sources before starting Indexer");
     }
@@ -2230,8 +3194,17 @@ fn is_control_interruption(error: &anyhow::Error) -> bool {
 mod tests {
     use anyhow::{Context as _, Result};
     use serde_json::json;
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex, mpsc},
+        time::Duration,
+    };
 
     use super::*;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleEventSubscription, ModuleTransport,
+        ModuleTransportResult,
+    };
     use crate::source_routing::channel_sources::{
         ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
         PersistedSequencerAttestation,
@@ -2771,6 +3744,569 @@ mod tests {
         let error = IndexerLifecycleEvent::from_watch_frame(&mismatched)
             .expect_err("mismatched event and status scopes must be rejected");
         anyhow::ensure!(error.to_string().contains("disagree on Channel scope"));
+        Ok(())
+    }
+
+    #[derive(Debug, Clone)]
+    struct BasecampIndexerTestInstance {
+        channel_id: Option<String>,
+        state: String,
+        epoch: u64,
+        sequence: u64,
+    }
+
+    impl Default for BasecampIndexerTestInstance {
+        fn default() -> Self {
+            Self {
+                channel_id: None,
+                state: "uninitialized".to_owned(),
+                epoch: 1,
+                sequence: 0,
+            }
+        }
+    }
+
+    struct BasecampIndexerTestSubscription {
+        module: String,
+        instance_id: String,
+        event: String,
+        sender: mpsc::Sender<ModuleTransportEvent>,
+    }
+
+    #[derive(Default)]
+    struct BasecampIndexerTestState {
+        instances: BTreeMap<String, BasecampIndexerTestInstance>,
+        calls: Vec<ModuleCall>,
+        subscriptions: Vec<BasecampIndexerTestSubscription>,
+    }
+
+    struct BasecampIndexerTestTransport {
+        state: Arc<Mutex<BasecampIndexerTestState>>,
+    }
+
+    struct BasecampIndexerTestEventSubscription {
+        receiver: mpsc::Receiver<ModuleTransportEvent>,
+    }
+
+    impl ModuleEventSubscription for BasecampIndexerTestEventSubscription {
+        fn next_within(&mut self, timeout: Duration) -> Result<Option<ModuleTransportEvent>> {
+            match self.receiver.recv_timeout(timeout) {
+                Ok(event) => Ok(Some(event)),
+                Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("Basecamp Indexer test lifecycle subscription disconnected")
+                }
+            }
+        }
+    }
+
+    impl BasecampIndexerTestTransport {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(Mutex::new(BasecampIndexerTestState::default())),
+            }
+        }
+
+        fn snapshot(instance_id: &str, instance: &BasecampIndexerTestInstance) -> Value {
+            let supported_actions = match instance.state.as_str() {
+                "uninitialized" | "stopped" => json!(["start"]),
+                "running" => json!(["stop"]),
+                "starting" | "stopping" => json!([]),
+                _ => json!([]),
+            };
+            json!({
+                "schema": "logos.managed_node_lifecycle.snapshot",
+                "version": 1,
+                "instance_id": format!("lifecycle-{instance_id}"),
+                "epoch": instance.epoch,
+                "sequence": instance.sequence,
+                "scope": { "kind": "indexer", "channel_id": instance.channel_id },
+                "state": instance.state,
+                "supported_actions": supported_actions,
+            })
+        }
+
+        fn lifecycle_event(
+            scoped_instance_id: &str,
+            instance: &BasecampIndexerTestInstance,
+            operation_id: &str,
+            action: &str,
+            phase: &str,
+            outcome: &str,
+            previous_state: &str,
+        ) -> Result<ModuleTransportEvent> {
+            ModuleTransportEvent::new_instance(
+                INDEXER_MODULE,
+                scoped_instance_id,
+                INDEXER_NODE_CHANGED_EVENT,
+                vec![Value::String(
+                    json!({
+                        "schema": "logos.managed_node_lifecycle.event",
+                        "version": 1,
+                        "instance_id": format!("lifecycle-{scoped_instance_id}"),
+                        "epoch": instance.epoch,
+                        "sequence": instance.sequence,
+                        "scope": { "kind": "indexer", "channel_id": instance.channel_id },
+                        "operation_id": operation_id,
+                        "action": action,
+                        "phase": phase,
+                        "outcome": outcome,
+                        "previous_state": previous_state,
+                        "status": Self::snapshot(scoped_instance_id, instance),
+                        "emitted_at_ms": 1,
+                    })
+                    .to_string(),
+                )],
+            )
+        }
+
+        fn subscribers_for(
+            state: &BasecampIndexerTestState,
+            scoped_instance_id: &str,
+        ) -> Vec<mpsc::Sender<ModuleTransportEvent>> {
+            state
+                .subscriptions
+                .iter()
+                .filter(|subscription| {
+                    subscription.module == INDEXER_MODULE
+                        && subscription.instance_id == scoped_instance_id
+                        && subscription.event == INDEXER_NODE_CHANGED_EVENT
+                })
+                .map(|subscription| subscription.sender.clone())
+                .collect()
+        }
+
+        fn handle_core_call(&self, call: &ModuleCall) -> Result<Value> {
+            anyhow::ensure!(call.instance_id().is_none(), "core service call was scoped");
+            match call.method() {
+                BASECAMP_HOST_CAPABILITIES_METHOD => Ok(json!({
+                    "schema": "logos.basecamp_host",
+                    "version": 1,
+                    "scoped_module_instances": true,
+                    "direct_scoped_clients": true,
+                    "direct_scoped_events": true,
+                })),
+                BASECAMP_INSTANCE_LOADED_METHOD => {
+                    let instance_id = call
+                        .args()
+                        .get(1)
+                        .and_then(Value::as_str)
+                        .context("test isModuleInstanceLoaded has no instance id")?;
+                    let state = self
+                        .state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?;
+                    Ok(json!({
+                        "status": "ok",
+                        "module_name": INDEXER_MODULE,
+                        "instance_id": instance_id,
+                        "loaded": state.instances.contains_key(instance_id),
+                    }))
+                }
+                BASECAMP_LOAD_INSTANCE_METHOD => {
+                    let instance_id = call
+                        .args()
+                        .get(1)
+                        .and_then(Value::as_str)
+                        .context("test loadModuleInstance has no instance id")?
+                        .to_owned();
+                    let mut state = self
+                        .state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?;
+                    state.instances.entry(instance_id.clone()).or_default();
+                    Ok(json!({
+                        "status": "ok",
+                        "module_name": INDEXER_MODULE,
+                        "instance_id": instance_id,
+                    }))
+                }
+                method => bail!("unexpected Basecamp core service method `{method}`"),
+            }
+        }
+
+        fn handle_indexer_call(&self, call: &ModuleCall) -> Result<Value> {
+            let scoped_instance_id = call
+                .instance_id()
+                .context("Indexer call was dispatched without an explicit Basecamp instance")?
+                .to_owned();
+            match call.method() {
+                INDEXER_NODE_STATUS_METHOD => {
+                    let state = self
+                        .state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?;
+                    let instance = state
+                        .instances
+                        .get(&scoped_instance_id)
+                        .context("Indexer status reached an unloaded Basecamp instance")?;
+                    Ok(Self::snapshot(&scoped_instance_id, instance))
+                }
+                INDEXER_NODE_ACTION_METHOD => {
+                    let request = call
+                        .args()
+                        .first()
+                        .and_then(Value::as_str)
+                        .context("Indexer nodeAction request is missing")?;
+                    let request: Value = serde_json::from_str(request)
+                        .context("Indexer nodeAction request is invalid JSON")?;
+                    let action = request
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .context("Indexer nodeAction request has no action")?;
+                    let operation_id = request
+                        .get("operation_id")
+                        .and_then(Value::as_str)
+                        .context("Indexer nodeAction request has no operation id")?
+                        .to_owned();
+                    let start_channel_id = if action == "start" {
+                        let config_path = request
+                            .pointer("/parameters/config_path")
+                            .and_then(Value::as_str)
+                            .context("Indexer start request has no configuration path")?;
+                        let config: Value = serde_json::from_slice(
+                            &fs::read(config_path)
+                                .context("failed to read Basecamp Indexer test config")?,
+                        )
+                        .context("Basecamp Indexer test config is invalid")?;
+                        Some(
+                            config
+                                .get("channel_id")
+                                .and_then(Value::as_str)
+                                .context("Basecamp Indexer test config has no Channel ID")?
+                                .to_owned(),
+                        )
+                    } else {
+                        None
+                    };
+                    let (acknowledgement, events, subscribers) = {
+                        let mut state = self
+                            .state
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?;
+                        let instance = state
+                            .instances
+                            .get_mut(&scoped_instance_id)
+                            .context("Indexer action reached an unloaded Basecamp instance")?;
+                        let previous_state = instance.state.clone();
+                        let (transition, terminal) = match action {
+                            "start"
+                                if instance.state == "uninitialized"
+                                    || instance.state == "stopped" =>
+                            {
+                                instance.channel_id = start_channel_id;
+                                ("starting", "running")
+                            }
+                            "stop" if instance.state == "running" => ("stopping", "stopped"),
+                            _ => bail!(
+                                "Indexer action `{action}` is unavailable in state `{}`",
+                                instance.state
+                            ),
+                        };
+                        instance.sequence = instance.sequence.saturating_add(1);
+                        instance.state = transition.to_owned();
+                        let acknowledgement = json!({
+                            "schema": "logos.managed_node_lifecycle.ack",
+                            "version": 1,
+                            "operation_id": operation_id,
+                            "accepted": true,
+                            "duplicate": false,
+                            "instance_id": format!("lifecycle-{scoped_instance_id}"),
+                            "epoch": instance.epoch,
+                            "sequence": instance.sequence,
+                            "state": transition,
+                        });
+                        let accepted = Self::lifecycle_event(
+                            &scoped_instance_id,
+                            instance,
+                            &operation_id,
+                            action,
+                            "accepted",
+                            "accepted",
+                            &previous_state,
+                        )?;
+                        instance.sequence = instance.sequence.saturating_add(1);
+                        instance.state = terminal.to_owned();
+                        let settled = Self::lifecycle_event(
+                            &scoped_instance_id,
+                            instance,
+                            &operation_id,
+                            action,
+                            "settled",
+                            "succeeded",
+                            transition,
+                        )?;
+                        (
+                            acknowledgement,
+                            vec![accepted, settled],
+                            Self::subscribers_for(&state, &scoped_instance_id),
+                        )
+                    };
+                    for event in events {
+                        for subscriber in &subscribers {
+                            match subscriber.send(event.clone()) {
+                                Ok(()) | Err(_) => {}
+                            }
+                        }
+                    }
+                    Ok(acknowledgement)
+                }
+                method => bail!("unexpected scoped Indexer method `{method}`"),
+            }
+        }
+    }
+
+    impl ModuleTransport for BasecampIndexerTestTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            Box::pin(async move {
+                self.state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?
+                    .calls
+                    .push(call.clone());
+                let value = match call.module() {
+                    BASECAMP_CORE_SERVICE_MODULE => self.handle_core_call(&call)?,
+                    INDEXER_MODULE => self.handle_indexer_call(&call)?,
+                    module => bail!("unexpected test module `{module}`"),
+                };
+                Ok(ModuleCallReply::new(ModuleTransportKind::Module, value))
+            })
+        }
+
+        fn subscribe_module_instance_event(
+            &self,
+            module: &str,
+            instance_id: &str,
+            event: &str,
+        ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+            let (sender, receiver) = mpsc::channel();
+            self.state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?
+                .subscriptions
+                .push(BasecampIndexerTestSubscription {
+                    module: module.to_owned(),
+                    instance_id: instance_id.to_owned(),
+                    event: event.to_owned(),
+                    sender,
+                });
+            Ok(Box::new(BasecampIndexerTestEventSubscription { receiver }))
+        }
+    }
+
+    fn basecamp_start_request(channel_id: &str) -> ChannelIndexerActionRequest {
+        ChannelIndexerActionRequest {
+            action: NodeAction::Start,
+            network_scope: network_scope(),
+            channel_id: channel_id.to_owned(),
+            bedrock_endpoint: Some("http://127.0.0.1:8080/".to_owned()),
+            source_config_revision: Some(7),
+            selected_sequencer_source_id: Some("src_selected".to_owned()),
+        }
+    }
+
+    #[tokio::test]
+    async fn basecamp_indexers_are_scoped_per_channel_and_confirm_lifecycle_events() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first_channel = "01".repeat(32);
+        let second_channel = "88".repeat(32);
+        let configs = vec![
+            module_source_config(&first_channel),
+            module_source_config(&second_channel),
+        ];
+        let implementation = Arc::new(BasecampIndexerTestTransport::new());
+        let transport: SharedModuleTransport = implementation.clone();
+
+        let initial = basecamp_status_with_configs(
+            "default",
+            directory.path(),
+            &configs,
+            &transport,
+            &network_scope(),
+            &first_channel,
+        )
+        .await?;
+        anyhow::ensure!(
+            initial
+                .nodes
+                .first()
+                .map(|node| node.available_actions.as_slice())
+                == Some([NodeAction::Start].as_slice()),
+            "unloaded Basecamp Channel Indexer did not expose Start"
+        );
+
+        let first = basecamp_action_with_configs(
+            "default",
+            directory.path(),
+            &configs,
+            basecamp_start_request(&first_channel),
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(
+            first.nodes.first().map(|node| node.run_state.as_str()) == Some("running"),
+            "first Basecamp Channel Indexer did not reach running"
+        );
+        anyhow::ensure!(
+            first
+                .operations
+                .first()
+                .map(|operation| operation.status.as_str())
+                == Some("running"),
+            "terminal Basecamp Channel Indexer Start was not recorded as running"
+        );
+        let first_config = basecamp_config_snapshot_with_configs(
+            directory.path(),
+            "default",
+            &config_request(&first_channel),
+            &configs,
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(
+            !first_config.editable
+                && first_config.blocked_reason.as_deref() == Some(CONFIG_ACTIVE_RUNTIME_REASON),
+            "running Basecamp Channel Indexer did not lock its configuration"
+        );
+        let save_while_running = basecamp_save_config_with_configs(
+            directory.path(),
+            "default",
+            &config_request(&first_channel),
+            &first_config.raw_text,
+            &first_config.revision,
+            &configs,
+            &transport,
+        )
+        .await
+        .expect_err("running Basecamp Channel Indexer configuration save must fail");
+        anyhow::ensure!(
+            save_while_running
+                .to_string()
+                .contains(CONFIG_ACTIVE_RUNTIME_REASON),
+            "running Basecamp Channel Indexer save did not explain its lifecycle lock"
+        );
+
+        let second = basecamp_action_with_configs(
+            "default",
+            directory.path(),
+            &configs,
+            basecamp_start_request(&second_channel),
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(
+            second.nodes.first().map(|node| node.run_state.as_str()) == Some("running"),
+            "second Basecamp Channel Indexer did not reach running"
+        );
+
+        let stop_first = ChannelIndexerActionRequest {
+            action: NodeAction::Stop,
+            network_scope: network_scope(),
+            channel_id: first_channel.clone(),
+            bedrock_endpoint: None,
+            source_config_revision: None,
+            selected_sequencer_source_id: None,
+        };
+        let stopped = basecamp_action_with_configs(
+            "default",
+            directory.path(),
+            &configs,
+            stop_first,
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(
+            stopped.nodes.first().map(|node| node.run_state.as_str()) == Some("stopped"),
+            "stopping one Basecamp Channel Indexer did not settle its own instance"
+        );
+        let second_after_first_stop = basecamp_status_with_configs(
+            "default",
+            directory.path(),
+            &configs,
+            &transport,
+            &network_scope(),
+            &second_channel,
+        )
+        .await?;
+        anyhow::ensure!(
+            second_after_first_stop
+                .nodes
+                .first()
+                .map(|node| node.run_state.as_str())
+                == Some("running"),
+            "stopping one Basecamp Channel Indexer changed the other Channel instance"
+        );
+        let first_config_after_stop = basecamp_config_snapshot_with_configs(
+            directory.path(),
+            "default",
+            &config_request(&first_channel),
+            &configs,
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(
+            first_config_after_stop.editable,
+            "stopped Basecamp Channel Indexer remained configuration-locked"
+        );
+
+        let state = implementation
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?;
+        let first_instance = basecamp_instance_id(&network_scope(), &first_channel)?;
+        let second_instance = basecamp_instance_id(&network_scope(), &second_channel)?;
+        anyhow::ensure!(
+            state
+                .instances
+                .get(&first_instance)
+                .map(|instance| instance.state.as_str())
+                == Some("stopped"),
+            "first scoped Basecamp Indexer state was not retained independently"
+        );
+        anyhow::ensure!(
+            state
+                .instances
+                .get(&second_instance)
+                .map(|instance| instance.state.as_str())
+                == Some("running"),
+            "second scoped Basecamp Indexer state was not retained independently"
+        );
+        let indexer_calls: Vec<_> = state
+            .calls
+            .iter()
+            .filter(|call| call.module() == INDEXER_MODULE)
+            .collect();
+        anyhow::ensure!(
+            !indexer_calls.is_empty()
+                && indexer_calls.iter().all(|call| {
+                    matches!(
+                        call.instance_id(),
+                        Some(instance_id) if instance_id == first_instance || instance_id == second_instance
+                    )
+                }),
+            "Indexer calls were not bound to one of the two explicit Basecamp instances"
+        );
+        anyhow::ensure!(
+            state
+                .calls
+                .iter()
+                .filter(|call| call.module() == BASECAMP_CORE_SERVICE_MODULE)
+                .all(|call| call.instance_id().is_none()),
+            "Basecamp core service calls must remain unscoped"
+        );
+        anyhow::ensure!(
+            state.subscriptions.iter().all(|subscription| {
+                subscription.module == INDEXER_MODULE
+                    && (subscription.instance_id == first_instance
+                        || subscription.instance_id == second_instance)
+                    && subscription.event == INDEXER_NODE_CHANGED_EVENT
+            }),
+            "Indexer lifecycle subscriptions were not exact-instance subscriptions"
+        );
         Ok(())
     }
 }

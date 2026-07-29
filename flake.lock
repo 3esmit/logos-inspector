@@ -17128,18 +17128,22 @@
         "nixpkgs": [
           "logos-module-builder",
           "nixpkgs"
-        ],
-        "upstream": "upstream"
+        ]
       },
       "locked": {
-        "path": "./nix/logos-protocol-overlay",
-        "type": "path"
+        "lastModified": 1785355127,
+        "narHash": "sha256-elgmkSKq9IDK+T6zZxlnmazTq/yZhixn5ToXSQtXW+g=",
+        "owner": "3esmit",
+        "repo": "logos-protocol",
+        "rev": "6f75e612d7ed71510a9f9a84f36ede2fe687d1fe",
+        "type": "github"
       },
       "original": {
-        "path": "./nix/logos-protocol-overlay",
-        "type": "path"
-      },
-      "parent": []
+        "owner": "3esmit",
+        "repo": "logos-protocol",
+        "rev": "6f75e612d7ed71510a9f9a84f36ede2fe687d1fe",
+        "type": "github"
+      }
     },
     "logos-protocol_2": {
       "inputs": {
@@ -31499,32 +31503,6 @@
         "owner": "3esmit",
         "repo": "logos-storage-module",
         "rev": "cb1f934a13e35016553c670489af5fc1df8169e6",
-        "type": "github"
-      }
-    },
-    "upstream": {
-      "inputs": {
-        "logos-nix": [
-          "logos-protocol",
-          "logos-nix"
-        ],
-        "nixpkgs": [
-          "logos-protocol",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1782920676,
-        "narHash": "sha256-Vb81kiYbi8yYDZbUSW6v7QhV6uO/pj7F+lCAW1coAsY=",
-        "owner": "logos-co",
-        "repo": "logos-protocol",
-        "rev": "d7ad26d369c4e464a99f2a357f10c5947c7174e1",
-        "type": "github"
-      },
-      "original": {
-        "owner": "logos-co",
-        "repo": "logos-protocol",
-        "rev": "d7ad26d369c4e464a99f2a357f10c5947c7174e1",
         "type": "github"
       }
     },
