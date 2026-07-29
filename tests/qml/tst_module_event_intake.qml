@@ -538,6 +538,25 @@ TestCase {
         compare(runtimeModuleEventCalls(basecampHost.calls), 0)
     }
 
+    function test_basecamp_lifecycle_event_normalizes_qt_v4_sequence() {
+        bridge.host = basecampHost
+        tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })
+        const sequence = ({ length: 3, 0: true, 1: "", 2: 123 })
+        sequence[Symbol.toStringTag] = "V4Sequence"
+
+        basecampHost.moduleEventReceived(
+            model.deliveryModule,
+            "nodeStarted",
+            sequence
+        )
+
+        tryVerify(function () { return model.deliveryModuleEvents.length === 1 })
+        const event = model.deliveryModuleEventRows()[0]
+        compare(event.label, "nodeStarted")
+        compare(event.status, "ok")
+        compare(model.deliveryNodeStatus, "ok")
+    }
+
     function test_basecamp_nested_json_argument_array_projects_blockchain_event() {
         bridge.host = basecampHost
         tryVerify(function () { return !intake.forwardsRuntimeOperationEvents() })

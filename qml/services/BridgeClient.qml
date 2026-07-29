@@ -185,6 +185,21 @@ QtObject {
         }
     }
 
+    function normalizeModuleEventArgs(args) {
+        // QVariantList reaches QML as V4Sequence rather than a JavaScript
+        // Array. Copy its positional arguments without changing native arrays
+        // or object payloads.
+        if (!args || typeof args !== "object" || Array.isArray(args)
+                || Object.prototype.toString.call(args) !== "[object V4Sequence]") {
+            return args
+        }
+        const values = []
+        for (let index = 0; index < args.length; ++index) {
+            values.push(args[index])
+        }
+        return values
+    }
+
     function callModule(moduleName, method, args) {
         if (root.closed) {
             return root.closedResponse()
@@ -984,7 +999,9 @@ QtObject {
             owner.moduleEventReceived(
                 moduleText,
                 eventText,
-                values.length === 1 ? values[0] : values
+                owner.normalizeModuleEventArgs(
+                    values.length === 1 ? values[0] : values
+                )
             )
         }
         let active = false
@@ -1187,13 +1204,21 @@ QtObject {
 
         function onModuleEvent(moduleName, eventName, args) {
             if (!root.closed) {
-                root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+                root.moduleEventReceived(
+                    String(moduleName || ""),
+                    String(eventName || ""),
+                    root.normalizeModuleEventArgs(args)
+                )
             }
         }
 
         function onModuleEventReceived(moduleName, eventName, args) {
             if (!root.closed) {
-                root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+                root.moduleEventReceived(
+                    String(moduleName || ""),
+                    String(eventName || ""),
+                    root.normalizeModuleEventArgs(args)
+                )
             }
         }
 
@@ -1208,7 +1233,7 @@ QtObject {
             root.moduleEventReceived(
                 String(moduleName || ""),
                 String(eventName || ""),
-                parsed.value
+                root.normalizeModuleEventArgs(parsed.value)
             )
         }
     }
