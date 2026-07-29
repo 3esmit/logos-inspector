@@ -278,15 +278,17 @@ impl LogoscoreRuntimeProfile {
     }
 
     fn apply_local_status_probe(&mut self, output: Result<LogosCoreOutput>) {
+        let Ok(output) = output else {
+            let service_target = discover_stopped_system_service_target();
+            let service_is_terminally_stopped = service_target
+                .as_ref()
+                .is_some_and(system_service_is_terminally_stopped);
+            self.apply_failed_local_status_probe(service_target, service_is_terminally_stopped);
+            return;
+        };
         self.daemon_process_id = None;
         self.service_target = None;
         self.observation = LogoscoreRuntimeObservation::Verified;
-        let Ok(output) = output else {
-            self.service_target = discover_stopped_system_service_target();
-            self.observation =
-                local_probe_failure_observation(self.attached_service_is_terminally_stopped());
-            return;
-        };
         if let Some(process_id) = running_daemon_process_id(&output.value) {
             self.daemon_process_id = Some(process_id);
             self.service_target = system_service_target(process_id);
@@ -294,6 +296,16 @@ impl LogoscoreRuntimeProfile {
         if self.service_target.is_none() {
             self.service_target = discover_stopped_system_service_target();
         }
+    }
+
+    fn apply_failed_local_status_probe(
+        &mut self,
+        service_target: Option<LogoscoreServiceTarget>,
+        service_is_terminally_stopped: bool,
+    ) {
+        self.daemon_process_id = None;
+        self.service_target = service_target;
+        self.observation = local_probe_failure_observation(service_is_terminally_stopped);
     }
 
     #[must_use]
@@ -380,16 +392,7 @@ impl LogoscoreRuntimeProfile {
 
     fn attached_service_is_terminally_stopped(&self) -> bool {
         self.service_target()
-            .and_then(|target| {
-                system_service_stop_status_with_timeout(
-                    target,
-                    Some(&attached_service_query_control()),
-                    ATTACHED_SERVICE_STATUS_TIMEOUT,
-                )
-                .ok()
-            })
-            .map(SystemServiceStopStatus::outcome)
-            .is_some_and(service_stop_outcome_allows_package_mutation)
+            .is_some_and(system_service_is_terminally_stopped)
     }
 
     /// Returns the module directory from a running daemon command line.
@@ -1018,6 +1021,17 @@ fn attached_service_query_control() -> CommandControl {
             .unwrap_or(now),
     )
     .with_command_budget(ATTACHED_SERVICE_STATUS_BUDGET.clone())
+}
+
+fn system_service_is_terminally_stopped(target: &LogoscoreServiceTarget) -> bool {
+    system_service_stop_status_with_timeout(
+        target,
+        Some(&attached_service_query_control()),
+        ATTACHED_SERVICE_STATUS_TIMEOUT,
+    )
+    .ok()
+    .map(SystemServiceStopStatus::outcome)
+    .is_some_and(service_stop_outcome_allows_package_mutation)
 }
 
 #[cfg(target_os = "linux")]
@@ -2293,15 +2307,33 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
     }
 
     #[test]
-    fn local_status_probe_failure_creates_an_unavailable_attachment() {
+    fn failed_local_status_probe_applies_explicit_service_state() {
         let mut profile = LogoscoreRuntimeProfile::local_attached_profile(
             "/bin/sh".to_owned(),
             "/tmp/logoscore-client".to_owned(),
         );
-        profile.apply_local_status_probe(Err(anyhow::anyhow!("status probe timed out")));
+        profile.apply_failed_local_status_probe(None, false);
         assert!(profile.is_unavailable());
         assert_eq!(profile.daemon_process_id, None);
 
+        let service_target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        profile.apply_failed_local_status_probe(Some(service_target.clone()), true);
+        assert!(!profile.is_unavailable());
+        assert_eq!(profile.daemon_process_id, None);
+        assert_eq!(profile.service_target, Some(service_target));
+        assert!(profile.is_controllable());
+    }
+
+    #[test]
+    fn stopped_local_status_probe_clears_an_unavailable_attachment() {
+        let mut profile = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
+        );
+        profile.observation = LogoscoreRuntimeObservation::Unavailable;
         profile.apply_local_status_probe(Ok(LogosCoreOutput {
             runner: "fixture".to_owned(),
             value: json!({"daemon": {"status": "stopped"}}),
