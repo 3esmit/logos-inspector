@@ -1026,7 +1026,7 @@ async fn basecamp_action_with_configs(
     let (status, detail) = match result {
         Ok(detail) => (
             match request.action {
-                NodeAction::Start => "starting",
+                NodeAction::Start => "running",
                 NodeAction::Stop => "stopped",
                 _ => unreachable!("Channel Indexer action was validated"),
             },
@@ -4156,8 +4156,8 @@ mod tests {
                 .operations
                 .first()
                 .map(|operation| operation.status.as_str())
-                == Some("starting"),
-            "first Basecamp Channel Indexer action was not confirmed"
+                == Some("running"),
+            "terminal Basecamp Channel Indexer Start was not recorded as running"
         );
         let first_config = basecamp_config_snapshot_with_configs(
             directory.path(),
