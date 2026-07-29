@@ -118,6 +118,30 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: qtVariantSignalHost
+
+        signal moduleEventReceived(string moduleName, string eventName, var args)
+
+        function callModuleJson(moduleName, method, argsJson) {
+            return JSON.stringify({
+                ok: true,
+                value: { method: method },
+                text: "json",
+                error: ""
+            })
+        }
+    }
+
+    function v4Sequence(values) {
+        const sequence = ({ length: values.length })
+        for (let index = 0; index < values.length; ++index) {
+            sequence[index] = values[index]
+        }
+        sequence[Symbol.toStringTag] = "V4Sequence"
+        return sequence
+    }
+
     component BasecampAsyncHost: QtObject {
         signal moduleEventReceived(string moduleName, string eventName, var args)
 
@@ -1502,6 +1526,59 @@ TestCase {
         compare(receivedArgs[0].cid, "cid-1")
     }
 
+    function test_qt_v4_sequence_event_normalizes_without_call_routing() {
+        client.host = qtVariantSignalHost
+        verify(!client.prefersBasecampModules())
+
+        qtVariantSignalHost.moduleEventReceived(
+            "delivery_module",
+            "nodeStarted",
+            v4Sequence([true, "", 123])
+        )
+
+        compare(receivedModule, "delivery_module")
+        compare(receivedEvent, "nodeStarted")
+        compare(receivedArgs.length, 3)
+        compare(receivedArgs[0], true)
+        compare(receivedArgs[1], "")
+        compare(receivedArgs[2], 123)
+    }
+
+    function test_qt_v4_sequence_preserves_one_object_argument() {
+        client.host = qtVariantSignalHost
+        const payload = { cid: "cid-v4-sequence" }
+
+        qtVariantSignalHost.moduleEventReceived(
+            "storage_module",
+            "storageUploadDone",
+            v4Sequence([payload])
+        )
+
+        compare(receivedModule, "storage_module")
+        compare(receivedEvent, "storageUploadDone")
+        compare(receivedArgs.length, 1)
+        compare(receivedArgs[0].cid, "cid-v4-sequence")
+    }
+
+    function test_native_nested_array_argument_is_not_rewritten() {
+        client.host = basecampAsyncHost
+
+        basecampAsyncHost.moduleEventReceived(
+            "delivery_module",
+            "messageReceived",
+            [[7, 8, 9]]
+        )
+
+        compare(receivedModule, "delivery_module")
+        compare(receivedEvent, "messageReceived")
+        compare(receivedArgs.length, 1)
+        verify(Array.isArray(receivedArgs[0]))
+        compare(receivedArgs[0].length, 3)
+        compare(receivedArgs[0][0], 7)
+        compare(receivedArgs[0][1], 8)
+        compare(receivedArgs[0][2], 9)
+    }
+
     function test_basecamp_without_core_event_owner_uses_legacy_subscription() {
         client.host = basecampAsyncHost
         basecampAsyncHost.runtimeModuleEventOwnershipResponse = false
@@ -1602,6 +1679,20 @@ TestCase {
         compare(receivedModule, "storage_module")
         compare(receivedEvent, "storageUploadDone")
         compare(receivedArgs.cid, "cid-1")
+    }
+
+    function test_compatibility_module_event_normalizes_qt_v4_sequence() {
+        client.host = eventHost
+
+        verify(client.subscribeModuleEvent("delivery_module", "nodeStarted"))
+        eventHost.subscribedCallback(v4Sequence([true, "", 123]))
+
+        compare(receivedModule, "delivery_module")
+        compare(receivedEvent, "nodeStarted")
+        compare(receivedArgs.length, 3)
+        compare(receivedArgs[0], true)
+        compare(receivedArgs[1], "")
+        compare(receivedArgs[2], 123)
     }
 
     function test_shutdown_closes_routes_and_settles_known_mailbox_token_once() {
