@@ -302,6 +302,14 @@ Panel {
                 }
 
                 ActionButton {
+                    objectName: "nodeConfigCloseButton"
+                    theme: root.theme
+                    text: qsTr("Back to nodes")
+                    enabled: !root.dirty && !root.saving
+                    onClicked: root.resetSelection()
+                }
+
+                ActionButton {
                     objectName: "nodeConfigUndoButton"
                     theme: root.theme
                     text: qsTr("Undo")

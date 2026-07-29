@@ -620,13 +620,16 @@ Item {
             const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
             const configure = findChild(page, "nodeConfigurebedrock")
             const panel = findChild(page, "nodeConfigurationPanel")
+            const close = findChild(page, "nodeConfigCloseButton")
             verify(!!configure, "Configuration control exists")
             verify(!!panel, "Configuration panel exists")
+            verify(!!close, "Back to nodes control exists")
             verify(configure.enabled)
 
             mouseClick(configure, configure.width / 2, configure.height / 2)
             tryCompare(panel, "visible", true)
             tryCompare(panel, "activeNode", "bedrock")
+            verify(close.enabled)
             compare(panel.currentTab, "common")
             compare(panel.nodeLabel(), "Bedrock")
             verify(panel.editable)
@@ -639,6 +642,7 @@ Item {
             }, "127.0.0.1:9090")
             verify(panel.dirty)
             verify(panel.draftText.indexOf("127.0.0.1:9090") >= 0)
+            verify(!close.enabled)
 
             panel.requestTab("raw")
             compare(panel.currentTab, "common")
@@ -646,6 +650,7 @@ Item {
 
             panel.undoDraft()
             verify(!panel.dirty)
+            verify(close.enabled)
             panel.requestTab("raw")
             compare(panel.currentTab, "raw")
             const raw = findChild(panel, "nodeConfigRawInput")
@@ -657,6 +662,25 @@ Item {
             panel.setDraftText("{")
             verify(panel.validationError.length > 0)
             verify(!save.enabled)
+        }
+
+        function test_node_configuration_returns_to_actions_after_clean_close() {
+            const page = createPage(sampleReport("stopped"), samplePackageCatalog(null))
+            const configure = findChild(page, "nodeConfigurebedrock")
+            const panel = findChild(page, "nodeConfigurationPanel")
+            const close = findChild(page, "nodeConfigCloseButton")
+            verify(!!configure, "Configuration control exists")
+            verify(!!panel, "Configuration panel exists")
+            verify(!!close, "Back to nodes control exists")
+
+            mouseClick(configure, configure.width / 2, configure.height / 2)
+            tryCompare(panel, "activeNode", "bedrock")
+            verify(close.enabled)
+
+            mouseClick(close, close.width / 2, close.height / 2)
+
+            compare(panel.activeNode, "")
+            verify(!panel.visible)
         }
 
         function test_node_configuration_common_field_accepts_full_text() {
