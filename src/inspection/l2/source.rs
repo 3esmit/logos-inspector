@@ -374,9 +374,19 @@ impl DirectIndexerL2SourceAdapter {
         &self,
         source: &IndexerL2Source,
     ) -> Result<SharedModuleTransport, L2SourceError> {
-        if !self.use_channel_indexer_runtime
-            || !matches!(source.target(), ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID)
+        if !matches!(source.target(), ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID)
         {
+            return Ok(Arc::clone(&self.module_transport));
+        }
+        if self.module_transport_kind == ModuleTransportKind::Module {
+            return crate::local_nodes::basecamp_channel_indexer_module_transport(
+                Arc::clone(&self.module_transport),
+                &source.descriptor.network_scope,
+                &source.descriptor.channel_id,
+            )
+            .map_err(|_| L2SourceError::unavailable());
+        }
+        if !self.use_channel_indexer_runtime {
             return Ok(Arc::clone(&self.module_transport));
         }
         crate::local_nodes::channel_indexer_module_transport(
@@ -541,7 +551,51 @@ fn map_execution_zone_error(error: ExecutionZoneReadError) -> L2SourceError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use anyhow::{Context as _, Result, ensure};
+    use serde_json::json;
+
     use super::*;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport,
+    };
+
+    struct RecordingModuleTransport {
+        calls: Arc<Mutex<Vec<ModuleCall>>>,
+    }
+
+    impl ModuleTransport for RecordingModuleTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            Box::pin(async move {
+                self.calls
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("recorded module calls lock poisoned"))?
+                    .push(call);
+                Ok(ModuleCallReply::new(ModuleTransportKind::Module, json!(17)))
+            })
+        }
+    }
+
+    fn basecamp_indexer_source(channel_id: &str) -> Result<IndexerL2Source> {
+        IndexerL2Source::parse(L2SourceDescriptor {
+            network_scope: NetworkScope::GenesisId {
+                genesis_id: "a".repeat(64),
+            },
+            channel_id: channel_id.to_owned(),
+            source_id: format!("indexer-{channel_id}"),
+            role: ZoneSourceRole::Indexer,
+            target: ChannelSourceTarget::Module {
+                module_id: MODULE_ID.to_owned(),
+            },
+            source_config_revision: 1,
+        })
+        .map_err(|error| anyhow::anyhow!("invalid test Indexer source: {:?}", error.kind))
+    }
 
     #[test]
     fn adapter_error_mapping_preserves_all_error_classes() {
@@ -562,5 +616,66 @@ mod tests {
             let mapped = map_execution_zone_error(ExecutionZoneReadError { kind: source });
             assert_eq!(mapped.kind, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn basecamp_indexer_reads_use_distinct_channel_instances() -> Result<()> {
+        let first_channel = "1".repeat(64);
+        let second_channel = "2".repeat(64);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let transport: SharedModuleTransport = Arc::new(RecordingModuleTransport {
+            calls: Arc::clone(&calls),
+        });
+        let adapter = DirectIndexerL2SourceAdapter::new(transport, ModuleTransportKind::Module);
+
+        for source in [
+            basecamp_indexer_source(&first_channel)?,
+            basecamp_indexer_source(&second_channel)?,
+        ] {
+            let transport = adapter.module_transport_for(&source).map_err(|error| {
+                anyhow::anyhow!(
+                    "Basecamp Indexer transport was unavailable: {:?}",
+                    error.kind
+                )
+            })?;
+            let head = indexer_adapter(&source, &transport, ModuleTransportKind::Module)
+                .map_err(|error| {
+                    anyhow::anyhow!("Basecamp Indexer adapter was unavailable: {:?}", error.kind)
+                })?
+                .reported_head_id()
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Indexer finalized-head read failed: {error:?}")
+                })?;
+            ensure!(head == Some(17), "Indexer finalized-head result changed");
+        }
+
+        let calls = calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("recorded module calls lock poisoned"))?;
+        ensure!(calls.len() == 2, "expected exactly two Indexer reads");
+        for (call, channel_id) in calls.iter().zip([&first_channel, &second_channel]) {
+            ensure!(
+                call.module() == MODULE_ID,
+                "Indexer read used another module"
+            );
+            ensure!(
+                call.method() == "getLastFinalizedBlockId",
+                "unexpected Indexer read method `{}`",
+                call.method()
+            );
+            let instance_id = call
+                .instance_id()
+                .context("Basecamp Indexer read fell back to a default instance")?;
+            ensure!(
+                instance_id.ends_with(channel_id),
+                "Indexer read used an instance for another Channel"
+            );
+        }
+        ensure!(
+            calls[0].instance_id() != calls[1].instance_id(),
+            "two Zone Channels shared one Basecamp Indexer instance"
+        );
+        Ok(())
     }
 }

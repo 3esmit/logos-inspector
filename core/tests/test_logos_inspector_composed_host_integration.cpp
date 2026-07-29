@@ -405,6 +405,11 @@ void runComposedIntegration(QCoreApplication& application)
 {
     QTemporaryDir logoscoreSentinel;
     REQUIRE(logoscoreSentinel.isValid());
+    QTemporaryDir inspectorState;
+    REQUIRE(inspectorState.isValid());
+    REQUIRE(qputenv(
+        "LOGOS_INSPECTOR_CONFIG_DIR",
+        inspectorState.path().toUtf8()));
     const QString logoscoreMarker = logoscoreSentinel.filePath(
         QStringLiteral("logoscore-invoked"));
     const QString logoscoreProgram = logoscoreSentinel.filePath(

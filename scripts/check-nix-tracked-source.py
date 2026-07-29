@@ -14,7 +14,6 @@ SENTINELS = (
     Path(".nix-untracked-source-sentinel"),
     Path("qml/.nix-untracked-source-sentinel"),
     Path("core/tests/.nix-untracked-source-sentinel"),
-    Path("nix/logos-protocol-overlay/cpp/.nix-untracked-source-sentinel"),
 )
 
 

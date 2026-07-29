@@ -44,9 +44,9 @@ target_compile_options(logos_protocol_host_transport_tests PRIVATE
     -Werror
 )
 target_include_directories(logos_protocol_host_transport_tests PRIVATE
+    include
     ../src
     ../../crates/core-ffi/include
-    ../../nix/logos-protocol-overlay/cpp
 )
 target_link_libraries(logos_protocol_host_transport_tests PRIVATE
     Qt6::Core

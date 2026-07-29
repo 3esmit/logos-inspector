@@ -392,6 +392,8 @@ pub(crate) trait ChannelSourceProbe: Send + Sync + 'static {
 
 pub(crate) struct DefaultChannelSourceProbe {
     transport: Arc<dyn ChannelSourceProbeTransport>,
+    module_transport: SharedModuleTransport,
+    module_transport_kind: ModuleTransportKind,
     use_channel_indexer_runtime: bool,
 }
 
@@ -413,9 +415,11 @@ impl DefaultChannelSourceProbe {
             && module_transport.logoscore_cli_transport().is_some();
         Self {
             transport: Arc::new(DefaultChannelSourceProbeTransport::new(
-                module_transport,
+                Arc::clone(&module_transport),
                 module_transport_kind,
             )),
+            module_transport,
+            module_transport_kind,
             use_channel_indexer_runtime,
         }
     }
@@ -424,10 +428,28 @@ impl DefaultChannelSourceProbe {
         &self,
         request: &ChannelSourceProbeRequest,
     ) -> Result<Arc<dyn ChannelSourceProbeTransport>, ChannelSourceProbeFailure> {
-        if !self.use_channel_indexer_runtime
-            || request.role != ChannelSourceRole::Indexer
+        if request.role != ChannelSourceRole::Indexer
             || !matches!(&request.target, ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID)
         {
+            return Ok(Arc::clone(&self.transport));
+        }
+        if self.module_transport_kind == ModuleTransportKind::Module {
+            let module_transport = crate::local_nodes::basecamp_channel_indexer_module_transport(
+                Arc::clone(&self.module_transport),
+                &request.network_scope,
+                &request.channel_id,
+            )
+            .map_err(|error| {
+                ChannelSourceProbeFailure::unavailable(format!(
+                    "Basecamp Channel-owned Indexer runtime is unavailable: {error}"
+                ))
+            })?;
+            return Ok(Arc::new(DefaultChannelSourceProbeTransport::new(
+                module_transport,
+                ModuleTransportKind::Module,
+            )));
+        }
+        if !self.use_channel_indexer_runtime {
             return Ok(Arc::clone(&self.transport));
         }
         let module_transport = crate::local_nodes::channel_indexer_module_transport(

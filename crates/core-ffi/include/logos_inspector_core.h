@@ -8,7 +8,11 @@ extern "C" {
 
 typedef struct LogosInspectorCore LogosInspectorCore;
 
-#define LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION 1u
+#define LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION_V1 1u
+#define LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION_V2 2u
+/* Compatibility name for V1-only hosts. */
+#define LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION \
+    LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION_V1
 #define LOGOS_INSPECTOR_EVENT_REJECTED 0
 #define LOGOS_INSPECTOR_EVENT_ACCEPTED 1
 #define LOGOS_INSPECTOR_EVENT_BACKPRESSURE -1
@@ -33,6 +37,22 @@ typedef int32_t (*LogosInspectorHostDispatchFn)(
     LogosInspectorHostReplyFn reply,
     void* reply_context);
 
+typedef int32_t (*LogosInspectorHostDispatchInstanceFn)(
+    void* host_context,
+    uint64_t module_request_id,
+    const char* module,
+    const char* instance_id,
+    const char* method,
+    const char* args_json,
+    LogosInspectorHostReplyFn reply,
+    void* reply_context);
+
+typedef int32_t (*LogosInspectorHostSubscribeInstanceFn)(
+    void* host_context,
+    const char* module,
+    const char* instance_id,
+    const char* event);
+
 typedef void (*LogosInspectorHostCancelFn)(
     void* host_context,
     uint64_t module_request_id);
@@ -47,6 +67,17 @@ typedef struct LogosInspectorHostTransportV1 {
     LogosInspectorHostCancelFn cancel;
     LogosInspectorHostCloseFn close;
 } LogosInspectorHostTransportV1;
+
+/*
+ * V2 is additive. Its V1 prefix remains byte-for-byte unchanged, but hosts
+ * using V2 must set v1.abi_version to V2 and v1.struct_size to sizeof(V2).
+ * Both scoped callbacks are required by the V2 constructor.
+ */
+typedef struct LogosInspectorHostTransportV2 {
+    LogosInspectorHostTransportV1 v1;
+    LogosInspectorHostDispatchInstanceFn dispatch_instance;
+    LogosInspectorHostSubscribeInstanceFn subscribe_instance;
+} LogosInspectorHostTransportV2;
 
 /*
  * Runtime event-health signaling is an additive function, not a field in
@@ -83,6 +114,17 @@ LogosInspectorCore* logos_inspector_core_new(void);
  */
 LogosInspectorCore* logos_inspector_core_new_with_host_transport(
     const LogosInspectorHostTransportV1* transport);
+
+/*
+ * Creates an asynchronous bridge with explicit module-instance routing.
+ * A scoped call or subscription is never redirected to a default instance.
+ * transport must provide a readable V1 prefix. If its prefix advertises V2
+ * and a V2-sized struct, transport must provide the full readable V2 value.
+ * The V1 prefix follows the same ownership, concurrency, and quiescence
+ * contract documented above.
+ */
+LogosInspectorCore* logos_inspector_core_new_with_host_transport_v2(
+    const LogosInspectorHostTransportV2* transport);
 
 /*
  * Publishes native runtime module-event ownership to the Rust transport.
@@ -184,6 +226,19 @@ int32_t logos_inspector_core_call_module_async(
 int32_t logos_inspector_core_ingest_module_event(
     LogosInspectorCore* handle,
     const char* module,
+    const char* event,
+    const char* args_json);
+
+/*
+ * Copies and queues one event emitted by an explicitly named module instance.
+ * It is delivered only to subscriptions for the exact module, instance, and
+ * event tuple. The host must use this with a V2 transport and must quiesce it
+ * before its close callback returns. Return values match unscoped ingress.
+ */
+int32_t logos_inspector_core_ingest_module_event_instance(
+    LogosInspectorCore* handle,
+    const char* module,
+    const char* instance_id,
     const char* event,
     const char* args_json);
 

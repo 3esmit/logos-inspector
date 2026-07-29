@@ -204,6 +204,7 @@ impl BridgeCallbackId {
 pub struct ModuleCall {
     transport: ModuleTransportKind,
     module: String,
+    instance_id: Option<String>,
     method: String,
     args: Vec<Value>,
 }
@@ -215,10 +216,41 @@ impl ModuleCall {
         method: impl Into<String>,
         args: Vec<Value>,
     ) -> Result<Self> {
+        Self::new_with_instance(transport, module, None, method, args)
+    }
+
+    /// Creates a call for one explicitly named module instance.
+    ///
+    /// A scoped call must never be silently redirected to a transport's
+    /// default instance. Callers use this for independently configured
+    /// Basecamp module instances, such as one Indexer per Zone channel.
+    pub fn new_instance(
+        transport: ModuleTransportKind,
+        module: impl Into<String>,
+        instance_id: impl Into<String>,
+        method: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Result<Self> {
+        Self::new_with_instance(transport, module, Some(instance_id.into()), method, args)
+    }
+
+    fn new_with_instance(
+        transport: ModuleTransportKind,
+        module: impl Into<String>,
+        instance_id: Option<String>,
+        method: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Result<Self> {
         let module = module.into();
         let method = method.into();
         if module.trim().is_empty() {
             bail!("module name is required");
+        }
+        if instance_id
+            .as_deref()
+            .is_some_and(|instance_id| instance_id.trim().is_empty())
+        {
+            bail!("module instance id is required");
         }
         if method.trim().is_empty() {
             bail!("method name is required");
@@ -226,6 +258,7 @@ impl ModuleCall {
         Ok(Self {
             transport,
             module,
+            instance_id,
             method,
             args,
         })
@@ -239,6 +272,11 @@ impl ModuleCall {
     #[must_use]
     pub fn module(&self) -> &str {
         &self.module
+    }
+
+    #[must_use]
+    pub fn instance_id(&self) -> Option<&str> {
+        self.instance_id.as_deref()
     }
 
     #[must_use]
@@ -300,6 +338,7 @@ pub type SharedModuleTransport = Arc<dyn ModuleTransport>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModuleTransportEvent {
     module: String,
+    instance_id: Option<String>,
     event: String,
     args: Vec<Value>,
 }
@@ -310,16 +349,42 @@ impl ModuleTransportEvent {
         event: impl Into<String>,
         args: Vec<Value>,
     ) -> Result<Self> {
+        Self::new_with_instance(module, None, event, args)
+    }
+
+    /// Creates an event emitted by one explicitly named module instance.
+    pub fn new_instance(
+        module: impl Into<String>,
+        instance_id: impl Into<String>,
+        event: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Result<Self> {
+        Self::new_with_instance(module, Some(instance_id.into()), event, args)
+    }
+
+    fn new_with_instance(
+        module: impl Into<String>,
+        instance_id: Option<String>,
+        event: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Result<Self> {
         let module = module.into();
         let event = event.into();
         if module.trim().is_empty() {
             bail!("module event module name is required");
+        }
+        if instance_id
+            .as_deref()
+            .is_some_and(|instance_id| instance_id.trim().is_empty())
+        {
+            bail!("module event instance id is required");
         }
         if event.trim().is_empty() {
             bail!("module event name is required");
         }
         Ok(Self {
             module,
+            instance_id,
             event,
             args,
         })
@@ -328,6 +393,11 @@ impl ModuleTransportEvent {
     #[must_use]
     pub fn module(&self) -> &str {
         &self.module
+    }
+
+    #[must_use]
+    pub fn instance_id(&self) -> Option<&str> {
+        self.instance_id.as_deref()
     }
 
     #[must_use]
@@ -543,6 +613,18 @@ pub trait ModuleTransport: Send + Sync {
         bail!("module event subscriptions are unavailable through this adapter")
     }
 
+    fn subscribe_module_instance_event(
+        &self,
+        module: &str,
+        instance_id: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        if instance_id.trim().is_empty() {
+            return self.subscribe_module_event(module, event);
+        }
+        bail!("scoped module event subscriptions are unavailable through this adapter")
+    }
+
     fn ingest_module_event(
         &self,
         _module: &str,
@@ -636,6 +718,161 @@ impl ModuleTransport for UnavailableModuleTransport {
 
     fn call(&self, _call: ModuleCall) -> ModuleCallFuture<'_> {
         Box::pin(async move { bail!(self.reason.clone()) })
+    }
+}
+
+/// Binds one transport to exactly one explicitly named module instance.
+///
+/// The wrapper exists for Basecamp modules that are independently configured
+/// by the Inspector. It rejects a different module or instance instead of
+/// allowing a caller to fall back to a transport default instance.
+#[derive(Clone)]
+pub(crate) struct ScopedModuleTransport {
+    inner: SharedModuleTransport,
+    module: String,
+    instance_id: String,
+}
+
+impl ScopedModuleTransport {
+    pub(crate) fn new(
+        inner: SharedModuleTransport,
+        module: impl Into<String>,
+        instance_id: impl Into<String>,
+    ) -> Result<Self> {
+        let module = module.into();
+        let instance_id = instance_id.into();
+        ensure!(!module.trim().is_empty(), "scoped module name is required");
+        ensure!(
+            !instance_id.trim().is_empty(),
+            "scoped module instance id is required"
+        );
+        Ok(Self {
+            inner,
+            module,
+            instance_id,
+        })
+    }
+
+    fn require_module(&self, module: &str) -> Result<()> {
+        ensure!(
+            module == self.module,
+            "scoped module transport is bound to `{}`, not `{module}`",
+            self.module
+        );
+        Ok(())
+    }
+
+    fn scoped_call(&self, call: ModuleCall) -> Result<ModuleCall> {
+        self.require_module(call.module())?;
+        if let Some(instance_id) = call.instance_id() {
+            ensure!(
+                instance_id == self.instance_id,
+                "scoped module transport is bound to instance `{}`, not `{instance_id}`",
+                self.instance_id
+            );
+        }
+        ModuleCall::new_instance(
+            call.transport(),
+            self.module.clone(),
+            self.instance_id.clone(),
+            call.method().to_owned(),
+            call.args().to_vec(),
+        )
+    }
+}
+
+impl ModuleTransport for ScopedModuleTransport {
+    fn kind(&self) -> ModuleTransportKind {
+        self.inner.kind()
+    }
+
+    fn begin_close(&self) {
+        self.inner.begin_close();
+    }
+
+    fn logoscore_cli_transport(&self) -> Option<&LogoscoreCliTransport> {
+        self.inner.logoscore_cli_transport()
+    }
+
+    fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+        let inner = Arc::clone(&self.inner);
+        let call = self.scoped_call(call);
+        Box::pin(async move {
+            let call = call?;
+            inner.call(call).await
+        })
+    }
+
+    fn call_controlled(
+        &self,
+        call: ModuleCall,
+        control: ModuleCallControl,
+    ) -> ModuleCallFuture<'_> {
+        let inner = Arc::clone(&self.inner);
+        let call = self.scoped_call(call);
+        Box::pin(async move {
+            let call = call?;
+            inner.call_controlled(call, control).await
+        })
+    }
+
+    fn subscribe_module_event(
+        &self,
+        module: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        self.require_module(module)?;
+        self.inner
+            .subscribe_module_instance_event(&self.module, &self.instance_id, event)
+    }
+
+    fn subscribe_module_instance_event(
+        &self,
+        module: &str,
+        instance_id: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        self.require_module(module)?;
+        ensure!(
+            instance_id == self.instance_id,
+            "scoped module transport is bound to instance `{}`, not `{instance_id}`",
+            self.instance_id
+        );
+        self.inner
+            .subscribe_module_instance_event(&self.module, &self.instance_id, event)
+    }
+
+    fn ingest_module_event(
+        &self,
+        _module: &str,
+        _event: &str,
+        _args: &[Value],
+    ) -> ModuleTransportResult<()> {
+        bail!(
+            "scoped module event ingress must use the owning host transport with an explicit instance id"
+        )
+    }
+
+    fn supports_shared_file_staging(&self) -> bool {
+        self.inner.supports_shared_file_staging()
+    }
+
+    fn native_runtime_module_events_ready(&self) -> bool {
+        self.inner.native_runtime_module_events_ready()
+    }
+
+    fn status(&self) -> ModuleDiagnosticFuture<'_> {
+        self.inner.status()
+    }
+
+    fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
+        let required = self.require_module(&module);
+        Box::pin(async move {
+            required?;
+            bail!(
+                "scoped module metadata is unavailable; query the explicit Basecamp module instance interface"
+            )
+        })
     }
 }
 
@@ -820,6 +1057,9 @@ impl ModuleTransport for LogoscoreCliTransport {
                     transport.as_str()
                 );
             }
+            if call.instance_id().is_some() {
+                bail!("LogosCore CLI transport cannot execute scoped module calls");
+            }
             let module = call.module().to_owned();
             let method = call.method().to_owned();
             let args = call.args().to_vec();
@@ -866,6 +1106,9 @@ impl ModuleTransport for LogoscoreCliTransport {
                     "LogosCore CLI transport cannot execute `{}` calls",
                     transport.as_str()
                 );
+            }
+            if call.instance_id().is_some() {
+                bail!("LogosCore CLI transport cannot execute scoped module calls");
             }
             let module = call.module().to_owned();
             let method = call.method().to_owned();
@@ -4918,6 +5161,7 @@ mod tests {
         reply_kind: ModuleTransportKind,
         calls: AtomicUsize,
         last_call: Mutex<Option<ModuleCall>>,
+        subscriptions: Mutex<Vec<(String, String, String)>>,
     }
 
     impl RecordingTransport {
@@ -4927,8 +5171,130 @@ mod tests {
                 reply_kind,
                 calls: AtomicUsize::new(0),
                 last_call: Mutex::new(None),
+                subscriptions: Mutex::new(Vec::new()),
             }
         }
+    }
+
+    #[test]
+    fn scoped_module_calls_and_events_require_and_preserve_instance_ids() -> Result<()> {
+        let call = ModuleCall::new_instance(
+            ModuleTransportKind::Module,
+            "lez_indexer_module",
+            "indexer-testnet-0101010101010101",
+            "nodeStatus",
+            vec![json!({ "verbose": true })],
+        )?;
+        anyhow::ensure!(
+            call.instance_id() == Some("indexer-testnet-0101010101010101"),
+            "scoped module call lost its instance identifier"
+        );
+        anyhow::ensure!(
+            ModuleCall::new_instance(
+                ModuleTransportKind::Module,
+                "lez_indexer_module",
+                "  ",
+                "nodeStatus",
+                Vec::new(),
+            )
+            .is_err(),
+            "blank scoped module call instance identifier was accepted"
+        );
+
+        let event = ModuleTransportEvent::new_instance(
+            "lez_indexer_module",
+            "indexer-testnet-0101010101010101",
+            "nodeChanged",
+            vec![json!({ "running": true })],
+        )?;
+        anyhow::ensure!(
+            event.instance_id() == Some("indexer-testnet-0101010101010101"),
+            "scoped module event lost its instance identifier"
+        );
+        anyhow::ensure!(
+            ModuleTransportEvent::new_instance(
+                "lez_indexer_module",
+                "",
+                "nodeChanged",
+                Vec::new(),
+            )
+            .is_err(),
+            "blank scoped module event instance identifier was accepted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scoped_module_transport_never_uses_a_default_instance() -> Result<()> {
+        let inner = Arc::new(RecordingTransport::new(
+            ModuleTransportKind::Module,
+            ModuleTransportKind::Module,
+        ));
+        let transport: SharedModuleTransport = inner.clone();
+        let scoped = ScopedModuleTransport::new(
+            transport,
+            "lez_indexer_module",
+            "indexer-network-0101010101010101",
+        )?;
+
+        dispatch_module_call(
+            &scoped,
+            ModuleCall::new(
+                ModuleTransportKind::Module,
+                "lez_indexer_module",
+                "getStatus",
+                Vec::new(),
+            )?,
+        )
+        .await?;
+        let call = inner
+            .last_call
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recording call lock failed: {error}"))?
+            .clone()
+            .context("scoped transport did not forward its call")?;
+        anyhow::ensure!(
+            call.instance_id() == Some("indexer-network-0101010101010101"),
+            "scoped transport dispatched through a default module instance"
+        );
+
+        let _subscription = scoped.subscribe_module_event("lez_indexer_module", "nodeChanged")?;
+        let subscriptions = inner
+            .subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recording subscriptions lock failed: {error}"))?
+            .clone();
+        anyhow::ensure!(
+            subscriptions
+                == vec![(
+                    "lez_indexer_module".to_owned(),
+                    "indexer-network-0101010101010101".to_owned(),
+                    "nodeChanged".to_owned(),
+                )],
+            "scoped transport did not subscribe to its exact module instance"
+        );
+
+        let wrong_module = ModuleCall::new(
+            ModuleTransportKind::Module,
+            "storage_module",
+            "getStatus",
+            Vec::new(),
+        )?;
+        anyhow::ensure!(
+            dispatch_module_call(&scoped, wrong_module).await.is_err(),
+            "scoped transport accepted a different module"
+        );
+        anyhow::ensure!(
+            scoped
+                .subscribe_module_instance_event(
+                    "lez_indexer_module",
+                    "other-instance",
+                    "nodeChanged",
+                )
+                .is_err(),
+            "scoped transport accepted a different module instance"
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -6249,6 +6615,27 @@ mod tests {
                     }),
                 ))
             })
+        }
+
+        fn subscribe_module_instance_event(
+            &self,
+            module: &str,
+            instance_id: &str,
+            event: &str,
+        ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+            self.subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("recording subscriptions lock failed: {error}"))?
+                .push((module.to_owned(), instance_id.to_owned(), event.to_owned()));
+            Ok(Box::new(EmptyModuleEventSubscription))
+        }
+    }
+
+    struct EmptyModuleEventSubscription;
+
+    impl ModuleEventSubscription for EmptyModuleEventSubscription {
+        fn next_within(&mut self, _timeout: Duration) -> Result<Option<ModuleTransportEvent>> {
+            Ok(None)
         }
     }
 

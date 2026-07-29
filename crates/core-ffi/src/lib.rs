@@ -23,7 +23,8 @@ use logos_inspector::{
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-const HOST_TRANSPORT_ABI_VERSION: u32 = 1;
+const HOST_TRANSPORT_ABI_VERSION_V1: u32 = 1;
+const HOST_TRANSPORT_ABI_VERSION_V2: u32 = 2;
 const HOST_RESPONSE_JSON_MAX_BYTES: usize = 16 * 1024 * 1024;
 const ASYNC_WORKER_QUEUE_CAPACITY: usize = 128;
 const HOST_EVENT_SUBSCRIPTION_CAPACITY: usize = 64;
@@ -53,6 +54,18 @@ pub type LogosInspectorHostDispatchFn = unsafe extern "C" fn(
     LogosInspectorHostReplyFn,
     *mut c_void,
 ) -> i32;
+pub type LogosInspectorHostDispatchInstanceFn = unsafe extern "C" fn(
+    *mut c_void,
+    u64,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    LogosInspectorHostReplyFn,
+    *mut c_void,
+) -> i32;
+pub type LogosInspectorHostSubscribeInstanceFn =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char) -> i32;
 pub type LogosInspectorHostCancelFn = unsafe extern "C" fn(*mut c_void, u64);
 pub type LogosInspectorHostCloseFn = unsafe extern "C" fn(*mut c_void);
 
@@ -65,6 +78,19 @@ pub struct LogosInspectorHostTransportV1 {
     pub dispatch: Option<LogosInspectorHostDispatchFn>,
     pub cancel: Option<LogosInspectorHostCancelFn>,
     pub close: Option<LogosInspectorHostCloseFn>,
+}
+
+/// Additive host transport ABI for explicitly named module instances.
+///
+/// The version-1 prefix remains byte-for-byte stable. Hosts that expose this
+/// vtable must set `v1.abi_version` to 2 and `v1.struct_size` to at least this
+/// structure's size.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct LogosInspectorHostTransportV2 {
+    pub v1: LogosInspectorHostTransportV1,
+    pub dispatch_instance: Option<LogosInspectorHostDispatchInstanceFn>,
+    pub subscribe_instance: Option<LogosInspectorHostSubscribeInstanceFn>,
 }
 
 pub struct LogosInspectorCore {
@@ -94,6 +120,8 @@ struct AsynchronousCore {
 struct HostVtable {
     context: usize,
     dispatch: LogosInspectorHostDispatchFn,
+    dispatch_instance: Option<LogosInspectorHostDispatchInstanceFn>,
+    subscribe_instance: Option<LogosInspectorHostSubscribeInstanceFn>,
     cancel: Option<LogosInspectorHostCancelFn>,
     close: LogosInspectorHostCloseFn,
 }
@@ -130,6 +158,7 @@ struct PendingHostCall {
 
 struct HostEventSubscriptionEntry {
     module: String,
+    instance_id: Option<String>,
     event: String,
     sender: mpsc::SyncSender<ModuleTransportEvent>,
     status: Arc<HostEventSubscriptionStatus>,
@@ -184,6 +213,7 @@ enum WorkerCommand {
     },
     ModuleEvent {
         module: String,
+        instance_id: Option<String>,
         event: String,
         args: Vec<Value>,
         fanout_ready: mpsc::Receiver<()>,
@@ -219,7 +249,7 @@ impl HostVtable {
         // SAFETY: the constructor contract requires a readable v1 prefix for
         // the duration of this call; the value is copied before returning.
         let transport = unsafe { *transport };
-        if transport.abi_version != HOST_TRANSPORT_ABI_VERSION {
+        if transport.abi_version != HOST_TRANSPORT_ABI_VERSION_V1 {
             return Err(format!(
                 "unsupported host transport ABI version {}",
                 transport.abi_version
@@ -237,7 +267,57 @@ impl HostVtable {
         Ok(Self {
             context: transport.context.expose_provenance(),
             dispatch,
+            dispatch_instance: None,
+            subscribe_instance: None,
             cancel: transport.cancel,
+            close,
+        })
+    }
+
+    unsafe fn copy_from_v2(
+        transport: *const LogosInspectorHostTransportV2,
+    ) -> Result<Self, String> {
+        if transport.is_null() {
+            return Err("host transport is required".to_owned());
+        }
+
+        // SAFETY: the constructor contract requires a readable v1 prefix for
+        // the duration of this call. Inspect it before reading V2-only fields
+        // so an older or undersized vtable is rejected without an out-of-bounds
+        // read.
+        let prefix = unsafe { ptr::read(transport.cast::<LogosInspectorHostTransportV1>()) };
+        if prefix.abi_version != HOST_TRANSPORT_ABI_VERSION_V2 {
+            return Err(format!(
+                "unsupported host transport ABI version {}",
+                prefix.abi_version
+            ));
+        }
+        if (prefix.struct_size as usize) < size_of::<LogosInspectorHostTransportV2>() {
+            return Err("host transport vtable is smaller than version 2".to_owned());
+        }
+
+        // SAFETY: a version-2 prefix whose advertised size covers V2, together
+        // with the constructor contract, proves this complete V2 value is
+        // readable for the duration of the copy.
+        let transport = unsafe { ptr::read(transport) };
+        let Some(dispatch) = transport.v1.dispatch else {
+            return Err("host transport dispatch callback is required".to_owned());
+        };
+        let Some(dispatch_instance) = transport.dispatch_instance else {
+            return Err("host transport scoped dispatch callback is required".to_owned());
+        };
+        let Some(subscribe_instance) = transport.subscribe_instance else {
+            return Err("host transport scoped subscription callback is required".to_owned());
+        };
+        let Some(close) = transport.v1.close else {
+            return Err("host transport close callback is required".to_owned());
+        };
+        Ok(Self {
+            context: transport.v1.context.expose_provenance(),
+            dispatch,
+            dispatch_instance: Some(dispatch_instance),
+            subscribe_instance: Some(subscribe_instance),
+            cancel: transport.v1.cancel,
             close,
         })
     }
@@ -278,12 +358,24 @@ impl HostState {
         let state = Arc::clone(self);
         Box::pin(async move {
             let module = call.module().to_owned();
+            let instance_id = call.instance_id().map(ToOwned::to_owned);
+            if instance_id.is_some() && state.vtable.dispatch_instance.is_none() {
+                return Err(std::io::Error::other(
+                    "Basecamp host transport does not support scoped module calls",
+                )
+                .into());
+            }
             let method = call.method().to_owned();
             let args_json = serde_json::to_string(call.args()).map_err(|error| {
                 std::io::Error::other(format!("failed to encode module args: {error}"))
             })?;
             let module_c = CString::new(module.clone())
                 .map_err(|_| std::io::Error::other("module name contains a NUL byte"))?;
+            let instance_c = instance_id
+                .as_deref()
+                .map(CString::new)
+                .transpose()
+                .map_err(|_| std::io::Error::other("module instance id contains a NUL byte"))?;
             let method_c = CString::new(method.clone())
                 .map_err(|_| std::io::Error::other("method name contains a NUL byte"))?;
             let args_c = CString::new(args_json)
@@ -314,16 +406,42 @@ impl HostState {
             // SAFETY: all strings remain live through the dispatch call. The
             // callback context points to this stable Arc allocation, retained
             // by the core until host close has quiesced every reply callback.
-            let accepted = unsafe {
-                (state.vtable.dispatch)(
-                    state.vtable.context(),
-                    module_request_id.0,
-                    module_c.as_ptr(),
-                    method_c.as_ptr(),
-                    args_c.as_ptr(),
-                    host_transport_reply,
-                    Arc::as_ptr(&state).cast_mut().cast(),
-                )
+            let accepted = if let Some(instance_c) = instance_c.as_ref() {
+                // SAFETY: all strings remain live through the dispatch call.
+                // The callback context points to this stable Arc allocation,
+                // retained by the core until host close has quiesced every
+                // reply callback.
+                match state.vtable.dispatch_instance {
+                    Some(dispatch_instance) => unsafe {
+                        dispatch_instance(
+                            state.vtable.context(),
+                            module_request_id.0,
+                            module_c.as_ptr(),
+                            instance_c.as_ptr(),
+                            method_c.as_ptr(),
+                            args_c.as_ptr(),
+                            host_transport_reply,
+                            Arc::as_ptr(&state).cast_mut().cast(),
+                        )
+                    },
+                    None => EVENT_REJECTED,
+                }
+            } else {
+                // SAFETY: all strings remain live through the dispatch call.
+                // The callback context points to this stable Arc allocation,
+                // retained by the core until host close has quiesced every
+                // reply callback.
+                unsafe {
+                    (state.vtable.dispatch)(
+                        state.vtable.context(),
+                        module_request_id.0,
+                        module_c.as_ptr(),
+                        method_c.as_ptr(),
+                        args_c.as_ptr(),
+                        host_transport_reply,
+                        Arc::as_ptr(&state).cast_mut().cast(),
+                    )
+                }
             };
             if accepted != 1 {
                 lock(&state.registry).pending.remove(&module_request_id);
@@ -375,12 +493,56 @@ impl HostState {
         module: &str,
         event: &str,
     ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        self.subscribe_module_event_with_instance(module, None, event)
+    }
+
+    fn subscribe_module_instance_event(
+        self: &Arc<Self>,
+        module: &str,
+        instance_id: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        if instance_id.trim().is_empty() {
+            return self.subscribe_module_event(module, event);
+        }
+        self.subscribe_module_event_with_instance(module, Some(instance_id), event)
+    }
+
+    fn subscribe_module_event_with_instance(
+        self: &Arc<Self>,
+        module: &str,
+        instance_id: Option<&str>,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
         if module.trim().is_empty() {
             return Err(std::io::Error::other("module event module name is required").into());
         }
         if event.trim().is_empty() {
             return Err(std::io::Error::other("module event name is required").into());
         }
+        if instance_id.is_some_and(|instance_id| instance_id.trim().is_empty()) {
+            return Err(std::io::Error::other("module event instance id is required").into());
+        }
+
+        let remote_subscription = if let Some(instance_id) = instance_id {
+            let Some(subscribe_instance) = self.vtable.subscribe_instance else {
+                return Err(std::io::Error::other(
+                    "Basecamp host transport does not support scoped module event subscriptions",
+                )
+                .into());
+            };
+            let module = CString::new(module).map_err(|_| {
+                std::io::Error::other("module event module name contains a NUL byte")
+            })?;
+            let instance_id = CString::new(instance_id).map_err(|_| {
+                std::io::Error::other("module event instance id contains a NUL byte")
+            })?;
+            let event = CString::new(event)
+                .map_err(|_| std::io::Error::other("module event name contains a NUL byte"))?;
+            Some((subscribe_instance, module, instance_id, event))
+        } else {
+            None
+        };
         let (sender, receiver) = mpsc::sync_channel(HOST_EVENT_SUBSCRIPTION_CAPACITY);
         let status = Arc::new(HostEventSubscriptionStatus {
             overflowed: AtomicBool::new(false),
@@ -406,13 +568,38 @@ impl HostState {
                 subscription_id,
                 HostEventSubscriptionEntry {
                     module: module.to_owned(),
+                    instance_id: instance_id.map(ToOwned::to_owned),
                     event: event.to_owned(),
                     sender,
                     status: Arc::clone(&status),
                 },
             );
+            if remote_subscription.is_some() {
+                registry.active_host_calls += 1;
+            }
             subscription_id
         };
+
+        if let Some((subscribe_instance, module, instance_id, event)) = remote_subscription {
+            // SAFETY: the copied host context remains valid until close. Each
+            // string is borrowed only for this synchronous subscription call.
+            let accepted = unsafe {
+                subscribe_instance(
+                    self.vtable.context(),
+                    module.as_ptr(),
+                    instance_id.as_ptr(),
+                    event.as_ptr(),
+                )
+            };
+            self.finish_host_call();
+            if accepted != 1 {
+                self.unsubscribe_module_event(subscription_id);
+                return Err(std::io::Error::other(
+                    "Basecamp host rejected scoped module event subscription",
+                )
+                .into());
+            }
+        }
         Ok(Box::new(BasecampModuleEventSubscription {
             state: Arc::clone(self),
             subscription_id,
@@ -427,7 +614,22 @@ impl HostState {
         event: &str,
         args: &[Value],
     ) -> ModuleTransportResult<()> {
-        let transport_event = ModuleTransportEvent::new(module, event, args.to_vec())?;
+        self.publish_module_event_instance(module, None, event, args)
+    }
+
+    fn publish_module_event_instance(
+        &self,
+        module: &str,
+        instance_id: Option<&str>,
+        event: &str,
+        args: &[Value],
+    ) -> ModuleTransportResult<()> {
+        let transport_event = match instance_id {
+            Some(instance_id) => {
+                ModuleTransportEvent::new_instance(module, instance_id, event, args.to_vec())?
+            }
+            None => ModuleTransportEvent::new(module, event, args.to_vec())?,
+        };
         let mut registry = lock(&self.registry);
         if registry.phase != LifecyclePhase::Open {
             return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
@@ -435,7 +637,10 @@ impl HostState {
         let mut remove = Vec::new();
         let mut overflowed = false;
         for (subscription_id, subscription) in &registry.subscriptions {
-            if subscription.module != module || subscription.event != event {
+            if subscription.module != module
+                || subscription.instance_id.as_deref() != instance_id
+                || subscription.event != event
+            {
                 continue;
             }
             match subscription.sender.try_send(transport_event.clone()) {
@@ -645,6 +850,16 @@ impl ModuleTransport for BasecampHostTransport {
         event: &str,
     ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
         self.state.subscribe_module_event(module, event)
+    }
+
+    fn subscribe_module_instance_event(
+        &self,
+        module: &str,
+        instance_id: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        self.state
+            .subscribe_module_instance_event(module, instance_id, event)
     }
 
     fn ingest_module_event(
@@ -998,7 +1213,13 @@ impl AsynchronousCore {
         self.state.cancel(bridge_request_id)
     }
 
-    fn enqueue_module_event(&self, module: String, event: String, args: Vec<Value>) -> i32 {
+    fn enqueue_module_event(
+        &self,
+        module: String,
+        instance_id: Option<String>,
+        event: String,
+        args: Vec<Value>,
+    ) -> i32 {
         let registry = lock(&self.state.registry);
         if registry.phase != LifecyclePhase::Open {
             return EVENT_REJECTED;
@@ -1008,6 +1229,7 @@ impl AsynchronousCore {
         let (fanout_complete, fanout_ready) = mpsc::channel();
         match self.sender.try_send(WorkerCommand::ModuleEvent {
             module: module.clone(),
+            instance_id: instance_id.clone(),
             event: event.clone(),
             args: args.clone(),
             fanout_ready,
@@ -1017,7 +1239,12 @@ impl AsynchronousCore {
                 // on the bridge worker. Publish subscriptions before that
                 // worker reduces the queued event, otherwise its own wait
                 // prevents the confirmation from ever being observed.
-                let _published = self.host.publish_module_event(&module, &event, &args);
+                let _published = self.host.publish_module_event_instance(
+                    &module,
+                    instance_id.as_deref(),
+                    &event,
+                    &args,
+                );
                 let _signalled = fanout_complete.send(()).is_ok();
                 EVENT_ACCEPTED
             }
@@ -1109,6 +1336,7 @@ fn run_worker(
             }
             WorkerCommand::ModuleEvent {
                 module,
+                instance_id,
                 event,
                 args,
                 fanout_ready,
@@ -1116,9 +1344,11 @@ fn run_worker(
                 if fanout_ready.recv().is_err() {
                     continue;
                 }
-                let _result = catch_unwind(AssertUnwindSafe(|| {
-                    bridge.reduce_module_event_after_transport(&module, &event, args)
-                }));
+                if instance_id.is_none() {
+                    let _result = catch_unwind(AssertUnwindSafe(|| {
+                        bridge.reduce_module_event_after_transport(&module, &event, args)
+                    }));
+                }
             }
             WorkerCommand::Shutdown => {
                 let _shutdown = bridge.shutdown().is_ok();
@@ -1157,6 +1387,32 @@ pub unsafe extern "C" fn logos_inspector_core_new_with_host_transport(
     match catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: forwarded from this function's constructor contract.
         let vtable = unsafe { HostVtable::copy_from(transport) }?;
+        AsynchronousCore::new(vtable).map(|core| LogosInspectorCore {
+            mode: CoreMode::Asynchronous(core),
+        })
+    })) {
+        Ok(Ok(core)) => Box::into_raw(Box::new(core)),
+        Ok(Err(_)) | Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Creates an asynchronous bridge around an additive version-2 host transport
+/// vtable with explicitly scoped module calls and event subscriptions.
+///
+/// # Safety
+///
+/// `transport` must point to a readable `LogosInspectorHostTransportV1`
+/// prefix. When that prefix advertises ABI version 2 and a V2-sized vtable,
+/// `transport` must point to a readable `LogosInspectorHostTransportV2`. Its
+/// context must remain valid until `logos_inspector_core_close` returns and
+/// satisfy the same concurrency and callback-quiescence contract as version 1.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn logos_inspector_core_new_with_host_transport_v2(
+    transport: *const LogosInspectorHostTransportV2,
+) -> *mut LogosInspectorCore {
+    match catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: forwarded from this function's constructor contract.
+        let vtable = unsafe { HostVtable::copy_from_v2(transport) }?;
         AsynchronousCore::new(vtable).map(|core| LogosInspectorCore {
             mode: CoreMode::Asynchronous(core),
         })
@@ -1379,7 +1635,44 @@ pub unsafe extern "C" fn logos_inspector_core_ingest_module_event(
         };
         match &core.mode {
             CoreMode::Synchronous(_) => EVENT_REJECTED,
-            CoreMode::Asynchronous(core) => core.enqueue_module_event(module, event, args),
+            CoreMode::Asynchronous(core) => core.enqueue_module_event(module, None, event, args),
+        }
+    }))
+    .unwrap_or(EVENT_REJECTED)
+}
+
+/// Copies and queues one asynchronous host module event from a named instance.
+///
+/// This is additive: version-1 hosts continue to use
+/// `logos_inspector_core_ingest_module_event` for their default instances.
+/// Scoped events are delivered only to subscriptions for the exact
+/// `{module, instance_id, event}` tuple and are not reduced as unscoped runtime
+/// operation events.
+///
+/// # Safety
+///
+/// `handle` must be null or live. All string pointers must remain readable
+/// NUL-terminated UTF-8 for this call. The host must quiesce event ingress
+/// before its close callback returns.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn logos_inspector_core_ingest_module_event_instance(
+    handle: *mut LogosInspectorCore,
+    module: *const c_char,
+    instance_id: *const c_char,
+    event: *const c_char,
+    args_json: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok((core, module, instance_id, event, args)) =
+            module_instance_event_inputs(handle, module, instance_id, event, args_json)
+        else {
+            return EVENT_REJECTED;
+        };
+        match &core.mode {
+            CoreMode::Synchronous(_) => EVENT_REJECTED,
+            CoreMode::Asynchronous(core) => {
+                core.enqueue_module_event(module, Some(instance_id), event, args)
+            }
         }
     }))
     .unwrap_or(EVENT_REJECTED)
@@ -1501,6 +1794,31 @@ fn module_event_inputs(
         return Err("module event args must be a JSON array".to_owned());
     };
     Ok((core_ref(handle)?, module.to_owned(), event.to_owned(), args))
+}
+
+fn module_instance_event_inputs(
+    handle: *mut LogosInspectorCore,
+    module: *const c_char,
+    instance_id: *const c_char,
+    event: *const c_char,
+    args_json: *const c_char,
+) -> Result<
+    (
+        &'static LogosInspectorCore,
+        String,
+        String,
+        String,
+        Vec<Value>,
+    ),
+    String,
+> {
+    let (core, module, event, args) = module_event_inputs(handle, module, event, args_json)?;
+    let instance_id = c_string(instance_id, "module instance id")?;
+    let instance_id = instance_id.trim();
+    if instance_id.is_empty() {
+        return Err("module instance id is required".to_owned());
+    }
+    Ok((core, module, instance_id.to_owned(), event, args))
 }
 
 fn core_ref(handle: *mut LogosInspectorCore) -> Result<&'static LogosInspectorCore, String> {
@@ -1704,6 +2022,7 @@ mod tests {
         dispatch_entered: bool,
         release_dispatch: bool,
         requests: Vec<TestHostRequest>,
+        scoped_subscriptions: Vec<(String, String, String)>,
         cancelled: Vec<u64>,
         close_count: usize,
     }
@@ -1712,6 +2031,7 @@ mod tests {
     struct TestHostRequest {
         id: u64,
         module: String,
+        instance_id: Option<String>,
         method: String,
         args_json: String,
         reply: LogosInspectorHostReplyFn,
@@ -1788,6 +2108,7 @@ mod tests {
                     dispatch_entered: false,
                     release_dispatch: false,
                     requests: Vec::new(),
+                    scoped_subscriptions: Vec::new(),
                     cancelled: Vec::new(),
                     close_count: 0,
                 }),
@@ -1797,12 +2118,23 @@ mod tests {
 
         fn vtable(self: &Arc<Self>) -> LogosInspectorHostTransportV1 {
             LogosInspectorHostTransportV1 {
-                abi_version: HOST_TRANSPORT_ABI_VERSION,
+                abi_version: HOST_TRANSPORT_ABI_VERSION_V1,
                 struct_size: size_of::<LogosInspectorHostTransportV1>() as u32,
                 context: Arc::as_ptr(self).cast_mut().cast(),
                 dispatch: Some(test_host_dispatch),
                 cancel: Some(test_host_cancel),
                 close: Some(test_host_close),
+            }
+        }
+
+        fn vtable_v2(self: &Arc<Self>) -> LogosInspectorHostTransportV2 {
+            let mut v1 = self.vtable();
+            v1.abi_version = HOST_TRANSPORT_ABI_VERSION_V2;
+            v1.struct_size = size_of::<LogosInspectorHostTransportV2>() as u32;
+            LogosInspectorHostTransportV2 {
+                v1,
+                dispatch_instance: Some(test_host_dispatch_instance),
+                subscribe_instance: Some(test_host_subscribe_instance),
             }
         }
 
@@ -2223,6 +2555,7 @@ mod tests {
         let request = TestHostRequest {
             id: module_request_id,
             module,
+            instance_id: None,
             method,
             args_json,
             reply,
@@ -2259,6 +2592,109 @@ mod tests {
                 );
             }
         }
+        1
+    }
+
+    unsafe extern "C" fn test_host_dispatch_instance(
+        host_context: *mut c_void,
+        module_request_id: u64,
+        module: *const c_char,
+        instance_id: *const c_char,
+        method: *const c_char,
+        args_json: *const c_char,
+        reply: LogosInspectorHostReplyFn,
+        reply_context: *mut c_void,
+    ) -> i32 {
+        if host_context.is_null() {
+            return 0;
+        }
+        // SAFETY: each test keeps its Arc host alive through core close.
+        let host = unsafe { &*host_context.cast::<TestHost>() };
+        let Ok(module) = c_string(module, "module") else {
+            return 0;
+        };
+        let Ok(instance_id) = c_string(instance_id, "module instance id") else {
+            return 0;
+        };
+        if instance_id.trim().is_empty() {
+            return 0;
+        }
+        let Ok(method) = c_string(method, "method") else {
+            return 0;
+        };
+        let Ok(args_json) = c_string(args_json, "args JSON") else {
+            return 0;
+        };
+        let request = TestHostRequest {
+            id: module_request_id,
+            module,
+            instance_id: Some(instance_id),
+            method,
+            args_json,
+            reply,
+            reply_context: reply_context.expose_provenance(),
+        };
+        let inline_reply = {
+            let mut registry = lock(&host.registry);
+            if registry.reject_dispatch {
+                return 0;
+            }
+            let inline_reply = registry.inline_reply.take();
+            if inline_reply.is_none() {
+                registry.requests.push(request.clone());
+            }
+            registry.dispatch_entered = true;
+            host.changed.notify_all();
+            while registry.block_dispatch && !registry.release_dispatch {
+                registry = wait(&host.changed, registry);
+            }
+            inline_reply
+        };
+        if let Some((ok, payload_json)) = inline_reply {
+            let Ok(payload_json) = CString::new(payload_json) else {
+                return 0;
+            };
+            // SAFETY: inline completion borrows the core callback context for
+            // this accepted dispatch.
+            unsafe {
+                (request.reply)(
+                    ptr::with_exposed_provenance_mut(request.reply_context),
+                    request.id,
+                    ok,
+                    payload_json.as_ptr(),
+                );
+            }
+        }
+        1
+    }
+
+    unsafe extern "C" fn test_host_subscribe_instance(
+        host_context: *mut c_void,
+        module: *const c_char,
+        instance_id: *const c_char,
+        event: *const c_char,
+    ) -> i32 {
+        if host_context.is_null() {
+            return 0;
+        }
+        // SAFETY: each test keeps its Arc host alive through core close.
+        let host = unsafe { &*host_context.cast::<TestHost>() };
+        let Ok(module) = c_string(module, "module") else {
+            return 0;
+        };
+        let Ok(instance_id) = c_string(instance_id, "module instance id") else {
+            return 0;
+        };
+        let Ok(event) = c_string(event, "event") else {
+            return 0;
+        };
+        if module.trim().is_empty() || instance_id.trim().is_empty() || event.trim().is_empty() {
+            return 0;
+        }
+        lock(&host.registry)
+            .scoped_subscriptions
+            .push((module, instance_id, event));
+        host.changed.notify_all();
         1
     }
 
@@ -2675,7 +3111,7 @@ mod tests {
     fn host_transport_constructor_rejects_unknown_abi_without_taking_context() -> TestResult {
         let host = TestHost::new();
         let mut vtable = host.vtable();
-        vtable.abi_version = HOST_TRANSPORT_ABI_VERSION + 1;
+        vtable.abi_version = HOST_TRANSPORT_ABI_VERSION_V1 + 1;
 
         // SAFETY: the vtable remains readable for this constructor call.
         let handle = unsafe { logos_inspector_core_new_with_host_transport(&vtable) };
@@ -2723,6 +3159,62 @@ mod tests {
         }
         if host.close_count() != 0 {
             return err("rejected vtable transferred host ownership");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_transport_v2_constructor_requires_complete_scoped_callbacks() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable_v2();
+        // SAFETY: the complete v2 vtable remains readable for this call.
+        let handle = unsafe { logos_inspector_core_new_with_host_transport_v2(&vtable) };
+        if handle.is_null() {
+            return err("complete version-2 host transport vtable was rejected");
+        }
+        // SAFETY: the test owns this successful constructor result.
+        unsafe {
+            logos_inspector_core_free(handle);
+        }
+        if host.close_count() != 1 {
+            return err("accepted version-2 constructor did not close its host once");
+        }
+
+        let mut undersized = host.vtable_v2();
+        undersized.v1.struct_size = size_of::<LogosInspectorHostTransportV1>() as u32;
+        let mut missing_dispatch = host.vtable_v2();
+        missing_dispatch.dispatch_instance = None;
+        let mut missing_subscription = host.vtable_v2();
+        missing_subscription.subscribe_instance = None;
+        let v1_only = host.vtable();
+        // SAFETY: each vtable has a readable V1 prefix for its constructor
+        // call. The V1-sized value is intentionally passed to the V2 entry
+        // point to prove it is rejected before V2-only fields are read.
+        let handles = unsafe {
+            [
+                logos_inspector_core_new_with_host_transport_v2(&undersized),
+                logos_inspector_core_new_with_host_transport_v2(&missing_dispatch),
+                logos_inspector_core_new_with_host_transport_v2(&missing_subscription),
+                logos_inspector_core_new_with_host_transport_v2(
+                    (&v1_only as *const LogosInspectorHostTransportV1)
+                        .cast::<LogosInspectorHostTransportV2>(),
+                ),
+            ]
+        };
+        if handles.iter().any(|handle| !handle.is_null()) {
+            for handle in handles {
+                if !handle.is_null() {
+                    // SAFETY: unexpected non-null results still came from
+                    // this library and remain owned by this test.
+                    unsafe {
+                        logos_inspector_core_free(handle);
+                    }
+                }
+            }
+            return err("incomplete version-2 host transport vtable was accepted");
+        }
+        if host.close_count() != 1 {
+            return err("rejected version-2 vtable transferred host ownership");
         }
         Ok(())
     }
@@ -3028,6 +3520,137 @@ mod tests {
         }
 
         drop(subscription);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_host_dispatch_and_events_keep_instance_identity() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable_v2();
+        // SAFETY: the local vtable provides a complete readable v2 value.
+        let copied = unsafe { HostVtable::copy_from_v2(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let transport = BasecampHostTransport {
+            state: Arc::clone(&state),
+        };
+        let lez_instance = "indexer-testnet-0101010101010101";
+        let paradox_instance = "indexer-testnet-8888888888888888";
+        let call = ModuleCall::new_instance(
+            ModuleTransportKind::Module,
+            "lez_indexer_module",
+            lez_instance,
+            "nodeStatus",
+            Vec::new(),
+        )?;
+        let mut call_future = transport.call(call);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::future::Future::poll(call_future.as_mut(), &mut context).is_ready() {
+            return err("scoped module call completed before its host reply");
+        }
+        let request = host.wait_for_request()?;
+        if request.module != "lez_indexer_module"
+            || request.instance_id.as_deref() != Some(lez_instance)
+            || request.method != "nodeStatus"
+            || request.args_json != "[]"
+        {
+            return err("scoped module call lost its module instance identity");
+        }
+        host.complete(request.id, 1, r#"{"running":true}"#, false)?;
+        let reply = match std::future::Future::poll(call_future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Ok(reply)) => reply,
+            std::task::Poll::Ready(Err(error)) => {
+                return err(&format!("scoped module call failed: {error:#}"));
+            }
+            std::task::Poll::Pending => {
+                return err("scoped module call remained pending after its reply");
+            }
+        };
+        if reply.into_value() != serde_json::json!({ "running": true }) {
+            return err("scoped module call changed its reply");
+        }
+
+        let mut subscription = transport.subscribe_module_instance_event(
+            "lez_indexer_module",
+            lez_instance,
+            "nodeChanged",
+        )?;
+        if lock(&host.registry).scoped_subscriptions
+            != [(
+                "lez_indexer_module".to_owned(),
+                lez_instance.to_owned(),
+                "nodeChanged".to_owned(),
+            )]
+        {
+            return err("scoped event subscription was not forwarded to the host");
+        }
+        let args = vec![serde_json::json!({ "state": "running" })];
+        state.publish_module_event_instance(
+            "lez_indexer_module",
+            Some(paradox_instance),
+            "nodeChanged",
+            &args,
+        )?;
+        if subscription.next_within(Duration::ZERO)?.is_some() {
+            return err("scoped subscription received another instance's event");
+        }
+        state.publish_module_event_instance(
+            "lez_indexer_module",
+            Some(lez_instance),
+            "nodeChanged",
+            &args,
+        )?;
+        let event = subscription
+            .next_within(Duration::from_secs(1))?
+            .ok_or_else(|| std::io::Error::other("scoped event was not delivered"))?;
+        if event.module() != "lez_indexer_module"
+            || event.instance_id() != Some(lez_instance)
+            || event.event() != "nodeChanged"
+            || event.args() != args
+        {
+            return err("scoped event lost its instance identity or arguments");
+        }
+
+        drop(call_future);
+        drop(subscription);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn version_one_host_rejects_scoped_module_calls() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let call = ModuleCall::new_instance(
+            ModuleTransportKind::Module,
+            "lez_indexer_module",
+            "indexer-testnet-0101010101010101",
+            "nodeStatus",
+            Vec::new(),
+        )?;
+        let mut future = state.dispatch(call);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let error = match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Err(error)) => error.to_string(),
+            std::task::Poll::Ready(Ok(_)) => {
+                return err("version-1 host accepted a scoped module call");
+            }
+            std::task::Poll::Pending => {
+                return err("version-1 host queued a scoped module call");
+            }
+        };
+        if error != "Basecamp host transport does not support scoped module calls" {
+            return err(&format!(
+                "version-1 host returned the wrong scoped-call error: {error}"
+            ));
+        }
+        if !lock(&host.registry).requests.is_empty() {
+            return err("version-1 host received a silently rerouted scoped call");
+        }
+        drop(future);
         state.close();
         Ok(())
     }
@@ -3930,6 +4553,7 @@ mod tests {
         sender
             .send(WorkerCommand::ModuleEvent {
                 module: "delivery_module".to_owned(),
+                instance_id: None,
                 event: "nodeStarted".to_owned(),
                 args: vec![
                     serde_json::json!(true),

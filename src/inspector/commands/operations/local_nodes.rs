@@ -8,8 +8,9 @@ use crate::{
     LocalNodeActionRequest,
     local_nodes::{
         ChannelIndexerActionRequest, INDEXER_PACKAGE_INSTALL_TIMEOUT, LocalNodePackageCommit,
-        basecamp_local_nodes_action, channel_indexer_action_controlled,
-        local_module_install_controlled, local_nodes_action_controlled,
+        basecamp_channel_indexer_action, basecamp_local_nodes_action,
+        channel_indexer_action_controlled, local_module_install_controlled,
+        local_nodes_action_controlled,
     },
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::{args::Args, command_runner::CommandControl},
@@ -70,7 +71,7 @@ pub(super) async fn execute(
             execute_local_nodes_action(request, control, module_transport).await
         }
         LocalNodesCommand::ChannelIndexerAction => {
-            execute_channel_indexer_action(request, control).await
+            execute_channel_indexer_action(request, control, module_transport).await
         }
         LocalNodesCommand::ModulePackageInstall => {
             execute_module_package_install(request, control, module_transport).await
@@ -118,6 +119,7 @@ async fn execute_module_package_install(
 async fn execute_channel_indexer_action(
     request: &RuntimeOperationRequest,
     control: &OperationControl,
+    module_transport: SharedModuleTransport,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let action_request = serde_json::from_value::<ChannelIndexerActionRequest>(
@@ -128,6 +130,17 @@ async fn execute_channel_indexer_action(
     .context("failed to parse Channel Indexer action request")?;
     let profile = args.optional_string(0).unwrap_or("default").to_owned();
     let confirmation = args.optional_string(2).map(ToOwned::to_owned);
+    if module_transport.kind() == ModuleTransportKind::Module {
+        return to_value(
+            basecamp_channel_indexer_action(
+                &profile,
+                action_request,
+                confirmation.as_deref(),
+                &module_transport,
+            )
+            .await?,
+        );
+    }
     let command_control = command_control(control);
     let worker_guard = control.blocking_worker_guard()?;
     let result = blocking_value("Channel Indexer action", move || {

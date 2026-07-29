@@ -225,6 +225,59 @@ pub(crate) fn channel_indexer_module_transport(
     channel_indexer::module_transport(network_scope, channel_id, source_config_revision, source_id)
 }
 
+pub(crate) fn basecamp_channel_indexer_module_transport(
+    module_transport: SharedModuleTransport,
+    network_scope: &crate::inspection::NetworkScope,
+    channel_id: &str,
+) -> Result<SharedModuleTransport> {
+    channel_indexer::basecamp_module_transport(module_transport, network_scope, channel_id)
+}
+
+pub(crate) async fn basecamp_channel_indexer_status(
+    profile: &str,
+    module_transport: &SharedModuleTransport,
+    network_scope: &crate::inspection::NetworkScope,
+    channel_id: &str,
+) -> Result<LocalNodeReport> {
+    channel_indexer::basecamp_status(profile, module_transport, network_scope, channel_id).await
+}
+
+pub(crate) async fn basecamp_channel_indexer_config(
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    channel_indexer::basecamp_config_snapshot(profile, request, module_transport).await
+}
+
+pub(crate) async fn basecamp_save_channel_indexer_config(
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+    confirmation: Option<&str>,
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    channel_indexer::basecamp_save_config(
+        profile,
+        request,
+        text,
+        expected_revision,
+        confirmation,
+        module_transport,
+    )
+    .await
+}
+
+pub(crate) async fn basecamp_channel_indexer_action(
+    profile: &str,
+    request: ChannelIndexerActionRequest,
+    confirmation: Option<&str>,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    channel_indexer::basecamp_action(profile, request, confirmation, module_transport).await
+}
+
 pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {
     action_engine::LocalNodeActionEngine::system()?.devnets(profile)
 }
