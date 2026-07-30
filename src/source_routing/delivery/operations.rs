@@ -523,11 +523,12 @@ fn delivery_module_dispatch_outcome(
                 correlation,
                 ModuleTerminalEventContract::new(
                     super::layer::module_id(),
-                    Some("messagePropagated"),
-                    "messageSent",
+                    None,
+                    "messagePropagated",
                     Some("messageError"),
                     ModuleEventCorrelationKind::Request,
-                ),
+                )
+                .with_success_event_alias("messageSent"),
             )
         });
     let acknowledgement = receipt.into_acknowledgement();
@@ -709,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn module_send_uses_request_identity_only() -> Result<()> {
+    fn module_send_uses_request_identity_and_delivery_success_events() -> Result<()> {
         let outcome = delivery_module_dispatch_outcome(
             "send",
             ModuleDispatchReceipt::new(
@@ -731,9 +732,13 @@ mod tests {
                     .bridge_callback_id()
                     .map(crate::source_routing::BridgeCallbackId::value)
                     == Some(41)
+                && acceptance.terminal_event().progress_event().is_none()
+                && acceptance.terminal_event().success_event() == "messagePropagated"
+                && acceptance.terminal_event().success_event_alias() == Some("messageSent")
+                && acceptance.terminal_event().failure_event() == Some("messageError")
                 && acceptance.terminal_event().correlation()
                     == &ModuleEventCorrelationKind::Request,
-            "Delivery request identity role drifted"
+            "Delivery send terminal contract drifted"
         );
         Ok(())
     }
