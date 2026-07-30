@@ -33,35 +33,87 @@ pub(crate) async fn blockchain_node_report(
     transport: &SharedModuleTransport,
     transport_kind: ModuleTransportKind,
 ) -> BlockchainNodeReport {
+    let (cryptarchia_info, headers, network_info, mantle_metrics) =
+        blockchain_diagnostic_reads(transport, transport_kind).await;
+
     BlockchainNodeReport {
         endpoint: BLOCKCHAIN_MODULE.to_owned(),
         cryptarchia_info: ProbeReport::from_result(
             "cryptarchia info",
             "blockchain_module.get_cryptarchia_info",
-            transport_call_value(
-                transport,
-                transport_kind,
-                BLOCKCHAIN_MODULE,
-                "get_cryptarchia_info",
-                Vec::new(),
-            )
-            .await
-            .map(crate::blockchain::normalize_cryptarchia_info),
+            cryptarchia_info.map(crate::blockchain::normalize_cryptarchia_info),
         ),
-        headers: ProbeReport::err(
+        headers: ProbeReport::from_result(
             "headers",
-            "blockchain_module",
-            "blockchain_module does not expose header-list reads",
+            "blockchain_module.get_cryptarchia_headers",
+            headers,
         ),
-        network_info: ProbeReport::err(
+        network_info: ProbeReport::from_result(
             "network info",
-            "blockchain_module",
-            "blockchain_module does not expose network info reads",
+            "blockchain_module.get_network_info",
+            network_info,
         ),
-        mantle_metrics: ProbeReport::err(
+        mantle_metrics: ProbeReport::from_result(
             "mantle metrics",
-            "blockchain_module",
-            "blockchain_module does not expose Mantle metrics",
+            "blockchain_module.get_mantle_metrics",
+            mantle_metrics,
+        ),
+    }
+}
+
+async fn blockchain_diagnostic_reads(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+) -> (Result<Value>, Result<Value>, Result<Value>, Result<Value>) {
+    let cryptarchia_info = || {
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_cryptarchia_info",
+            Vec::new(),
+        )
+    };
+    let headers = || {
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_cryptarchia_headers",
+            Vec::new(),
+        )
+    };
+    let network_info = || {
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_network_info",
+            Vec::new(),
+        )
+    };
+    let mantle_metrics = || {
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_mantle_metrics",
+            Vec::new(),
+        )
+    };
+
+    match transport_kind {
+        ModuleTransportKind::LogoscoreCli => (
+            cryptarchia_info().await,
+            headers().await,
+            network_info().await,
+            mantle_metrics().await,
+        ),
+        ModuleTransportKind::Module => tokio::join!(
+            cryptarchia_info(),
+            headers(),
+            network_info(),
+            mantle_metrics(),
         ),
     }
 }
@@ -623,7 +675,10 @@ fn empty_module_lookup(value: &Value) -> bool {
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::panic_in_result_fn)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::modules::logos_core::{
@@ -633,6 +688,24 @@ mod tests {
     struct TipParentTransport {
         kind: ModuleTransportKind,
         calls: Mutex<Vec<ModuleCall>>,
+    }
+
+    struct PeakConcurrentCliTransport {
+        active_calls: AtomicUsize,
+        peak_calls: AtomicUsize,
+    }
+
+    impl PeakConcurrentCliTransport {
+        const fn new() -> Self {
+            Self {
+                active_calls: AtomicUsize::new(0),
+                peak_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn peak_calls(&self) -> usize {
+            self.peak_calls.load(Ordering::SeqCst)
+        }
     }
 
     impl TipParentTransport {
@@ -724,6 +797,12 @@ mod tests {
                     "tip": test_hash('a'),
                     "slot": 130,
                 }))
+            } else if method == "get_cryptarchia_headers" && args.is_empty() {
+                Ok(json!([{"slot": 130, "id": test_hash('a')}]))
+            } else if method == "get_network_info" && args.is_empty() {
+                Ok(json!({"peers": 3}))
+            } else if method == "get_mantle_metrics" && args.is_empty() {
+                Ok(json!({"transactions": 1}))
             } else if method == "get_block" && args == vec![json!(test_hash('a'))] {
                 Ok(test_block(130, test_hash('b'), 2))
             } else if method == "get_block" && args == vec![json!(test_hash('b'))] {
@@ -736,6 +815,44 @@ mod tests {
                 ))
             };
             Box::pin(async move { reply.map(|value| ModuleCallReply::new(transport, value)) })
+        }
+    }
+
+    impl ModuleTransport for PeakConcurrentCliTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let module = call.module().to_owned();
+            let method = call.method().to_owned();
+            let args = call.args().to_vec();
+            Box::pin(async move {
+                let active = self.active_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak_calls.fetch_max(active, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                self.active_calls.fetch_sub(1, Ordering::SeqCst);
+                let value = if module != BLOCKCHAIN_MODULE || !args.is_empty() {
+                    Err(anyhow::anyhow!(
+                        "unexpected CLI diagnostic call {module}.{method}"
+                    ))
+                } else {
+                    match method.as_str() {
+                        "get_cryptarchia_info" => Ok(json!({
+                            "genesis_id": test_hash('0'),
+                            "tip": test_hash('a'),
+                            "slot": 130,
+                        })),
+                        "get_cryptarchia_headers" => {
+                            Ok(json!([{"slot": 130, "id": test_hash('a')}]))
+                        }
+                        "get_network_info" => Ok(json!({"peers": 3})),
+                        "get_mantle_metrics" => Ok(json!({"transactions": 1})),
+                        _ => Err(anyhow::anyhow!("unexpected CLI diagnostic method {method}")),
+                    }
+                };
+                value.map(|value| ModuleCallReply::new(ModuleTransportKind::LogoscoreCli, value))
+            })
         }
     }
 
@@ -917,7 +1034,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cli_node_report_uses_the_canonical_cryptarchia_shape() -> Result<()> {
+    async fn cli_node_report_relays_all_bedrock_diagnostic_reads() -> Result<()> {
         let harness = Arc::new(TipParentTransport::new());
         let transport: SharedModuleTransport = harness.clone();
 
@@ -947,7 +1064,47 @@ mod tests {
                 .and_then(|value| value.pointer("/cryptarchia_info/genesis_id")),
             Some(&json!(test_hash('0')))
         );
-        assert_eq!(harness.call_methods(), vec!["get_cryptarchia_info"]);
+        assert!(report.headers.ok);
+        assert_eq!(
+            report.headers.value.as_ref(),
+            Some(&json!([{"slot": 130, "id": test_hash('a')}]))
+        );
+        assert!(report.network_info.ok);
+        assert_eq!(
+            report.network_info.value.as_ref(),
+            Some(&json!({"peers": 3}))
+        );
+        assert!(report.mantle_metrics.ok);
+        assert_eq!(
+            report.mantle_metrics.value.as_ref(),
+            Some(&json!({"transactions": 1}))
+        );
+
+        let methods = harness.call_methods();
+        assert_eq!(methods.len(), 4);
+        for method in [
+            "get_cryptarchia_info",
+            "get_cryptarchia_headers",
+            "get_network_info",
+            "get_mantle_metrics",
+        ] {
+            assert!(methods.iter().any(|called| called == method));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_node_report_serializes_diagnostic_reads_for_cli_gate() -> Result<()> {
+        let harness = Arc::new(PeakConcurrentCliTransport::new());
+        let transport: SharedModuleTransport = harness.clone();
+
+        let report = blockchain_node_report(&transport, ModuleTransportKind::LogoscoreCli).await;
+
+        assert!(report.cryptarchia_info.ok);
+        assert!(report.headers.ok);
+        assert!(report.network_info.ok);
+        assert!(report.mantle_metrics.ok);
+        assert_eq!(harness.peak_calls(), 1);
         Ok(())
     }
 }
