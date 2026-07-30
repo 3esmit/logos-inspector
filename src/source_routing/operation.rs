@@ -107,6 +107,7 @@ pub(crate) struct ModuleTerminalEventContract {
     module: String,
     progress_event: Option<String>,
     success_event: String,
+    success_event_alias: Option<String>,
     failure_event: Option<String>,
     correlation: ModuleEventCorrelationKind,
 }
@@ -124,9 +125,16 @@ impl ModuleTerminalEventContract {
             module: module.to_owned(),
             progress_event: progress_event.map(ToOwned::to_owned),
             success_event: success_event.to_owned(),
+            success_event_alias: None,
             failure_event: failure_event.map(ToOwned::to_owned),
             correlation,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_success_event_alias(mut self, event: &str) -> Self {
+        self.success_event_alias = Some(event.to_owned());
+        self
     }
 
     #[must_use]
@@ -145,6 +153,11 @@ impl ModuleTerminalEventContract {
     }
 
     #[must_use]
+    pub(crate) fn success_event_alias(&self) -> Option<&str> {
+        self.success_event_alias.as_deref()
+    }
+
+    #[must_use]
     pub(crate) fn failure_event(&self) -> Option<&str> {
         self.failure_event.as_deref()
     }
@@ -158,7 +171,8 @@ impl ModuleTerminalEventContract {
     pub(crate) fn recognizes(&self, event: &ModuleEventEnvelope) -> bool {
         self.module == event.module_name
             && (self.progress_event() == Some(event.event_name())
-                || self.success_event == event.event_name
+                || self.success_event() == event.event_name()
+                || self.success_event_alias() == Some(event.event_name())
                 || self.failure_event() == Some(event.event_name()))
     }
 }

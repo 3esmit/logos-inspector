@@ -895,8 +895,8 @@ mod tests {
                 ModuleCorrelation::with_request(request_id),
                 ModuleTerminalEventContract::new(
                     "delivery_module",
-                    Some("messagePropagated"),
-                    "messageSent",
+                    None,
+                    "messagePropagated",
                     Some("messageError"),
                     ModuleEventCorrelationKind::Request,
                 ),
@@ -1130,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn request_events_use_only_their_declared_identity_role() -> Result<()> {
+    fn propagated_request_events_settle_with_their_declared_identity_role() -> Result<()> {
         let mut records = records(&["request-success", "request-failure"])?;
         let request_success = operation_id("request-success")?;
         let request_failure = operation_id("request-failure")?;
@@ -1148,7 +1148,7 @@ mod tests {
             &mut records,
             &ModuleEventEnvelope::from_value(&json!({
                 "moduleName": "delivery_module",
-                "eventName": "messageSent",
+                "eventName": "messagePropagated",
                 "args": ["request-1", "hash-1"]
             }))?,
         )?;
