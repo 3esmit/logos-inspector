@@ -38,7 +38,7 @@ use super::{
     },
     presentation,
     runtime::LogoscoreRuntimeStatus,
-    workflow::{LocalNodeWorkflow, normalized_profile},
+    workflow::normalized_profile,
 };
 
 const HOST_NODE_KINDS: [NodeKind; 3] = [NodeKind::Bedrock, NodeKind::Storage, NodeKind::Messaging];
@@ -75,6 +75,7 @@ struct HostNodeObservation {
     context_initialized: Option<bool>,
     liveness: Option<bool>,
     liveness_error: Option<String>,
+    managed_actions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +99,7 @@ impl HostNodeObservation {
             context_initialized: None,
             liveness: None,
             liveness_error: None,
+            managed_actions: None,
         }
     }
 
@@ -111,7 +113,7 @@ struct PreparedHostAction {
     kind: NodeKind,
     action: NodeAction,
     module: &'static str,
-    call: ManagedModuleCallSpec,
+    call: Option<ManagedModuleCallSpec>,
     args: Vec<Value>,
 }
 
@@ -188,6 +190,15 @@ impl ManagedNodeLifecycleState {
             Self::Initializing | Self::Starting | Self::Stopping | Self::Destroying => &[],
         }
     }
+
+    const fn allowed_actions(self) -> &'static [&'static str] {
+        match self {
+            Self::Uninitialized => &["initialize"],
+            Self::Stopped => &["start", "destroy"],
+            Self::Running => &["stop"],
+            Self::Initializing | Self::Starting | Self::Stopping | Self::Destroying => &[],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +209,13 @@ struct ManagedNodeLifecycleSnapshot {
     state: ManagedNodeLifecycleState,
     supported_actions: Vec<String>,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ManagedNodeLifecycleAction {
+    wire_name: &'static str,
+    expected_transition: &'static str,
+    expected_terminal: &'static str,
 }
 
 impl ManagedNodeLifecycleSnapshot {
@@ -286,13 +304,23 @@ fn managed_node_lifecycle_snapshot(
         "{label} response has an unknown health state"
     );
     let state = ManagedNodeLifecycleState::parse(&payload.state, label)?;
-    let expected_actions = state.expected_actions();
+    let actions = payload
+        .supported_actions
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     anyhow::ensure!(
-        payload
-            .supported_actions
+        actions
             .iter()
-            .map(String::as_str)
-            .eq(expected_actions.iter().copied()),
+            .all(|action| state.allowed_actions().contains(action))
+            && state
+                .expected_actions()
+                .iter()
+                .all(|expected| actions.contains(expected))
+            && actions
+                .iter()
+                .enumerate()
+                .all(|(index, action)| !actions.iter().take(index).any(|prior| prior == action)),
         "{label} response has actions inconsistent with its lifecycle state"
     );
     let last_error = payload
@@ -431,6 +459,7 @@ async fn observe_node(
             context_initialized: None,
             liveness: None,
             liveness_error: None,
+            managed_actions: None,
         };
     }
 
@@ -446,6 +475,7 @@ async fn observe_node(
             context_initialized: None,
             liveness: None,
             liveness_error: None,
+            managed_actions: None,
         };
     };
     if let Err(error) = require_method(&metadata, module, method, signature) {
@@ -456,6 +486,7 @@ async fn observe_node(
             context_initialized: None,
             liveness: None,
             liveness_error: Some(error.to_string()),
+            managed_actions: None,
         };
     }
     let call = match ModuleCall::new(ModuleTransportKind::Module, module, method, args) {
@@ -468,6 +499,7 @@ async fn observe_node(
                 context_initialized: None,
                 liveness: None,
                 liveness_error: Some(error.to_string()),
+                managed_actions: None,
             };
         }
     };
@@ -482,6 +514,7 @@ async fn observe_node(
                     .observed
                     .or_else(|| (kind == NodeKind::Bedrock).then_some(true)),
                 liveness_error: service.detail,
+                managed_actions: None,
             },
             Err(error) => HostNodeObservation {
                 kind,
@@ -490,6 +523,7 @@ async fn observe_node(
                 context_initialized: Some(true),
                 liveness: None,
                 liveness_error: Some(error.to_string()),
+                managed_actions: None,
             },
         },
         Err(error) => {
@@ -509,6 +543,7 @@ async fn observe_node(
                     .then_some(false)
                     .or_else(|| context_missing.then_some(false)),
                 liveness_error: Some(error.to_string()),
+                managed_actions: None,
             }
         }
     }
@@ -538,6 +573,7 @@ async fn observe_managed_node_lifecycle_v1(
                 context_initialized: None,
                 liveness: None,
                 liveness_error: Some(error.to_string()),
+                managed_actions: None,
             };
         }
     };
@@ -556,6 +592,7 @@ async fn observe_managed_node_lifecycle_v1(
             context_initialized: snapshot.state().context_initialized(),
             liveness: snapshot.state().liveness(),
             liveness_error: snapshot.last_error().map(ToOwned::to_owned),
+            managed_actions: Some(snapshot.supported_actions),
         },
         Err(error) => HostNodeObservation {
             kind,
@@ -564,6 +601,7 @@ async fn observe_managed_node_lifecycle_v1(
             context_initialized: None,
             liveness: None,
             liveness_error: Some(error.to_string()),
+            managed_actions: None,
         },
     }
 }
@@ -586,6 +624,7 @@ async fn observe_storage_lifecycle(
             context_initialized: None,
             liveness: None,
             liveness_error: None,
+            managed_actions: None,
         };
     }
     let call = match ModuleCall::new(ModuleTransportKind::Module, module, METHOD, Vec::new()) {
@@ -598,6 +637,7 @@ async fn observe_storage_lifecycle(
                 context_initialized: None,
                 liveness: None,
                 liveness_error: Some(error.to_string()),
+                managed_actions: None,
             };
         }
     };
@@ -614,6 +654,7 @@ async fn observe_storage_lifecycle(
             context_initialized: Some(status.initialized()),
             liveness: status.liveness(),
             liveness_error: None,
+            managed_actions: None,
         },
         Err(error) => HostNodeObservation {
             kind: NodeKind::Storage,
@@ -622,6 +663,7 @@ async fn observe_storage_lifecycle(
             context_initialized: None,
             liveness: None,
             liveness_error: Some(error.to_string()),
+            managed_actions: None,
         },
     }
 }
@@ -645,6 +687,7 @@ async fn observe_storage_node_lifecycle_v1(
                 context_initialized: None,
                 liveness: None,
                 liveness_error: Some(error.to_string()),
+                managed_actions: None,
             };
         }
     };
@@ -662,6 +705,7 @@ async fn observe_storage_node_lifecycle_v1(
             context_initialized: None,
             liveness: None,
             liveness_error: Some(error.to_string()),
+            managed_actions: None,
         },
     }
 }
@@ -676,6 +720,7 @@ fn storage_node_lifecycle_observation(
         context_initialized: snapshot.state().context_initialized(),
         liveness: snapshot.state().liveness(),
         liveness_error: snapshot.last_error().map(ToOwned::to_owned),
+        managed_actions: None,
     }
 }
 
@@ -988,8 +1033,6 @@ fn prepare_action(
     state: &LocalNodesState,
     request: &LocalNodeActionRequest,
 ) -> Result<PreparedHostAction> {
-    let workflow = LocalNodeWorkflow::for_state(profile, state);
-    workflow.validate_request(request)?;
     let kind = request.node.context("node kind is required")?;
     if !HOST_NODE_KINDS.contains(&kind) {
         bail!(
@@ -998,6 +1041,21 @@ fn prepare_action(
         );
     }
     let action = request.action;
+    anyhow::ensure!(
+        matches!(
+            action,
+            NodeAction::Initialize | NodeAction::Start | NodeAction::Stop | NodeAction::Uninstall
+        ),
+        "{} is not a Basecamp module lifecycle action",
+        action.as_str()
+    );
+    anyhow::ensure!(
+        !request.allow_identity_rotation
+            || matches!((action, kind), (NodeAction::Stop, NodeKind::Messaging)),
+        "identity rotation acknowledgement only applies to Messaging Stop"
+    );
+    // V1 module capabilities come from nodeStatus, including optional actions
+    // such as destroy. Static workflow actions remain for the local CLI path.
     let managed_action = managed_action(action).with_context(|| {
         format!(
             "{} is not a Basecamp module lifecycle action",
@@ -1030,10 +1088,18 @@ fn prepare_action(
     } else {
         &config.config_path
     };
-    let call = contract
-        .call_spec(managed_action, action_path)
-        .with_context(|| format!("{} {} is not implemented", adapter.label(), action.as_str()))?;
-    let args = native_args(&call.args)?;
+    let call = contract.call_spec(managed_action, action_path);
+    anyhow::ensure!(
+        call.is_some() || action == NodeAction::Uninstall,
+        "{} {} is not implemented",
+        adapter.label(),
+        action.as_str()
+    );
+    let args = call
+        .as_ref()
+        .map(|call| native_args(&call.args))
+        .transpose()?
+        .unwrap_or_default();
     Ok(PreparedHostAction {
         kind,
         action,
@@ -1144,20 +1210,22 @@ async fn execute_host_action_with_lifecycle_timeout(
     {
         return execute_storage_node_lifecycle_v1_action(plan, module_transport).await;
     }
-    require_method(
-        &metadata,
-        plan.module,
-        plan.call.method,
-        plan.call.signature,
-    )?;
+    let call = plan.call.as_ref().with_context(|| {
+        format!(
+            "{} {} is not implemented",
+            adapter_for(plan.kind).label(),
+            plan.action.as_str()
+        )
+    })?;
+    require_method(&metadata, plan.module, call.method, call.signature)?;
     let lifecycle = subscribe_host_lifecycle_event(plan, module_transport, &metadata)?;
-    let call = ModuleCall::new(
+    let module_call = ModuleCall::new(
         ModuleTransportKind::Module,
         plan.module,
-        plan.call.method,
+        call.method,
         plan.args.clone(),
     )?;
-    let value = dispatch_module_call(module_transport.as_ref(), call)
+    let value = dispatch_module_call(module_transport.as_ref(), module_call)
         .await?
         .into_value();
     validate_host_action_result(plan, &value)?;
@@ -1169,7 +1237,7 @@ async fn execute_host_action_with_lifecycle_timeout(
     };
     Ok(HostActionExecution {
         lifecycle_detail,
-        dispatched_method: plan.call.method,
+        dispatched_method: call.method,
     })
 }
 
@@ -1189,24 +1257,25 @@ async fn execute_managed_node_lifecycle_v1_action(
     let snapshot =
         managed_node_lifecycle_snapshot_for_action(plan.kind, plan.module, module_transport)
             .await?;
-    let (action, expected_transition, expected_terminal, parameters) =
-        managed_node_lifecycle_action_request(plan)?;
+    let (lifecycle_action, parameters) = managed_node_lifecycle_action_request(plan)?;
     anyhow::ensure!(
-        snapshot.supports_action(action),
-        "{label} V1 nodeStatus does not allow `{action}` in its current state"
+        snapshot.supports_action(lifecycle_action.wire_name),
+        "{label} V1 nodeStatus does not allow `{}` in its current state",
+        lifecycle_action.wire_name
     );
     let lifecycle = subscribe_managed_node_lifecycle_event(plan, module_transport, metadata)?;
     let serial = contract.operation_serial.fetch_add(1, Ordering::Relaxed);
     let operation_id = format!(
-        "logos-inspector-{}-{action}-{}-{serial}",
+        "logos-inspector-{}-{}-{}-{serial}",
         contract.scope,
+        lifecycle_action.wire_name,
         now_millis()
     );
     let request = json!({
         "schema": "logos.managed_node_lifecycle.command",
         "version": 1,
         "operation_id": operation_id,
-        "action": action,
+        "action": lifecycle_action.wire_name,
         "expected": {
             "instance_id": snapshot.instance_id(),
             "epoch": snapshot.epoch(),
@@ -1229,15 +1298,14 @@ async fn execute_managed_node_lifecycle_v1_action(
         &value,
         &operation_id,
         &snapshot,
-        expected_transition,
+        lifecycle_action.expected_transition,
     )?;
     let lifecycle_detail = wait_for_managed_node_lifecycle_event(
         plan,
         lifecycle,
         &operation_id,
         &snapshot,
-        expected_transition,
-        expected_terminal,
+        lifecycle_action,
         lifecycle_timeout,
     )
     .await?;
@@ -1249,7 +1317,7 @@ async fn execute_managed_node_lifecycle_v1_action(
 
 fn managed_node_lifecycle_action_request(
     plan: &PreparedHostAction,
-) -> Result<(&'static str, &'static str, &'static str, Value)> {
+) -> Result<(ManagedNodeLifecycleAction, Value)> {
     let label = adapter_for(plan.kind).label();
     match plan.action {
         NodeAction::Initialize => {
@@ -1264,9 +1332,11 @@ fn managed_node_lifecycle_action_request(
                 "{label} initialization configuration must be a JSON object"
             );
             Ok((
-                "initialize",
-                "initializing",
-                "stopped",
+                ManagedNodeLifecycleAction {
+                    wire_name: "initialize",
+                    expected_transition: "initializing",
+                    expected_terminal: "stopped",
+                },
                 json!({ "config": config }),
             ))
         }
@@ -1285,9 +1355,31 @@ fn managed_node_lifecycle_action_request(
                     bail!("{label} V1 lifecycle is not supported")
                 }
             };
-            Ok(("start", "starting", "running", parameters))
+            Ok((
+                ManagedNodeLifecycleAction {
+                    wire_name: "start",
+                    expected_transition: "starting",
+                    expected_terminal: "running",
+                },
+                parameters,
+            ))
         }
-        NodeAction::Stop => Ok(("stop", "stopping", "stopped", json!({}))),
+        NodeAction::Stop => Ok((
+            ManagedNodeLifecycleAction {
+                wire_name: "stop",
+                expected_transition: "stopping",
+                expected_terminal: "stopped",
+            },
+            json!({}),
+        )),
+        NodeAction::Uninstall => Ok((
+            ManagedNodeLifecycleAction {
+                wire_name: "destroy",
+                expected_transition: "destroying",
+                expected_terminal: "uninitialized",
+            },
+            json!({}),
+        )),
         action => bail!("{label} V1 lifecycle does not support {}", action.as_str()),
     }
 }
@@ -1519,8 +1611,7 @@ async fn wait_for_managed_node_lifecycle_event(
     mut lifecycle: HostLifecycleSubscription,
     operation_id: &str,
     snapshot: &ManagedNodeLifecycleSnapshot,
-    expected_transition: &str,
-    expected_terminal: &str,
+    expected: ManagedNodeLifecycleAction,
     timeout: Duration,
 ) -> Result<String> {
     let operation_id = operation_id.to_owned();
@@ -1528,8 +1619,9 @@ async fn wait_for_managed_node_lifecycle_event(
     let initial_epoch = snapshot.epoch();
     let initial_sequence = snapshot.sequence();
     let action = plan.action.as_str();
-    let expected_transition = expected_transition.to_owned();
-    let expected_terminal = expected_terminal.to_owned();
+    let expected_action = expected.wire_name.to_owned();
+    let expected_transition = expected.expected_transition.to_owned();
+    let expected_terminal = expected.expected_terminal.to_owned();
     let kind = plan.kind;
     let module = plan.module.to_owned();
     let label = adapter_for(kind).label();
@@ -1558,7 +1650,7 @@ async fn wait_for_managed_node_lifecycle_event(
                 "Basecamp {label} nodeChanged has an invalid lifecycle cursor"
             );
             anyhow::ensure!(
-                event.action == action,
+                event.action == expected_action,
                 "Basecamp {label} nodeChanged does not match the requested action"
             );
             match event.phase.as_str() {
@@ -1841,7 +1933,7 @@ fn validate_host_action_result(plan: &PreparedHostAction, value: &Value) -> Resu
         bail!(
             "{}.{} did not accept the lifecycle action",
             plan.module,
-            plan.call.method
+            plan.call.as_ref().map_or("nodeAction", |call| call.method)
         );
     }
     Ok(())
@@ -1906,7 +1998,7 @@ fn record_action_result(
             format!("{error:#}"),
             false,
             None,
-            plan.call.method,
+            plan.call.as_ref().map_or("nodeAction", |call| call.method),
         ),
     };
     if succeeded {
@@ -2311,6 +2403,18 @@ fn host_available_actions(
 ) -> Vec<NodeAction> {
     if !observation.contract_ready() || config.lifecycle_state.is_pending() {
         return Vec::new();
+    }
+    if let Some(actions) = observation.managed_actions.as_deref() {
+        return actions
+            .iter()
+            .filter_map(|action| match action.as_str() {
+                "initialize" => Some(NodeAction::Initialize),
+                "start" => Some(NodeAction::Start),
+                "stop" => Some(NodeAction::Stop),
+                "destroy" => Some(NodeAction::Uninstall),
+                _ => None,
+            })
+            .collect();
     }
     if !config.installed {
         return vec![NodeAction::Initialize];
@@ -2866,6 +2970,7 @@ mod tests {
         state: Arc<Mutex<RecordingManagedNodeLifecycleState>>,
         native_events_ready: bool,
         event_metadata_available: bool,
+        supports_destroy: bool,
         module: &'static str,
         scope: &'static str,
         instance_id: &'static str,
@@ -2880,6 +2985,7 @@ mod tests {
                 "bedrock",
                 "recording-bedrock-instance",
                 "Bedrock",
+                false,
             )
         }
 
@@ -2890,6 +2996,7 @@ mod tests {
                 "messaging",
                 "recording-messaging-instance",
                 "Messaging",
+                true,
             )
         }
 
@@ -2899,6 +3006,7 @@ mod tests {
             scope: &'static str,
             instance_id: &'static str,
             label: &'static str,
+            supports_destroy: bool,
         ) -> Self {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
@@ -2910,6 +3018,7 @@ mod tests {
                 })),
                 native_events_ready,
                 event_metadata_available: true,
+                supports_destroy,
                 module,
                 scope,
                 instance_id,
@@ -2954,12 +3063,20 @@ mod tests {
                 } else {
                     "unknown"
                 },
-                "supported_actions": state.state.expected_actions(),
+                "supported_actions": self.supported_actions(state.state),
                 "pending_operation": null,
                 "last_completed_operation": null,
                 "last_error": null,
                 "updated_at_ms": 1,
             })
+        }
+
+        fn supported_actions(&self, state: ManagedNodeLifecycleState) -> &'static [&'static str] {
+            if self.supports_destroy && state == ManagedNodeLifecycleState::Stopped {
+                &["start", "destroy"]
+            } else {
+                state.expected_actions()
+            }
         }
 
         fn lifecycle_event(
@@ -3106,6 +3223,24 @@ mod tests {
                     (
                         ManagedNodeLifecycleState::Stopping,
                         ManagedNodeLifecycleState::Stopped,
+                    )
+                }
+                "destroy"
+                    if self.supports_destroy
+                        && state.state == ManagedNodeLifecycleState::Stopped =>
+                {
+                    anyhow::ensure!(
+                        request
+                            .get("parameters")
+                            .is_some_and(|parameters| parameters
+                                .as_object()
+                                .is_some_and(|object| object.is_empty())),
+                        "recording {} destroy parameters are invalid",
+                        self.label
+                    );
+                    (
+                        ManagedNodeLifecycleState::Destroying,
+                        ManagedNodeLifecycleState::Uninitialized,
                     )
                 }
                 _ => bail!(
@@ -3648,6 +3783,7 @@ mod tests {
             context_initialized: Some(true),
             liveness: liveness.observed,
             liveness_error: liveness.detail,
+            managed_actions: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3690,6 +3826,7 @@ mod tests {
             context_initialized: Some(true),
             liveness: None,
             liveness_error: Some("Basecamp Messaging REST health is NOT_READY".to_owned()),
+            managed_actions: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3755,6 +3892,7 @@ mod tests {
             context_initialized: Some(true),
             liveness: liveness.observed,
             liveness_error: liveness.detail,
+            managed_actions: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3811,6 +3949,7 @@ mod tests {
             context_initialized: Some(true),
             liveness: liveness.observed,
             liveness_error: liveness.detail,
+            managed_actions: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3864,6 +4003,7 @@ mod tests {
             context_initialized: Some(true),
             liveness: liveness.observed,
             liveness_error: liveness.detail,
+            managed_actions: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3918,6 +4058,7 @@ mod tests {
             context_initialized: Some(true),
             liveness: liveness.observed,
             liveness_error: liveness.detail,
+            managed_actions: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -4476,6 +4617,29 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn messaging_v1_snapshot_accepts_stopped_destroy_extension() -> Result<()> {
+        let snapshot = managed_node_lifecycle_snapshot(
+            &json!({
+                "schema": "logos.managed_node_lifecycle.snapshot",
+                "version": 1,
+                "instance_id": "messaging-instance-1",
+                "epoch": 1,
+                "sequence": 2,
+                "scope": { "kind": "messaging" },
+                "state": "stopped",
+                "health": "unknown",
+                "supported_actions": ["start", "destroy"],
+                "last_error": null,
+            }),
+            "messaging",
+            "Messaging nodeStatus",
+        )?;
+        anyhow::ensure!(snapshot.supports_action("start"));
+        anyhow::ensure!(snapshot.supports_action("destroy"));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn basecamp_bedrock_v1_status_uses_module_state_without_legacy_liveness() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -4681,13 +4845,135 @@ mod tests {
             .find(|node| node.kind == NodeKind::Messaging)
             .context("Basecamp report omitted V1 Messaging")?;
         if messaging.run_state != "stopped"
-            || messaging.available_actions != vec![NodeAction::Start]
+            || messaging.available_actions != vec![NodeAction::Start, NodeAction::Uninstall]
             || transport_impl
                 .calls()?
                 .iter()
                 .any(|call| call.module() == "delivery_module" && call.method() == "getNodeInfo")
         {
             bail!("Basecamp Messaging V1 status inferred legacy liveness: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_messaging_v1_destroy_uses_advertised_action_and_allows_reinitialization()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let transport_impl = RecordingManagedNodeLifecycleTransport::messaging(true);
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Messaging),
+            &transport,
+            &store,
+        )
+        .await?;
+        action_with_store(
+            "default",
+            node_action_request(NodeKind::Messaging, NodeAction::Start),
+            &transport,
+            &store,
+        )
+        .await?;
+        let stopped = action_with_store(
+            "default",
+            node_action_request(NodeKind::Messaging, NodeAction::Stop),
+            &transport,
+            &store,
+        )
+        .await?;
+        let stopped_messaging = stopped
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging before V1 destroy")?;
+        if stopped_messaging.available_actions != vec![NodeAction::Start, NodeAction::Uninstall] {
+            bail!("Basecamp Messaging did not project advertised destroy: {stopped:?}");
+        }
+
+        let uninstalled = action_with_store(
+            "default",
+            node_action_request(NodeKind::Messaging, NodeAction::Uninstall),
+            &transport,
+            &store,
+        )
+        .await?;
+        let uninstalled_messaging = uninstalled
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging after V1 destroy")?;
+        let uninstalled_operation = uninstalled
+            .operations
+            .last()
+            .context("Basecamp Messaging V1 destroy was not recorded")?;
+        if uninstalled_messaging.install_state != "needs_configuration"
+            || uninstalled_messaging.run_state != "not_initialized"
+            || uninstalled_messaging.available_actions != vec![NodeAction::Initialize]
+            || uninstalled_operation.status != "uninstalled"
+            || !uninstalled_operation
+                .detail
+                .contains("V1 uninstall transition settled")
+        {
+            bail!("Basecamp Messaging V1 destroy did not clear its context: {uninstalled:?}");
+        }
+
+        let reinitialized = action_with_store(
+            "default",
+            initialize_request(NodeKind::Messaging),
+            &transport,
+            &store,
+        )
+        .await?;
+        let reinitialized_messaging = reinitialized
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("Basecamp report omitted Messaging after V1 reinitialize")?;
+        if reinitialized_messaging.run_state != "stopped"
+            || reinitialized_messaging.available_actions
+                != vec![NodeAction::Start, NodeAction::Uninstall]
+        {
+            bail!("Basecamp Messaging V1 reinitialize did not settle: {reinitialized:?}");
+        }
+
+        let calls = transport_impl.calls()?;
+        let node_actions = calls
+            .iter()
+            .filter(|call| {
+                call.module() == "delivery_module" && call.method() == MESSAGING_NODE_ACTION_METHOD
+            })
+            .collect::<Vec<_>>();
+        let actions = node_actions
+            .iter()
+            .map(|call| {
+                call.args()
+                    .first()
+                    .and_then(Value::as_str)
+                    .context("Basecamp Messaging V1 nodeAction did not send a request")
+                    .and_then(|request| {
+                        serde_json::from_str::<Value>(request)
+                            .context("Basecamp Messaging V1 nodeAction request is invalid JSON")
+                    })
+                    .and_then(|request| {
+                        request
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .context("Basecamp Messaging V1 nodeAction request omitted action")
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if actions != ["initialize", "start", "stop", "destroy", "initialize"]
+            || calls.iter().any(|call| {
+                call.module() == "delivery_module"
+                    && matches!(call.method(), "createNode" | "start" | "stop")
+            })
+        {
+            bail!("Basecamp Messaging V1 destroy used the wrong lifecycle route: {calls:?}");
         }
         Ok(())
     }
@@ -4904,6 +5190,7 @@ mod tests {
                 context_initialized: None,
                 liveness: None,
                 liveness_error: Some("Basecamp Bedrock probe timed out".to_owned()),
+                managed_actions: None,
             }],
             &store,
         )?;
@@ -4953,6 +5240,7 @@ mod tests {
                 context_initialized: Some(true),
                 liveness: Some(true),
                 liveness_error: None,
+                managed_actions: None,
             }],
             &store,
         )?;
@@ -5011,6 +5299,7 @@ mod tests {
                 context_initialized: Some(false),
                 liveness: Some(false),
                 liveness_error: Some("Context not initialized".to_owned()),
+                managed_actions: None,
             }],
             &store,
         )?;
