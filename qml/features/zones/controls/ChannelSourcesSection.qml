@@ -14,6 +14,7 @@ ColumnLayout {
     required property Theme theme
     required property var zoneState
     required property var detail
+    property var catalogState: null
     property bool editorOpen: false
     property string draftRole: "sequencer"
     property var draftSource: null
@@ -29,6 +30,9 @@ ColumnLayout {
         || managedIndexerControl.hasDirtyDraft
     readonly property bool sourceInteractionsBlocked: root.sourceEditorDirty
         || managedIndexerControl.configurationOpen
+    readonly property var snapshotState: root.catalogState || root.zoneState
+    readonly property bool sourceActionsEnabled: root.snapshotState !== null
+        && root.snapshotState.summaryRowsUsable === true
     readonly property string mutationWarningCode: String(
         root.zoneState.sourceMutationWarning
         && root.zoneState.sourceMutationWarning.code || "")
@@ -89,7 +93,7 @@ ColumnLayout {
 
             objectName: "addSequencerSourceButton"
             enabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-                && root.zoneState.summaryRowsUsable === true
+                && root.sourceActionsEnabled
             text: "+"
             hoverEnabled: true
             focusPolicy: Qt.TabFocus
@@ -148,7 +152,7 @@ ColumnLayout {
             selected: String(root.config.selected_sequencer_source_id || "")
                 === String(modelData.source_id || "")
             actionsEnabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-                && root.zoneState.summaryRowsUsable === true
+                && root.sourceActionsEnabled
             Layout.fillWidth: true
             onSelectRequested: root.selectSequencer(modelData)
             onEditRequested: root.beginEditor("sequencer", modelData)
@@ -193,7 +197,7 @@ ColumnLayout {
             objectName: "configureIndexerSourceButton"
             visible: !root.config.indexer_source
             enabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-                && root.zoneState.summaryRowsUsable === true
+                && root.sourceActionsEnabled
             text: "+"
             hoverEnabled: true
             focusPolicy: Qt.TabFocus
@@ -247,7 +251,7 @@ ColumnLayout {
         )
         role: "indexer"
         actionsEnabled: !root.sourceInteractionsBlocked && !root.zoneState.sourceMutationInFlight
-            && root.zoneState.summaryRowsUsable === true
+            && root.sourceActionsEnabled
         Layout.fillWidth: true
         onEditRequested: root.beginEditor("indexer", root.config.indexer_source)
         onRemoveRequested: root.confirmRemove("indexer", root.config.indexer_source)
@@ -259,6 +263,7 @@ ColumnLayout {
         visible: root.indexerTargetKind() === "module"
         theme: root.theme
         zoneState: root.zoneState
+        catalogState: root.catalogState
         interactionBlocked: root.sourceEditorDirty
         Layout.fillWidth: true
     }
@@ -283,6 +288,7 @@ ColumnLayout {
         sourceComponent: ChannelSourceEditor {
             theme: root.theme
             zoneState: root.zoneState
+            catalogState: root.catalogState
             onSaved: root.discardDraft()
             onCancelled: root.discardDraft()
             onReloadRequested: root.reloadDraft()

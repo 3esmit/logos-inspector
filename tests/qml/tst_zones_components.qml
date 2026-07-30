@@ -143,6 +143,56 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: separateSourceEditorState
+
+        property var appModel: null
+        property string activeZoneId: FixtureData.identity("1")
+        property var sourceMutationWarning: null
+        property string sourceMutationError: ""
+        property bool sourceMutationInFlight: false
+        property var managedIndexerRuntime: ({
+            ownership: "inspector_managed",
+            run_state: "running",
+            detail: "Fixture LogosCore runtime"
+        })
+        property var managedIndexerNode: ({
+            key: "indexer",
+            install_state: "installed",
+            run_state: "stopped",
+            indexer_state: "stopped",
+            package_version: "1.0.0",
+            managed_channel_id: null,
+            available_actions: ["start"],
+            detail: "Ready"
+        })
+        property bool managedIndexerRefreshInFlight: false
+        property bool managedIndexerControlInFlight: false
+        property bool managedIndexerStatusStale: false
+        property string managedIndexerError: ""
+        property string managedIndexerResult: ""
+        property bool managedIndexerConfigLoading: false
+        property bool managedIndexerConfigSaving: false
+
+        function refreshManagedIndexer() {
+            return true
+        }
+
+        function runManagedIndexerAction(action, channelId) {
+            return true
+        }
+
+        function bedrockEndpoint() {
+            return "http://127.0.0.1:8080/"
+        }
+    }
+
+    QtObject {
+        id: separateCatalogState
+
+        property bool summaryRowsUsable: true
+    }
+
     ApplicationWindow {
         id: testWindow
 
@@ -1080,9 +1130,11 @@ TestCase {
         })
 
         const control = findChild(detail, "managedIndexerControl")
+        const sources = findChild(detail, "channelSourcesSection")
         const start = findChild(control, "startManagedIndexerButton")
         const stop = findChild(control, "stopManagedIndexerButton")
         verify(control.visible)
+        verify(!!sources, "Object exists")
         verify(start !== null && start.enabled)
         verify(stop !== null && !stop.enabled)
         verify(hasVisibleText(control,
@@ -1090,6 +1142,84 @@ TestCase {
         verify(hasVisibleText(control, "1.0.0"))
 
         compare(control.selectedChannelId, zoneState.activeZoneId)
+        compare(sources.catalogState, zoneState)
+        compare(control.catalogState, zoneState)
+    }
+
+    function test_managed_indexer_start_uses_catalog_state_separate_from_source_editor() {
+        separateCatalogState.summaryRowsUsable = true
+        const detail = {
+            channel_source_config: {
+                config_revision: 1,
+                selected_sequencer_source_id: "src_sequencer",
+                sequencer_sources: [],
+                indexer_source: {
+                    source_id: "src_indexer",
+                    target: {
+                        kind: "module",
+                        module_id: "lez_indexer_module"
+                    }
+                }
+            },
+            source_observations: []
+        }
+        const section = sourcesSectionFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: separateSourceEditorState,
+            catalogState: separateCatalogState,
+            detail: detail,
+            width: 900
+        })
+        verify(!!section, "Component exists")
+        try {
+            const control = findChild(section, "managedIndexerControl")
+            verify(!!control, "Object exists")
+            const start = findChild(control, "startManagedIndexerButton")
+            verify(!!start, "Object exists")
+            tryCompare(start, "enabled", true)
+
+            separateCatalogState.summaryRowsUsable = false
+            tryCompare(start, "enabled", false)
+        } finally {
+            separateCatalogState.summaryRowsUsable = true
+            section.destroy()
+        }
+    }
+
+    function test_source_editor_save_uses_source_editor_catalog_snapshot() {
+        separateCatalogState.summaryRowsUsable = true
+        const detail = {
+            channel_source_config: {
+                config_revision: 1,
+                selected_sequencer_source_id: "src_sequencer",
+                sequencer_sources: [],
+                indexer_source: null
+            },
+            source_observations: []
+        }
+        const section = sourcesSectionFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            zoneState: separateSourceEditorState,
+            catalogState: separateCatalogState,
+            detail: detail,
+            width: 900
+        })
+        verify(!!section, "Component exists")
+        try {
+            verify(section.beginEditor("sequencer", null))
+            const endpoint = findChild(section, "channelSourceEndpointField")
+            const save = findChild(section, "channelSourceSaveButton")
+            verify(!!endpoint, "Object exists")
+            verify(!!save, "Object exists")
+            endpoint.text = "https://sequencer.example/"
+            tryCompare(save, "enabled", true)
+
+            separateCatalogState.summaryRowsUsable = false
+            tryCompare(save, "enabled", false)
+        } finally {
+            separateCatalogState.summaryRowsUsable = true
+            section.destroy()
+        }
     }
 
     function test_basecamp_channel_indexer_describes_hosted_instance() {

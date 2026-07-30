@@ -11,6 +11,7 @@ ColumnLayout {
 
     required property Theme theme
     required property var zoneState
+    property var catalogState: null
     property bool interactionBlocked: false
 
     property string pendingAction: ""
@@ -26,6 +27,9 @@ ColumnLayout {
     readonly property string installedState: String(root.node.install_state || "needs_configuration")
     readonly property string managedChannelId: String(root.node.managed_channel_id || "")
     readonly property string selectedChannelId: String(root.zoneState.activeZoneId || "")
+    readonly property var snapshotState: root.catalogState || root.zoneState
+    readonly property bool catalogSnapshotUsable: root.snapshotState !== null
+        && root.snapshotState.summaryRowsUsable === true
     readonly property var configurationPanel: configurationLoader.item || null
     readonly property bool hasDirtyDraft: root.configurationPanel !== null
         && root.configurationPanel.dirty === true
@@ -42,7 +46,7 @@ ColumnLayout {
     readonly property bool canStart: !root.actionInFlight
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
-        && root.zoneState.summaryRowsUsable === true
+        && root.catalogSnapshotUsable
         && root.availableActions.indexOf("start") >= 0
         && root.installed
         && (root.runState === "stopped" || root.runState === "not_initialized")
@@ -54,7 +58,7 @@ ColumnLayout {
     readonly property bool canConfigure: !root.actionInFlight
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
-        && root.zoneState.summaryRowsUsable === true
+        && root.catalogSnapshotUsable
         && (root.runState === "stopped" || root.runState === "not_initialized")
 
     objectName: "managedIndexerControl"

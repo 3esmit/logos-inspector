@@ -213,6 +213,7 @@ ColumnLayout {
         sourceComponent: ChannelSourcesSection {
             theme: root.theme
             zoneState: root.sourceEditorState
+            catalogState: root.zoneState
             detail: root.detail
         }
         onLoaded: {
