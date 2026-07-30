@@ -14,6 +14,7 @@ Rectangle {
 
     required property Theme theme
     required property var zoneState
+    property var catalogState: null
     property string role: "sequencer"
     property string mode: "add"
     property var source: null
@@ -32,6 +33,9 @@ Rectangle {
     readonly property bool validDraft: root.targetModeImplemented(root.targetKind)
         && (root.targetKind === "module"
             || (root.adapterAcceptsInput("rpc_endpoint") && root.targetValue.length > 0))
+    readonly property var snapshotState: root.catalogState || root.zoneState
+    readonly property bool catalogSnapshotUsable: root.snapshotState !== null
+        && root.snapshotState.summaryRowsUsable === true
     signal saved()
     signal cancelled()
     signal reloadRequested()
@@ -171,7 +175,7 @@ Rectangle {
         }
 
         Text {
-            visible: root.zoneState.summaryRowsUsable !== true
+            visible: root.catalogSnapshotUsable !== true
             text: qsTr("Catalog snapshot is not current. Draft retained; saving is disabled.")
             color: root.theme.warning
             textFormat: Text.PlainText
@@ -238,7 +242,7 @@ Rectangle {
                 enabled: root.validDraft
                     && root.dirty
                     && !root.conflict
-                    && root.zoneState.summaryRowsUsable === true
+                    && root.catalogSnapshotUsable
                     && root.zoneState.activeZoneId.length > 0
                     && !root.zoneState.sourceMutationInFlight
                 onClicked: root.submit()
