@@ -199,6 +199,12 @@ TestCase {
         ChannelSourcesSection {}
     }
 
+    SignalSpy {
+        id: programOpenSourcesSpy
+
+        signalName: "configureSourcesRequested"
+    }
+
     function init() {
         zoneState.verification = "verified"
         zoneState.coverage = {
@@ -1716,6 +1722,38 @@ TestCase {
             compare(favoriteState.count("program"), 0)
             compare(programs.programRows()[0].cells[3].text, "Add")
         } finally {
+            programs.destroy()
+        }
+    }
+
+    function test_l2_program_recovery_action_opens_sources_without_enabling_reads() {
+        const previousReadEligibility = zoneState.sequencerSourceReadEligible
+        zoneState.sequencerSourceReadEligible = false
+        const programs = isolatedProgramsFactory.createObject(
+            testWindow.contentItem, {
+                theme: testRoot.testTheme,
+                zoneState: isolatedProgramState,
+                appModel: appModel,
+                zoneDetail: zoneState.zoneDetail,
+                width: 1100,
+                height: 900
+            })
+        verify(programs !== null)
+        try {
+            const openSources = findChild(programs,
+                "zoneL2ProgramsOpenSourcesButton")
+            verify(openSources !== null)
+            tryCompare(programs, "sequencerDataDisplayEnabled", false)
+            tryCompare(openSources, "visible", true)
+            tryCompare(openSources, "enabled", true)
+
+            programOpenSourcesSpy.target = programs
+            programOpenSourcesSpy.clear()
+            mouseClick(openSources)
+            tryCompare(programOpenSourcesSpy, "count", 1)
+        } finally {
+            programOpenSourcesSpy.target = null
+            zoneState.sequencerSourceReadEligible = previousReadEligibility
             programs.destroy()
         }
     }

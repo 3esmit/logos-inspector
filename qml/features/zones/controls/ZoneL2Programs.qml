@@ -94,10 +94,10 @@ ColumnLayout {
     }
 
     ActionButton {
+        objectName: "zoneL2ProgramsOpenSourcesButton"
         visible: root.zoneState.l2Applicable && !root.zoneState.l2SequencerReadEnabled
         theme: root.theme
         text: qsTr("Open Sources")
-        enabled: root.zoneState.l2SequencerReadEnabled
         Layout.preferredWidth: 150
         onClicked: root.configureSourcesRequested()
     }
