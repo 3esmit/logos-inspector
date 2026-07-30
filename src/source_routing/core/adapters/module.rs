@@ -33,35 +33,58 @@ pub(crate) async fn blockchain_node_report(
     transport: &SharedModuleTransport,
     transport_kind: ModuleTransportKind,
 ) -> BlockchainNodeReport {
+    let (cryptarchia_info, headers, network_info, mantle_metrics) = tokio::join!(
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_cryptarchia_info",
+            Vec::new(),
+        ),
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_cryptarchia_headers",
+            Vec::new(),
+        ),
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_network_info",
+            Vec::new(),
+        ),
+        transport_call_value(
+            transport,
+            transport_kind,
+            BLOCKCHAIN_MODULE,
+            "get_mantle_metrics",
+            Vec::new(),
+        ),
+    );
+
     BlockchainNodeReport {
         endpoint: BLOCKCHAIN_MODULE.to_owned(),
         cryptarchia_info: ProbeReport::from_result(
             "cryptarchia info",
             "blockchain_module.get_cryptarchia_info",
-            transport_call_value(
-                transport,
-                transport_kind,
-                BLOCKCHAIN_MODULE,
-                "get_cryptarchia_info",
-                Vec::new(),
-            )
-            .await
-            .map(crate::blockchain::normalize_cryptarchia_info),
+            cryptarchia_info.map(crate::blockchain::normalize_cryptarchia_info),
         ),
-        headers: ProbeReport::err(
+        headers: ProbeReport::from_result(
             "headers",
-            "blockchain_module",
-            "blockchain_module does not expose header-list reads",
+            "blockchain_module.get_cryptarchia_headers",
+            headers,
         ),
-        network_info: ProbeReport::err(
+        network_info: ProbeReport::from_result(
             "network info",
-            "blockchain_module",
-            "blockchain_module does not expose network info reads",
+            "blockchain_module.get_network_info",
+            network_info,
         ),
-        mantle_metrics: ProbeReport::err(
+        mantle_metrics: ProbeReport::from_result(
             "mantle metrics",
-            "blockchain_module",
-            "blockchain_module does not expose Mantle metrics",
+            "blockchain_module.get_mantle_metrics",
+            mantle_metrics,
         ),
     }
 }
@@ -724,6 +747,12 @@ mod tests {
                     "tip": test_hash('a'),
                     "slot": 130,
                 }))
+            } else if method == "get_cryptarchia_headers" && args.is_empty() {
+                Ok(json!([{"slot": 130, "id": test_hash('a')}]))
+            } else if method == "get_network_info" && args.is_empty() {
+                Ok(json!({"peers": 3}))
+            } else if method == "get_mantle_metrics" && args.is_empty() {
+                Ok(json!({"transactions": 1}))
             } else if method == "get_block" && args == vec![json!(test_hash('a'))] {
                 Ok(test_block(130, test_hash('b'), 2))
             } else if method == "get_block" && args == vec![json!(test_hash('b'))] {
@@ -917,7 +946,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cli_node_report_uses_the_canonical_cryptarchia_shape() -> Result<()> {
+    async fn cli_node_report_relays_all_bedrock_diagnostic_reads() -> Result<()> {
         let harness = Arc::new(TipParentTransport::new());
         let transport: SharedModuleTransport = harness.clone();
 
@@ -947,7 +976,32 @@ mod tests {
                 .and_then(|value| value.pointer("/cryptarchia_info/genesis_id")),
             Some(&json!(test_hash('0')))
         );
-        assert_eq!(harness.call_methods(), vec!["get_cryptarchia_info"]);
+        assert!(report.headers.ok);
+        assert_eq!(
+            report.headers.value.as_ref(),
+            Some(&json!([{"slot": 130, "id": test_hash('a')}]))
+        );
+        assert!(report.network_info.ok);
+        assert_eq!(
+            report.network_info.value.as_ref(),
+            Some(&json!({"peers": 3}))
+        );
+        assert!(report.mantle_metrics.ok);
+        assert_eq!(
+            report.mantle_metrics.value.as_ref(),
+            Some(&json!({"transactions": 1}))
+        );
+
+        let methods = harness.call_methods();
+        assert_eq!(methods.len(), 4);
+        for method in [
+            "get_cryptarchia_info",
+            "get_cryptarchia_headers",
+            "get_network_info",
+            "get_mantle_metrics",
+        ] {
+            assert!(methods.iter().any(|called| called == method));
+        }
         Ok(())
     }
 }
