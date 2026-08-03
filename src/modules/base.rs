@@ -1,11 +1,19 @@
+use std::sync::{Arc, atomic::AtomicU8};
+use std::time::Duration;
+
 use serde::Serialize;
 use serde_json::Value;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::{ProbeReport, source_routing::SourceProbeKey};
 
 use super::{
     delivery::delivery_report,
-    logos_core::{ModuleCall, ModuleTransportKind, SharedModuleTransport, dispatch_module_call},
+    logos_core::{
+        ModuleCall, ModuleCallControl, ModuleTransportKind, SharedModuleTransport,
+        dispatch_module_call, dispatch_module_call_controlled,
+    },
     storage::storage_report,
 };
 
@@ -13,6 +21,7 @@ pub(super) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 pub(super) const STORAGE_MODULE: &str = "storage_module";
 pub(super) const DELIVERY_MODULE: &str = "delivery_module";
 const CAPABILITY_MODULE: &str = "capability_module";
+const OPTIONAL_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogosModulesReport {
@@ -73,6 +82,12 @@ pub async fn blockchain_module_report(
     adapter: ModuleTransportKind,
     address: Option<&str>,
 ) -> ModuleReport {
+    let module_info = match adapter {
+        ModuleTransportKind::Module => None,
+        ModuleTransportKind::LogoscoreCli => {
+            Some(module_info_probe(module_transport, adapter, BLOCKCHAIN_MODULE).await)
+        }
+    };
     let mut probes = vec![
         call_probe(
             module_transport,
@@ -82,37 +97,60 @@ pub async fn blockchain_module_report(
             &[],
         )
         .await,
-        call_probe(
+        call_probe_with_timeout(
             module_transport,
             adapter,
             BLOCKCHAIN_MODULE,
             "wallet_get_known_addresses",
             &[],
+            OPTIONAL_PROBE_TIMEOUT,
         )
         .await,
     ];
     if let Some(address) = optional(address) {
         probes.push(
-            call_probe(
+            call_probe_with_timeout(
                 module_transport,
                 adapter,
                 BLOCKCHAIN_MODULE,
                 "wallet_get_balance",
                 &[address],
+                OPTIONAL_PROBE_TIMEOUT,
             )
             .await,
         );
     }
-    let module_info = match adapter {
-        ModuleTransportKind::Module => probes
+    let module_info = module_info.unwrap_or_else(|| {
+        probes
             .first()
             .cloned()
-            .unwrap_or_else(|| unavailable_metadata_probe(adapter, BLOCKCHAIN_MODULE)),
-        ModuleTransportKind::LogoscoreCli => {
-            module_info_probe(module_transport, adapter, BLOCKCHAIN_MODULE).await
-        }
-    };
+            .unwrap_or_else(|| unavailable_metadata_probe(adapter, BLOCKCHAIN_MODULE))
+    });
     ModuleReport::new(adapter, BLOCKCHAIN_MODULE, module_info, probes)
+}
+
+async fn call_probe_with_timeout(
+    module_transport: &SharedModuleTransport,
+    adapter: ModuleTransportKind,
+    module: &str,
+    method: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> ProbeReport {
+    call_module_probe_with_control(
+        module_transport,
+        adapter,
+        module,
+        method,
+        args,
+        None,
+        Some(ModuleCallControl::new(
+            CancellationToken::new(),
+            Instant::now() + timeout,
+            Arc::new(AtomicU8::new(0)),
+        )),
+    )
+    .await
 }
 
 pub async fn capabilities_report(
@@ -197,6 +235,18 @@ async fn call_module_probe(
     args: &[&str],
     key: Option<SourceProbeKey>,
 ) -> ProbeReport {
+    call_module_probe_with_control(module_transport, adapter, module, method, args, key, None).await
+}
+
+async fn call_module_probe_with_control(
+    module_transport: &SharedModuleTransport,
+    adapter: ModuleTransportKind,
+    module: &str,
+    method: &str,
+    args: &[&str],
+    key: Option<SourceProbeKey>,
+    control: Option<ModuleCallControl>,
+) -> ProbeReport {
     let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let args_label = if args.is_empty() {
         String::new()
@@ -222,9 +272,16 @@ async fn call_module_probe(
         method,
         args.into_iter().map(Value::String).collect(),
     ) {
-        Ok(call) => dispatch_module_call(module_transport.as_ref(), call)
-            .await
-            .map(|reply| reply.into_value()),
+        Ok(call) => match control {
+            Some(control) => {
+                dispatch_module_call_controlled(module_transport.as_ref(), call, control)
+                    .await
+                    .map(|reply| reply.into_value())
+            }
+            None => dispatch_module_call(module_transport.as_ref(), call)
+                .await
+                .map(|reply| reply.into_value()),
+        },
         Err(error) => Err(error),
     };
     let probe = ProbeReport::from_result(format!("{module}.{method}{args_label}"), source, result);
@@ -306,6 +363,34 @@ mod tests {
         ) -> super::super::logos_core::ModuleDiagnosticFuture<'_> {
             self.module_info_calls.fetch_add(1, Ordering::Relaxed);
             Box::pin(async move { Ok(json!({ "runner": "fake_cli", "module": module })) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct SlowOptionalProbeTransport;
+
+    impl super::super::logos_core::ModuleTransport for SlowOptionalProbeTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> super::super::logos_core::ModuleCallFuture<'_> {
+            Box::pin(async move {
+                if call.method() == "wallet_get_known_addresses" {
+                    std::future::pending::<()>().await;
+                }
+                Ok(super::super::logos_core::ModuleCallReply::new(
+                    ModuleTransportKind::LogoscoreCli,
+                    json!({ "method": call.method() }),
+                ))
+            })
+        }
+
+        fn module_info(
+            &self,
+            module: String,
+        ) -> super::super::logos_core::ModuleDiagnosticFuture<'_> {
+            Box::pin(async move { Ok(json!({ "module": module })) })
         }
     }
 
@@ -439,6 +524,42 @@ mod tests {
             || !module.probes.is_empty()
         {
             bail!("deferred module report invoked runtime diagnostics: {module:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_optional_wallet_probe_is_bounded_without_blocking_metadata() -> Result<()> {
+        let transport: SharedModuleTransport = Arc::new(SlowOptionalProbeTransport);
+        let started = std::time::Instant::now();
+
+        let report = tokio::time::timeout(
+            Duration::from_secs(3),
+            blockchain_module_report(&transport, ModuleTransportKind::LogoscoreCli, None),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("optional wallet probe exceeded report bound"))?;
+
+        if started.elapsed() >= Duration::from_secs(3) {
+            bail!("optional wallet probe delayed the report beyond its bound");
+        }
+        if !report.module_info.ok {
+            bail!("required blockchain metadata was lost: {report:?}");
+        }
+        let wallet_probe = report
+            .probes
+            .iter()
+            .find(|probe| probe.label == "blockchain_module.wallet_get_known_addresses")
+            .ok_or_else(|| anyhow::anyhow!("bounded wallet probe was omitted: {report:?}"))?;
+        if wallet_probe.ok
+            || !wallet_probe
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("deadline exceeded"))
+        {
+            bail!(
+                "slow optional wallet probe was not reported as bounded failure: {wallet_probe:?}"
+            );
         }
         Ok(())
     }
