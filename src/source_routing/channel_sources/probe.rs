@@ -15,7 +15,7 @@ use super::{
     sequencer::SequencerAdapter,
 };
 
-const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(crate) type ChannelSourceProbeFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub(crate) type SequencerAttestorFuture = Pin<
