@@ -5066,6 +5066,21 @@ pub(crate) fn normalize_module_call_value(
     method: &str,
     value: Value,
 ) -> Result<Value> {
+    normalize_module_call_value_inner(module, method, value, 0)
+}
+
+const MODULE_RESULT_UNWRAP_MAX_DEPTH: usize = 8;
+
+fn normalize_module_call_value_inner(
+    module: &str,
+    method: &str,
+    value: Value,
+    depth: usize,
+) -> Result<Value> {
+    if depth > MODULE_RESULT_UNWRAP_MAX_DEPTH {
+        bail!("{module}.{method} returned excessively nested result envelopes");
+    }
+    let value = parse_module_json_string(value);
     let status = value
         .get("status")
         .and_then(Value::as_str)
@@ -5077,11 +5092,41 @@ pub(crate) fn normalize_module_call_value(
         );
     }
 
-    let Some(result) = value.get("result") else {
-        return Ok(parse_module_json_string(value));
+    let Some(object) = value.as_object() else {
+        return Ok(value);
     };
-    if let Some(object) = result.as_object()
-        && let Some(success) = object.get("success").and_then(Value::as_bool)
+
+    // Logos Protocol and Basecamp can each add a result envelope. Accept
+    // repeated exact envelopes, but keep application payloads such as
+    // {"result": ..., "kind": ...} opaque.
+    if object.len() == 1 && object.contains_key("result") {
+        return normalize_module_call_value_inner(
+            module,
+            method,
+            object.get("result").cloned().unwrap_or(Value::Null),
+            depth + 1,
+        );
+    }
+
+    if status == "ok" && object.contains_key("result") {
+        return normalize_module_call_value_inner(
+            module,
+            method,
+            object.get("result").cloned().unwrap_or(Value::Null),
+            depth + 1,
+        );
+    }
+
+    // LogosCore CLI omits a null `error` member from successful results, while
+    // the Basecamp bridge serializes it. Accept both wire shapes, but keep
+    // objects with additional application fields opaque.
+    let canonical_result_shape =
+        (object.len() == 2 && object.contains_key("success") && object.contains_key("value"))
+            || (object.len() == 3
+                && object.contains_key("success")
+                && object.contains_key("value")
+                && object.contains_key("error"));
+    if canonical_result_shape && let Some(success) = object.get("success").and_then(Value::as_bool)
     {
         if !success {
             let error = object
@@ -5091,13 +5136,15 @@ pub(crate) fn normalize_module_call_value(
                 .unwrap_or_else(|| "module call failed".to_owned());
             bail!("{module}.{method} failed: {error}");
         }
-        return Ok(object
-            .get("value")
-            .cloned()
-            .map(parse_module_json_string)
-            .unwrap_or(Value::Null));
+        return normalize_module_call_value_inner(
+            module,
+            method,
+            object.get("value").cloned().unwrap_or(Value::Null),
+            depth + 1,
+        );
     }
-    Ok(parse_module_json_string(result.clone()))
+
+    Ok(value)
 }
 
 fn parse_module_json_string(value: Value) -> Value {
@@ -8100,6 +8147,50 @@ esac
         )?;
 
         anyhow::ensure!(value.as_array().map(Vec::len) == Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn module_call_value_unwraps_cli_result_without_error_field() -> Result<()> {
+        let value = normalize_module_call_value(
+            "delivery_module",
+            "getNodeInfo",
+            json!({
+                "status": "ok",
+                "result": {
+                    "success": true,
+                    "value": "peer-test"
+                }
+            }),
+        )?;
+
+        anyhow::ensure!(value.as_str() == Some("peer-test"));
+        Ok(())
+    }
+
+    #[test]
+    fn module_call_value_unwraps_nested_result_envelopes() -> Result<()> {
+        let value = normalize_module_call_value(
+            "blockchain_module",
+            "nodeAction",
+            json!({
+                "result": r#"{"result":"{\"schema\":\"logos.managed_node_lifecycle.ack\",\"version\":1}"}"#
+            }),
+        )?;
+
+        anyhow::ensure!(
+            value.get("schema").and_then(Value::as_str) == Some("logos.managed_node_lifecycle.ack")
+        );
+        anyhow::ensure!(value.get("version").and_then(Value::as_u64) == Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn module_call_value_preserves_payload_with_result_field() -> Result<()> {
+        let payload = json!({"result": "application-value", "kind": "block"});
+        let value = normalize_module_call_value("module", "method", payload.clone())?;
+
+        anyhow::ensure!(value == payload);
         Ok(())
     }
 
