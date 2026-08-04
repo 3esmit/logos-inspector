@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use super::{
     indexer::{AccountTransactionSummary, summarize_indexer_transaction, with_account_direction},
     programs::{program_id_base58, program_id_hex},
-    sequencer::sequencer_client,
+    sequencer::with_sequencer_rpc_retry,
 };
 #[cfg(test)]
 use crate::decode_account_data_hex_with_idl;
@@ -40,10 +40,11 @@ pub struct SequencerAccountIdlReport {
 
 pub async fn sequencer_account(endpoint: &str, account_id: &str) -> Result<AccountReport> {
     let parsed_account_id = parse_account_id(account_id)?;
-    let account = sequencer_client(endpoint)?
-        .get_account(parsed_account_id)
-        .await
-        .with_context(|| format!("failed to fetch sequencer account {account_id}"))?;
+    let account = with_sequencer_rpc_retry(endpoint, move |client| async move {
+        client.get_account(parsed_account_id).await
+    })
+    .await
+    .with_context(|| format!("failed to fetch sequencer account {account_id}"))?;
     account_report(parsed_account_id, account)
 }
 

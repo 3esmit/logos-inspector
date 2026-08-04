@@ -1,3 +1,5 @@
+use std::{future::Future, time::Duration};
+
 use anyhow::{Context as _, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use borsh::BorshDeserialize as _;
@@ -6,6 +8,7 @@ use common::transaction::LeeTransaction;
 use lee_core::program::ProgramId;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
+use tokio::time::sleep;
 
 use super::{
     BlockSummary, ProgramIdEntry, TransactionSummary,
@@ -15,11 +18,17 @@ use super::{
 };
 use crate::{parse_hash, rpc::raw_json_rpc};
 
+const SEQUENCER_RPC_TIMEOUT: Duration = Duration::from_secs(8);
+const SEQUENCER_RPC_ATTEMPTS: usize = 2;
+const SEQUENCER_RPC_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 pub async fn sequencer_health(endpoint: &str) -> Result<()> {
-    sequencer_client(endpoint)?
-        .check_health()
-        .await
-        .context("sequencer health check failed")
+    with_sequencer_rpc_retry(
+        endpoint,
+        |client| async move { client.check_health().await },
+    )
+    .await
+    .context("sequencer health check failed")
 }
 
 pub async fn sequencer_channel_id(endpoint: &str) -> Result<String> {
@@ -30,10 +39,11 @@ pub async fn sequencer_channel_id(endpoint: &str) -> Result<String> {
 }
 
 pub async fn last_sequencer_block_id(endpoint: &str) -> Result<u64> {
-    sequencer_client(endpoint)?
-        .get_last_block_id()
-        .await
-        .context("failed to fetch last sequencer block id")
+    with_sequencer_rpc_retry(endpoint, |client| async move {
+        client.get_last_block_id().await
+    })
+    .await
+    .context("failed to fetch last sequencer block id")
 }
 
 pub async fn sequencer_program_ids(endpoint: &str) -> Result<Vec<ProgramIdEntry>> {
@@ -44,8 +54,11 @@ pub async fn sequencer_program_ids(endpoint: &str) -> Result<Vec<ProgramIdEntry>
         return Ok(program_entries_from_ids(program_ids));
     }
 
-    let programs = sequencer_client(endpoint)?
-        .get_program_ids()
+    let programs =
+        with_sequencer_rpc_retry(
+            endpoint,
+            |client| async move { client.get_program_ids().await },
+        )
         .await
         .context("failed to fetch sequencer program ids")?;
     Ok(program_entries(programs))
@@ -59,10 +72,12 @@ pub async fn sequencer_account_nonces(
         .iter()
         .map(|account_id| crate::parse_account_id(account_id))
         .collect::<Result<Vec<_>>>()?;
-    let nonces = sequencer_client(endpoint)?
-        .get_accounts_nonces(parsed)
-        .await
-        .context("failed to fetch Sequencer account nonces")?;
+    let nonces = with_sequencer_rpc_retry(endpoint, move |client| {
+        let parsed = parsed.clone();
+        async move { client.get_accounts_nonces(parsed).await }
+    })
+    .await
+    .context("failed to fetch Sequencer account nonces")?;
     if nonces.len() != account_ids.len() {
         return Err(super::evidence_protocol_error(
             "Sequencer returned an invalid account nonce count",
@@ -84,10 +99,12 @@ pub async fn sequencer_commitment_proof(
     }
     let commitment = lee_core::Commitment::deserialize_reader(&mut bytes.as_slice())
         .context("commitment did not match the LEZ commitment layout")?;
-    let proof = sequencer_client(endpoint)?
-        .get_proof_for_commitment(commitment)
-        .await
-        .context("failed to fetch Sequencer commitment proof")?;
+    let proof = with_sequencer_rpc_retry(endpoint, move |client| {
+        let commitment = commitment.clone();
+        async move { client.get_proof_for_commitment(commitment).await }
+    })
+    .await
+    .context("failed to fetch Sequencer commitment proof")?;
     proof
         .map(|(leaf_index, siblings)| {
             Ok((
@@ -129,12 +146,13 @@ pub async fn sequencer_blocks(
         None => last_sequencer_block_id(endpoint).await?,
     };
     let start_block_id = end_block_id.saturating_sub(limit.saturating_sub(1));
-    let blocks = sequencer_client(endpoint)?
-        .get_block_range(start_block_id, end_block_id)
-        .await
-        .with_context(|| {
-            format!("failed to fetch sequencer block range {start_block_id}..={end_block_id}")
-        })?;
+    let blocks = with_sequencer_rpc_retry(endpoint, move |client| async move {
+        client.get_block_range(start_block_id, end_block_id).await
+    })
+    .await
+    .with_context(|| {
+        format!("failed to fetch sequencer block range {start_block_id}..={end_block_id}")
+    })?;
     blocks
         .iter()
         .rev()
@@ -155,6 +173,7 @@ pub async fn sequencer_transaction(
 
 pub(crate) fn sequencer_client(endpoint: &str) -> Result<sequencer_service_rpc::SequencerClient> {
     SequencerClientBuilder::default()
+        .request_timeout(SEQUENCER_RPC_TIMEOUT)
         .build(endpoint)
         .with_context(|| format!("failed to build sequencer client for {endpoint}"))
 }
@@ -164,10 +183,49 @@ async fn fetch_sequencer_transaction(
     tx_hash: &str,
 ) -> Result<Option<LeeTransaction>> {
     let hash = parse_hash(tx_hash, "transaction hash")?;
-    sequencer_client(endpoint)?
-        .get_transaction(hash)
-        .await
-        .with_context(|| format!("failed to fetch sequencer transaction {tx_hash}"))
+    with_sequencer_rpc_retry(endpoint, move |client| async move {
+        client.get_transaction(hash).await
+    })
+    .await
+    .with_context(|| format!("failed to fetch sequencer transaction {tx_hash}"))
+}
+
+pub(crate) async fn with_sequencer_rpc_retry<T, F, Fut>(
+    endpoint: &str,
+    mut operation: F,
+) -> Result<T>
+where
+    F: FnMut(sequencer_service_rpc::SequencerClient) -> Fut,
+    Fut: Future<Output = std::result::Result<T, sequencer_service_rpc::ClientError>>,
+{
+    let mut last_error = None;
+    for attempt in 0..SEQUENCER_RPC_ATTEMPTS {
+        let client = sequencer_client(endpoint)?;
+        match operation(client).await {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if attempt + 1 < SEQUENCER_RPC_ATTEMPTS && is_retryable_sequencer_error(&error) =>
+            {
+                last_error = Some(error);
+                sleep(SEQUENCER_RPC_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    match last_error {
+        Some(error) => Err(error.into()),
+        None => anyhow::bail!("Sequencer RPC retry loop completed without a result"),
+    }
+}
+
+fn is_retryable_sequencer_error(error: &sequencer_service_rpc::ClientError) -> bool {
+    matches!(
+        error,
+        sequencer_service_rpc::ClientError::Transport(_)
+            | sequencer_service_rpc::ClientError::RequestTimeout
+            | sequencer_service_rpc::ClientError::RestartNeeded(_)
+            | sequencer_service_rpc::ClientError::ServiceDisconnect
+    )
 }
 
 struct FetchedSequencerBlock {
@@ -274,9 +332,63 @@ fn sequencer_block_bytes_from_response(response: &Value) -> Result<Option<Vec<u8
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use anyhow::{Result, bail, ensure};
 
     use super::*;
+
+    #[tokio::test]
+    async fn typed_transport_retry_replays_only_transient_failures() -> Result<()> {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let result = with_sequencer_rpc_retry("http://127.0.0.1:1", {
+            let attempts = Arc::clone(&attempts);
+            move |_client| {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        Err(sequencer_service_rpc::ClientError::RequestTimeout)
+                    } else {
+                        Ok(7_u64)
+                    }
+                }
+            }
+        })
+        .await?;
+
+        ensure!(result == 7, "retry did not return the successful result");
+        ensure!(
+            attempts.load(Ordering::SeqCst) == 2,
+            "transient transport failure was not retried"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn typed_protocol_error_is_not_retried() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let result = with_sequencer_rpc_retry::<(), _, _>("http://127.0.0.1:1", {
+            let attempts = Arc::clone(&attempts);
+            move |_client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err(sequencer_service_rpc::ClientError::Custom(
+                        "protocol failure".to_owned(),
+                    ))
+                }
+            }
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(error) if error.to_string().contains("protocol failure")
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn channel_identity_response_is_canonicalized() -> Result<()> {
