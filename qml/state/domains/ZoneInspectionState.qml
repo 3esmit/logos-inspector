@@ -42,7 +42,7 @@ QtObject {
         && (networkScopeKey.length === 0
             || summaryNetworkScopeKey === networkScopeKey)
         && zoneSummaries.length > 0
-    readonly property string retainedNetworkScopeKey: summaryRowsRetainable
+    readonly property string retainedNetworkScopeKey: navigationRowsRetainable
         ? summaryNetworkScopeKey : ""
     readonly property bool summaryRowsUsable: verification === "verified"
         && summaryRowsRetainable
