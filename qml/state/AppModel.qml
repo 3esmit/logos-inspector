@@ -1332,7 +1332,7 @@ QtObject {
         if (source && String(source.effectiveMode || "") !== "rpc") {
             return {
                 kind: "unavailable",
-                reason: qsTr("Zone Catalog requires a Direct RPC, Basecamp module, or LogosCore CLI Bedrock source with Catalog reads. %1 does not expose the finalized range and time data required to verify Zones.")
+                reason: qsTr("Zone Catalog requires a Direct RPC source, Basecamp module, or LogosCore CLI connector with Catalog reads. %1 does not expose the finalized range and time data required to verify Zones.")
                     .arg(sourceLabel)
             }
         }

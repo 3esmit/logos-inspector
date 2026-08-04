@@ -29,7 +29,7 @@ use crate::{
             ZoneEvidenceSourceProvenance, extract_catalog_evidence_payload,
         },
     },
-    modules::logos_core::{SharedModuleTransport, pin_module_transport},
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport, pin_module_transport},
     source_routing::channel_sources::{
         FinalizedL1EvidenceBasis, SequencerAttestationBasis, SequencerLegacyAnchor,
         SequencerLegacyAnchorState,
@@ -112,10 +112,22 @@ impl EvidenceBlockReader for RoutedEvidenceBlockReader {
                 }
                 ZoneCatalogSourceKind::LogoscoreCli => {
                     let module_transport = pin_module_transport(module_transport)?;
+                    if module_transport.kind() != ModuleTransportKind::LogoscoreCli {
+                        bail!(
+                            "LogosCore CLI evidence source resolved to `{}` transport",
+                            module_transport.kind().as_str()
+                        );
+                    }
                     let source = LogoscoreCatalogL1Source::for_evidence(module_transport)?;
                     source.block(block_id).await.map_err(anyhow::Error::from)
                 }
                 ZoneCatalogSourceKind::Module => {
+                    if module_transport.kind() != ModuleTransportKind::Module {
+                        bail!(
+                            "Basecamp module evidence source resolved to `{}` transport",
+                            module_transport.kind().as_str()
+                        );
+                    }
                     let source = LogoscoreCatalogL1Source::for_evidence(module_transport)?;
                     source.block(block_id).await.map_err(anyhow::Error::from)
                 }
