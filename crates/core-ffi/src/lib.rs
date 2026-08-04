@@ -1926,9 +1926,21 @@ fn normalize_basecamp_module_reply(
     method: &str,
     value: Value,
 ) -> Result<Value, String> {
+    let value = parse_basecamp_structured_json(value);
     let Some(object) = value.as_object() else {
         return Ok(value);
     };
+    // Basecamp's CoreModuleManager transport wraps direct module results in a
+    // single-key `{ "result": ... }` object. Keep this deliberately narrow:
+    // module payloads that contain a `result` field alongside other data are
+    // valid application values and must remain untouched.
+    if object.len() == 1 && object.contains_key("result") {
+        return normalize_basecamp_module_reply(
+            module,
+            method,
+            object.get("result").cloned().unwrap_or(Value::Null),
+        );
+    }
     let Some(success) = object.get("success").and_then(Value::as_bool) else {
         return Ok(value);
     };
@@ -3470,6 +3482,82 @@ mod tests {
                 .map_err(std::io::Error::other)?;
         if normalized != raw {
             return err("noncanonical Basecamp reply was unexpectedly unwrapped");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_result_wrapper_unwraps_structured_string() -> TestResult {
+        let wrapped = serde_json::json!({
+            "result": r#"{"schema":"logos.managed_node_lifecycle.ack","version":1}"#,
+        });
+        let normalized =
+            normalize_basecamp_module_reply("blockchain_module", "nodeAction", wrapped)
+                .map_err(std::io::Error::other)?;
+        if normalized
+            != serde_json::json!({
+                "schema": "logos.managed_node_lifecycle.ack",
+                "version": 1
+            })
+        {
+            return err("Basecamp result wrapper did not yield the structured module value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_serialized_result_wrapper_is_unwrapped() -> TestResult {
+        let wrapped = serde_json::json!(
+            r#"{"result":"{\"schema\":\"logos.managed_node_lifecycle.ack\",\"version\":1}"}"#
+        );
+        let normalized =
+            normalize_basecamp_module_reply("blockchain_module", "nodeAction", wrapped)
+                .map_err(std::io::Error::other)?;
+        if normalized
+            != serde_json::json!({
+                "schema": "logos.managed_node_lifecycle.ack",
+                "version": 1
+            })
+        {
+            return err("serialized Basecamp result wrapper was not normalized");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_nested_result_and_canonical_envelopes_are_unwrapped() -> TestResult {
+        let wrapped = serde_json::json!({
+            "result": {
+                "success": true,
+                "value": r#"{"schema":"logos.managed_node_lifecycle.ack","version":1}"#,
+                "error": null,
+            }
+        });
+        let normalized =
+            normalize_basecamp_module_reply("blockchain_module", "nodeAction", wrapped)
+                .map_err(std::io::Error::other)?;
+        if normalized
+            != serde_json::json!({
+                "schema": "logos.managed_node_lifecycle.ack",
+                "version": 1
+            })
+        {
+            return err("nested Basecamp envelopes were not normalized");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_payload_with_result_field_remains_opaque() -> TestResult {
+        let payload = serde_json::json!({
+            "result": "application-value",
+            "kind": "block",
+        });
+        let normalized =
+            normalize_basecamp_module_reply("blockchain_module", "get_blocks", payload.clone())
+                .map_err(std::io::Error::other)?;
+        if normalized != payload {
+            return err("module payload with an additional result field was unwrapped");
         }
         Ok(())
     }

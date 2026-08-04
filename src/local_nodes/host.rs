@@ -1293,22 +1293,33 @@ async fn execute_managed_node_lifecycle_v1_action(
         .await?
         .into_value();
     let value = normalize_module_call_value(plan.module, contract.action_method, value)?;
-    validate_managed_node_lifecycle_ack(
+    let acknowledged = validate_managed_node_lifecycle_ack(
         plan.kind,
         &value,
         &operation_id,
         &snapshot,
         lifecycle_action.expected_transition,
     )?;
-    let lifecycle_detail = wait_for_managed_node_lifecycle_event(
-        plan,
-        lifecycle,
-        &operation_id,
-        &snapshot,
-        lifecycle_action,
-        lifecycle_timeout,
-    )
-    .await?;
+    let lifecycle_detail = if acknowledged {
+        wait_for_managed_node_lifecycle_event(
+            plan,
+            lifecycle,
+            &operation_id,
+            &snapshot,
+            lifecycle_action,
+            lifecycle_timeout,
+        )
+        .await?
+    } else {
+        wait_for_managed_node_lifecycle_status(
+            plan,
+            module_transport,
+            &snapshot,
+            lifecycle_action,
+            lifecycle_timeout,
+        )
+        .await?
+    };
     Ok(HostActionExecution {
         lifecycle_detail: Some(lifecycle_detail),
         dispatched_method: contract.action_method,
@@ -1438,18 +1449,26 @@ fn validate_managed_node_lifecycle_ack(
     operation_id: &str,
     snapshot: &ManagedNodeLifecycleSnapshot,
     expected_state: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let label = adapter_for(kind).label();
     let acknowledgement = match value {
         Value::String(text) => serde_json::from_str(text)
             .with_context(|| format!("{label} nodeAction response is not valid JSON"))?,
         value => value.clone(),
     };
+    // Basecamp's Qt module adapter cannot marshal a plugin method whose return
+    // type is `std::string` into QVariant. A null reply therefore means only
+    // that the invocation result is unavailable; confirmation must come from
+    // the module's event or status path after dispatch.
+    if acknowledgement.is_null() {
+        return Ok(false);
+    }
     anyhow::ensure!(
         acknowledgement.get("schema").and_then(Value::as_str)
             == Some("logos.managed_node_lifecycle.ack")
             && acknowledgement.get("version").and_then(Value::as_u64) == Some(1),
-        "{label} nodeAction response has an unsupported schema or version"
+        "{label} nodeAction response has an unsupported schema or version: {}",
+        crate::response_excerpt(&acknowledgement.to_string())
     );
     anyhow::ensure!(
         acknowledgement.get("operation_id").and_then(Value::as_str) == Some(operation_id),
@@ -1496,7 +1515,44 @@ fn validate_managed_node_lifecycle_ack(
         acknowledgement.get("state").and_then(Value::as_str) == Some(expected_state),
         "{label} nodeAction response has an unexpected lifecycle state"
     );
-    Ok(())
+    Ok(true)
+}
+
+async fn wait_for_managed_node_lifecycle_status(
+    plan: &PreparedHostAction,
+    module_transport: &SharedModuleTransport,
+    snapshot: &ManagedNodeLifecycleSnapshot,
+    expected: ManagedNodeLifecycleAction,
+    timeout: Duration,
+) -> Result<String> {
+    let deadline = Instant::now() + timeout;
+    let label = adapter_for(plan.kind).label();
+    loop {
+        let current =
+            managed_node_lifecycle_snapshot_for_action(plan.kind, plan.module, module_transport)
+                .await?;
+        if current.sequence() > snapshot.sequence()
+            && current.state().as_str() == expected.expected_terminal
+        {
+            if let Some(error) = current.last_error() {
+                bail!(
+                    "Basecamp {label} V1 {} failed: {error}",
+                    plan.action.as_str()
+                );
+            }
+            return Ok(format!(
+                "V1 {} transition confirmed by nodeStatus after an unmarshalable host reply",
+                plan.action.as_str()
+            ));
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            bail!(
+                "Basecamp {label} nodeStatus did not confirm {} before lifecycle confirmation timeout",
+                plan.action.as_str()
+            );
+        };
+        tokio::time::sleep(remaining.min(Duration::from_millis(250))).await;
+    }
 }
 
 #[derive(Debug, Deserialize)]
