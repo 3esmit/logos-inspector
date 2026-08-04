@@ -421,6 +421,8 @@ TestCase {
         model.zoneInspection.summaryNetworkScopeKey
             = model.zoneInspection.networkScopeKey
         model.zoneInspection.summarySourceConfigEpoch = 1
+        model.zoneInspection.summarySourceKey = "source-old"
+        model.zoneInspection.desiredSourceKey = "source-old"
         model.zoneInspection.zoneSummaries = [configuredZone]
         model.zoneInspection.activeZoneContext = null
         model.shell.navExpanded = ({ l1: true, zones: true, network: true,
@@ -471,6 +473,66 @@ TestCase {
         compare(model.zoneInspection.activeZoneId, channelId)
         compare(model.shell.currentView, "sequencerDashboard")
         compare(loader.item, dashboardPage)
+    }
+
+    function test_configured_zone_navigation_survives_source_epoch_reverification() {
+        const model = findChild(shell, "appModel")
+        const channelId = ZoneFixtureData.identity("3")
+        const scope = ZoneFixtureData.networkScope()
+        const sourceZone = ZoneFixtureData.zones()[0]
+        const configuredZone = Object.assign({}, sourceZone, {
+            channel_id: channelId,
+            display: Object.assign({}, sourceZone.display, {
+                alias: "Stable Nav"
+            }),
+            active_zone_context_fields: {
+                network_scope: scope,
+                channel_id: channelId,
+                zone_kind: "sequencer_zone",
+                selected_sequencer_source_id: "seq-stable-nav",
+                indexer_source_id: "idx-stable-nav",
+                source_config_revision: 1
+            },
+            settlement_link: Object.assign({}, sourceZone.settlement_link, {
+                selected_sequencer_source_id: "seq-stable-nav",
+                indexer_source_id: "idx-stable-nav"
+            })
+        })
+        model.stopZoneInspection()
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.networkScope = scope
+        model.zoneInspection.networkScopeKey = "genesis_id:" + scope.genesis_id
+        model.zoneInspection.sourceRevision = 1
+        model.zoneInspection.sourceConfigEpoch = 1
+        model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summarySourceRevision = 1
+        model.zoneInspection.summaryNetworkScopeKey
+            = model.zoneInspection.networkScopeKey
+        model.zoneInspection.summarySourceConfigEpoch = 1
+        model.zoneInspection.zoneSummaries = [configuredZone]
+        model.zoneInspection.activeZoneContext = null
+        model.zoneMenuSelections = ({})
+        model.shell.selectView("overview")
+
+        const groups = model.zoneMenuGroups()
+        compare(groups.length, 1)
+        verify(model.setZoneMenuEnabled(String(groups[0].fields[0].key || ""), true))
+        tryVerify(function () {
+            return findChild(shell, "navButton_zone_" + channelId) !== null
+        })
+
+        model.zoneInspection.sourceConfigEpoch = 2
+        model.zoneInspection.desiredSourceKey = "source-new"
+        model.zoneInspection.verification = "source_behind"
+        model.zoneInspection.summaryStale = true
+        model.shell.navRevision += 1
+        wait(0)
+
+        verify(!model.zoneInspection.summaryRowsRetainable)
+        verify(model.zoneInspection.navigationRowsRetainable)
+        const button = findChild(shell, "navButton_zone_" + channelId)
+        verify(button !== null)
+        verify(button.visible)
     }
 
     function verifyButtonNavigation(model, loader, view) {

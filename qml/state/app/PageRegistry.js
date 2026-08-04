@@ -88,7 +88,7 @@ function configuredZoneNavigationItems(root) {
 
 function configuredZoneMenuCandidates(root) {
     const state = root && root.zoneInspection ? root.zoneInspection : null
-    if (!state || state.summaryRowsRetainable !== true) {
+    if (!state || state.navigationRowsRetainable !== true) {
         return []
     }
     const rows = Array.isArray(state.zoneSummaries) ? state.zoneSummaries : []
