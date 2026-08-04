@@ -126,6 +126,7 @@ impl ZoneCatalogWorker for DirectZoneCatalogWorker {
                 ZoneCatalogSourceKind::LogoscoreCli => {
                     self.run_logoscore_cli(descriptor, context).await
                 }
+                ZoneCatalogSourceKind::Module => self.run_module(descriptor, context).await,
             }
         })
     }
@@ -205,6 +206,31 @@ impl DirectZoneCatalogWorker {
                 "LogosCore CLI Catalog requires compatible blockchain module methods: {error:#}"
             ))
         })?;
+        context.ensure_current()?;
+        let source = Arc::new(
+            LogoscoreCatalogL1Source::new(transport)
+                .map_err(map_source_error)?
+                .with_cancellation(context.cancellation().clone()),
+        );
+        self.run_source(descriptor, source, context).await
+    }
+
+    async fn run_module(
+        &self,
+        descriptor: ZoneCatalogSourceDescriptor,
+        context: ZoneCatalogRunContext,
+    ) -> ZoneCatalogServiceResult<()> {
+        let transport = self.module_transport.clone().ok_or_else(|| {
+            ZoneCatalogServiceError::Worker(
+                "Basecamp module Catalog source is unavailable because no module transport was configured"
+                    .to_owned(),
+            )
+        })?;
+        if transport.kind() != ModuleTransportKind::Module {
+            return Err(ZoneCatalogServiceError::Worker(
+                "Basecamp module Catalog source requires the Basecamp module transport".to_owned(),
+            ));
+        }
         context.ensure_current()?;
         let source = Arc::new(
             LogoscoreCatalogL1Source::new(transport)

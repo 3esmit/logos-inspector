@@ -1485,6 +1485,13 @@ TestCase {
         compare(basecampModel.sourceRouting.storageSourceTarget(), basecampModel.storageModule)
     }
 
+    function test_basecamp_zone_catalog_uses_the_blockchain_module_connector() {
+        const descriptor = basecampModel.zoneCatalogL1SourceDescriptor()
+        compare(descriptor.kind, "module")
+        verify(descriptor.endpoint === undefined)
+        compare(descriptor.default_topology, "logos_testnet")
+    }
+
     function test_standalone_defaults_l1_to_direct_rpc_and_hides_host_module_connector() {
         const defaults = model.defaultNetworkConnectorConfig().scopes
         compare(defaults.l1.connector_id, "direct_l1_rpc")

@@ -325,9 +325,12 @@ pub(crate) struct LogoscoreCatalogL1Source {
 
 impl LogoscoreCatalogL1Source {
     pub(crate) fn new(transport: SharedModuleTransport) -> CatalogL1SourceResult<Self> {
-        if transport.kind() != ModuleTransportKind::LogoscoreCli {
+        if !matches!(
+            transport.kind(),
+            ModuleTransportKind::LogoscoreCli | ModuleTransportKind::Module
+        ) {
             return Err(CatalogL1SourceError::Unavailable(
-                "LogosCore CLI Catalog reads require the LogosCore CLI transport".to_owned(),
+                "Catalog reads require a module or LogosCore CLI transport".to_owned(),
             ));
         }
         Ok(Self {
@@ -355,13 +358,8 @@ impl LogoscoreCatalogL1Source {
         args: Vec<Value>,
         output_limit: usize,
     ) -> CatalogL1SourceResult<Value> {
-        let call = ModuleCall::new(
-            ModuleTransportKind::LogoscoreCli,
-            BLOCKCHAIN_MODULE,
-            method,
-            args,
-        )
-        .map_err(|error| CatalogL1SourceError::InvalidRequest(error.to_string()))?;
+        let call = ModuleCall::new(self.transport.kind(), BLOCKCHAIN_MODULE, method, args)
+            .map_err(|error| CatalogL1SourceError::InvalidRequest(error.to_string()))?;
         let control = ModuleCallControl::new(
             self.cancellation.clone(),
             Instant::now() + CATALOG_L1_REQUEST_TIMEOUT,
@@ -372,7 +370,7 @@ impl LogoscoreCatalogL1Source {
         dispatch_module_call_controlled(self.transport.as_ref(), call, control)
             .await
             .map(|reply| reply.into_value())
-            .map_err(|error| source_unavailable("LogosCore CLI module call failed", error))
+            .map_err(|error| source_unavailable("Catalog module call failed", error))
     }
 
     async fn fetch_chain_status(&self) -> CatalogL1SourceResult<CatalogL1ChainStatus> {
@@ -972,9 +970,18 @@ mod tests {
         output_limit: usize,
     }
 
-    #[derive(Default)]
     struct CatalogCliRecordingTransport {
+        kind: ModuleTransportKind,
         calls: Mutex<Vec<RecordedCliCall>>,
+    }
+
+    impl Default for CatalogCliRecordingTransport {
+        fn default() -> Self {
+            Self {
+                kind: ModuleTransportKind::LogoscoreCli,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     impl CatalogCliRecordingTransport {
@@ -1024,10 +1031,7 @@ mod tests {
                 }),
                 other => bail!("unexpected Catalog CLI method `{other}`"),
             };
-            Ok(ModuleCallReply::new(
-                ModuleTransportKind::LogoscoreCli,
-                value,
-            ))
+            Ok(ModuleCallReply::new(self.kind, value))
         }
 
         fn calls(&self) -> Result<Vec<RecordedCliCall>> {
@@ -1041,7 +1045,7 @@ mod tests {
 
     impl ModuleTransport for CatalogCliRecordingTransport {
         fn kind(&self) -> ModuleTransportKind {
-            ModuleTransportKind::LogoscoreCli
+            self.kind
         }
 
         fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
@@ -1217,6 +1221,28 @@ mod tests {
             bail!(
                 "CLI Catalog block call did not preserve typed arguments or block cap: {calls:?}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_source_dispatches_catalog_reads_through_basecamp_transport() -> Result<()> {
+        let transport = Arc::new(CatalogCliRecordingTransport {
+            kind: ModuleTransportKind::Module,
+            ..Default::default()
+        });
+        let source = LogoscoreCatalogL1Source::new(transport.clone())?;
+        let status = Runtime::new()?.block_on(source.chain_status())?;
+        if status.snapshot.lib.slot != 20 {
+            bail!("Basecamp module chain status was not decoded: {status:?}");
+        }
+        let calls = transport.calls()?;
+        if calls.len() != 1
+            || calls
+                .first()
+                .is_none_or(|call| call.method != "get_cryptarchia_info")
+        {
+            bail!("Basecamp module Catalog used an unexpected call sequence: {calls:?}");
         }
         Ok(())
     }
