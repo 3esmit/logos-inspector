@@ -195,6 +195,8 @@ TestCase {
         }))
 
         model.zoneInspection.sourceConfigEpoch = 2
+        model.zoneInspection.summarySourceKey = "stale-source"
+        model.zoneInspection.networkScopeKey = ""
         wait(0)
         verify(!model.zoneInspection.summaryRowsUsable)
         verify(model.shell.navRows().some(function (row) {
