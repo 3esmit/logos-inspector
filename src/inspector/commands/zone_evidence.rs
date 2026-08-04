@@ -115,6 +115,10 @@ impl EvidenceBlockReader for RoutedEvidenceBlockReader {
                     let source = LogoscoreCatalogL1Source::for_evidence(module_transport)?;
                     source.block(block_id).await.map_err(anyhow::Error::from)
                 }
+                ZoneCatalogSourceKind::Module => {
+                    let source = LogoscoreCatalogL1Source::for_evidence(module_transport)?;
+                    source.block(block_id).await.map_err(anyhow::Error::from)
+                }
             }
         })
     }
@@ -895,6 +899,7 @@ fn source_provenance(
         kind: match descriptor.kind() {
             ZoneCatalogSourceKind::DirectHttp => ZoneEvidenceSourceKind::DirectHttp,
             ZoneCatalogSourceKind::LogoscoreCli => ZoneEvidenceSourceKind::LogoscoreCli,
+            ZoneCatalogSourceKind::Module => ZoneEvidenceSourceKind::Module,
         },
         fingerprint,
     })

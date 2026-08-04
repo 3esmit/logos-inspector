@@ -36,6 +36,19 @@ fn logoscore_cli_source_descriptor_is_endpoint_free_and_separate_from_direct_htt
 }
 
 #[test]
+fn module_source_descriptor_is_endpoint_free_and_separate_from_cli() -> Result<()> {
+    let module = ZoneCatalogSourceDescriptor::module();
+    let cli = ZoneCatalogSourceDescriptor::logoscore_cli();
+    ensure!(
+        module.kind() == ZoneCatalogSourceKind::Module
+            && module.direct_endpoint().is_none()
+            && module.fingerprint() != cli.fingerprint(),
+        "Basecamp module descriptor retained CLI identity or an endpoint"
+    );
+    Ok(())
+}
+
+#[test]
 fn promotion_resumes_prepared_transition_and_keeps_catalog_file() -> Result<()> {
     let runtime = Runtime::new()?;
     runtime.block_on(async {

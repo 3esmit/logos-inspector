@@ -1108,7 +1108,7 @@ TestCase {
         verify(!zoneState.pollStatus())
 
         zoneState.sourceDescriptor = {
-            kind: "module",
+            kind: "unsupported",
             module_id: "blockchain_module"
         }
         compare(gateway.requests.length, 0)
@@ -1198,6 +1198,23 @@ TestCase {
         verify(endpointFree.endpoint === undefined)
         verify(withEndpoint.endpoint === undefined)
         compare(zoneState.sourceKey(endpointFree), zoneState.sourceKey(withEndpoint))
+    }
+
+    function test_basecamp_module_catalog_configuration_omits_endpoint() {
+        zoneState.sourceDescriptor = {
+            kind: "module",
+            endpoint: "http://127.0.0.1:8080/",
+            default_topology: "logos_testnet"
+        }
+        zoneState.start()
+
+        const request = gateway.pendingRequest("zoneCatalogConfigure")
+        verify(request !== null)
+        compare(request.args[0].source.kind, "module")
+        verify(request.args[0].source.endpoint === undefined)
+        compare(request.args[0].source.default_topology, "logos_testnet")
+        verify(zoneState.desiredSource.endpoint === undefined)
+        compare(zoneState.desiredSourceKey, "module\n\nlogos_testnet")
     }
 
     function test_configure_race_accepts_only_latest_source() {

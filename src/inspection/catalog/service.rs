@@ -85,6 +85,7 @@ pub struct ZoneCatalogSourceDescriptor {
 pub(crate) enum ZoneCatalogSourceKind {
     DirectHttp,
     LogoscoreCli,
+    Module,
 }
 
 impl ZoneCatalogSourceDescriptor {
@@ -108,6 +109,17 @@ impl ZoneCatalogSourceDescriptor {
         digest.update(b"catalog-l1-logoscore-cli-v1\0");
         Self {
             kind: ZoneCatalogSourceKind::LogoscoreCli,
+            endpoint: None,
+            fingerprint: format!("sha256:{}", hex::encode(digest.finalize())),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn module() -> Self {
+        let mut digest = Sha256::new();
+        digest.update(b"catalog-l1-module-v1\0");
+        Self {
+            kind: ZoneCatalogSourceKind::Module,
             endpoint: None,
             fingerprint: format!("sha256:{}", hex::encode(digest.finalize())),
         }

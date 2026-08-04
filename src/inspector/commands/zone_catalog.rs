@@ -347,6 +347,9 @@ impl ZoneCatalogCommandInterface {
                 ZoneCatalogSourceDescriptor::logoscore_cli(),
                 default_topology,
             ),
+            ZoneCatalogSourceRequest::Module { default_topology } => {
+                (ZoneCatalogSourceDescriptor::module(), default_topology)
+            }
         };
         let source_revision = runtime.block_on(self.service.configure(source.clone()))?;
         *self.lock_default_topology()? =

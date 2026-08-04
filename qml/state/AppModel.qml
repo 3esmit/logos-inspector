@@ -1308,6 +1308,15 @@ QtObject {
             }
             return descriptor
         }
+        if (source && resolvedMode === "module") {
+            const descriptor = {
+                kind: "module"
+            }
+            if (localNodesEnabled && networkProfile === "default") {
+                descriptor.default_topology = "logos_testnet"
+            }
+            return descriptor
+        }
         if (source && String(source.effectiveMode || "") === "rpc" && endpoint.length > 0) {
             const descriptor = {
                 kind: "direct_http",
@@ -1323,7 +1332,7 @@ QtObject {
         if (source && String(source.effectiveMode || "") !== "rpc") {
             return {
                 kind: "unavailable",
-                reason: qsTr("Zone Catalog requires a Direct RPC Bedrock source or a LogosCore CLI source with Catalog reads. %1 does not expose the finalized range and time data required to verify Zones.")
+                reason: qsTr("Zone Catalog requires a Direct RPC, Basecamp module, or LogosCore CLI Bedrock source with Catalog reads. %1 does not expose the finalized range and time data required to verify Zones.")
                     .arg(sourceLabel)
             }
         }

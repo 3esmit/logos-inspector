@@ -240,7 +240,7 @@ QtObject {
                 default_topology: defaultTopology
             }
         }
-        if (kind !== "logoscore_cli") {
+        if (kind !== "logoscore_cli" && kind !== "module") {
             return null
         }
         return {

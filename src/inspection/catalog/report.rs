@@ -30,6 +30,10 @@ pub enum ZoneCatalogSourceRequest {
         #[serde(default)]
         default_topology: Option<ZoneCatalogDefaultTopology>,
     },
+    Module {
+        #[serde(default)]
+        default_topology: Option<ZoneCatalogDefaultTopology>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -314,6 +318,7 @@ pub struct ZoneEvidenceSourceProvenance {
 pub enum ZoneEvidenceSourceKind {
     DirectHttp,
     LogoscoreCli,
+    Module,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
