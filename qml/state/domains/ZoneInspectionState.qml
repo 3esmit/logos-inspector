@@ -35,6 +35,13 @@ QtObject {
         && summaryNetworkScopeKey.length > 0
         && (summarySourceKey.length === 0
             || summarySourceKey === desiredSourceKey)
+    // Keep accepted rows available for navigation while the catalog source
+    // identity re-verifies. Data views still use stricter usability gates.
+    readonly property bool navigationRowsRetainable: summaryLoaded
+        && summaryNetworkScopeKey.length > 0
+        && (networkScopeKey.length === 0
+            || summaryNetworkScopeKey === networkScopeKey)
+        && zoneSummaries.length > 0
     readonly property string retainedNetworkScopeKey: summaryRowsRetainable
         ? summaryNetworkScopeKey : ""
     readonly property bool summaryRowsUsable: verification === "verified"
