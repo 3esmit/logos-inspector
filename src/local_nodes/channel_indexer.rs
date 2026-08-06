@@ -787,9 +787,7 @@ fn basecamp_instance_id(network_scope: &NetworkScope, channel_id: &str) -> Resul
     let scope_prefix = scope_key
         .get(..scope_prefix_len)
         .context("Channel Indexer network scope key is shorter than expected")?;
-    let instance_id = format!(
-        "{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_prefix}-{channel_id}"
-    );
+    let instance_id = format!("{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_prefix}-{channel_id}");
     anyhow::ensure!(
         instance_id.len() <= BASECAMP_MAX_INSTANCE_ID_BYTES,
         "Channel Indexer Basecamp instance id exceeds the runtime address limit ({} > {BASECAMP_MAX_INSTANCE_ID_BYTES})",
