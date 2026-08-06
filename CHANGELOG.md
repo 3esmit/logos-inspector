@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Core package metadata now lists `lez_indexer_module` as a runtime
+  dependency so Basecamp package resolution can install the managed Indexer
+  alongside Inspector.
+
 ## [0.2.0-rc12] - 2026-07-28
 
 ### Fixed

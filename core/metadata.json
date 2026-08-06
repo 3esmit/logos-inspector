@@ -12,7 +12,8 @@
     "blockchain_module",
     "storage_module",
     "delivery_module",
-    "lez_core"
+    "lez_core",
+    "lez_indexer_module"
   ],
   "include": [],
   "capabilities": [],
