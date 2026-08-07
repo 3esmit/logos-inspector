@@ -26,6 +26,10 @@
       url = "github:3esmit/logos-execution-zone-module?rev=930262a80f7d934acd88244ba130ced786bff83b";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
+    lez_indexer_module = {
+      url = "github:3esmit/lez-indexer-module?rev=d3feb6bd19528c1b2b5922dc94a6ba2a1e2b488a";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
     nix-bundle-dir = {
       url = "github:logos-co/nix-bundle-dir?rev=4f72d7a64dd83979d771c17161f23ebc9dbedb40";
       inputs.nixpkgs.follows = "nixpkgs";
