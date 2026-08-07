@@ -37,6 +37,10 @@ FORK_INPUTS = {
         "3esmit/logos-execution-zone-module",
         "930262a80f7d934acd88244ba130ced786bff83b",
     ),
+    "lez_indexer_module": (
+        "3esmit/lez-indexer-module",
+        "d3feb6bd19528c1b2b5922dc94a6ba2a1e2b488a",
+    ),
 }
 BUNDLER_INPUTS = {
     "nix-bundle-dir": (
@@ -535,9 +539,7 @@ def main() -> int:
             errors.append("UI metadata display_name must be `Logos Inspector`")
         if ui_metadata.get("dependencies") != ["logos_inspector"]:
             errors.append("UI dependency name must remain `logos_inspector`")
-        # Runtime package dependencies can include modules that are not flake
-        # build inputs (for example scoped lez_indexer_module instances).
-        expected_core = list(FORK_INPUTS) + ["lez_indexer_module"]
+        expected_core = list(FORK_INPUTS)
         if core_metadata.get("dependencies") != expected_core:
             errors.append(f"core dependency names must be {expected_core}")
 

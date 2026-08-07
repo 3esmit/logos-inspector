@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Core LGX builds now pull `lez_indexer_module` as a flake input so the
+  generated SDK can resolve `lez_indexer_module_api.h` after declaring it as a
+  runtime dependency.
+
 ## [0.2.0-rc13] - 2026-08-07
 
 ### Fixed
