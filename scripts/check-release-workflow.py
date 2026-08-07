@@ -535,7 +535,9 @@ def main() -> int:
             errors.append("UI metadata display_name must be `Logos Inspector`")
         if ui_metadata.get("dependencies") != ["logos_inspector"]:
             errors.append("UI dependency name must remain `logos_inspector`")
-        expected_core = list(FORK_INPUTS)
+        # Runtime package dependencies can include modules that are not flake
+        # build inputs (for example scoped lez_indexer_module instances).
+        expected_core = list(FORK_INPUTS) + ["lez_indexer_module"]
         if core_metadata.get("dependencies") != expected_core:
             errors.append(f"core dependency names must be {expected_core}")
 

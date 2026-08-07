@@ -12,6 +12,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exceed the LogosCore 128-byte runtime-address limit (`module@instance`),
   which previously failed with `Cannot load module with invalid runtime
   address` and `MODULE_INSTANCE_LOAD_FAILED`.
+- Core package metadata now lists `lez_indexer_module` as a runtime
+  dependency so Basecamp package resolution can install the managed Indexer
+  alongside Inspector.
 
 ## [0.2.0-rc12] - 2026-07-28
 

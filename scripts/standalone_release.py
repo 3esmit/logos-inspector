@@ -27,6 +27,7 @@ CORE_RUNTIME_DEPENDENCIES = (
     "storage_module",
     "delivery_module",
     "lez_core",
+    "lez_indexer_module",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?$"
