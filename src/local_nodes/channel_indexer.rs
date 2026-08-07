@@ -72,6 +72,13 @@ const BASECAMP_HOST_CAPABILITIES_METHOD: &str = "getHostCapabilities";
 const BASECAMP_LOAD_INSTANCE_METHOD: &str = "loadModuleInstance";
 const BASECAMP_INSTANCE_LOADED_METHOD: &str = "isModuleInstanceLoaded";
 const BASECAMP_INDEXER_INSTANCE_PREFIX: &str = "indexer";
+// LogosCore ModuleAddress allows instance IDs of at most 128 bytes in
+// [A-Za-z0-9_-]. The naive form indexer-{sha256(scope)}-{channel64} is 137
+// bytes and is rejected as "invalid runtime address". Keep the full Channel
+// ID for operator readability; truncate the scope digest to 32 hex chars
+// (128 bits), which still disambiguates network scopes.
+const BASECAMP_INDEXER_SCOPE_KEY_PREFIX_LEN: usize = 32;
+const BASECAMP_MAX_INSTANCE_ID_BYTES: usize = 128;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CONFIG_BYTES_USIZE: usize = 1024 * 1024;
 const CONFIG_ROLE: &str = "Zone-owned Indexer";
@@ -776,9 +783,23 @@ fn basecamp_source_detail(binding: &Result<SourceBinding>, indexer_source: &Resu
 fn basecamp_instance_id(network_scope: &NetworkScope, channel_id: &str) -> Result<String> {
     let scope_key = network_scope_key(network_scope)?;
     let channel_id = normalized_channel_id(channel_id)?;
-    Ok(format!(
-        "{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_key}-{channel_id}"
-    ))
+    let scope_prefix_len = BASECAMP_INDEXER_SCOPE_KEY_PREFIX_LEN.min(scope_key.len());
+    let scope_prefix = scope_key
+        .get(..scope_prefix_len)
+        .context("Channel Indexer network scope key is shorter than expected")?;
+    let instance_id = format!("{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_prefix}-{channel_id}");
+    anyhow::ensure!(
+        instance_id.len() <= BASECAMP_MAX_INSTANCE_ID_BYTES,
+        "Channel Indexer Basecamp instance id exceeds the runtime address limit ({} > {BASECAMP_MAX_INSTANCE_ID_BYTES})",
+        instance_id.len()
+    );
+    anyhow::ensure!(
+        instance_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+        "Channel Indexer Basecamp instance id contains characters outside the runtime address allowlist"
+    );
+    Ok(instance_id)
 }
 
 async fn ensure_basecamp_host_capabilities(module_transport: &SharedModuleTransport) -> Result<()> {
@@ -3214,6 +3235,41 @@ mod tests {
         NetworkScope::GenesisId {
             genesis_id: "ab".repeat(32),
         }
+    }
+
+    #[test]
+    fn basecamp_instance_id_fits_runtime_address_limit() -> Result<()> {
+        let channel_id = "01".repeat(32);
+        let instance_id = basecamp_instance_id(&network_scope(), &channel_id)?;
+        anyhow::ensure!(
+            instance_id.len() <= BASECAMP_MAX_INSTANCE_ID_BYTES,
+            "instance id length {} exceeds Basecamp limit {}",
+            instance_id.len(),
+            BASECAMP_MAX_INSTANCE_ID_BYTES
+        );
+        anyhow::ensure!(
+            instance_id.starts_with(&format!("{BASECAMP_INDEXER_INSTANCE_PREFIX}-")),
+            "instance id must keep the indexer prefix"
+        );
+        anyhow::ensure!(
+            instance_id.ends_with(&channel_id),
+            "instance id must retain the full channel id for operators"
+        );
+        let other_scope = NetworkScope::GenesisId {
+            genesis_id: "cd".repeat(32),
+        };
+        let other_instance = basecamp_instance_id(&other_scope, &channel_id)?;
+        anyhow::ensure!(
+            instance_id != other_instance,
+            "distinct network scopes must produce distinct instance ids"
+        );
+        let other_channel = "88".repeat(32);
+        let other_channel_instance = basecamp_instance_id(&network_scope(), &other_channel)?;
+        anyhow::ensure!(
+            instance_id != other_channel_instance,
+            "distinct channels must produce distinct instance ids"
+        );
+        Ok(())
     }
 
     fn source_config(channel_id: &str) -> ChannelSourceConfig {
