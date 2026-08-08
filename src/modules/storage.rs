@@ -61,10 +61,17 @@ pub async fn storage_report(
             }
         });
     }
-    let metadata = if runtime_diagnostics_enabled {
-        module_info_probe(module_transport, adapter, STORAGE_MODULE).await
-    } else {
-        unavailable_metadata_probe(adapter, STORAGE_MODULE)
+    // LogosCore CLI exposes module metadata through its read-only
+    // `module-info` command even when the optional runtime probes are off.
+    // Keep the cheap Basecamp summary behavior, but do not discard metadata
+    // that the selected CLI transport can already provide.
+    let metadata = match adapter {
+        ModuleTransportKind::Module if !runtime_diagnostics_enabled => {
+            unavailable_metadata_probe(adapter, STORAGE_MODULE)
+        }
+        ModuleTransportKind::Module | ModuleTransportKind::LogoscoreCli => {
+            module_info_probe(module_transport, adapter, STORAGE_MODULE).await
+        }
     };
     let module_info = match adapter {
         ModuleTransportKind::Module
