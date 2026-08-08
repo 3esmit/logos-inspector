@@ -488,9 +488,9 @@ mod tests {
             bail!("module report bypassed injected CLI status capability");
         }
         let metadata_calls = module_info_calls.load(Ordering::Relaxed);
-        if metadata_calls != 3 {
+        if metadata_calls != 4 {
             bail!(
-                "module report made {metadata_calls} injected CLI metadata calls; expected Blockchain, Delivery, and Capability"
+                "module report made {metadata_calls} injected CLI metadata calls; expected Blockchain, Storage, Delivery, and Capability"
             );
         }
         if report
@@ -513,17 +513,13 @@ mod tests {
                 bail!("module report did not preserve injected CLI metadata: {module:?}");
             }
         }
-        let module = &report.storage;
+        let storage = &report.storage;
         let value =
-            module.module_info.value.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("deferred module metadata is missing: {module:?}")
+            storage.module_info.value.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Storage module metadata is missing: {storage:?}")
             })?;
-        if value.get("supported") != Some(&json!(false))
-            || value.get("adapter") != Some(&json!("logoscore_cli"))
-            || value.get("runner").is_some()
-            || !module.probes.is_empty()
-        {
-            bail!("deferred module report invoked runtime diagnostics: {module:?}");
+        if value.get("runner") != Some(&json!("fake_cli")) || !storage.probes.is_empty() {
+            bail!("Storage metadata was not relayed without runtime probes: {storage:?}");
         }
         Ok(())
     }
