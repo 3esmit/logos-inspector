@@ -2,7 +2,7 @@
   description = "Logos Inspector QML UI plugin and standalone app";
 
   inputs = {
-    logos-module-builder.url = "github:logos-co/logos-module-builder/0.2.0";
+    logos-module-builder.url = "github:3esmit/logos-module-builder/0.2.0";
     logos-module-builder.inputs.logos-protocol.follows = "logos-protocol";
     # The scoped C client API is part of the protocol source. Keep the module
     # builder and every Inspector target on the same published ABI, rather
