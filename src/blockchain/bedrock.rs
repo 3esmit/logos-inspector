@@ -73,7 +73,25 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 }
 
 pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
-    blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES).await
+    let legacy =
+        blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES)
+            .await?;
+    if value_array_len(&legacy) != Some(0) {
+        return Ok(legacy);
+    }
+
+    // Recent nodes accept the legacy endpoint but return an empty array because
+    // their complete snapshot is exposed by the bounded range endpoint instead.
+    // Keep the legacy result when that endpoint is unavailable so older nodes
+    // retain their previous behavior.
+    let limit = slot_to
+        .saturating_sub(slot_from)
+        .saturating_add(1)
+        .clamp(1, MAX_BLOCK_RANGE_SLOTS);
+    match blockchain_blocks_range(endpoint, slot_from, slot_to, limit).await {
+        Ok(range) => Ok(range),
+        Err(_) => Ok(legacy),
+    }
 }
 
 async fn blockchain_blocks_bounded(
@@ -1131,6 +1149,56 @@ mod tests {
             Ok(())
         });
         Ok((endpoint, server))
+    }
+
+    fn serve_http_sequence(
+        responses: Vec<&'static [u8]>,
+    ) -> Result<(String, JoinHandle<Result<()>>)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            for response in responses {
+                let (mut stream, _) = listener.accept()?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let bytes = stream.read(&mut buffer)?;
+                    if bytes == 0 {
+                        bail!("HTTP request headers were incomplete");
+                    }
+                    request.extend_from_slice(
+                        buffer
+                            .get(..bytes)
+                            .context("HTTP request header chunk was invalid")?,
+                    );
+                }
+                stream.write_all(response)?;
+            }
+            Ok(())
+        });
+        Ok((endpoint, server))
+    }
+
+    #[tokio::test]
+    async fn direct_blocks_falls_back_when_legacy_endpoint_is_empty() -> Result<()> {
+        let legacy =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]";
+        let range = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"block\":{\"header\":{\"id\":\"range-block\",\"slot\":10},\"transactions\":[]},\"tip\":\"range-block\",\"tip_slot\":10,\"lib\":\"range-block\",\"lib_slot\":10}";
+        let (endpoint, server) = serve_http_sequence(vec![legacy, range])?;
+
+        let blocks = blockchain_blocks(&endpoint, 10, 10).await?;
+        join_http_server(server, "legacy blocks fallback")?;
+
+        ensure_nested_string(
+            blocks
+                .as_array()
+                .and_then(|blocks| blocks.first())
+                .context("range fallback should return a block")?,
+            &["header", "id"],
+            "range-block",
+        )?;
+        Ok(())
     }
 
     fn join_http_server(server: JoinHandle<Result<()>>, label: &str) -> Result<()> {
