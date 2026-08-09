@@ -880,7 +880,10 @@ fn install_indexer_package(
         request.package_root_hash.as_deref(),
         "Indexer package root hash",
     )?;
-    let catalog = local_node_package_catalog(request.runtime_modules_dir.as_deref())?;
+    let mut catalog = local_node_package_catalog(
+        request.runtime_modules_dir.as_deref(),
+        &PackageInstallAuthority::CurrentUser,
+    )?;
     if let Some(runtime) = runtime.filter(|runtime| runtime.is_attached()) {
         runtime.validate_attached_module_install_target(Path::new(&catalog.modules_dir))?;
     } else {
@@ -893,6 +896,9 @@ fn install_indexer_package(
         }
         None => PackageInstallAuthority::CurrentUser,
     };
+    if authority != PackageInstallAuthority::CurrentUser {
+        catalog = local_node_package_catalog(Some(&catalog.modules_dir), &authority)?;
+    }
     let release = catalog
         .package
         .versions

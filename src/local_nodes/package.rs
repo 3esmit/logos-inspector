@@ -317,12 +317,13 @@ impl PackageToolchain {
 
 pub(super) fn local_node_package_catalog(
     requested_modules_dir: Option<&str>,
+    authority: &PackageInstallAuthority,
 ) -> Result<LocalNodePackageCatalogReport> {
     let modules_dir = resolve_modules_dir(requested_modules_dir)?;
     let toolchain = PackageToolchain::system();
     let package = query_catalog(&toolchain)?;
     let installed = if toolchain.lgpm.is_some() {
-        query_installed(&toolchain, &modules_dir)?
+        query_installed_as(&toolchain, &modules_dir, authority)?
     } else {
         None
     };
@@ -335,13 +336,14 @@ pub(super) fn local_node_package_catalog(
 
 pub(crate) fn local_module_catalog(
     requested_modules_dir: Option<&str>,
+    authority: &PackageInstallAuthority,
 ) -> Result<LocalModuleCatalogReport> {
     let modules_dir = resolve_modules_dir(requested_modules_dir)?;
     let toolchain = PackageToolchain::system();
     let repositories = query_repositories(&toolchain)?;
     let packages = query_core_module_catalog(&toolchain)?;
     let installed = if toolchain.lgpm.is_some() {
-        query_installed_modules(&toolchain, &modules_dir)?
+        query_installed_modules_as(&toolchain, &modules_dir, authority)?
     } else {
         LocalModuleInstalledReport::default()
     };
@@ -499,17 +501,6 @@ fn query_core_module_catalog(
     parse_core_module_catalog(&output.stdout)
 }
 
-fn query_installed(
-    toolchain: &PackageToolchain,
-    modules_dir: &Path,
-) -> Result<Option<LocalNodeInstalledPackageReport>> {
-    query_installed_as(
-        toolchain,
-        modules_dir,
-        &PackageInstallAuthority::CurrentUser,
-    )
-}
-
 fn query_installed_as(
     toolchain: &PackageToolchain,
     modules_dir: &Path,
@@ -629,17 +620,6 @@ pub(super) fn verify_installed_indexer_module(
         return Ok(false);
     };
     Ok(validate_installed_artifact(&installed, &modules_dir).is_ok())
-}
-
-fn query_installed_modules(
-    toolchain: &PackageToolchain,
-    modules_dir: &Path,
-) -> Result<LocalModuleInstalledReport> {
-    query_installed_modules_as(
-        toolchain,
-        modules_dir,
-        &PackageInstallAuthority::CurrentUser,
-    )
 }
 
 fn query_installed_modules_as(
@@ -1027,7 +1007,7 @@ fn clear_untrusted_package_environment(command: &mut Command) {
     command.env_remove("LGPM_UI_PLUGINS_DIR");
 }
 
-fn resolve_modules_dir(requested: Option<&str>) -> Result<PathBuf> {
+pub(super) fn resolve_modules_dir(requested: Option<&str>) -> Result<PathBuf> {
     let requested = requested
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2316,9 +2296,23 @@ mod tests {
             lgpm: Some(lgpm),
         };
 
-        anyhow::ensure!(query_installed(&toolchain, &modules_dir)?.is_none());
+        anyhow::ensure!(
+            query_installed_as(
+                &toolchain,
+                &modules_dir,
+                &PackageInstallAuthority::CurrentUser
+            )?
+            .is_none()
+        );
         fs::write(&main_file_path, b"module")?;
-        anyhow::ensure!(query_installed(&toolchain, &modules_dir)?.is_some());
+        anyhow::ensure!(
+            query_installed_as(
+                &toolchain,
+                &modules_dir,
+                &PackageInstallAuthority::CurrentUser
+            )?
+            .is_some()
+        );
         Ok(())
     }
 
