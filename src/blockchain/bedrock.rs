@@ -73,7 +73,19 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 }
 
 pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
-    blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES).await
+    let blocks =
+        blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES)
+            .await?;
+    if value_array_len(&blocks) == Some(0)
+        && let Some(range_limit) = slot_to
+            .checked_sub(slot_from)
+            .and_then(|window| window.checked_add(1))
+        && let Ok(range_blocks) =
+            blockchain_blocks_range(endpoint, slot_from, slot_to, range_limit).await
+    {
+        return Ok(range_blocks);
+    }
+    Ok(blocks)
 }
 
 async fn blockchain_blocks_bounded(
@@ -997,6 +1009,65 @@ mod tests {
             .contains("http response body exceeded 8 byte limit")
         {
             bail!("unexpected declared block body error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_blocks_fall_back_to_range_when_legacy_endpoint_is_empty() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let block = json!({
+            "header": {
+                "id": "block-10",
+                "slot": 10,
+                "parent_block": "block-9"
+            },
+            "transactions": []
+        });
+        let range_event = serde_json::to_vec(&json!({
+            "block": block,
+            "tip": "block-10",
+            "tip_slot": 10,
+            "lib": "block-9",
+            "lib_slot": 9
+        }))?;
+        let responses = vec![b"[]".to_vec(), range_event];
+        let server = thread::spawn(move || -> Result<()> {
+            for body in responses {
+                let (mut stream, _) = listener.accept()?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let bytes = stream.read(&mut buffer)?;
+                    if bytes == 0 {
+                        bail!("HTTP request headers were incomplete");
+                    }
+                    request.extend_from_slice(
+                        buffer
+                            .get(..bytes)
+                            .context("HTTP request header chunk was invalid")?,
+                    );
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes())?;
+                stream.write_all(&body)?;
+            }
+            Ok(())
+        });
+
+        let blocks = blockchain_blocks(&endpoint, 10, 10).await?;
+        join_http_server(server, "blocks range fallback")?;
+        let blocks = blocks
+            .as_array()
+            .context("fallback should normalize to a block array")?;
+        let block = blocks.first().context("fallback should return one block")?;
+        if blocks.len() != 1 || block.pointer("/header/slot") != Some(&json!(10)) {
+            bail!("unexpected fallback blocks: {blocks:?}");
         }
         Ok(())
     }
