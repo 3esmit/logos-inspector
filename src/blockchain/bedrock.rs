@@ -24,6 +24,24 @@ const BLOCK_RANGE_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const BLOCK_DETAIL_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_BLOCK_RANGE_SLOTS: u64 = 2_001;
 
+#[derive(Debug)]
+struct LegacyBlocksEndpointError {
+    status: StatusCode,
+    detail: String,
+}
+
+impl std::fmt::Display for LegacyBlocksEndpointError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "http call `/cryptarchia/blocks` failed with status {}: {}",
+            self.status, self.detail
+        )
+    }
+}
+
+impl std::error::Error for LegacyBlocksEndpointError {}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockchainNodeReport {
     pub endpoint: String,
@@ -73,9 +91,28 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 }
 
 pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
-    let blocks =
-        blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES)
-            .await?;
+    let blocks = match blockchain_blocks_bounded(
+        endpoint,
+        slot_from,
+        slot_to,
+        BLOCK_RANGE_RESPONSE_MAX_BYTES,
+    )
+    .await
+    {
+        Ok(blocks) => blocks,
+        Err(error) if legacy_blocks_endpoint_is_unavailable(&error) => {
+            let range_limit = slot_to
+                .checked_sub(slot_from)
+                .and_then(|window| window.checked_add(1))
+                .context("legacy blocks fallback range overflowed")?;
+            blockchain_blocks_range(endpoint, slot_from, slot_to, range_limit)
+                .await
+                .with_context(|| {
+                    format!("legacy blocks endpoint unavailable: {error:#}; range fallback failed")
+                })?
+        }
+        Err(error) => return Err(error),
+    };
     if value_array_len(&blocks) == Some(0)
         && let Some(range_limit) = slot_to
             .checked_sub(slot_from)
@@ -99,16 +136,36 @@ async fn blockchain_blocks_bounded(
         endpoint,
         &format!("cryptarchia/blocks?slot_from={slot_from}&slot_to={slot_to}"),
     );
-    request_json_bounded(
-        reqwest::Client::new().get(&url),
-        &url,
-        "failed to read http response body",
-        "invalid JSON response",
-        false,
-        false,
-        max_bytes,
-    )
-    .await
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("failed to call {url}"))?;
+    let (status, bytes) =
+        read_response_body_bytes_bounded(response, "failed to read http response body", max_bytes)
+            .await?;
+    if !status.is_success() {
+        return Err(LegacyBlocksEndpointError {
+            status,
+            detail: response_excerpt_bytes(&bytes),
+        }
+        .into());
+    }
+    serde_json::from_slice(&bytes).context("invalid JSON response")
+}
+
+fn legacy_blocks_endpoint_is_unavailable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<LegacyBlocksEndpointError>()
+        .is_some_and(|error| {
+            matches!(
+                error.status,
+                StatusCode::BAD_REQUEST
+                    | StatusCode::NOT_FOUND
+                    | StatusCode::METHOD_NOT_ALLOWED
+                    | StatusCode::NOT_IMPLEMENTED
+            )
+        })
 }
 
 pub async fn blockchain_recent_blocks(
@@ -1062,6 +1119,70 @@ mod tests {
 
         let blocks = blockchain_blocks(&endpoint, 10, 10).await?;
         join_http_server(server, "blocks range fallback")?;
+        let blocks = blocks
+            .as_array()
+            .context("fallback should normalize to a block array")?;
+        let block = blocks.first().context("fallback should return one block")?;
+        if blocks.len() != 1 || block.pointer("/header/slot") != Some(&json!(10)) {
+            bail!("unexpected fallback blocks: {blocks:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_blocks_fall_back_to_range_when_legacy_endpoint_is_unavailable() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let block = json!({
+            "header": {
+                "id": "block-10",
+                "slot": 10,
+                "parent_block": "block-9"
+            },
+            "transactions": []
+        });
+        let range_event = serde_json::to_vec(&json!({
+            "block": block,
+            "tip": "block-10",
+            "tip_slot": 10,
+            "lib": "block-9",
+            "lib_slot": 9
+        }))?;
+        let unavailable =
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let range_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            range_event.len()
+        );
+        let responses = vec![unavailable.to_vec(), {
+            let mut response = range_response.into_bytes();
+            response.extend_from_slice(&range_event);
+            response
+        }];
+        let server = thread::spawn(move || -> Result<()> {
+            for response in responses {
+                let (mut stream, _) = listener.accept()?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let bytes = stream.read(&mut buffer)?;
+                    if bytes == 0 {
+                        bail!("HTTP request headers were incomplete");
+                    }
+                    request.extend_from_slice(
+                        buffer
+                            .get(..bytes)
+                            .context("HTTP request header chunk was invalid")?,
+                    );
+                }
+                stream.write_all(&response)?;
+            }
+            Ok(())
+        });
+
+        let blocks = blockchain_blocks(&endpoint, 10, 10).await?;
+        join_http_server(server, "unavailable blocks range fallback")?;
         let blocks = blocks
             .as_array()
             .context("fallback should normalize to a block array")?;
