@@ -130,6 +130,19 @@ Panel {
             }
 
             StatusMessage {
+                visible: root.requiresReinitialization
+                theme: root.theme
+                tone: "info"
+                title: root.attachedConfiguration
+                    ? qsTr("Saved for the next Storage initialization")
+                    : qsTr("Reinitialize to apply Storage changes")
+                message: root.attachedConfiguration
+                    ? qsTr("Storage reads this file during initialization. Save changes while stopped; the module uses it the next time its context is initialized.")
+                    : qsTr("Storage reads this file during initialization. Save changes while stopped, then uninstall and initialize Storage again before starting it.")
+                Layout.fillWidth: true
+            }
+
+            StatusMessage {
                 visible: root.protectedFieldsText().length > 0
                 theme: root.theme
                 tone: "info"
@@ -355,6 +368,16 @@ Panel {
         root.activeNode = nodeKey
         return true
     }
+
+    readonly property bool requiresReinitialization: {
+        if (!root.snapshot || String(root.snapshot.node || "") !== "storage") {
+            return false
+        }
+        const node = root.model.nodeByKind("storage")
+        return node !== null && String(node.run_state || "") === "stopped"
+    }
+    readonly property bool attachedConfiguration: root.snapshot
+        && String(root.snapshot.config_role || "") === "Attached service initialization configuration"
 
     function resetSelection() {
         validationTimer.stop()

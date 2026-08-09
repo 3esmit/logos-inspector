@@ -1146,12 +1146,6 @@ fn edit_blocked_reason(
                 .to_owned(),
         );
     }
-    if kind == NodeKind::Storage && node.lifecycle_state != NodeLifecycleState::NotInitialized {
-        return Some(
-            "Storage reads this configuration during initialization. Uninstall the stopped Storage context before editing it."
-                .to_owned(),
-        );
-    }
     None
 }
 
@@ -1770,6 +1764,53 @@ mod tests {
         .expect_err("Messaging config without an identity must not be saved");
         assert!(error.to_string().contains("no persisted peer identity"));
         assert_eq!(fs::read(path)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_storage_configuration_is_editable_and_persists_for_reinitialization() -> Result<()> {
+        let (directory, mut state) = state_for(
+            NodeKind::Storage,
+            json!({
+                "data-dir": "/tmp/placeholder",
+                "listen-ip": "0.0.0.0",
+                "listen-port": 8091,
+                "disc-port": 8090,
+                "nat": "any",
+                "network": "logos.test",
+                "log-level": "INFO"
+            }),
+        )?;
+        let path = directory.path().join("devnet/configs/storage.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        config["data-dir"] =
+            Value::String(directory.path().join("devnet/data").display().to_string());
+        fs::write(&path, serde_json::to_vec_pretty(&config)?)?;
+        let node = state
+            .devnets
+            .first_mut()
+            .and_then(|record| record.nodes.first_mut())
+            .context("Storage fixture node is missing")?;
+        node.installed = true;
+        node.lifecycle_state = NodeLifecycleState::Stopped;
+
+        let initial = snapshot(&state, None, "local", NodeKind::Storage)?;
+        assert!(initial.editable);
+        assert!(initial.blocked_reason.is_none());
+        let mut replacement: Value = serde_json::from_str(&initial.raw_text)?;
+        replacement["log-level"] = Value::String("DEBUG".to_owned());
+        save(
+            &mut state,
+            None,
+            "local",
+            NodeKind::Storage,
+            &serde_json::to_string(&replacement)?,
+            &initial.revision,
+            persist_success,
+        )?;
+
+        let stored: Value = serde_json::from_slice(&fs::read(path)?)?;
+        assert_eq!(stored["log-level"], "DEBUG");
         Ok(())
     }
 
