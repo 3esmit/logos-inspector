@@ -15,7 +15,7 @@
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {
-      url = "github:3esmit/logos-storage-module?rev=cb1f934a13e35016553c670489af5fc1df8169e6";
+      url = "github:3esmit/logos-storage-module?rev=ed6f60604dd5d61fe1a89f8abc4603632a288473";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     delivery_module = {
@@ -23,7 +23,7 @@
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     lez_core = {
-      url = "github:3esmit/logos-execution-zone-module?rev=930262a80f7d934acd88244ba130ced786bff83b";
+      url = "github:3esmit/logos-execution-zone-module?rev=3523af62f5146e9a4295c93550289a279ec18f62";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     lez_indexer_module = {

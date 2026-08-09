@@ -27,7 +27,7 @@ FORK_INPUTS = {
     ),
     "storage_module": (
         "3esmit/logos-storage-module",
-        "cb1f934a13e35016553c670489af5fc1df8169e6",
+        "ed6f60604dd5d61fe1a89f8abc4603632a288473",
     ),
     "delivery_module": (
         "3esmit/logos-delivery-module",
@@ -35,7 +35,7 @@ FORK_INPUTS = {
     ),
     "lez_core": (
         "3esmit/logos-execution-zone-module",
-        "930262a80f7d934acd88244ba130ced786bff83b",
+        "3523af62f5146e9a4295c93550289a279ec18f62",
     ),
     "lez_indexer_module": (
         "3esmit/lez-indexer-module",
