@@ -692,10 +692,13 @@ async fn basecamp_status_with_configs(
         }
     };
     if !loaded {
-        let actions = source_ready
+        let mut actions = source_ready
             .then_some(NodeAction::Start)
             .into_iter()
-            .collect();
+            .collect::<Vec<_>>();
+        if config_path.is_file() {
+            actions.push(NodeAction::Purge);
+        }
         return Ok(basecamp_report(
             profile,
             config_root,
@@ -927,6 +930,9 @@ fn basecamp_available_actions(
     if snapshot.supports_action("stop") {
         actions.push(NodeAction::Stop);
     }
+    if matches!(snapshot.state.as_str(), "uninitialized" | "stopped") {
+        actions.push(NodeAction::Purge);
+    }
     actions
 }
 
@@ -1026,8 +1032,11 @@ async fn basecamp_action_with_configs(
     module_transport: &SharedModuleTransport,
 ) -> Result<LocalNodeReport> {
     let channel_id = normalized_channel_id(&request.channel_id)?;
-    if !matches!(request.action, NodeAction::Start | NodeAction::Stop) {
-        bail!("Channel Indexer only supports Start and Stop actions");
+    if !matches!(
+        request.action,
+        NodeAction::Start | NodeAction::Stop | NodeAction::Purge
+    ) {
+        bail!("Channel Indexer only supports Start, Stop, and Reset data actions");
     }
 
     let result = match request.action {
@@ -1042,6 +1051,16 @@ async fn basecamp_action_with_configs(
             .await
         }
         NodeAction::Stop => basecamp_stop_indexer(&request, &channel_id, module_transport).await,
+        NodeAction::Purge => {
+            basecamp_purge_indexer(
+                config_root,
+                configs,
+                &request,
+                &channel_id,
+                module_transport,
+            )
+            .await
+        }
         _ => unreachable!("Channel Indexer action was validated"),
     };
     let (status, detail) = match result {
@@ -1049,6 +1068,7 @@ async fn basecamp_action_with_configs(
             match request.action {
                 NodeAction::Start => "running",
                 NodeAction::Stop => "stopped",
+                NodeAction::Purge => "purged",
                 _ => unreachable!("Channel Indexer action was validated"),
             },
             detail,
@@ -1139,6 +1159,63 @@ async fn basecamp_stop_indexer(
         None,
     )
     .await
+}
+
+async fn basecamp_purge_indexer(
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    request: &ChannelIndexerActionRequest,
+    channel_id: &str,
+    module_transport: &SharedModuleTransport,
+) -> Result<String> {
+    basecamp_indexer_source_configured(configs, &request.network_scope, channel_id)?;
+    let binding = requested_source_binding_from_configs(request, channel_id, configs)?;
+    let endpoint = normalized_bedrock_endpoint(
+        request
+            .bedrock_endpoint
+            .as_deref()
+            .context("Indexer Bedrock endpoint is required")?,
+    )?;
+    let context = ChannelIndexerConfigContext {
+        channel_id: channel_id.to_owned(),
+        bedrock_endpoint: endpoint,
+        binding,
+    };
+    let config_path =
+        ensure_basecamp_indexer_config(config_root, &request.network_scope, &context)?;
+    ensure_basecamp_host_capabilities(module_transport).await?;
+    let instance_id = basecamp_instance_id(&request.network_scope, channel_id)?;
+    if !basecamp_instance_loaded(module_transport, &instance_id).await? {
+        load_basecamp_instance(module_transport, &instance_id).await?;
+    }
+    let scoped = basecamp_module_transport(
+        Arc::clone(module_transport),
+        &request.network_scope,
+        channel_id,
+    )?;
+    let snapshot = basecamp_indexer_snapshot(&scoped, channel_id).await?;
+    anyhow::ensure!(
+        matches!(snapshot.state.as_str(), "uninitialized" | "stopped"),
+        "stop the Basecamp Channel Indexer before resetting its data"
+    );
+    let call = ModuleCall::new(
+        ModuleTransportKind::Module,
+        INDEXER_MODULE,
+        "reset_storage",
+        vec![Value::String(config_path)],
+    )?;
+    let value = dispatch_module_call(scoped.as_ref(), call)
+        .await?
+        .into_value();
+    let value = normalize_module_call_value(INDEXER_MODULE, "reset_storage", value)?;
+    anyhow::ensure!(
+        value.as_i64() == Some(0),
+        "lez_indexer_module.reset_storage failed with OperationStatus {}",
+        value
+    );
+    Ok(format!(
+        "Reset data for Basecamp Channel Indexer `{channel_id}`"
+    ))
 }
 
 fn ensure_basecamp_indexer_config(
@@ -1361,10 +1438,18 @@ async fn wait_for_basecamp_indexer_lifecycle_terminal_event(
                     accepted = true;
                 }
                 "settled" => {
+                    if event.outcome != "succeeded" {
+                        let detail = event
+                            .error
+                            .as_ref()
+                            .map(|error| format!("{}: {}", error.code, error.message))
+                            .unwrap_or_else(|| format!("outcome `{}`", event.outcome));
+                        bail!(
+                            "Indexer V1 nodeChanged terminal event reported failure: {detail}"
+                        );
+                    }
                     anyhow::ensure!(
-                        accepted
-                            && event.outcome == "succeeded"
-                            && event.status.state == expected_terminal,
+                        accepted && event.status.state == expected_terminal,
                         "Basecamp Indexer nodeChanged terminal event did not confirm the requested action"
                     );
                     anyhow::ensure!(
@@ -1432,8 +1517,11 @@ pub(super) fn apply(
     control: Option<&CommandControl>,
 ) -> Result<LocalNodeReport> {
     let channel_id = normalized_channel_id(&request.channel_id)?;
-    if !matches!(request.action, NodeAction::Start | NodeAction::Stop) {
-        bail!("Channel Indexer only supports Start and Stop actions");
+    if !matches!(
+        request.action,
+        NodeAction::Start | NodeAction::Stop | NodeAction::Purge
+    ) {
+        bail!("Channel Indexer only supports Start, Stop, and Reset data actions");
     }
     if let Some(control) = control {
         control.check_active()?;
@@ -1455,6 +1543,12 @@ pub(super) fn apply(
             },
         ),
         NodeAction::Stop => stop(
+            &mut channel_state,
+            &request.network_scope,
+            &channel_id,
+            control,
+        ),
+        NodeAction::Purge => purge(
             &mut channel_state,
             &request.network_scope,
             &channel_id,
@@ -1646,6 +1740,78 @@ fn stop(
     Ok(ActionOutcome::stopped(format!(
         "Stopped isolated Channel Indexer for `{channel_id}` ({module_detail})"
     )))
+}
+
+fn purge(
+    channel_state: &mut ChannelIndexerState,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+    control: Option<&CommandControl>,
+) -> Result<ActionOutcome> {
+    let Some(record) = find_record_mut(channel_state, network_scope, channel_id) else {
+        return Ok(ActionOutcome::needs_configuration(
+            "no isolated Channel Indexer data is configured for this Channel",
+        ));
+    };
+    anyhow::ensure!(
+        record.state == "stopped",
+        "stop this Channel Indexer before resetting its data"
+    );
+
+    let started_runtime = !record.runtime.is_running();
+    if started_runtime {
+        let command = record.runtime.daemon_command()?;
+        let process_id = spawn_detached(command, "isolated Channel Indexer maintenance runtime")?;
+        record.runtime.daemon_process_id = Some(process_id);
+        let readiness = match control {
+            Some(control) => record.runtime.wait_until_ready_controlled(control),
+            None => record.runtime.wait_until_ready(),
+        };
+        if let Err(error) = readiness {
+            return match stop_runtime(record, None) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(error).context(format!(
+                    "failed to stop maintenance runtime: {cleanup_error:#}"
+                )),
+            };
+        }
+    }
+
+    let result = (|| {
+        let cli = record.runtime.cli_runtime()?;
+        let spec = command_spec_for(
+            NodeKind::Indexer,
+            NodeAction::Purge,
+            &record.config_path(),
+            &record.data_path(),
+            None,
+        )
+        .context("Channel Indexer data reset is not implemented")?;
+        ensure_module_loaded(&spec, Some(&cli), control)?;
+        let output = execute_command_spec(&spec, Some(&cli), control)?;
+        Ok::<String, anyhow::Error>(format!(
+            "Reset data for Channel Indexer `{channel_id}` ({})",
+            operation_detail_from_value(&output)
+        ))
+    })();
+    let cleanup = if started_runtime {
+        stop_runtime(record, control)
+    } else {
+        Ok(())
+    };
+    match (result, cleanup) {
+        (Ok(detail), Ok(())) => {
+            record.state = "stopped".to_owned();
+            record.indexed_block_id = None;
+            record.last_error = None;
+            Ok(ActionOutcome::purged(detail))
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error).context("failed to stop maintenance runtime"),
+        (Err(error), Err(cleanup_error)) => Err(error).context(format!(
+            "failed to stop maintenance runtime: {cleanup_error:#}"
+        )),
+    }
 }
 
 fn start_runtime_and_indexer(
@@ -1999,10 +2165,16 @@ fn wait_for_indexer_lifecycle_terminal_event(
                 accepted = true;
             }
             "settled" => {
+                if event.outcome != "succeeded" {
+                    let detail = event
+                        .error
+                        .as_ref()
+                        .map(|error| format!("{}: {}", error.code, error.message))
+                        .unwrap_or_else(|| format!("outcome `{}`", event.outcome));
+                    bail!("Indexer V1 nodeChanged terminal event reported failure: {detail}");
+                }
                 anyhow::ensure!(
-                    accepted
-                        && event.outcome == "succeeded"
-                        && event.status.state == expected_terminal,
+                    accepted && event.status.state == expected_terminal,
                     "Indexer V1 nodeChanged terminal event did not confirm the requested action"
                 );
                 anyhow::ensure!(
@@ -2121,6 +2293,13 @@ struct IndexerLifecycleEvent {
     phase: String,
     outcome: String,
     status: IndexerLifecycleSnapshot,
+    error: Option<IndexerLifecycleError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IndexerLifecycleError {
+    code: String,
+    message: String,
 }
 
 impl IndexerLifecycleEvent {
@@ -2173,6 +2352,7 @@ impl IndexerLifecycleEvent {
             phase: payload.phase,
             outcome: payload.outcome,
             status,
+            error: payload.error,
         })
     }
 }
@@ -2192,6 +2372,8 @@ struct IndexerLifecycleEventPayload {
     outcome: String,
     previous_state: String,
     status: Value,
+    #[serde(default)]
+    error: Option<IndexerLifecycleError>,
     emitted_at_ms: i64,
 }
 
@@ -2285,6 +2467,7 @@ fn build_report(
         current_binding.is_ok(),
         legacy_problem.is_none(),
         record_is_running,
+        record.is_some(),
         record_state,
     );
     node.detail = indexer_detail(
@@ -2616,6 +2799,7 @@ fn channel_actions(
     source_configured: bool,
     legacy_inactive: bool,
     runtime_running: bool,
+    record_exists: bool,
     state: &str,
 ) -> Vec<NodeAction> {
     if runtime_running {
@@ -2626,10 +2810,14 @@ fn channel_actions(
         actions.push(NodeAction::Stop);
         return actions;
     }
+    let mut actions = Vec::new();
     if package_installed && source_configured && legacy_inactive {
-        return vec![NodeAction::Start];
+        actions.push(NodeAction::Start);
     }
-    Vec::new()
+    if record_exists {
+        actions.push(NodeAction::Purge);
+    }
+    actions
 }
 
 fn indexer_detail(
@@ -3168,6 +3356,13 @@ impl ActionOutcome {
         }
     }
 
+    fn purged(detail: String) -> Self {
+        Self {
+            status: "purged",
+            detail,
+        }
+    }
+
     fn needs_configuration(detail: impl Into<String>) -> Self {
         Self {
             status: "needs_configuration",
@@ -3569,8 +3764,23 @@ mod tests {
     #[test]
     fn live_idle_runtime_can_be_stopped_or_reused() -> Result<()> {
         anyhow::ensure!(
-            channel_actions(true, true, true, true, "stopped")
+            channel_actions(true, true, true, true, true, "stopped")
                 == vec![NodeAction::Start, NodeAction::Stop]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_channel_indexer_exposes_reset_data_recovery() -> Result<()> {
+        anyhow::ensure!(
+            channel_actions(true, true, true, false, true, "stopped")
+                == vec![NodeAction::Start, NodeAction::Purge]
+        );
+        anyhow::ensure!(
+            channel_actions(false, false, true, false, true, "stopped") == vec![NodeAction::Purge]
+        );
+        anyhow::ensure!(
+            !channel_actions(true, true, true, true, true, "running").contains(&NodeAction::Purge)
         );
         Ok(())
     }
@@ -3800,6 +4010,31 @@ mod tests {
         let error = IndexerLifecycleEvent::from_watch_frame(&mismatched)
             .expect_err("mismatched event and status scopes must be rejected");
         anyhow::ensure!(error.to_string().contains("disagree on Channel scope"));
+        Ok(())
+    }
+
+    #[test]
+    fn indexer_v1_failed_event_preserves_module_error_detail() -> Result<()> {
+        let channel_id = "01".repeat(32);
+        let mut frame =
+            indexer_v1_event_frame(Some(&channel_id), "uninitialized", &["start"], 0, 2);
+        let payload = frame
+            .pointer_mut("/data/arg0")
+            .and_then(|value| value.as_str())
+            .context("failed-event fixture is missing payload")?;
+        let mut payload: Value = serde_json::from_str(payload)?;
+        payload["outcome"] = json!("failed");
+        payload["error"] = json!({
+            "code": "start_failed",
+            "message": "Indexer start failed.",
+            "at_ms": 1
+        });
+        frame["data"]["arg0"] = json!(payload.to_string());
+        let event = IndexerLifecycleEvent::from_watch_frame(&frame)?;
+        anyhow::ensure!(event.outcome == "failed");
+        anyhow::ensure!(
+            event.error.as_ref().map(|error| error.code.as_str()) == Some("start_failed")
+        );
         Ok(())
     }
 
