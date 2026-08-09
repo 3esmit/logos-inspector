@@ -16,7 +16,10 @@ use super::{
     programs::{program_entries, program_entries_from_ids},
     summarize_block, summarize_transaction,
 };
-use crate::{parse_hash, rpc::raw_json_rpc};
+use crate::{
+    parse_hash,
+    rpc::{raw_json_rpc, raw_json_rpc_optional_result},
+};
 
 const SEQUENCER_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 const SEQUENCER_RPC_ATTEMPTS: usize = 2;
@@ -183,11 +186,43 @@ async fn fetch_sequencer_transaction(
     tx_hash: &str,
 ) -> Result<Option<LeeTransaction>> {
     let hash = parse_hash(tx_hash, "transaction hash")?;
-    with_sequencer_rpc_retry(endpoint, move |client| async move {
-        client.get_transaction(hash).await
-    })
-    .await
-    .with_context(|| format!("failed to fetch sequencer transaction {tx_hash}"))
+    let result =
+        raw_json_rpc_optional_result(endpoint, "getTransaction", json!([hash.to_string()]))
+            .await
+            .with_context(|| format!("failed to fetch sequencer transaction {tx_hash}"))?;
+    decode_sequencer_transaction_result(&result)
+}
+
+fn decode_sequencer_transaction_result(result: &Value) -> Result<Option<LeeTransaction>> {
+    if result.is_null() {
+        return Ok(None);
+    }
+    let Some(tuple) = result.as_array() else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer transaction response is malformed",
+        ));
+    };
+    if tuple.len() != 2 {
+        return Err(super::evidence_protocol_error(
+            "Sequencer transaction response is malformed",
+        ));
+    }
+    let Some(encoded) = tuple.first().and_then(Value::as_str) else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer transaction response is malformed",
+        ));
+    };
+    if tuple.get(1).and_then(Value::as_u64).is_none() {
+        return Err(super::evidence_protocol_error(
+            "Sequencer transaction response is malformed",
+        ));
+    }
+    let bytes = BASE64_STANDARD.decode(encoded).map_err(|_| {
+        super::evidence_protocol_error("Sequencer transaction response is not valid base64")
+    })?;
+    LeeTransaction::try_from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| super::evidence_protocol_error("Sequencer transaction payload is malformed"))
 }
 
 pub(crate) async fn with_sequencer_rpc_retry<T, F, Fut>(
@@ -509,6 +544,45 @@ mod tests {
             ensure!(
                 super::super::is_evidence_protocol_error(&error),
                 "invalid deployed program response was not classified as a protocol failure"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sequencer_transaction_wire_result_decodes_base64_payload() -> Result<()> {
+        let result = json!([
+            "ADGfvAVNdyB8uuwLMenMgT7KC0DTENcRLsSg/mQ5XGH8AwAAAC9MRVovQ2xvY2tQcm9ncmFtQWNjb3VudC8wMDAwMDAxL0xFWi9DbG9ja1Byb2dyYW1BY2NvdW50LzAwMDAwMTAvTEVaL0Nsb2NrUHJvZ3JhbUFjY291bnQvMDAwMDA1MAAAAAACAAAAFDfB5p8BAAAAAAAA",
+            2416
+        ]);
+
+        let transaction = decode_sequencer_transaction_result(&result)?
+            .ok_or_else(|| anyhow::anyhow!("transaction unexpectedly missing"))?;
+        ensure!(
+            hex::encode(transaction.hash())
+                == "307f0ee5f458c010b5288e7d261d02fca39ee35faaf70cd6e0f5354f2f3e7402",
+            "decoded transaction hash did not match wire payload"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_sequencer_transaction_wire_results_are_protocol_failures() -> Result<()> {
+        for result in [
+            json!({}),
+            json!(["not-a-transaction"]),
+            json!([7, 2416]),
+            json!(["not-base64", 2416]),
+            json!(["AA==", 2416]),
+            json!(["AA==", "2416"]),
+        ] {
+            let error = match decode_sequencer_transaction_result(&result) {
+                Ok(_) => bail!("malformed transaction unexpectedly succeeded"),
+                Err(error) => error,
+            };
+            ensure!(
+                super::super::is_evidence_protocol_error(&error),
+                "malformed transaction was not classified as protocol failure"
             );
         }
         Ok(())
