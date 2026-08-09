@@ -30,6 +30,7 @@ pub(crate) fn normalize_sequencer_block(
             timestamp: block.timestamp,
             bedrock_status: block.bedrock_status,
             transaction_count: block.tx_count,
+            decode_warning: block.decode_warning.clone(),
         },
         transactions,
     })
@@ -67,6 +68,7 @@ pub(crate) fn normalize_indexer_block(
             timestamp,
             bedrock_status: block.bedrock_status.unwrap_or_else(|| "Unknown".to_owned()),
             transaction_count: block.tx_count,
+            decode_warning: None,
         },
         transactions,
     })

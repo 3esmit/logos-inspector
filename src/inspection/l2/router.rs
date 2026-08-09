@@ -182,6 +182,7 @@ impl ZoneL2Router {
             .iter()
             .filter_map(ContributorResult::warning)
             .collect();
+        report.warnings.extend(decoded_block_warnings(&successful));
         if page.has_more {
             let cursor = self.insert_block_cursor(BlockCursorState {
                 context: request.context,
@@ -2277,6 +2278,25 @@ fn compose_block_page(
         },
         pinned,
     )
+}
+
+fn decoded_block_warnings(results: &[ContributorResult]) -> Vec<L2ReadWarning> {
+    results
+        .iter()
+        .filter(|result| result.failure.is_none())
+        .flat_map(|result| result.blocks.iter())
+        .filter_map(|block| {
+            block
+                .summary
+                .decode_warning
+                .as_ref()
+                .map(|message| L2ReadWarning {
+                    code: L2ReadErrorCode::SourceProtocolError,
+                    recovery: L2RecoveryAction::Retry,
+                    message: format!("Block {}: {message}", block.summary.block_id),
+                })
+        })
+        .collect()
 }
 
 fn validate_block_sequence(

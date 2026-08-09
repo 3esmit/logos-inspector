@@ -3,7 +3,6 @@ use std::{future::Future, time::Duration};
 use anyhow::{Context as _, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use borsh::BorshDeserialize as _;
-use common::block::Block;
 use common::transaction::LeeTransaction;
 use lee_core::program::ProgramId;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
@@ -12,9 +11,9 @@ use tokio::time::sleep;
 
 use super::{
     BlockSummary, ProgramIdEntry, TransactionSummary,
-    block::{decode_sequencer_block_bytes, verify_block_content_hash},
+    block::decode_sequencer_block_summary_bytes,
     programs::{program_entries, program_entries_from_ids},
-    summarize_block, summarize_transaction,
+    summarize_transaction,
 };
 use crate::{
     parse_hash,
@@ -119,18 +118,29 @@ pub async fn sequencer_commitment_proof(
 }
 
 pub async fn sequencer_block(endpoint: &str, block_id: u64) -> Result<Option<BlockSummary>> {
-    Ok(fetch_sequencer_block(endpoint, block_id)
-        .await?
-        .map(|fetched| summarize_block(&fetched.block)))
+    let response = raw_json_rpc(endpoint, "getBlock", json!([block_id]))
+        .await
+        .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
+    let Some(bytes) = sequencer_block_bytes_from_response(&response)? else {
+        return Ok(None);
+    };
+    let summary = decode_sequencer_block_summary_bytes(&bytes)?;
+    if summary.block_id != block_id {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block response returned another block id",
+        ));
+    }
+    Ok(Some(summary))
 }
 
 pub(crate) async fn sequencer_block_bytes(
     endpoint: &str,
     block_id: u64,
 ) -> Result<Option<Vec<u8>>> {
-    Ok(fetch_sequencer_block(endpoint, block_id)
-        .await?
-        .map(|fetched| fetched.bytes))
+    let response = raw_json_rpc(endpoint, "getBlock", json!([block_id]))
+        .await
+        .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
+    sequencer_block_bytes_from_response(&response)
 }
 
 pub async fn sequencer_blocks(
@@ -149,20 +159,20 @@ pub async fn sequencer_blocks(
         None => last_sequencer_block_id(endpoint).await?,
     };
     let start_block_id = end_block_id.saturating_sub(limit.saturating_sub(1));
-    let blocks = with_sequencer_rpc_retry(endpoint, move |client| async move {
-        client.get_block_range(start_block_id, end_block_id).await
-    })
+    let response = raw_json_rpc(
+        endpoint,
+        "getBlockRange",
+        json!([start_block_id, end_block_id]),
+    )
     .await
     .with_context(|| {
         format!("failed to fetch sequencer block range {start_block_id}..={end_block_id}")
     })?;
+    let blocks = sequencer_block_range_bytes_from_response(&response)?;
     blocks
         .iter()
         .rev()
-        .map(|block| {
-            verify_block_content_hash(block)?;
-            Ok(summarize_block(block))
-        })
+        .map(|bytes| decode_sequencer_block_summary_bytes(bytes))
         .collect()
 }
 
@@ -263,30 +273,6 @@ fn is_retryable_sequencer_error(error: &sequencer_service_rpc::ClientError) -> b
     )
 }
 
-struct FetchedSequencerBlock {
-    bytes: Vec<u8>,
-    block: Block,
-}
-
-async fn fetch_sequencer_block(
-    endpoint: &str,
-    block_id: u64,
-) -> Result<Option<FetchedSequencerBlock>> {
-    let response = raw_json_rpc(endpoint, "getBlock", Value::Array(vec![json!(block_id)]))
-        .await
-        .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
-    let Some(bytes) = sequencer_block_bytes_from_response(&response)? else {
-        return Ok(None);
-    };
-    let block = decode_sequencer_block_bytes(&bytes)?;
-    if block.header.block_id != block_id {
-        return Err(super::evidence_protocol_error(
-            "Sequencer block response returned another block id",
-        ));
-    }
-    Ok(Some(FetchedSequencerBlock { bytes, block }))
-}
-
 fn sequencer_channel_id_from_response(response: &Value) -> Result<String> {
     if response.get("error").is_some() {
         if response.pointer("/error/code").and_then(Value::as_i64) == Some(-32601) {
@@ -363,6 +349,36 @@ fn sequencer_block_bytes_from_response(response: &Value) -> Result<Option<Vec<u8
         .decode(encoded)
         .map(Some)
         .map_err(|_| super::evidence_protocol_error("Sequencer block response is not valid base64"))
+}
+
+fn sequencer_block_range_bytes_from_response(response: &Value) -> Result<Vec<Vec<u8>>> {
+    if response.get("error").is_some() {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block range request returned an RPC error",
+        ));
+    }
+    let Some(result) = response.get("result") else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block range response is malformed",
+        ));
+    };
+    let Some(rows) = result.as_array() else {
+        return Err(super::evidence_protocol_error(
+            "Sequencer block range response is malformed",
+        ));
+    };
+    rows.iter()
+        .map(|row| {
+            let Some(encoded) = row.as_str() else {
+                return Err(super::evidence_protocol_error(
+                    "Sequencer block range response is malformed",
+                ));
+            };
+            BASE64_STANDARD.decode(encoded).map_err(|_| {
+                super::evidence_protocol_error("Sequencer block range contains invalid base64")
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -583,6 +599,40 @@ mod tests {
             ensure!(
                 super::super::is_evidence_protocol_error(&error),
                 "malformed transaction was not classified as protocol failure"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sequencer_block_range_wire_result_decodes_each_raw_block() -> Result<()> {
+        let blocks = sequencer_block_range_bytes_from_response(&json!({
+            "result": [BASE64_STANDARD.encode([1_u8, 2, 3]), BASE64_STANDARD.encode([4_u8, 5])]
+        }))?;
+
+        ensure!(
+            blocks == vec![vec![1, 2, 3], vec![4, 5]],
+            "raw block range changed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_sequencer_block_range_wire_results_are_protocol_failures() -> Result<()> {
+        for response in [
+            json!({}),
+            json!({ "result": null }),
+            json!({ "result": [7] }),
+            json!({ "result": ["not-base64"] }),
+            json!({ "error": { "code": -32000, "message": "failed" } }),
+        ] {
+            let error = match sequencer_block_range_bytes_from_response(&response) {
+                Ok(_) => bail!("malformed block range unexpectedly succeeded"),
+                Err(error) => error,
+            };
+            ensure!(
+                super::super::is_evidence_protocol_error(&error),
+                "malformed block range was not classified as protocol failure"
             );
         }
         Ok(())

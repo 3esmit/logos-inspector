@@ -1,6 +1,9 @@
+use std::io::Cursor;
+
 use anyhow::Result;
 #[cfg(test)]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use borsh::BorshDeserialize as _;
 use common::block::{BedrockStatus, Block, BlockBody, BlockHeader};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -34,6 +37,40 @@ pub(crate) fn decode_sequencer_block_bytes(bytes: &[u8]) -> Result<Block> {
         .map_err(|_| super::evidence_protocol_error("Sequencer block has invalid layout"))?;
     verify_block_content_hash(&block)?;
     Ok(block)
+}
+
+pub(crate) fn decode_sequencer_block_summary_bytes(bytes: &[u8]) -> Result<BlockSummary> {
+    let block = match borsh::from_slice::<Block>(bytes) {
+        Ok(block) => block,
+        Err(_) => {
+            let mut reader = Cursor::new(bytes);
+            let header =
+                common::block::BlockHeader::deserialize_reader(&mut reader).map_err(|_| {
+                    super::evidence_protocol_error("Sequencer block has invalid header")
+                })?;
+            let transaction_count = u32::deserialize_reader(&mut reader).map_err(|_| {
+                super::evidence_protocol_error("Sequencer block has invalid transaction count")
+            })?;
+            let transaction_count = usize::try_from(transaction_count).map_err(|_| {
+                super::evidence_protocol_error("Sequencer block transaction count is too large")
+            })?;
+            return Ok(BlockSummary {
+                block_id: header.block_id,
+                header_hash: header.hash.to_string(),
+                parent_hash: header.prev_block_hash.to_string(),
+                timestamp: header.timestamp,
+                bedrock_status: "Unknown".to_owned(),
+                tx_count: transaction_count,
+                transactions: Vec::new(),
+                decode_warning: Some(
+                    "Some Sequencer transactions could not be decoded; block header retained."
+                        .to_owned(),
+                ),
+            });
+        }
+    };
+    verify_block_content_hash(&block)?;
+    Ok(summarize_block(&block))
 }
 
 pub(crate) fn verify_block_content_hash(block: &Block) -> Result<()> {
@@ -112,6 +149,38 @@ mod tests {
     }
 
     #[test]
+    fn malformed_body_retains_verified_header_fields_with_warning() -> Result<()> {
+        let key = lee::PrivateKey::try_new([7_u8; 32])?;
+        let header = BlockHeader {
+            block_id: 2480,
+            prev_block_hash: common::HashType([1_u8; 32]),
+            hash: common::HashType([2_u8; 32]),
+            timestamp: 42,
+            signature: lee::Signature::new(&key, &[0_u8; 32]),
+        };
+        let mut bytes = borsh::to_vec(&header)?;
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.push(1);
+
+        let summary = decode_sequencer_block_summary_bytes(&bytes)?;
+        ensure!(summary.block_id == 2480, "header block id was lost");
+        ensure!(summary.tx_count == 1, "raw transaction count was lost");
+        ensure!(
+            summary.transactions.is_empty(),
+            "malformed tx was fabricated"
+        );
+        ensure!(
+            summary.bedrock_status == "Unknown",
+            "fallback status was not explicit"
+        );
+        ensure!(
+            summary.decode_warning.is_some(),
+            "fallback warning was lost"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn block_content_verification_rejects_tampering() -> Result<()> {
         let bytes = BASE64_STANDARD.decode(TESTNET_LEGACY_BLOCK_1234)?;
         let mut block = borsh::from_slice::<Block>(&bytes)?;
@@ -126,6 +195,12 @@ mod tests {
         ensure!(
             error.as_deref() == Some("LEZ block content hash does not match its header"),
             "tampered block returned unstable error"
+        );
+        let tampered_bytes = borsh::to_vec(&block)?;
+        let summary_result = decode_sequencer_block_summary_bytes(&tampered_bytes);
+        ensure!(
+            summary_result.is_err(),
+            "tampered fully decoded block was downgraded to a header-only summary"
         );
         Ok(())
     }

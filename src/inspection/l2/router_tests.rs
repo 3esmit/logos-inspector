@@ -1826,6 +1826,7 @@ fn block(block_id: u64, hash: char) -> NormalizedL2Block {
             timestamp: block_id,
             bedrock_status: "Pending".to_owned(),
             transaction_count: 0,
+            decode_warning: None,
         },
         transactions: Vec::new(),
     }
