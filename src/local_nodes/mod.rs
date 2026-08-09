@@ -285,11 +285,37 @@ pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {
 pub fn local_node_package_catalog(
     modules_dir: Option<&str>,
 ) -> Result<LocalNodePackageCatalogReport> {
-    package::local_node_package_catalog(modules_dir)
+    let requested_modules_dir = package::resolve_modules_dir(modules_dir)?;
+    let authority = package_catalog_authority(&requested_modules_dir)?;
+    package::local_node_package_catalog(
+        Some(
+            requested_modules_dir
+                .to_str()
+                .context("Logos modules directory is not valid UTF-8")?,
+        ),
+        &authority,
+    )
 }
 
 pub(crate) fn local_module_catalog(modules_dir: Option<&str>) -> Result<LocalModuleCatalogReport> {
-    package::local_module_catalog(modules_dir)
+    let requested_modules_dir = package::resolve_modules_dir(modules_dir)?;
+    let authority = package_catalog_authority(&requested_modules_dir)?;
+    package::local_module_catalog(
+        Some(
+            requested_modules_dir
+                .to_str()
+                .context("Logos modules directory is not valid UTF-8")?,
+        ),
+        &authority,
+    )
+}
+
+fn package_catalog_authority(modules_dir: &std::path::Path) -> Result<PackageInstallAuthority> {
+    let runtime = action_engine::LocalNodeActionEngine::system()?.runtime_profile()?;
+    match runtime {
+        Some(runtime) => runtime.package_install_authority_for_module_target(modules_dir),
+        None => Ok(PackageInstallAuthority::CurrentUser),
+    }
 }
 
 pub(crate) fn local_module_install_controlled(
