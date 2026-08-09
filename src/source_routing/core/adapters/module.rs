@@ -502,6 +502,19 @@ async fn cli_tip_parent_blocks(
         Vec::new(),
     )
     .await?;
+    let tip = info
+        .get("cryptarchia_info")
+        .filter(|value| value.is_object())
+        .unwrap_or(&info);
+    let tip_slot = tip
+        .get("slot")
+        .and_then(Value::as_u64)
+        .context("blockchain_module.get_cryptarchia_info did not include a numeric tip slot")?;
+    if tip_slot < slot_from
+        || tip_slot.saturating_sub(slot_from) >= CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64
+    {
+        return Ok(Value::Array(Vec::new()));
+    }
     let mut block_id = cli_tip_block_id(&info)?;
     let mut visited = HashSet::new();
     let mut blocks = Vec::new();
@@ -818,6 +831,47 @@ mod tests {
         }
     }
 
+    struct FarTipTransport {
+        calls: Mutex<Vec<ModuleCall>>,
+    }
+
+    impl FarTipTransport {
+        fn call_methods(&self) -> Vec<String> {
+            let calls = match self.calls.lock() {
+                Ok(calls) => calls,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            calls.iter().map(|call| call.method().to_owned()).collect()
+        }
+    }
+
+    impl ModuleTransport for FarTipTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let transport = call.transport();
+            let method = call.method().to_owned();
+            let args = call.args().to_vec();
+            match self.calls.lock() {
+                Ok(mut calls) => calls.push(call),
+                Err(poisoned) => poisoned.into_inner().push(call),
+            }
+            let reply = match method.as_str() {
+                "get_blocks" if args == vec![json!(100_u64), json!(100_u64)] => Ok(json!([])),
+                "get_cryptarchia_info" if args.is_empty() => Ok(json!({
+                    "tip": test_hash('a'),
+                    "slot": 700,
+                })),
+                _ => Err(anyhow::anyhow!(
+                    "unexpected far-tip call {method} with {args:?}"
+                )),
+            };
+            Box::pin(async move { reply.map(|value| ModuleCallReply::new(transport, value)) })
+        }
+    }
+
     impl ModuleTransport for PeakConcurrentCliTransport {
         fn kind(&self) -> ModuleTransportKind {
             ModuleTransportKind::LogoscoreCli
@@ -950,6 +1004,24 @@ mod tests {
                 "get_block",
                 "get_block",
             ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_empty_block_range_does_not_walk_when_tip_is_beyond_module_limit() -> Result<()> {
+        let harness = Arc::new(FarTipTransport {
+            calls: Mutex::new(Vec::new()),
+        });
+        let transport: SharedModuleTransport = harness.clone();
+
+        let value =
+            blockchain_blocks(&transport, ModuleTransportKind::LogoscoreCli, 100, 100).await?;
+
+        assert_eq!(value, json!([]));
+        assert_eq!(
+            harness.call_methods(),
+            vec!["get_blocks", "get_cryptarchia_info"]
         );
         Ok(())
     }
