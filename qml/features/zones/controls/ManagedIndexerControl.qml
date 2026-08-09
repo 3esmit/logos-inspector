@@ -55,6 +55,12 @@ ColumnLayout {
         && root.zoneState.managedIndexerStatusStale !== true
         && root.availableActions.indexOf("stop") >= 0 && root.runtimeRunning
         && root.managedChannelId.length > 0
+    readonly property bool canPurge: !root.actionInFlight
+        && !root.interactionBlocked
+        && root.zoneState.managedIndexerStatusStale !== true
+        && root.availableActions.indexOf("purge") >= 0
+        && (root.runState === "stopped" || root.runState === "not_initialized")
+        && root.managedChannelId.length > 0
     readonly property bool canConfigure: !root.actionInFlight
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
@@ -255,6 +261,14 @@ ColumnLayout {
         }
 
         ActionButton {
+            objectName: "purgeManagedIndexerButton"
+            theme: root.theme
+            text: qsTr("Reset data")
+            enabled: root.canPurge && !root.configurationOpen && !root.hasDirtyDraft
+            onClicked: root.confirmAction("purge", root.managedChannelId)
+        }
+
+        ActionButton {
             objectName: "startManagedIndexerButton"
             theme: root.theme
             text: qsTr("Start for this Channel")
@@ -285,17 +299,25 @@ ColumnLayout {
         objectName: "managedIndexerActionConfirmation"
         theme: root.theme
         title: root.pendingAction === "start"
-            ? qsTr("Start Channel Indexer") : qsTr("Stop Channel Indexer")
+            ? qsTr("Start Channel Indexer")
+            : root.pendingAction === "stop"
+            ? qsTr("Stop Channel Indexer")
+            : qsTr("Reset Channel Indexer data")
         message: root.pendingAction === "start"
             ? (root.basecampHosted
                 ? qsTr("Start the Basecamp-hosted lez_indexer_module instance for Channel %1 using Bedrock %2?")
                 : qsTr("Start an isolated lez_indexer_module runtime for Channel %1 using Bedrock %2?"))
                 .arg(root.pendingChannelId).arg(root.zoneState.bedrockEndpoint())
-            : (root.basecampHosted
+            : root.pendingAction === "stop"
+            ? (root.basecampHosted
                 ? qsTr("Stop the Basecamp-hosted Indexer instance for Channel %1?")
                 : qsTr("Stop the isolated managed Indexer for Channel %1?"))
                 .arg(root.pendingChannelId)
-        confirmText: root.pendingAction === "start" ? qsTr("Start") : qsTr("Stop")
+            : qsTr("Reset the persisted Indexer data for Channel %1? The next start will rebuild it from Bedrock.")
+                .arg(root.pendingChannelId)
+        confirmText: root.pendingAction === "start"
+            ? qsTr("Start")
+            : root.pendingAction === "stop" ? qsTr("Stop") : qsTr("Reset data")
         confirmEnabled: root.pendingAction.length > 0 && !root.actionInFlight
         onAccepted: {
             const action = root.pendingAction

@@ -384,7 +384,7 @@ QtObject {
             return null
         }
         const actionKey = String(action || "")
-        if (actionKey !== "start" && actionKey !== "stop") {
+        if (actionKey !== "start" && actionKey !== "stop" && actionKey !== "purge") {
             managedIndexerError = qsTr("Unsupported managed Indexer action.")
             return null
         }
@@ -400,9 +400,11 @@ QtObject {
                 .arg(actionKey)
             return null
         }
-        if (actionKey === "start" && (!activeZoneContext
+        if ((actionKey === "start" || actionKey === "purge") && (!activeZoneContext
                 || verification !== "verified" || catalogSnapshotUsable !== true)) {
-            managedIndexerError = qsTr("A current verified Zone catalog snapshot is required to start Indexer.")
+            managedIndexerError = actionKey === "purge"
+                ? qsTr("A current verified Zone catalog snapshot is required to reset Indexer data.")
+                : qsTr("A current verified Zone catalog snapshot is required to start Indexer.")
             return null
         }
         const targetChannel = String(channelId || activeZoneId).trim()
@@ -415,14 +417,16 @@ QtObject {
             network_scope: networkScope,
             channel_id: targetChannel
         }
-        if (actionKey === "start") {
+        if (actionKey === "start" || actionKey === "purge") {
             const configRequest = managedIndexerConfigRequest()
             if (!configRequest) {
                 managedIndexerError = managedIndexerConfigError
                 return null
             }
             if (targetChannel !== configRequest.channel_id) {
-                managedIndexerError = qsTr("Start Indexer only for the active Zone.")
+                managedIndexerError = actionKey === "purge"
+                    ? qsTr("Reset Indexer data only for the active Zone.")
+                    : qsTr("Start Indexer only for the active Zone.")
                 return null
             }
             request.bedrock_endpoint = configRequest.bedrock_endpoint
