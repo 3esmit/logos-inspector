@@ -17,6 +17,8 @@ pub struct L2BlockSummary {
     pub timestamp: u64,
     pub bedrock_status: String,
     pub transaction_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_warning: Option<String>,
 }
 
 impl L2BlockSummary {
