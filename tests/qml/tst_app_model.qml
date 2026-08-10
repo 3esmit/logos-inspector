@@ -1504,7 +1504,11 @@ TestCase {
 
         const basecampOptions = basecampModel.sourceRouting.sourceModeOptions("storage")
         verify(sourceOption(basecampOptions, "module") !== null)
-        verify(sourceOption(basecampOptions, "logoscore_cli") !== null)
+        compare(String(sourceOption(basecampOptions, "logoscore_cli").key || ""), "")
+
+        const basecampDeliveryOptions = basecampModel.sourceRouting.sourceModeOptions("delivery")
+        verify(sourceOption(basecampDeliveryOptions, "module") !== null)
+        compare(String(sourceOption(basecampDeliveryOptions, "logoscore_cli").key || ""), "")
     }
 
     function test_standalone_normalizes_persisted_host_modules_to_build_defaults() {
@@ -1588,7 +1592,7 @@ TestCase {
                 "logoscore_cli_delivery_module")
     }
 
-    function test_basecamp_translates_only_testnet_default_connector_scopes() {
+    function test_basecamp_normalizes_non_module_connector_scopes() {
         basecampModel.loadNetworkConnectorConfig({
             network_connector_config: {
                 scopes: {
@@ -1611,8 +1615,8 @@ TestCase {
 
         const scopes = basecampModel.networkConnectorConfig.scopes
         compare(scopes.l1.connector_id, "blockchain_module")
-        compare(scopes.delivery.connector_id, "direct_delivery_rest")
-        compare(scopes.delivery.endpoint, "https://delivery.custom.example/")
+        compare(scopes.delivery.connector_id, "delivery_module")
+        compare(scopes.delivery.endpoint, "")
         compare(scopes.storage.connector_id, "storage_module")
     }
 

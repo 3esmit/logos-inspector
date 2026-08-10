@@ -569,8 +569,12 @@ pub(crate) mod contract_tests {
         match adapter.connection_type {
             AdapterConnectionType::Module => {
                 assert!(
-                    keys.is_empty(),
-                    "managed module adapters take no user input"
+                    keys.is_empty() || keys == ["store_peer_addr"],
+                    "managed module adapters only accept the optional Store provider input"
+                );
+                assert!(
+                    required.is_empty(),
+                    "managed module adapter inputs must remain optional"
                 );
                 assert_eq!(adapter.target, "module");
                 assert!(adapter.module_id.is_some(), "module id is layer-owned");

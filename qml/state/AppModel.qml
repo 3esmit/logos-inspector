@@ -1988,7 +1988,9 @@ QtObject {
         for (let i = 0; i < policies.length; ++i) {
             const descriptor = sourceRouting.sourceModeDescriptor(family, policies[i].key)
             if (descriptor.connectorId === candidate) {
-                return descriptor.connectionType !== "module" || prefersBasecampModules()
+                return prefersBasecampModules()
+                    ? descriptor.connectionType === "module"
+                    : descriptor.connectionType !== "module"
             }
         }
         return false

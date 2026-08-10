@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn delivery_store_queries_require_a_verified_cli_contract() -> Result<()> {
+    fn delivery_store_queries_require_a_verified_module_contract() -> Result<()> {
         let source_report = |module_info: Option<Value>| -> Result<Value> {
             let mut report = json!({
                 "health": {
@@ -607,7 +607,7 @@ mod tests {
             None,
         )?;
         if !unavailable_contains(&basecamp, "delivery.store.query") {
-            bail!("Basecamp Delivery overclaimed Store queries: {basecamp}");
+            bail!("Basecamp Delivery should wait for module metadata: {basecamp}");
         }
         if unavailable_contains(&basecamp, "delivery.send") {
             bail!("Basecamp Delivery should retain send: {basecamp}");
@@ -627,6 +627,18 @@ mod tests {
                 }]
             })
         };
+        let basecamp_with_store = delivery_capability(
+            CapabilityBuildMode::Basecamp,
+            "delivery_module",
+            None,
+            Some("/dns4/provider.example/tcp/30303/p2p/peer"),
+            Some(cli_module_info()),
+        )?;
+        if unavailable_contains(&basecamp_with_store, "delivery.store.query") {
+            bail!(
+                "Basecamp Delivery did not expose the module Store contract: {basecamp_with_store}"
+            );
+        }
         let cli_without_provider = delivery_capability(
             CapabilityBuildMode::Standalone,
             "logoscore_cli_delivery_module",

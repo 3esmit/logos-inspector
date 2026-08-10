@@ -956,8 +956,11 @@ function deliveryStoreQueryGate(page) {
 function deliveryStoreAvailableDetail(page) {
     const route = page && typeof page.sourceRoute === "function"
         ? page.sourceRoute() : null
-    if (String(route && route.connectionType || "") === "logoscore_cli") {
-        return qsTr("Network / Delivery Store uses LogosCore CLI through the loaded Delivery module. Payloads are excluded by default.")
+    const connectionType = String(route && route.connectionType || "")
+    if (connectionType === "logoscore_cli" || connectionType === "module") {
+        return connectionType === "module"
+            ? qsTr("Network / Delivery Store uses the host Delivery module. Payloads are excluded by default.")
+            : qsTr("Network / Delivery Store uses LogosCore CLI through the loaded Delivery module. Payloads are excluded by default.")
     }
     return qsTr("Network / Delivery Store uses Direct Waku REST. Payloads are excluded by default.")
 }
@@ -973,7 +976,8 @@ function deliveryStoreUnavailableDetail(page, gate) {
     const sourceName = String(page && typeof page.sourceName === "function"
         ? page.sourceName() : qsTr("Current Delivery source"))
     if (page && typeof page.sourceRoute === "function"
-            && String(page.sourceRoute().connectionType || "") === "logoscore_cli") {
+            && (String(page.sourceRoute().connectionType || "") === "logoscore_cli"
+                || String(page.sourceRoute().connectionType || "") === "module")) {
         return qsTr("%1 does not provide the Store query contract.").arg(sourceName)
     }
     return qsTr("%1 does not expose Store queries.").arg(sourceName)

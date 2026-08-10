@@ -277,12 +277,12 @@ fn operation_plan(
             let page_size = payload.page_size.clamp(1, MAX_STORE_PAGE_SIZE);
             match adapter {
                 MessagingOperationAdapter::Module {
-                    transport: ModuleTransportKind::LogoscoreCli,
+                    transport,
                     store_peer_addr,
                 } => {
                     let peer_addr = optional_text(payload.peer_addr)
                         .or(store_peer_addr)
-                        .context("Store provider multiaddress is required for LogosCore CLI")?;
+                        .context("Store provider multiaddress is required for Delivery")?;
                     let query = delivery_store_query_request(
                         &new_delivery_store_request_id()?,
                         content_topics.as_deref(),
@@ -295,7 +295,7 @@ fn operation_plan(
                     context.insert("storePeer".to_owned(), json!(&peer_addr));
                     Ok((
                         DeliveryOperationPlan::ModuleStoreQuery {
-                            transport: ModuleTransportKind::LogoscoreCli,
+                            transport,
                             peer_addr,
                             query,
                             page_size,
@@ -303,9 +303,6 @@ fn operation_plan(
                         },
                         context,
                     ))
-                }
-                MessagingOperationAdapter::Module { .. } => {
-                    bail!("Delivery Store query requires LogosCore CLI Delivery source")
                 }
                 MessagingOperationAdapter::Rest { endpoint } => {
                     context.insert("endpoint".to_owned(), json!(endpoint));
@@ -368,7 +365,7 @@ async fn execute_plan(
                 ],
             )
             .await
-            .context("failed to query Delivery Store through LogosCore CLI")?;
+            .context("failed to query Delivery Store through the configured module")?;
             Ok(NodeOperationOutcome::Completed(json!({
                 "storePeer": peer_addr,
                 "includeData": include_data,
@@ -468,6 +465,7 @@ pub(crate) async fn execute_module_adapter_fixture(
     value: Value,
 ) -> Result<NodeOperationOutcome> {
     let transport: SharedModuleTransport = std::sync::Arc::new(FakeDeliveryModuleTransport {
+        transport_kind: ModuleTransportKind::LogoscoreCli,
         value,
         last_call: std::sync::Mutex::new(None),
     });
@@ -484,6 +482,7 @@ pub(crate) async fn execute_module_adapter_fixture(
 
 #[cfg(test)]
 struct FakeDeliveryModuleTransport {
+    transport_kind: ModuleTransportKind,
     value: Value,
     last_call: std::sync::Mutex<Option<crate::modules::logos_core::ModuleCall>>,
 }
@@ -491,7 +490,7 @@ struct FakeDeliveryModuleTransport {
 #[cfg(test)]
 impl crate::modules::logos_core::ModuleTransport for FakeDeliveryModuleTransport {
     fn kind(&self) -> ModuleTransportKind {
-        ModuleTransportKind::LogoscoreCli
+        self.transport_kind
     }
 
     fn call(
@@ -504,7 +503,7 @@ impl crate::modules::logos_core::ModuleTransport for FakeDeliveryModuleTransport
             })?;
             *last_call = Some(call);
             Ok(crate::modules::logos_core::ModuleCallReply::new(
-                ModuleTransportKind::LogoscoreCli,
+                self.transport_kind,
                 self.value.clone(),
             ))
         })
@@ -546,7 +545,9 @@ fn parse_adapter(value: &Value) -> Result<MessagingOperationAdapter> {
     match DeliverySourceMode::from_token(initialization.source_mode()) {
         DeliverySourceMode::Module => Ok(MessagingOperationAdapter::Module {
             transport: ModuleTransportKind::Module,
-            store_peer_addr: None,
+            store_peer_addr: initialization
+                .input("store_peer_addr")
+                .map(ToOwned::to_owned),
         }),
         DeliverySourceMode::LogoscoreCli => Ok(MessagingOperationAdapter::Module {
             transport: ModuleTransportKind::LogoscoreCli,
@@ -900,20 +901,27 @@ mod tests {
     }
 
     #[test]
-    fn basecamp_store_plan_remains_unsupported() -> Result<()> {
+    fn module_store_plan_uses_configured_provider() -> Result<()> {
         let request = request(json!({
-            "adapter": { "source_mode": "module", "inputs": {} },
+            "adapter": {
+                "source_mode": "module",
+                "inputs": { "store_peer_addr": "/dns4/provider.example/tcp/30303/p2p/peer" }
+            },
             "payload": { "content_topics": "/topic" }
         }))?;
-        let Err(error) = DeliveryOperationRequest::parse(&request, DeliveryOperation::StoreQuery)
+        let parsed = DeliveryOperationRequest::parse(&request, DeliveryOperation::StoreQuery)?;
+        let DeliveryOperationPlan::ModuleStoreQuery {
+            transport,
+            peer_addr,
+            ..
+        } = parsed.plan
         else {
-            anyhow::bail!("Basecamp Delivery unexpectedly accepted Store query");
+            anyhow::bail!("Basecamp Delivery Store query did not produce a module plan");
         };
         anyhow::ensure!(
-            error
-                .to_string()
-                .contains("requires LogosCore CLI Delivery source"),
-            "unexpected Basecamp Store error: {error:#}"
+            transport == ModuleTransportKind::Module
+                && peer_addr == "/dns4/provider.example/tcp/30303/p2p/peer",
+            "unexpected Basecamp Store transport or provider: {transport:?} {peer_addr}"
         );
         Ok(())
     }
@@ -924,6 +932,7 @@ mod tests {
         let query =
             delivery_store_query_request("request-1", Some("/topic"), None, None, 20, true, true);
         let transport = std::sync::Arc::new(FakeDeliveryModuleTransport {
+            transport_kind: ModuleTransportKind::LogoscoreCli,
             value: json!({ "requestId": "request-1", "statusCode": 200, "messages": [] }),
             last_call: std::sync::Mutex::new(None),
         });
@@ -967,6 +976,60 @@ mod tests {
             value.get("storePeer") == Some(&json!(provider))
                 && value.pointer("/value/statusCode") == Some(&json!(200)),
             "CLI Store response projection drifted: {value}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_store_execution_uses_typed_module_arguments() -> Result<()> {
+        let provider = "/dns4/provider.example/tcp/30303/p2p/peer";
+        let query =
+            delivery_store_query_request("request-1", Some("/topic"), None, None, 20, true, true);
+        let transport = std::sync::Arc::new(FakeDeliveryModuleTransport {
+            transport_kind: ModuleTransportKind::Module,
+            value: json!({ "requestId": "request-1", "statusCode": 200, "messages": [] }),
+            last_call: std::sync::Mutex::new(None),
+        });
+        let outcome = execute_plan(
+            DeliveryOperationPlan::ModuleStoreQuery {
+                transport: ModuleTransportKind::Module,
+                peer_addr: provider.to_owned(),
+                query: query.clone(),
+                page_size: 20,
+                include_data: true,
+            },
+            transport.clone(),
+        )
+        .await?;
+
+        let call = transport
+            .last_call
+            .lock()
+            .map_err(|error| {
+                anyhow::anyhow!("Delivery module call recording lock failed: {error}")
+            })?
+            .clone()
+            .context("Module Store query did not invoke Delivery module")?;
+        anyhow::ensure!(
+            call.transport() == ModuleTransportKind::Module
+                && call.module() == "delivery_module"
+                && call.method() == "storeQuery"
+                && call.args()
+                    == [
+                        json!(query.to_string()),
+                        json!(provider),
+                        json!(DELIVERY_STORE_TIMEOUT_MS),
+                    ],
+            "Module Store call arguments drifted: {:?}",
+            call.args()
+        );
+        let NodeOperationOutcome::Completed(value) = outcome else {
+            anyhow::bail!("Module Store query did not complete synchronously");
+        };
+        anyhow::ensure!(
+            value.get("storePeer") == Some(&json!(provider))
+                && value.pointer("/value/statusCode") == Some(&json!(200)),
+            "Module Store response projection drifted: {value}"
         );
         Ok(())
     }
