@@ -536,7 +536,7 @@ fn decode_instruction_words_with_idl_reports_arg_decode_error() {
 }
 
 #[test]
-fn decode_instruction_words_with_idl_rejects_external_type_without_variant_map() {
+fn decode_instruction_words_with_idl_accepts_external_type_without_variant_map() {
     let idl = r#"{
         "name": "test_program",
         "instruction_type": "test_program::Instruction",
@@ -552,12 +552,21 @@ fn decode_instruction_words_with_idl_rejects_external_type_without_variant_map()
 
     let report = decode_instruction_words_with_idl(idl, "program", &[0, 9], &[]);
 
-    assert!(report.is_err(), "{report:?}");
-    assert!(report.err().is_some_and(|error| {
-        error
-            .to_string()
-            .contains("instruction `set_value` must declare a u32 variant_index")
-    }));
+    assert!(
+        report.is_ok(),
+        "positional external IDL should decode: {:?}",
+        report.as_ref().err()
+    );
+    let Some(report) = report.ok() else {
+        return;
+    };
+    assert_eq!(report.instruction, "set_value");
+    assert_eq!(report.variant_index, 0);
+    assert_eq!(
+        report.args.first().map(|field| field.value.as_str()),
+        Some("9")
+    );
+    assert!(report.decode_error.is_none());
 }
 
 #[test]
