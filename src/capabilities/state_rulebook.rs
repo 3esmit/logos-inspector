@@ -355,20 +355,20 @@ fn delivery_state(
         connector,
         sub_capabilities,
     );
-    if connector.id != "logoscore_cli_delivery_module" {
+    if !matches!(
+        connector.id.as_str(),
+        "delivery_module" | "logoscore_cli_delivery_module"
+    ) {
         return state;
     }
     if !inputs
         .source_report_for("delivery")
-        .is_some_and(delivery_cli_store_query_supported)
+        .is_some_and(delivery_store_query_supported)
     {
         return merge_state_constraints(
             state,
             vec!["delivery.store.query".to_owned()],
-            vec![
-                "LogosCore CLI Delivery Store requires a loaded module that advertises storeQuery"
-                    .to_owned(),
-            ],
+            vec!["Delivery Store requires a loaded module that advertises storeQuery".to_owned()],
             vec!["Loaded Delivery module does not provide the Store query contract".to_owned()],
         );
     }
@@ -384,7 +384,7 @@ const DELIVERY_STORE_QUERY_SIGNATURES: &[&str] = &[
     "storeQuery(QString,QString,qlonglong)",
 ];
 
-fn delivery_cli_store_query_supported(report: &serde_json::Value) -> bool {
+fn delivery_store_query_supported(report: &serde_json::Value) -> bool {
     let Some(module_info) = delivery_module_info_value(report) else {
         return false;
     };

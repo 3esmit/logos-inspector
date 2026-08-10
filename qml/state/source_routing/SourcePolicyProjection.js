@@ -61,7 +61,10 @@ function sourceModeOptions(root, family) {
 
 function sourceModeVisible(root, mode) {
     const adapter = mode && mode.adapter && typeof mode.adapter === "object" ? mode.adapter : ({})
-    return String(adapter.connection_type || "") !== "module" || root.prefersBasecampModules()
+    const connectionType = String(adapter.connection_type || "")
+    return root.prefersBasecampModules()
+        ? connectionType === "module"
+        : connectionType !== "module"
 }
 
 function sourceModeIndexFor(root, family, value, options) {

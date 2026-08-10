@@ -143,7 +143,7 @@ const METRICS_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     label: "Metrics URL",
     required: true,
 }];
-const CLI_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
+const STORE_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     key: "store_peer_addr",
     label: "Store provider multiaddress",
     required: false,
@@ -151,6 +151,7 @@ const CLI_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
 
 const MODULE_CAPABILITIES: &[&str] = &[
     "delivery.identity.read",
+    "delivery.store.query",
     "delivery.subscribe",
     "delivery.unsubscribe",
     "delivery.send",
@@ -197,7 +198,7 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             connection_type: AdapterConnectionType::Module,
             target: "module",
             module_id: Some(DELIVERY_MODULE),
-            inputs: &[],
+            inputs: STORE_INPUTS,
             capabilities: MODULE_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
@@ -219,7 +220,7 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             connection_type: AdapterConnectionType::LogoscoreCli,
             target: "module",
             module_id: Some(DELIVERY_MODULE),
-            inputs: CLI_INPUTS,
+            inputs: STORE_INPUTS,
             capabilities: LOGOSCORE_CLI_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
@@ -554,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn messaging_cli_adapter_advertises_store_query_with_explicit_provider_input() -> Result<()> {
+    fn messaging_adapters_advertise_store_query_with_explicit_provider_input() -> Result<()> {
         let supports_store_query = |key: &str| {
             MESSAGING_SOURCE_MODES
                 .iter()
@@ -562,27 +563,26 @@ mod tests {
                 .is_some_and(|mode| mode.adapter.capabilities.contains(&"delivery.store.query"))
         };
 
-        if supports_store_query("module")
+        if !supports_store_query("module")
             || !supports_store_query("logoscore_cli")
             || !supports_store_query("rest")
         {
             bail!("Delivery Store capability declarations drifted");
         }
 
-        let cli = MESSAGING_SOURCE_MODES
-            .iter()
-            .find(|mode| mode.key == "logoscore_cli")
-            .context("LogosCore CLI Delivery source policy is missing")?;
         let expected = [AdapterInputPolicy {
             key: "store_peer_addr",
             label: "Store provider multiaddress",
             required: false,
         }];
-        if cli.adapter.inputs != expected {
-            bail!(
-                "LogosCore CLI Delivery inputs drifted: {:?}",
-                cli.adapter.inputs
-            );
+        for key in ["module", "logoscore_cli"] {
+            let mode = MESSAGING_SOURCE_MODES
+                .iter()
+                .find(|mode| mode.key == key)
+                .with_context(|| format!("{key} Delivery source policy is missing"))?;
+            if mode.adapter.inputs != expected {
+                bail!("{key} Delivery inputs drifted: {:?}", mode.adapter.inputs);
+            }
         }
         Ok(())
     }

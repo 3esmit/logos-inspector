@@ -49,6 +49,7 @@ SourceSettingsPanel {
 
         FieldRow {
             visible: root.deliverySource().connectionType === "logoscore_cli"
+                || root.deliverySource().connectionType === "module"
             theme: root.theme
             label: qsTr("Store provider multiaddress")
             sourceText: root.modelRef.messagingStorePeerAddress
