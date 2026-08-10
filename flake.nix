@@ -11,7 +11,7 @@
     logos-protocol.inputs.logos-nix.follows = "logos-module-builder/logos-nix";
     logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
     blockchain_module = {
-      url = "github:3esmit/logos-blockchain-module?rev=c81cdd5f349430cff3765d6631e285de6b5c7a50";
+      url = "github:3esmit/logos-blockchain-module?rev=a0a762b24f6568f5510cdd70b93828eba9d31eed";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {
