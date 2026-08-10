@@ -303,6 +303,8 @@ ColumnLayout {
             }
 
             Panel {
+                objectName: "logoscoreRuntimeConfiguration"
+                visible: !settingsRoot.model.prefersBasecampModules()
                 theme: settingsRoot.theme
                 title: qsTr("LogosCore Runtime")
 
