@@ -70,11 +70,31 @@ fn external_instruction_type(idl: &Value) -> Result<Option<String>> {
 
 fn external_variant_indices(instructions: &[Value], external_type: &str) -> Result<Vec<u32>> {
     let count = u32::try_from(instructions.len()).context("IDL has too many instructions")?;
+    let declared = instructions
+        .iter()
+        .enumerate()
+        .map(|(row_index, instruction)| {
+            let name = instruction_name(instruction, row_index);
+            declared_variant_index(instruction, &name).map(|variant_index| (name, variant_index))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Some generated IDLs identify an external enum but omit all per-row
+    // variant metadata. In that shape the IDL's instruction order is the
+    // only available mapping and matches the serialized enum declaration
+    // order. Keep rejecting partial metadata: silently guessing around a
+    // missing row would make an explicit mapping unsafe.
+    if declared
+        .iter()
+        .all(|(_, variant_index)| variant_index.is_none())
+    {
+        return positional_variant_indices(instructions);
+    }
+
     let mut owners = BTreeMap::<u32, String>::new();
     let mut indices = Vec::with_capacity(instructions.len());
-    for (row_index, instruction) in instructions.iter().enumerate() {
-        let name = instruction_name(instruction, row_index);
-        let variant_index = declared_variant_index(instruction, &name)?.with_context(|| {
+    for (name, declared_variant_index) in declared {
+        let variant_index = declared_variant_index.with_context(|| {
             format!(
                 "IDL uses external instruction_type `{external_type}`; instruction `{name}` must declare a u32 variant_index"
             )
@@ -140,6 +160,28 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn external_instruction_type_without_variant_metadata_uses_positional_order() -> Result<()> {
+        let idl = json!({
+            "instruction_type": "external::Instruction",
+            "instructions": [
+                {"name": "first"},
+                {"name": "second"}
+            ]
+        });
+        let variants = InstructionVariantMap::from_idl(&idl)?;
+        ensure!(variants.variant_index(0)? == 0);
+        ensure!(variants.variant_index(1)? == 1);
+        ensure!(
+            variants
+                .instruction_for_variant(1)?
+                .get("name")
+                .and_then(Value::as_str)
+                == Some("second")
+        );
+        Ok(())
+    }
 
     #[test]
     fn external_instruction_type_requires_complete_unique_permutation() -> Result<()> {
