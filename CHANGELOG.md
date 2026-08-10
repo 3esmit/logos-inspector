@@ -12,6 +12,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   generated SDK can resolve `lez_indexer_module_api.h` after declaring it as a
   runtime dependency.
 
+## [0.2.0-rc14] - 2026-08-10
+
+### Fixed
+
+- Published Alpha artifacts include automatic decoding for deployed external
+  instruction IDLs that omit per-row variant metadata when their order is
+  unambiguous.
+- Published connectors include the current LogosCore CLI Bedrock and module
+  dependency fixes.
+
 ## [0.2.0-rc13] - 2026-08-07
 
 ### Fixed
