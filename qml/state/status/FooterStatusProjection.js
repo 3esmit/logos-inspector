@@ -312,17 +312,18 @@ function channelFleetTone(root) {
 }
 
 function footerFieldItem(root, key) {
+    const value = footerFieldValue(root, key)
     return {
         label: footerFieldLabel(key),
         fullName: footerFieldName(key),
-        value: footerFieldValue(root, key),
-        accessibleValue: footerFieldAccessibleValue(root, key),
-        tone: footerFieldTone(root, key),
+        value: value,
+        accessibleValue: footerFieldAccessibleValue(root, key, value),
+        tone: footerFieldTone(root, key, value),
         maximumWidth: footerFieldWidth(key),
         priority: footerFieldPriority(key),
         valueVisible: !footerFieldUsesColorOnly(key),
         showDot: footerFieldShowsDot(key),
-        hidden: footerFieldHidden(root, key)
+        hidden: footerFieldHidden(root, key, value)
     }
 }
 
@@ -463,8 +464,8 @@ function footerFieldValue(root, key) {
     }
 }
 
-function footerFieldAccessibleValue(root, key) {
-    const value = footerFieldValue(root, key)
+function footerFieldAccessibleValue(root, key, knownValue) {
+    const value = knownValue === undefined ? footerFieldValue(root, key) : knownValue
     if (value.length > 0) {
         return value
     }
@@ -492,7 +493,8 @@ function footerFieldAccessibleValue(root, key) {
     return value
 }
 
-function footerFieldTone(root, key) {
+function footerFieldTone(root, key, knownValue) {
+    const value = knownValue === undefined ? footerFieldValue(root, key) : knownValue
     if (key === "network.network" || key === "network.report_time") {
         return "info"
     }
@@ -509,28 +511,28 @@ function footerFieldTone(root, key) {
         return root.toneForProbe("sequencer", "health")
     }
     if (key === "lez.publish_to_bedrock_status") {
-        return root.statusWordTone(footerFieldValue(root, key))
+        return root.statusWordTone(value)
     }
     if (key === "indexer.rpc_health" || key === "indexer.db_health" || key === "indexer.ingestion_status") {
         return root.indexerStatusTone()
     }
     if (key === "storage.node_reachable" || key === "storage.dht_connected" || key === "storage.cid_fetch_test") {
-        return root.booleanTone(footerFieldValue(root, key))
+        return root.booleanTone(value)
     }
     if (key === "storage.udp_discovery_port" || key === "storage.tcp_transfer_port") {
-        return root.portTone(footerFieldValue(root, key))
+        return root.portTone(value)
     }
     if (key === "messaging.connection_state") {
-        return root.booleanTone(footerFieldValue(root, key))
+        return root.booleanTone(value)
     }
     if (key === "messaging.message_error_events_recent") {
-        return root.countProblemTone(footerFieldValue(root, key))
+        return root.countProblemTone(value)
     }
     if (key === "storage.failed_transfers_recent") {
-        return root.countProblemTone(footerFieldValue(root, key))
+        return root.countProblemTone(value)
     }
     if (key === "storage.last_error" || key === "messaging.last_error") {
-        return footerFieldValue(root, key) === qsTr("n/a") ? "neutral" : "error"
+        return value === qsTr("n/a") ? "neutral" : "error"
     }
     if (key === "overall.status") {
         return overallTone(root)
@@ -591,16 +593,18 @@ function footerFieldShowsDot(key) {
     return StatusFieldCatalog.showsDot(key)
 }
 
-function footerFieldHidden(root, key) {
-    if ((key === "storage.last_error" || key === "messaging.last_error")
-            && footerFieldValue(root, key) === qsTr("n/a")) {
-        return true
+function footerFieldHidden(root, key, knownValue) {
+    if (key === "storage.last_error" || key === "messaging.last_error") {
+        const value = knownValue === undefined ? footerFieldValue(root, key) : knownValue
+        return value === qsTr("n/a")
     }
     if (key === "overall.main_risk") {
-        return overallTone(root) === "success" && mainRisk(root) === qsTr("none")
+        const value = knownValue === undefined ? mainRisk(root) : knownValue
+        return overallTone(root) === "success" && value === qsTr("none")
     }
     if (key === "overall.operator_action") {
-        return overallTone(root) === "success" && operatorAction(root) === qsTr("monitor")
+        const value = knownValue === undefined ? operatorAction(root) : knownValue
+        return overallTone(root) === "success" && value === qsTr("monitor")
     }
     if (key === "messaging.bootstrap_connected") {
         return true
