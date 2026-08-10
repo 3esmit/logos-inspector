@@ -426,8 +426,10 @@ QtObject {
             } else {
                 detailStale = zoneDetail !== null
             }
-            invalidateSummary(scopeChanged || restoreScopeChanged
-                || nextVerification === "mismatch")
+            // Keep the last accepted snapshot visible while the same network
+            // re-verifies. It is read-only until a verified summary replaces
+            // it; only a confirmed scope/restore change invalidates its rows.
+            invalidateSummary(scopeChanged || restoreScopeChanged)
         } else if (catalogChanged) {
             evidence.resetEvidenceState(true)
         }

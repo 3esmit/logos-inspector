@@ -1680,9 +1680,9 @@ TestCase {
             verification: "verified",
             coverage: { status: "complete" },
             ingestion: { worker_running: false },
-            summary_revision: 1
+            summary_revision: 2
         })))
-        gateway.respondNext("zonesSummary", ok(summaryReport(1, {
+        gateway.respondNext("zonesSummary", ok(summaryReport(2, {
             kind: "reset",
             rows: [row]
         }, null)))
@@ -1693,9 +1693,9 @@ TestCase {
             verification: "verified",
             coverage: { status: "complete" },
             ingestion: { worker_running: false },
-            summary_revision: 2
+            summary_revision: 3
         })))
-        gateway.respondNext("zonesSummary", ok(summaryReport(2, {
+        gateway.respondNext("zonesSummary", ok(summaryReport(3, {
             kind: "delta",
             upserts: [],
             removed_zone_ids: ["zone-a"]
@@ -1703,6 +1703,26 @@ TestCase {
         compare(zoneState.zoneSummaries.length, 0)
         compare(activeZoneSeenOnSummaryChange, "")
         verify(!zoneState.activateZone("zone-a"))
+    }
+
+    function test_verification_mismatch_retains_read_only_summary() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        verify(zoneState.navigationRowsRetainable)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "mismatch",
+            coverage: { status: "unknown" },
+            ingestion: { worker_running: false },
+            summary_revision: 1
+        })))
+
+        compare(zoneState.zoneSummaries.length, 1)
+        verify(zoneState.summaryRowsRetainable)
+        verify(zoneState.navigationRowsRetainable)
+        verify(!zoneState.summaryRowsUsable)
     }
 
     function test_source_mutation_updates_active_context_only_after_success() {
