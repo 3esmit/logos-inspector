@@ -633,9 +633,9 @@ fn basecamp_config_is_active(status: &LocalNodeReport) -> Result<bool> {
         .nodes
         .first()
         .context("Basecamp Channel Indexer status did not include its node")?;
-    Ok(matches!(
+    Ok(!matches!(
         node.run_state.as_str(),
-        "initializing" | "starting" | "running" | "stopping" | "destroying"
+        "stopped" | "uninitialized"
     ))
 }
 
@@ -4433,6 +4433,66 @@ mod tests {
             source_config_revision: Some(7),
             selected_sequencer_source_id: Some("src_selected".to_owned()),
         }
+    }
+
+    #[tokio::test]
+    async fn basecamp_unknown_lifecycle_status_blocks_configuration_edit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let configs = vec![module_source_config(&channel_id)];
+        let implementation = Arc::new(BasecampIndexerTestTransport::new());
+        let transport: SharedModuleTransport = implementation.clone();
+        let instance_id = basecamp_instance_id(&network_scope(), &channel_id)?;
+        implementation
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?
+            .instances
+            .insert(
+                instance_id,
+                BasecampIndexerTestInstance {
+                    channel_id: Some(channel_id.clone()),
+                    state: "unknown".to_owned(),
+                    ..BasecampIndexerTestInstance::default()
+                },
+            );
+
+        let unknown = basecamp_config_snapshot_with_configs(
+            directory.path(),
+            "default",
+            &config_request(&channel_id),
+            &configs,
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(!unknown.editable);
+        anyhow::ensure!(
+            unknown.blocked_reason.as_deref() == Some(CONFIG_ACTIVE_RUNTIME_REASON),
+            "unknown Basecamp lifecycle status did not block configuration editing"
+        );
+
+        let instance_id = basecamp_instance_id(&network_scope(), &channel_id)?;
+        implementation
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?
+            .instances
+            .get_mut(&instance_id)
+            .context("missing Basecamp Indexer test instance")?
+            .state = "stopped".to_owned();
+        let stopped = basecamp_config_snapshot_with_configs(
+            directory.path(),
+            "default",
+            &config_request(&channel_id),
+            &configs,
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(
+            stopped.editable,
+            "explicitly stopped Basecamp lifecycle status remained blocked"
+        );
+        Ok(())
     }
 
     #[tokio::test]
