@@ -184,6 +184,63 @@ Item {
             verify(!installButton.enabled)
         }
 
+        function test_module_package_panel_preserves_installed_release_identity() {
+            const installed = [{
+                name: "openmetrics",
+                version: "1.0.0",
+                root_hash: "root-hash-1.0.0-b",
+                category: "metrics",
+                install_dir: "/tmp/runtime-modules/openmetrics"
+            }]
+            const page = createPage(
+                sampleReport("stopped"),
+                samplePackageCatalog(null),
+                sampleModuleCatalog(installed))
+            const releaseSelector = findChild(page, "modulePackageReleaseSelector")
+            const installButton = findChild(page, "modulePackageInstallButton")
+            verify(!!releaseSelector, "Release selector exists")
+            verify(!!installButton, "Install release button exists")
+
+            compare(page.selectedModuleRelease.version, "1.0.0")
+            compare(page.selectedModuleRelease.root_hash, "root-hash-1.0.0-b")
+            compare(releaseSelector.currentIndex, 1)
+            verify(releaseSelector.model[1].installed)
+            verify(releaseSelector.model[1].label.indexOf("installed") >= 0)
+            verify(installButton.enabled)
+        }
+
+        function test_module_package_panel_exposes_unpublished_installed_release_without_installing_it() {
+            const installed = [{
+                name: "openmetrics",
+                version: "2.0.0",
+                root_hash: "root-hash-2.0.0-local",
+                category: "metrics",
+                install_dir: "/tmp/runtime-modules/openmetrics"
+            }]
+            const page = createPage(
+                sampleReport("stopped"),
+                samplePackageCatalog(null),
+                sampleModuleCatalog(installed))
+            const releaseSelector = findChild(page, "modulePackageReleaseSelector")
+            const installButton = findChild(page, "modulePackageInstallButton")
+            verify(!!releaseSelector, "Release selector exists")
+            verify(!!installButton, "Install release button exists")
+
+            compare(releaseSelector.count, 3)
+            compare(releaseSelector.currentIndex, 0)
+            compare(page.selectedModuleRelease.version, "2.0.0")
+            compare(page.selectedModuleRelease.root_hash, "root-hash-2.0.0-local")
+            verify(releaseSelector.model[0].installed)
+            verify(!releaseSelector.model[0].available)
+            verify(releaseSelector.model[0].label.indexOf("local-only") >= 0)
+            verify(!installButton.enabled)
+            verify(page.selectedModuleReleaseDetail().indexOf("not available") >= 0)
+
+            page.selectModuleRelease(releaseSelector.model[1])
+            compare(page.selectedModuleRelease.root_hash, "root-hash-1.0.0-a")
+            verify(installButton.enabled)
+        }
+
         function test_module_package_popup_mouse_selects_nondefault_core_module() {
             const catalog = sampleModuleCatalog([])
             catalog.packages.unshift({
