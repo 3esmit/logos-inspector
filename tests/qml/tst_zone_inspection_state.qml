@@ -1705,7 +1705,7 @@ TestCase {
         verify(!zoneState.activateZone("zone-a"))
     }
 
-    function test_verification_mismatch_retains_read_only_summary() {
+    function test_verification_mismatch_clears_unverified_summary() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
         loadOneZone(row)
@@ -1719,9 +1719,9 @@ TestCase {
             summary_revision: 1
         })))
 
-        compare(zoneState.zoneSummaries.length, 1)
-        verify(zoneState.summaryRowsRetainable)
-        verify(zoneState.navigationRowsRetainable)
+        compare(zoneState.zoneSummaries.length, 0)
+        verify(!zoneState.summaryRowsRetainable)
+        verify(!zoneState.navigationRowsRetainable)
         verify(!zoneState.summaryRowsUsable)
     }
 

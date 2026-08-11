@@ -414,6 +414,7 @@ QtObject {
             nextScopeKey, nextSourceConfigEpoch, nextVerification)
         const retainReadOnlyContext = canRetainReadOnlyContext(
             nextScopeKey, nextVerification)
+        const destructiveVerificationLoss = nextVerification === "mismatch"
         const catalogChanged = catalogStatus !== null
             && numericRevision(report.catalog_revision) !== catalogRevision
         if (scopeChanged || restoreScopeChanged
@@ -426,10 +427,13 @@ QtObject {
             } else {
                 detailStale = zoneDetail !== null
             }
-            // Keep the last accepted snapshot visible while the same network
-            // re-verifies. It is read-only until a verified summary replaces
-            // it; only a confirmed scope/restore change invalidates its rows.
-            invalidateSummary(scopeChanged || restoreScopeChanged)
+            // Keep the last accepted snapshot visible while non-destructive
+            // verification states re-check the same network. A mismatch is
+            // destructive: the catalog worker has quarantined the conflicting
+            // identity and may publish no scope, so old rows cannot be proven
+            // safe to retain.
+            invalidateSummary(destructiveVerificationLoss
+                || scopeChanged || restoreScopeChanged)
         } else if (catalogChanged) {
             evidence.resetEvidenceState(true)
         }
