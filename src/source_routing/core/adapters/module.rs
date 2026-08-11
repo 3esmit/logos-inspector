@@ -511,7 +511,7 @@ async fn cli_tip_parent_blocks(
         .and_then(Value::as_u64)
         .context("blockchain_module.get_cryptarchia_info did not include a numeric tip slot")?;
     if tip_slot < slot_from
-        || tip_slot.saturating_sub(slot_from) >= CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64
+        || tip_slot.saturating_sub(slot_to) >= CLI_TIP_PARENT_WALK_MAX_BLOCKS as u64
     {
         return Ok(Value::Array(Vec::new()));
     }
@@ -859,11 +859,25 @@ mod tests {
                 Err(poisoned) => poisoned.into_inner().push(call),
             }
             let reply = match method.as_str() {
-                "get_blocks" if args == vec![json!(100_u64), json!(100_u64)] => Ok(json!([])),
+                "get_blocks"
+                    if args == vec![json!(100_u64), json!(100_u64)]
+                        || args == vec![json!(100_u64), json!(700_u64)] =>
+                {
+                    Ok(json!([]))
+                }
                 "get_cryptarchia_info" if args.is_empty() => Ok(json!({
                     "tip": test_hash('a'),
                     "slot": 700,
                 })),
+                "get_block" if args == vec![json!(test_hash('a'))] => {
+                    Ok(test_block(700, test_hash('b'), 0))
+                }
+                "get_block" if args == vec![json!(test_hash('b'))] => {
+                    Ok(test_block(690, test_hash('c'), 0))
+                }
+                "get_block" if args == vec![json!(test_hash('c'))] => {
+                    Ok(test_block(680, "0".repeat(64), 0))
+                }
                 _ => Err(anyhow::anyhow!(
                     "unexpected far-tip call {method} with {args:?}"
                 )),
@@ -1022,6 +1036,35 @@ mod tests {
         assert_eq!(
             harness.call_methods(),
             vec!["get_blocks", "get_cryptarchia_info"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_recent_range_walks_when_upper_bound_contains_tip() -> Result<()> {
+        let harness = Arc::new(FarTipTransport {
+            calls: Mutex::new(Vec::new()),
+        });
+        let transport: SharedModuleTransport = harness.clone();
+
+        let value =
+            blockchain_recent_blocks(&transport, ModuleTransportKind::LogoscoreCli, 100, 700, 2)
+                .await?;
+        let blocks = value
+            .as_array()
+            .context("wide CLI tip-parent range did not return an array")?;
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].pointer("/header/slot"), Some(&json!(700)));
+        assert_eq!(blocks[1].pointer("/header/slot"), Some(&json!(690)));
+        assert_eq!(
+            harness.call_methods(),
+            vec![
+                "get_blocks",
+                "get_cryptarchia_info",
+                "get_block",
+                "get_block"
+            ]
         );
         Ok(())
     }
