@@ -18,6 +18,9 @@ QtObject {
 
     readonly property string activeZoneId: activeZoneContext
         ? String(activeZoneContext.channel_id || "") : ""
+    readonly property bool basecampHosted: appModel
+        && typeof appModel.prefersBasecampModules === "function"
+        && appModel.prefersBasecampModules() === true
 
     property string sourceMutationError: ""
     property var sourceMutationWarning: null
@@ -106,6 +109,11 @@ QtObject {
             source_config_revision: sourceRevision,
             selected_sequencer_source_id: selectedSourceId
         }
+    }
+
+    function managedIndexerActionRequiresSourceConfiguration(action) {
+        const actionKey = String(action || "")
+        return actionKey === "start" || (actionKey === "purge" && basecampHosted)
     }
 
     function managedIndexerConfigContextMatches(generation, scope, channelId, contextRevision) {
@@ -400,7 +408,8 @@ QtObject {
                 .arg(actionKey)
             return null
         }
-        if ((actionKey === "start" || actionKey === "purge") && (!activeZoneContext
+        const requiresSourceConfiguration = managedIndexerActionRequiresSourceConfiguration(actionKey)
+        if (requiresSourceConfiguration && (!activeZoneContext
                 || verification !== "verified" || catalogSnapshotUsable !== true)) {
             managedIndexerError = actionKey === "purge"
                 ? qsTr("A current verified Zone catalog snapshot is required to reset Indexer data.")
@@ -417,7 +426,7 @@ QtObject {
             network_scope: networkScope,
             channel_id: targetChannel
         }
-        if (actionKey === "start" || actionKey === "purge") {
+        if (requiresSourceConfiguration) {
             const configRequest = managedIndexerConfigRequest()
             if (!configRequest) {
                 managedIndexerError = managedIndexerConfigError
