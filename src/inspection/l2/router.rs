@@ -269,6 +269,7 @@ impl ZoneL2Router {
                 value: page.clone(),
             },
         );
+        report.warnings.extend(decoded_block_warnings(&results));
         if page.has_more {
             let Some(next_before) = page.rows.iter().map(|row| row.summary.block_id).min() else {
                 return Err(L2ReadFailure::new(

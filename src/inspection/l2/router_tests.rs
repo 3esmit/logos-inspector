@@ -589,6 +589,78 @@ async fn exact_sequencer_blocks_never_call_indexer_and_bind_cursor_to_source() -
 }
 
 #[tokio::test]
+async fn block_cursor_continuation_preserves_decode_warnings() -> Result<()> {
+    let (facts, config) = facts(false, true);
+    let adapter = Arc::new(ScriptedAdapter::default());
+    adapter.edit(|state| {
+        state
+            .heads
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(Some(block(3, '3'))));
+        state
+            .blocks_by_id
+            .entry((sequencer_id(), 3))
+            .or_default()
+            .push_back(Ok(Some(block(3, '3'))));
+        state
+            .block_pages
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(vec![block(3, '3'), block(2, '2')]));
+        state
+            .block_pages
+            .entry(sequencer_id())
+            .or_default()
+            .push_back(Ok(vec![block_with_warning(2, '2'), block(1, '1')]));
+    })?;
+    let router = scripted_router(adapter);
+    let first = router
+        .blocks(
+            &facts,
+            request(
+                &config,
+                ZoneL2BlocksQuery {
+                    cursor: None,
+                    limit: Some(1),
+                    exact_source_id: Some(sequencer_id()),
+                },
+            ),
+        )
+        .await?;
+    let L2ReadOutcome::Found { value } = first.data else {
+        bail!("first block page was not found");
+    };
+    let cursor = value.next_cursor.context("block cursor is missing")?;
+
+    let second = router
+        .blocks(
+            &facts,
+            request(
+                &config,
+                ZoneL2BlocksQuery {
+                    cursor: Some(cursor),
+                    limit: Some(1),
+                    exact_source_id: Some(sequencer_id()),
+                },
+            ),
+        )
+        .await?;
+    if second.warnings.len() != 1
+        || !second
+            .warnings
+            .first()
+            .is_some_and(|warning| warning.message.contains("Block 2"))
+    {
+        bail!(
+            "continuation lost decoded block warning: {:?}",
+            second.warnings
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn changed_block_anchor_invalidates_cursor() -> Result<()> {
     let (facts, config) = facts(false, true);
     let adapter = Arc::new(ScriptedAdapter::default());
@@ -1830,6 +1902,12 @@ fn block(block_id: u64, hash: char) -> NormalizedL2Block {
         },
         transactions: Vec::new(),
     }
+}
+
+fn block_with_warning(block_id: u64, hash: char) -> NormalizedL2Block {
+    let mut block = block(block_id, hash);
+    block.summary.decode_warning = Some("transaction decode gap".to_owned());
+    block
 }
 
 fn indexer_block(block_id: u64, hash: char) -> IndexerBlockReport {
