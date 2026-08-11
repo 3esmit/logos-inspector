@@ -521,12 +521,20 @@ async fn legacy_recent_blocks(
     slot_to: u64,
     limit: u64,
 ) -> Result<Value> {
-    let mut blocks = blockchain_blocks(endpoint, slot_from, slot_to).await?;
+    let mut blocks =
+        blockchain_blocks_bounded(endpoint, slot_from, slot_to, BLOCK_RANGE_RESPONSE_MAX_BYTES)
+            .await?;
     if value_array_len(&blocks) == Some(0)
         && let Some((fallback_from, fallback_to)) =
             legacy_finalized_fallback_range(endpoint, slot_from, slot_to).await?
     {
-        blocks = blockchain_blocks(endpoint, fallback_from, fallback_to).await?;
+        blocks = blockchain_blocks_bounded(
+            endpoint,
+            fallback_from,
+            fallback_to,
+            BLOCK_RANGE_RESPONSE_MAX_BYTES,
+        )
+        .await?;
     }
     Ok(sort_and_limit_blocks(blocks, limit))
 }
@@ -1000,6 +1008,7 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::TcpListener,
+        sync::{Arc, Mutex},
         thread::{self, JoinHandle},
     };
 
@@ -1189,6 +1198,84 @@ mod tests {
         let block = blocks.first().context("fallback should return one block")?;
         if blocks.len() != 1 || block.pointer("/header/slot") != Some(&json!(10)) {
             bail!("unexpected fallback blocks: {blocks:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_recent_blocks_does_not_retry_unavailable_range_endpoint() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let server_paths = Arc::clone(&paths);
+        let server = thread::spawn(move || -> Result<()> {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept()?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let bytes = stream.read(&mut buffer)?;
+                    if bytes == 0 {
+                        bail!("HTTP request headers were incomplete");
+                    }
+                    request.extend_from_slice(
+                        buffer
+                            .get(..bytes)
+                            .context("HTTP request header chunk was invalid")?,
+                    );
+                }
+                let request = String::from_utf8_lossy(&request);
+                let path = request.split_whitespace().nth(1).unwrap_or_default();
+                match server_paths.lock() {
+                    Ok(mut paths) => paths.push(path.to_owned()),
+                    Err(poisoned) => poisoned.into_inner().push(path.to_owned()),
+                }
+                let (status, body) = if path.starts_with("/cryptarchia/blocks_range") {
+                    ("400 Bad Request", String::new())
+                } else if path.starts_with("/cryptarchia/blocks?") {
+                    ("200 OK", "[]".to_owned())
+                } else if path == "/cryptarchia/info" {
+                    (
+                        "200 OK",
+                        r#"{"cryptarchia_info":{"lib_slot":9}}"#.to_owned(),
+                    )
+                } else {
+                    bail!("unexpected legacy fallback request path: {path}");
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes())?;
+            }
+            Ok(())
+        });
+
+        let blocks = blockchain_recent_blocks(&endpoint, 10, 10, 10).await?;
+        join_http_server(server, "legacy fallback request-count")?;
+        if !blocks.as_array().is_some_and(Vec::is_empty) {
+            bail!("expected no legacy blocks, got {blocks:?}");
+        }
+
+        let paths = match paths.lock() {
+            Ok(paths) => paths.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let range_calls = paths
+            .iter()
+            .filter(|path| path.starts_with("/cryptarchia/blocks_range"))
+            .count();
+        let legacy_calls = paths
+            .iter()
+            .filter(|path| path.starts_with("/cryptarchia/blocks?"))
+            .count();
+        let info_calls = paths
+            .iter()
+            .filter(|path| path.as_str() == "/cryptarchia/info")
+            .count();
+        if paths.len() != 4 || range_calls != 1 || legacy_calls != 2 || info_calls != 1 {
+            bail!("unexpected legacy fallback request sequence: {paths:?}");
         }
         Ok(())
     }
