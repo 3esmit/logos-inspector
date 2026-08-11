@@ -1163,26 +1163,13 @@ async fn basecamp_stop_indexer(
 
 async fn basecamp_purge_indexer(
     config_root: &Path,
-    configs: &[ChannelSourceConfig],
+    _configs: &[ChannelSourceConfig],
     request: &ChannelIndexerActionRequest,
     channel_id: &str,
     module_transport: &SharedModuleTransport,
 ) -> Result<String> {
-    basecamp_indexer_source_configured(configs, &request.network_scope, channel_id)?;
-    let binding = requested_source_binding_from_configs(request, channel_id, configs)?;
-    let endpoint = normalized_bedrock_endpoint(
-        request
-            .bedrock_endpoint
-            .as_deref()
-            .context("Indexer Bedrock endpoint is required")?,
-    )?;
-    let context = ChannelIndexerConfigContext {
-        channel_id: channel_id.to_owned(),
-        bedrock_endpoint: endpoint,
-        binding,
-    };
     let config_path =
-        ensure_basecamp_indexer_config(config_root, &request.network_scope, &context)?;
+        persisted_basecamp_indexer_config(config_root, &request.network_scope, channel_id)?;
     ensure_basecamp_host_capabilities(module_transport).await?;
     let instance_id = basecamp_instance_id(&request.network_scope, channel_id)?;
     if !basecamp_instance_loaded(module_transport, &instance_id).await? {
@@ -1216,6 +1203,32 @@ async fn basecamp_purge_indexer(
     Ok(format!(
         "Reset data for Basecamp Channel Indexer `{channel_id}`"
     ))
+}
+
+fn persisted_basecamp_indexer_config(
+    config_root: &Path,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<String> {
+    let channel_id = normalized_channel_id(channel_id)?;
+    let path = channel_indexer_config_path(config_root, network_scope, &channel_id)?;
+    let bytes = read_optional_indexer_config(config_root, &path)?.with_context(|| {
+        format!("Basecamp Channel Indexer configuration is unavailable for Channel `{channel_id}`")
+    })?;
+    let text = std::str::from_utf8(&bytes)
+        .context("Basecamp Channel Indexer configuration is not valid UTF-8")?;
+    let value = parse_indexer_config_text(text)?;
+    let configured_channel = required_config_string(
+        value
+            .as_object()
+            .and_then(|object| object.get("channel_id")),
+        "Zone channel ID",
+    )?;
+    anyhow::ensure!(
+        normalized_channel_id(configured_channel)? == channel_id,
+        "Basecamp Channel Indexer configuration belongs to a different Channel"
+    );
+    Ok(path.display().to_string())
 }
 
 fn ensure_basecamp_indexer_config(
@@ -4222,6 +4235,18 @@ mod tests {
                 .context("Indexer call was dispatched without an explicit Basecamp instance")?
                 .to_owned();
             match call.method() {
+                "reset_storage" => {
+                    let config_path = call
+                        .args()
+                        .first()
+                        .and_then(Value::as_str)
+                        .context("Indexer reset_storage request has no configuration path")?;
+                    anyhow::ensure!(
+                        Path::new(config_path).is_file(),
+                        "Basecamp Indexer test configuration path is not a file"
+                    );
+                    Ok(json!(0))
+                }
                 INDEXER_NODE_STATUS_METHOD => {
                     let state = self
                         .state
@@ -4597,6 +4622,62 @@ mod tests {
                     && subscription.event == INDEXER_NODE_CHANGED_EVENT
             }),
             "Indexer lifecycle subscriptions were not exact-instance subscriptions"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_purge_uses_persisted_config_without_live_source_binding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let context = ChannelIndexerConfigContext {
+            channel_id: channel_id.clone(),
+            bedrock_endpoint: "http://127.0.0.1:8080/".to_owned(),
+            binding: SourceBinding {
+                config_revision: source.config_revision,
+                source_id: "src_selected".to_owned(),
+                target_fingerprint: "sha256:test".to_owned(),
+            },
+        };
+        let config_path =
+            channel_indexer_config_path(directory.path(), &network_scope(), &channel_id)?;
+        write_indexer_config_bytes(
+            directory.path(),
+            &config_path,
+            &default_indexer_config_bytes(&context)?,
+        )?;
+        let implementation = Arc::new(BasecampIndexerTestTransport::new());
+        let transport: SharedModuleTransport = implementation.clone();
+        let request = ChannelIndexerActionRequest {
+            action: NodeAction::Purge,
+            network_scope: network_scope(),
+            channel_id: channel_id.clone(),
+            bedrock_endpoint: None,
+            source_config_revision: None,
+            selected_sequencer_source_id: None,
+        };
+
+        let report =
+            basecamp_action_with_configs("default", directory.path(), &[], request, &transport)
+                .await?;
+        anyhow::ensure!(
+            report
+                .operations
+                .first()
+                .map(|operation| operation.status.as_str())
+                == Some("purged"),
+            "Basecamp purge did not complete without live source bindings"
+        );
+        let state = implementation
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Basecamp Indexer test lock poisoned"))?;
+        anyhow::ensure!(
+            state.calls.iter().any(|call| {
+                call.module() == INDEXER_MODULE && call.method() == "reset_storage"
+            }),
+            "Basecamp purge did not dispatch reset_storage"
         );
         Ok(())
     }

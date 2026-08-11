@@ -18,10 +18,6 @@ QtObject {
 
     readonly property string activeZoneId: activeZoneContext
         ? String(activeZoneContext.channel_id || "") : ""
-    readonly property bool basecampHosted: appModel
-        && typeof appModel.prefersBasecampModules === "function"
-        && appModel.prefersBasecampModules() === true
-
     property string sourceMutationError: ""
     property var sourceMutationWarning: null
     property bool sourceMutationInFlight: false
@@ -113,7 +109,7 @@ QtObject {
 
     function managedIndexerActionRequiresSourceConfiguration(action) {
         const actionKey = String(action || "")
-        return actionKey === "start" || (actionKey === "purge" && basecampHosted)
+        return actionKey === "start"
     }
 
     function managedIndexerConfigContextMatches(generation, scope, channelId, contextRevision) {
