@@ -125,6 +125,11 @@ QtObject {
     property int statusAcceptanceRevision: 0
     property int summaryRequestRevision: 0
     property var summaryAssembly: null
+    // A freshly restarted catalog can briefly publish an empty reset before
+    // it has rebuilt the same source/configuration snapshot. Keep the prior
+    // rows through one such report; a following report for that source is the
+    // confirmation that an empty catalog is authoritative.
+    property var deferredEmptyResetReport: null
     property string summarySourceKey: ""
     property double summarySourceRevision: 0
     property string summaryNetworkScopeKey: ""
@@ -649,6 +654,15 @@ QtObject {
                 || assembly.source_generation !== sourceGeneration) {
             return
         }
+        if (shouldDeferCompatibleEmptyReset(assembly)) {
+            deferredEmptyResetReport = assembly.report
+            summaryAssembly = null
+            summaryError = ""
+            summaryInFlight = false
+            summaryStale = true
+            detailStale = zoneDetail !== null
+            return
+        }
         const summaryRowsChanged = assembly.kind === "reset"
             || assembly.upserts.length > 0 || assembly.removed_zone_ids.length > 0
         let rows = zoneSummaries
@@ -699,6 +713,7 @@ QtObject {
         summaryObservationRevision = numericRevision(report.observation_revision)
         summaryRevision = numericRevision(report.summary_revision)
         summaryAssembly = null
+        deferredEmptyResetReport = null
         summaryError = ""
         if (summaryRowsChanged) {
             zoneSummaries = rows
@@ -1270,6 +1285,23 @@ QtObject {
             && summaryRevision === numericRevision(catalogStatus.summary_revision)
     }
 
+    function shouldDeferCompatibleEmptyReset(assembly) {
+        const report = assembly && assembly.report
+        return assembly && assembly.kind === "reset"
+            && Array.isArray(assembly.rows) && assembly.rows.length === 0
+            && report && summaryLoaded && zoneSummaries.length > 0
+            && summarySourceKey === desiredSourceKey
+            && summaryNetworkScopeKey.length > 0
+            && summaryNetworkScopeKey === assembly.network_scope_key
+            && summarySourceConfigEpoch
+                === numericRevision(report.source_config_epoch)
+            && summarySourceRevision
+                !== numericRevision(report.source_revision)
+            && (deferredEmptyResetReport === null
+                || numericRevision(deferredEmptyResetReport.source_revision)
+                    !== numericRevision(report.source_revision))
+    }
+
     function cachedSummaryCompatible(nextScopeKey, nextSourceConfigEpoch) {
         if (!summaryLoaded || summaryNetworkScopeKey.length === 0
                 || (summarySourceKey.length > 0
@@ -1412,6 +1444,7 @@ QtObject {
         summaryAssembly = null
         summaryError = ""
         if (clearRows) {
+            deferredEmptyResetReport = null
             zoneSummaries = []
             summaryLoaded = false
             summaryStale = false

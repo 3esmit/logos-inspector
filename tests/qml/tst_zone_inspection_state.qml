@@ -1022,7 +1022,10 @@ TestCase {
         }, null, {
             source_revision: 2
         })))
-        compare(zoneState.activeZoneId, "")
+        compare(zoneState.activeZoneId, "zone-a")
+        compare(zoneState.zoneSummaries.length, 1)
+        verify(zoneState.navigationRowsRetainable)
+        verify(zoneState.summaryStale)
 
         verify(zoneState.pollStatus())
         gateway.respondNext("zoneCatalogStatus", ok(statusReport({
@@ -1033,9 +1036,8 @@ TestCase {
             summary_revision: 2
         })))
         gateway.respondNext("zonesSummary", ok(summaryReport(2, {
-            kind: "delta",
-            upserts: [row, other],
-            removed_zone_ids: []
+            kind: "reset",
+            rows: [row, other]
         }, null, {
             source_revision: 2
         })))
@@ -1043,6 +1045,65 @@ TestCase {
         compare(zoneState.activeZoneId, "zone-a")
         compare(zoneState.activeZoneContext.selected_sequencer_source_id, "seq-a")
         compare(zoneState.activeZoneContext.indexer_source_id, "idx-a")
+    }
+
+    function test_catalog_retry_accepts_a_confirmed_empty_reset() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a", 7)
+        loadOneZone(row)
+        compare(zoneState.activeZoneId, "zone-a")
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "empty",
+            coverage: { status: "unknown", gap_count: 0 },
+            ingestion: { worker_running: false, discovered_zone_count: 0 },
+            current_error: "Bedrock unavailable"
+        })))
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogRetry", ok({
+            report_kind: "zones.catalog_control",
+            schema_version: 1,
+            control: "retry",
+            source_revision: 2
+        }))
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            source_revision: 2,
+            verification: "verified",
+            coverage: { status: "complete", gap_count: 0 },
+            ingestion: { worker_running: false, discovered_zone_count: 0 },
+            summary_revision: 1
+        })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(1, {
+            kind: "reset",
+            rows: []
+        }, null, {
+            source_revision: 2
+        })))
+        compare(zoneState.activeZoneId, "zone-a")
+        verify(zoneState.navigationRowsRetainable)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            source_revision: 2,
+            verification: "verified",
+            coverage: { status: "complete", gap_count: 0 },
+            ingestion: { worker_running: false, discovered_zone_count: 0 },
+            summary_revision: 1
+        })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(1, {
+            kind: "reset",
+            rows: []
+        }, null, {
+            source_revision: 2
+        })))
+
+        compare(zoneState.activeZoneId, "")
+        compare(zoneState.zoneSummaries.length, 0)
+        verify(!zoneState.navigationRowsRetainable)
+        verify(!zoneState.summaryStale)
     }
 
     function test_same_snapshot_verification_recovery_restores_the_exact_zone() {
