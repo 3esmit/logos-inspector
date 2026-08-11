@@ -66,6 +66,8 @@ pub type LogosInspectorHostDispatchInstanceFn = unsafe extern "C" fn(
 ) -> i32;
 pub type LogosInspectorHostSubscribeInstanceFn =
     unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char) -> i32;
+pub type LogosInspectorHostUnsubscribeInstanceFn =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char) -> i32;
 pub type LogosInspectorHostCancelFn = unsafe extern "C" fn(*mut c_void, u64);
 pub type LogosInspectorHostCloseFn = unsafe extern "C" fn(*mut c_void);
 
@@ -91,6 +93,7 @@ pub struct LogosInspectorHostTransportV2 {
     pub v1: LogosInspectorHostTransportV1,
     pub dispatch_instance: Option<LogosInspectorHostDispatchInstanceFn>,
     pub subscribe_instance: Option<LogosInspectorHostSubscribeInstanceFn>,
+    pub unsubscribe_instance: Option<LogosInspectorHostUnsubscribeInstanceFn>,
 }
 
 pub struct LogosInspectorCore {
@@ -122,6 +125,7 @@ struct HostVtable {
     dispatch: LogosInspectorHostDispatchFn,
     dispatch_instance: Option<LogosInspectorHostDispatchInstanceFn>,
     subscribe_instance: Option<LogosInspectorHostSubscribeInstanceFn>,
+    unsubscribe_instance: Option<LogosInspectorHostUnsubscribeInstanceFn>,
     cancel: Option<LogosInspectorHostCancelFn>,
     close: LogosInspectorHostCloseFn,
 }
@@ -269,6 +273,7 @@ impl HostVtable {
             dispatch,
             dispatch_instance: None,
             subscribe_instance: None,
+            unsubscribe_instance: None,
             cancel: transport.cancel,
             close,
         })
@@ -292,32 +297,70 @@ impl HostVtable {
                 prefix.abi_version
             ));
         }
-        if (prefix.struct_size as usize) < size_of::<LogosInspectorHostTransportV2>() {
+        let v2_legacy_size = size_of::<LogosInspectorHostTransportV1>()
+            + size_of::<Option<LogosInspectorHostDispatchInstanceFn>>()
+            + size_of::<Option<LogosInspectorHostSubscribeInstanceFn>>();
+        if (prefix.struct_size as usize) < v2_legacy_size {
             return Err("host transport vtable is smaller than version 2".to_owned());
         }
 
-        // SAFETY: a version-2 prefix whose advertised size covers V2, together
-        // with the constructor contract, proves this complete V2 value is
-        // readable for the duration of the copy.
-        let transport = unsafe { ptr::read(transport) };
-        let Some(dispatch) = transport.v1.dispatch else {
+        let dispatch_instance = unsafe {
+            ptr::read(
+                transport
+                    .cast::<u8>()
+                    .add(size_of::<LogosInspectorHostTransportV1>())
+                    .cast::<Option<LogosInspectorHostDispatchInstanceFn>>(),
+            )
+        };
+        let subscribe_instance = unsafe {
+            ptr::read(
+                transport
+                    .cast::<u8>()
+                    .add(
+                        size_of::<LogosInspectorHostTransportV1>()
+                            + size_of::<Option<LogosInspectorHostDispatchInstanceFn>>(),
+                    )
+                    .cast::<Option<LogosInspectorHostSubscribeInstanceFn>>(),
+            )
+        };
+        let unsubscribe_instance =
+            if (prefix.struct_size as usize) >= size_of::<LogosInspectorHostTransportV2>() {
+                // SAFETY: the advertised V2 size covers the optional callback
+                // field, so this read stays within the caller-owned vtable.
+                unsafe {
+                    ptr::read(
+                        transport
+                            .cast::<u8>()
+                            .add(
+                                size_of::<LogosInspectorHostTransportV1>()
+                                    + size_of::<Option<LogosInspectorHostDispatchInstanceFn>>()
+                                    + size_of::<Option<LogosInspectorHostSubscribeInstanceFn>>(),
+                            )
+                            .cast::<Option<LogosInspectorHostUnsubscribeInstanceFn>>(),
+                    )
+                }
+            } else {
+                None
+            };
+        let Some(dispatch) = prefix.dispatch else {
             return Err("host transport dispatch callback is required".to_owned());
         };
-        let Some(dispatch_instance) = transport.dispatch_instance else {
+        let Some(dispatch_instance) = dispatch_instance else {
             return Err("host transport scoped dispatch callback is required".to_owned());
         };
-        let Some(subscribe_instance) = transport.subscribe_instance else {
+        let Some(subscribe_instance) = subscribe_instance else {
             return Err("host transport scoped subscription callback is required".to_owned());
         };
-        let Some(close) = transport.v1.close else {
+        let Some(close) = prefix.close else {
             return Err("host transport close callback is required".to_owned());
         };
         Ok(Self {
-            context: transport.v1.context.expose_provenance(),
+            context: prefix.context.expose_provenance(),
             dispatch,
             dispatch_instance: Some(dispatch_instance),
             subscribe_instance: Some(subscribe_instance),
-            cancel: transport.v1.cancel,
+            unsubscribe_instance,
+            cancel: prefix.cancel,
             close,
         })
     }
@@ -635,6 +678,7 @@ impl HostState {
             return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
         }
         let mut remove = Vec::new();
+        let mut remote_unsubscribes = Vec::new();
         let mut overflowed = false;
         for (subscription_id, subscription) in &registry.subscriptions {
             if subscription.module != module
@@ -657,9 +701,24 @@ impl HostState {
             }
         }
         for subscription_id in remove {
-            registry.subscriptions.remove(&subscription_id);
+            let Some(subscription) = registry.subscriptions.remove(&subscription_id) else {
+                continue;
+            };
+            if subscription.instance_id.is_some() && self.vtable.unsubscribe_instance.is_some() {
+                registry.active_host_calls += 1;
+                remote_unsubscribes.push((
+                    subscription.module,
+                    subscription.instance_id,
+                    subscription.event,
+                ));
+            }
         }
         drop(registry);
+        for (module, instance_id, event) in remote_unsubscribes {
+            if let Some(instance_id) = instance_id {
+                self.call_native_unsubscribe(&module, &instance_id, &event);
+            }
+        }
         if overflowed {
             return Err(std::io::Error::other(HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR).into());
         }
@@ -667,7 +726,54 @@ impl HostState {
     }
 
     fn unsubscribe_module_event(&self, subscription_id: HostSubscriptionId) {
-        lock(&self.registry).subscriptions.remove(&subscription_id);
+        let remote_subscription = {
+            let mut registry = lock(&self.registry);
+            let Some(subscription) = registry.subscriptions.remove(&subscription_id) else {
+                return;
+            };
+            if registry.phase == LifecyclePhase::Open
+                && subscription.instance_id.is_some()
+                && self.vtable.unsubscribe_instance.is_some()
+            {
+                registry.active_host_calls += 1;
+                Some((
+                    subscription.module,
+                    subscription.instance_id,
+                    subscription.event,
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some((module, Some(instance_id), event)) = remote_subscription {
+            self.call_native_unsubscribe(&module, &instance_id, &event);
+        }
+    }
+
+    fn call_native_unsubscribe(&self, module: &str, instance_id: &str, event: &str) {
+        let Some(unsubscribe_instance) = self.vtable.unsubscribe_instance else {
+            self.finish_host_call();
+            return;
+        };
+        let strings = (
+            CString::new(module),
+            CString::new(instance_id),
+            CString::new(event),
+        );
+        if let (Ok(module), Ok(instance_id), Ok(event)) = strings {
+            // SAFETY: the copied host context remains valid while the active
+            // host call is accounted for. Each string is borrowed only for
+            // this synchronous callback.
+            unsafe {
+                unsubscribe_instance(
+                    self.vtable.context(),
+                    module.as_ptr(),
+                    instance_id.as_ptr(),
+                    event.as_ptr(),
+                );
+            }
+        }
+        self.finish_host_call();
     }
 
     fn interrupt_requests_from_thread(&self, origin_thread: thread::ThreadId) {
@@ -1403,9 +1509,12 @@ pub unsafe extern "C" fn logos_inspector_core_new_with_host_transport(
 ///
 /// `transport` must point to a readable `LogosInspectorHostTransportV1`
 /// prefix. When that prefix advertises ABI version 2 and a V2-sized vtable,
-/// `transport` must point to a readable `LogosInspectorHostTransportV2`. Its
-/// context must remain valid until `logos_inspector_core_close` returns and
-/// satisfy the same concurrency and callback-quiescence contract as version 1.
+/// `transport` must point to a readable `LogosInspectorHostTransportV2`.
+/// Legacy V2-sized prefixes ending after `subscribe_instance` remain accepted;
+/// the optional unsubscribe callback is read only when advertised by
+/// `struct_size`. Its context must remain valid until
+/// `logos_inspector_core_close` returns and satisfy the same concurrency and
+/// callback-quiescence contract as version 1.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logos_inspector_core_new_with_host_transport_v2(
     transport: *const LogosInspectorHostTransportV2,
@@ -2035,6 +2144,7 @@ mod tests {
         release_dispatch: bool,
         requests: Vec<TestHostRequest>,
         scoped_subscriptions: Vec<(String, String, String)>,
+        scoped_unsubscriptions: Vec<(String, String, String)>,
         cancelled: Vec<u64>,
         close_count: usize,
     }
@@ -2121,6 +2231,7 @@ mod tests {
                     release_dispatch: false,
                     requests: Vec::new(),
                     scoped_subscriptions: Vec::new(),
+                    scoped_unsubscriptions: Vec::new(),
                     cancelled: Vec::new(),
                     close_count: 0,
                 }),
@@ -2147,6 +2258,7 @@ mod tests {
                 v1,
                 dispatch_instance: Some(test_host_dispatch_instance),
                 subscribe_instance: Some(test_host_subscribe_instance),
+                unsubscribe_instance: Some(test_host_unsubscribe_instance),
             }
         }
 
@@ -2710,6 +2822,36 @@ mod tests {
         1
     }
 
+    unsafe extern "C" fn test_host_unsubscribe_instance(
+        host_context: *mut c_void,
+        module: *const c_char,
+        instance_id: *const c_char,
+        event: *const c_char,
+    ) -> i32 {
+        if host_context.is_null() {
+            return 0;
+        }
+        // SAFETY: each test keeps its Arc host alive through core close.
+        let host = unsafe { &*host_context.cast::<TestHost>() };
+        let Ok(module) = c_string(module, "module") else {
+            return 0;
+        };
+        let Ok(instance_id) = c_string(instance_id, "module instance id") else {
+            return 0;
+        };
+        let Ok(event) = c_string(event, "event") else {
+            return 0;
+        };
+        if module.trim().is_empty() || instance_id.trim().is_empty() || event.trim().is_empty() {
+            return 0;
+        }
+        lock(&host.registry)
+            .scoped_unsubscriptions
+            .push((module, instance_id, event));
+        host.changed.notify_all();
+        1
+    }
+
     unsafe extern "C" fn test_host_cancel(host_context: *mut c_void, module_request_id: u64) {
         if host_context.is_null() {
             return;
@@ -3176,7 +3318,7 @@ mod tests {
     }
 
     #[test]
-    fn host_transport_v2_constructor_requires_complete_scoped_callbacks() -> TestResult {
+    fn host_transport_v2_constructor_accepts_legacy_optional_unsubscribe() -> TestResult {
         let host = TestHost::new();
         let vtable = host.vtable_v2();
         // SAFETY: the complete v2 vtable remains readable for this call.
@@ -3190,6 +3332,25 @@ mod tests {
         }
         if host.close_count() != 1 {
             return err("accepted version-2 constructor did not close its host once");
+        }
+
+        let mut legacy = host.vtable_v2();
+        legacy.v1.struct_size = (size_of::<LogosInspectorHostTransportV1>()
+            + size_of::<Option<LogosInspectorHostDispatchInstanceFn>>()
+            + size_of::<Option<LogosInspectorHostSubscribeInstanceFn>>())
+            as u32;
+        // SAFETY: the legacy-sized prefix still covers both required scoped
+        // callbacks; the optional callback is intentionally outside it.
+        let legacy_handle = unsafe { logos_inspector_core_new_with_host_transport_v2(&legacy) };
+        if legacy_handle.is_null() {
+            return err("legacy version-2 host transport prefix was rejected");
+        }
+        // SAFETY: the test owns this successful constructor result.
+        unsafe {
+            logos_inspector_core_free(legacy_handle);
+        }
+        if host.close_count() != 2 {
+            return err("legacy version-2 constructor did not close its host once");
         }
 
         let mut undersized = host.vtable_v2();
@@ -3225,7 +3386,7 @@ mod tests {
             }
             return err("incomplete version-2 host transport vtable was accepted");
         }
-        if host.close_count() != 1 {
+        if host.close_count() != 2 {
             return err("rejected version-2 vtable transferred host ownership");
         }
         Ok(())
@@ -3701,6 +3862,15 @@ mod tests {
 
         drop(call_future);
         drop(subscription);
+        if lock(&host.registry).scoped_unsubscriptions
+            != [(
+                "lez_indexer_module".to_owned(),
+                lez_instance.to_owned(),
+                "nodeChanged".to_owned(),
+            )]
+        {
+            return err("dropping a scoped subscription did not notify the host");
+        }
         state.close();
         Ok(())
     }

@@ -1324,6 +1324,7 @@ bool scopedIndexerDispatchAndEventsStayWithinInstance()
     REQUIRE(vtable.v1.struct_size == sizeof(LogosInspectorHostTransportV2));
     REQUIRE(vtable.dispatch_instance != nullptr);
     REQUIRE(vtable.subscribe_instance != nullptr);
+    REQUIRE(vtable.unsubscribe_instance != nullptr);
 
     fixture.protocol.setInvokeMode(FakeProtocol::InvokeMode::inlineNull);
     ReplyCollector replies;
@@ -1348,6 +1349,7 @@ bool scopedIndexerDispatchAndEventsStayWithinInstance()
                 &replies)
         == 1);
     REQUIRE(waitUntil([&replies] { return replies.replies().size() == 2; }));
+    REQUIRE(fixture.protocol.destroyedClients() == 2);
 
     const auto invocations = fixture.protocol.invocations();
     REQUIRE(invocations.size() == 2);
@@ -1398,6 +1400,102 @@ bool scopedIndexerDispatchAndEventsStayWithinInstance()
     REQUIRE(events[0].event == "nodeChanged");
     REQUIRE(events[0].argsJson == R"(["zone-a"])");
     REQUIRE(!fixture.protocol.emitEvent("lez_indexer_module", "nodeChanged", R"(["default"] )"));
+    REQUIRE(vtable.unsubscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeChanged")
+        == 1);
+    REQUIRE(fixture.protocol.destroyedClients() == 2);
+    REQUIRE(vtable.unsubscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.unsubscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeChanged")
+        == 1);
+    REQUIRE(fixture.protocol.destroyedClients() == 4);
+    REQUIRE(vtable.unsubscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeChanged")
+        == 1);
+    return true;
+}
+
+bool scopedClientCapIsReclaimedAfterLastReference()
+{
+    LogosProtocolHostTransportLimits limits;
+    limits.maxScopedClients = 1;
+    Fixture fixture(limits);
+    REQUIRE(fixture.transport.bindCoreV2(
+        &fixture.core,
+        &ingestModuleEvent,
+        &ingestModuleInstanceEvent,
+        &setRuntimeModuleEventHealth));
+    REQUIRE(fixture.transport.activate());
+    const LogosInspectorHostTransportV2 vtable = fixture.transport.vtableV2();
+    fixture.protocol.setInvokeMode(FakeProtocol::InvokeMode::inlineNull);
+    ReplyCollector replies;
+    REQUIRE(vtable.dispatch_instance(
+                vtable.v1.context,
+                301,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeStatus",
+                "[]",
+                &ReplyCollector::callback,
+                &replies)
+        == 1);
+    REQUIRE(waitUntil([&replies] { return replies.replies().size() == 1; }));
+    REQUIRE(vtable.dispatch_instance(
+                vtable.v1.context,
+                302,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeStatus",
+                "[]",
+                &ReplyCollector::callback,
+                &replies)
+        == 1);
+    REQUIRE(waitUntil([&replies] { return replies.replies().size() == 2; }));
+
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeChanged")
+        == 0);
+    REQUIRE(vtable.unsubscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-0101",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.subscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeChanged")
+        == 1);
+    REQUIRE(vtable.unsubscribe_instance(
+                vtable.v1.context,
+                "lez_indexer_module",
+                "indexer-testnet-8888",
+                "nodeChanged")
+        == 1);
     return true;
 }
 
@@ -2031,7 +2129,7 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 23> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 24> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
         { "missingRequiredSubscriptionKeepsDispatchOpen", missingRequiredSubscriptionKeepsDispatchOpen },
@@ -2042,6 +2140,7 @@ int main(int argc, char* argv[])
         { "faultDuringReadyHealthPublicationCannotRestoreStaleHealth", faultDuringReadyHealthPublicationCannotRestoreStaleHealth },
         { "dispatchEnforcesAllowlistAndBounds", dispatchEnforcesAllowlistAndBounds },
         { "scopedIndexerDispatchAndEventsStayWithinInstance", scopedIndexerDispatchAndEventsStayWithinInstance },
+        { "scopedClientCapIsReclaimedAfterLastReference", scopedClientCapIsReclaimedAfterLastReference },
         { "pendingAdmissionIsBoundedAndIdsStayReserved", pendingAdmissionIsBoundedAndIdsStayReserved },
         { "foreignResultsPreserveSuccessNullAndCanonicalFailure", foreignResultsPreserveSuccessNullAndCanonicalFailure },
         { "malformedResultStillCompletesAcceptedDispatch", malformedResultStillCompletesAcceptedDispatch },
