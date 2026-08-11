@@ -821,6 +821,19 @@ QtObject {
                 return root.invalidateAttachedRuntimeObservations()
             }
 
+            function refreshMessagingObservation() {
+                return metricsState.observeNetworkConnection(
+                    "messaging",
+                    false,
+                    false,
+                    function () {
+                        if (root.capabilityRegistryLoaded !== true) {
+                            root.loadCapabilityRegistryAsync()
+                        }
+                    },
+                    "source-inspection")
+            }
+
             function prefersBasecampModules() {
                 return root.prefersBasecampModules()
             }

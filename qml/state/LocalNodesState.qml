@@ -469,6 +469,12 @@ QtObject {
                 }, detail);
                 if (historyStatus === "failed") {
                     gateway.setResult(operationLabel, detail, true, operation);
+                } else if (basecampHost
+                        && request.action === "start"
+                        && request.node === "messaging"
+                        && String(operation.status || "").toLowerCase() === "running"
+                        && typeof gateway.refreshMessagingObservation === "function") {
+                    gateway.refreshMessagingObservation();
                 }
                 refreshDevnets();
                 if (request.node === "indexer"
