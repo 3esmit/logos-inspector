@@ -359,6 +359,7 @@ public:
         result.v1.struct_size = static_cast<uint32_t>(sizeof(result));
         result.dispatch_instance = &dispatchInstanceCallback;
         result.subscribe_instance = &subscribeInstanceCallback;
+        result.unsubscribe_instance = &unsubscribeInstanceCallback;
         return result;
     }
 
@@ -434,6 +435,7 @@ private:
         std::string module;
         std::string instanceId;
         lp_client* handle = nullptr;
+        std::size_t references = 0;
     };
 
     struct SubscriptionRecord
@@ -443,6 +445,8 @@ private:
         std::string instanceId;
         std::string event;
         lp_subscription* handle = nullptr;
+        lp_client* client = nullptr;
+        std::size_t references = 1;
     };
 
     struct PendingRequest
@@ -456,6 +460,7 @@ private:
         std::string method;
         std::string argsJson;
         std::size_t retainedBytes = 0;
+        bool scopedClientReference = false;
         bool invoking = true;
         bool callbackFinished = false;
         bool cancelled = false;
@@ -581,6 +586,24 @@ private:
         }
         try {
             return static_cast<Impl*>(context)->subscribeInstance(module, instanceId, event)
+                ? 1
+                : 0;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static int32_t unsubscribeInstanceCallback(
+        void* context,
+        const char* module,
+        const char* instanceId,
+        const char* event) noexcept
+    {
+        if (context == nullptr) {
+            return 0;
+        }
+        try {
+            return static_cast<Impl*>(context)->unsubscribeInstance(module, instanceId, event)
                 ? 1
                 : 0;
         } catch (...) {
@@ -796,7 +819,7 @@ private:
         return nullptr;
     }
 
-    lp_client* ensureScopedClient(std::string_view module, std::string_view instanceId)
+    lp_client* acquireScopedClient(std::string_view module, std::string_view instanceId)
     {
         if (instanceId.empty() || api_.clientCreateInstance == nullptr) {
             return nullptr;
@@ -808,6 +831,12 @@ private:
                 return nullptr;
             }
             if (lp_client* const existing = clientForModuleLocked(module, instanceId)) {
+                for (ClientRecord& client : clients_) {
+                    if (client.handle == existing) {
+                        ++client.references;
+                        break;
+                    }
+                }
                 return existing;
             }
             std::size_t scopedClients = 0;
@@ -835,7 +864,7 @@ private:
         try {
             std::lock_guard<std::mutex> lock(mutex_);
             if (lifecycle_ == Lifecycle::open && workerLive_) {
-                clients_.push_back(ClientRecord { moduleText, instanceText, handle });
+                clients_.push_back(ClientRecord { moduleText, instanceText, handle, 1 });
                 retain = true;
             }
         } catch (...) {
@@ -848,6 +877,50 @@ private:
             return nullptr;
         }
         return handle;
+    }
+
+    void releaseScopedClient(lp_client* handle) noexcept
+    {
+        if (handle == nullptr) {
+            return;
+        }
+        lp_client* destroy = nullptr;
+        try {
+            {
+                std::lock_guard<std::mutex> creationLock(clientCreationMutex_);
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = std::find_if(
+                    clients_.begin(),
+                    clients_.end(),
+                    [handle](const ClientRecord& client) {
+                        return client.handle == handle && !client.instanceId.empty();
+                    });
+                if (found == clients_.end()) {
+                    return;
+                }
+                if (found->references > 0) {
+                    --found->references;
+                }
+                if (found->references != 0) {
+                    return;
+                }
+                const bool referencedBySubscription = std::any_of(
+                    subscriptions_.begin(),
+                    subscriptions_.end(),
+                    [handle](const std::unique_ptr<SubscriptionRecord>& subscription) {
+                        return subscription->client == handle && subscription->references > 0;
+                    });
+                if (referencedBySubscription) {
+                    return;
+                }
+                destroy = found->handle;
+                clients_.erase(found);
+            }
+            if (destroy != nullptr) {
+                api_.clientDestroy(destroy);
+            }
+        } catch (...) {
+        }
     }
 
     bool subscribeInstance(
@@ -875,6 +948,7 @@ private:
         }
 
         std::lock_guard<std::mutex> creationLock(subscriptionCreationMutex_);
+        bool existingSubscription = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (lifecycle_ != Lifecycle::open || !workerLive_ || ingestInstance_ == nullptr) {
@@ -883,20 +957,48 @@ private:
             for (const auto& subscription : subscriptions_) {
                 if (subscription->module == module && subscription->instanceId == instanceId
                     && subscription->event == event) {
-                    return true;
+                    existingSubscription = true;
+                    break;
                 }
             }
-            std::size_t scopedSubscriptions = 0;
-            for (const auto& subscription : subscriptions_) {
-                scopedSubscriptions += !subscription->instanceId.empty() ? 1U : 0U;
-            }
-            if (scopedSubscriptions >= limits_.maxScopedSubscriptions) {
-                return false;
+            if (!existingSubscription) {
+                std::size_t scopedSubscriptions = 0;
+                for (const auto& subscription : subscriptions_) {
+                    scopedSubscriptions += !subscription->instanceId.empty() ? 1U : 0U;
+                }
+                if (scopedSubscriptions >= limits_.maxScopedSubscriptions) {
+                    return false;
+                }
             }
         }
 
-        lp_client* const client = ensureScopedClient(module, instanceId);
+        lp_client* const client = acquireScopedClient(module, instanceId);
         if (client == nullptr) {
+            return false;
+        }
+
+        if (existingSubscription) {
+            bool retained = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = std::find_if(
+                    subscriptions_.begin(),
+                    subscriptions_.end(),
+                    [&module, &instanceId, &event](
+                        const std::unique_ptr<SubscriptionRecord>& entry) {
+                        return entry->module == module && entry->instanceId == instanceId
+                            && entry->event == event;
+                    });
+                if (found != subscriptions_.end() && lifecycle_ == Lifecycle::open
+                    && workerLive_) {
+                    ++(*found)->references;
+                    retained = true;
+                }
+            }
+            if (retained) {
+                return true;
+            }
+            releaseScopedClient(client);
             return false;
         }
 
@@ -905,13 +1007,19 @@ private:
         record->module.assign(module);
         record->instanceId.assign(instanceId);
         record->event.assign(event);
+        record->client = client;
         SubscriptionRecord* const rawRecord = record.get();
+        bool retainRecord = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (lifecycle_ != Lifecycle::open || !workerLive_ || ingestInstance_ == nullptr) {
-                return false;
+            if (lifecycle_ == Lifecycle::open && workerLive_ && ingestInstance_ != nullptr) {
+                subscriptions_.push_back(std::move(record));
+                retainRecord = true;
             }
-            subscriptions_.push_back(std::move(record));
+        }
+        if (!retainRecord) {
+            releaseScopedClient(client);
+            return false;
         }
 
         lp_subscription* handle = nullptr;
@@ -926,6 +1034,7 @@ private:
         }
 
         bool retained = false;
+        std::unique_ptr<SubscriptionRecord> removedRecord;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = std::find_if(
@@ -939,6 +1048,7 @@ private:
                 rawRecord->handle = handle;
                 retained = true;
             } else if (found != subscriptions_.end()) {
+                removedRecord = std::move(*found);
                 subscriptions_.erase(found);
             }
         }
@@ -948,7 +1058,73 @@ private:
             } catch (...) {
             }
         }
+        if (!retained) {
+            releaseScopedClient(client);
+        }
         return retained;
+    }
+
+    bool unsubscribeInstance(
+        const char* moduleValue,
+        const char* instanceValue,
+        const char* eventValue)
+    {
+        std::size_t moduleLength = 0;
+        std::size_t instanceLength = 0;
+        std::size_t eventLength = 0;
+        if (!boundedCStringLength(moduleValue, kMaxIdentifierBytes, moduleLength)
+            || moduleLength == 0
+            || !boundedCStringLength(instanceValue, kMaxIdentifierBytes, instanceLength)
+            || instanceLength == 0
+            || !boundedCStringLength(eventValue, kMaxIdentifierBytes, eventLength)
+            || eventLength == 0) {
+            return false;
+        }
+        const std::string_view module(moduleValue, moduleLength);
+        const std::string_view instanceId(instanceValue, instanceLength);
+        const std::string_view event(eventValue, eventLength);
+        if (!allowedModule(module)
+            || module != "lez_indexer_module" || event != "nodeChanged") {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> creationLock(subscriptionCreationMutex_);
+        std::unique_ptr<SubscriptionRecord> removedRecord;
+        lp_client* client = nullptr;
+        lp_subscription* handle = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = std::find_if(
+                subscriptions_.begin(),
+                subscriptions_.end(),
+                [&module, &instanceId, &event](
+                    const std::unique_ptr<SubscriptionRecord>& entry) {
+                    return entry->module == module && entry->instanceId == instanceId
+                        && entry->event == event;
+                });
+            if (found == subscriptions_.end()) {
+                return true;
+            }
+            SubscriptionRecord& subscription = *(*found);
+            client = subscription.client;
+            if (subscription.references > 1) {
+                --subscription.references;
+            } else {
+                handle = subscription.handle;
+                removedRecord = std::move(*found);
+                subscriptions_.erase(found);
+            }
+        }
+        if (handle != nullptr) {
+            try {
+                api_.unsubscribe(handle);
+            } catch (...) {
+            }
+        }
+        // Keep the record alive until the native unsubscribe callback returns.
+        removedRecord.reset();
+        releaseScopedClient(client);
+        return true;
     }
 
     int32_t dispatch(
@@ -1001,40 +1177,53 @@ private:
 
         lp_client* scopedClient = nullptr;
         if (!instanceView.empty()) {
-            scopedClient = ensureScopedClient(moduleView, instanceView);
+            scopedClient = acquireScopedClient(moduleView, instanceView);
             if (scopedClient == nullptr) {
                 return 0;
             }
         }
 
-        auto request = std::make_unique<PendingRequest>();
-        request->owner = this;
-        request->requestId = requestId;
-        request->reply = reply;
-        request->replyContext = replyContext;
-        request->module.assign(moduleValue, moduleLength);
-        request->method.assign(methodValue, methodLength);
-        request->argsJson.assign(argsValue, argsLength);
-        request->retainedBytes = retainedBytes;
+        std::unique_ptr<PendingRequest> request;
+        try {
+            request = std::make_unique<PendingRequest>();
+            request->owner = this;
+            request->requestId = requestId;
+            request->reply = reply;
+            request->replyContext = replyContext;
+            request->module.assign(moduleValue, moduleLength);
+            request->method.assign(methodValue, methodLength);
+            request->argsJson.assign(argsValue, argsLength);
+            request->retainedBytes = retainedBytes;
+            request->scopedClientReference = !instanceView.empty();
+        } catch (...) {
+            releaseScopedClient(scopedClient);
+            return 0;
+        }
         PendingRequest* const rawRequest = request.get();
 
+        bool admitted = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (lifecycle_ != Lifecycle::open || !workerLive_
                 || pending_.size() >= limits_.maxPendingRequests
                 || pending_.find(requestId) != pending_.end()
                 || retainedBytes > limits_.maxRetainedRequestBytes - retainedRequestBytes_) {
-                return 0;
+                admitted = false;
+            } else {
+                request->client = instanceView.empty()
+                    ? clientForModuleLocked(request->module, {})
+                    : scopedClient;
+                if (request->client != nullptr) {
+                    pending_.emplace(requestId, std::move(request));
+                    retainedRequestBytes_ += retainedBytes;
+                    ++activeInvokes_;
+                    admitted = true;
+                }
             }
-            request->client = instanceView.empty()
-                ? clientForModuleLocked(request->module, {})
-                : scopedClient;
-            if (request->client == nullptr) {
-                return 0;
-            }
-            pending_.emplace(requestId, std::move(request));
-            retainedRequestBytes_ += retainedBytes;
-            ++activeInvokes_;
+        }
+        if (!admitted) {
+            releaseScopedClient(scopedClient);
+            return 0;
         }
         ActiveInvokeGuard activeInvoke(this, requestId, rawRequest);
 
@@ -1087,13 +1276,17 @@ private:
 
     void cancel(uint64_t requestId)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = pending_.find(requestId);
-        if (found == pending_.end()) {
-            return;
+        lp_client* release = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = pending_.find(requestId);
+            if (found == pending_.end()) {
+                return;
+            }
+            found->second->cancelled = true;
+            release = eraseFinishedRequestLocked(requestId, found->second.get());
         }
-        found->second->cancelled = true;
-        eraseFinishedRequestLocked(requestId, found->second.get());
+        releaseScopedClient(release);
     }
 
     void complete(PendingRequest* request, int ok, const char* json)
@@ -1138,15 +1331,17 @@ private:
             invokeReply(action);
         }
 
+        lp_client* release = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = pending_.find(request->requestId);
             if (found != pending_.end() && found->second.get() == request) {
                 found->second->callbackFinished = true;
-                eraseFinishedRequestLocked(request->requestId, request);
+                release = eraseFinishedRequestLocked(request->requestId, request);
             }
             changed_.notify_all();
         }
+        releaseScopedClient(release);
     }
 
     static void invokeReply(const ReplyAction& action) noexcept
@@ -1169,35 +1364,41 @@ private:
     void finishActiveInvoke(uint64_t requestId, PendingRequest* request) noexcept
     {
         try {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto found = pending_.find(requestId);
-            if (found != pending_.end() && found->second.get() == request) {
-                found->second->invoking = false;
+            lp_client* release = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = pending_.find(requestId);
+                if (found != pending_.end() && found->second.get() == request) {
+                    found->second->invoking = false;
+                }
+                if (activeInvokes_ > 0) {
+                    --activeInvokes_;
+                }
+                release = eraseFinishedRequestLocked(requestId, request);
+                changed_.notify_all();
             }
-            if (activeInvokes_ > 0) {
-                --activeInvokes_;
-            }
-            eraseFinishedRequestLocked(requestId, request);
-            changed_.notify_all();
+            releaseScopedClient(release);
         } catch (...) {
         }
     }
 
-    void eraseFinishedRequestLocked(uint64_t requestId, PendingRequest* expected)
+    lp_client* eraseFinishedRequestLocked(uint64_t requestId, PendingRequest* expected)
     {
         const auto found = pending_.find(requestId);
         if (found == pending_.end() || found->second.get() != expected) {
-            return;
+            return nullptr;
         }
         const PendingRequest& request = *found->second;
         if (request.invoking || !request.callbackFinished
             || (!request.terminal && !request.cancelled)) {
-            return;
+            return nullptr;
         }
+        lp_client* release = request.scopedClientReference ? request.client : nullptr;
         retainedRequestBytes_ = request.retainedBytes <= retainedRequestBytes_
             ? retainedRequestBytes_ - request.retainedBytes
             : 0;
         pending_.erase(found);
+        return release;
     }
 
     void ingestEvent(

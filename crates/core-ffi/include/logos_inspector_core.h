@@ -53,6 +53,12 @@ typedef int32_t (*LogosInspectorHostSubscribeInstanceFn)(
     const char* instance_id,
     const char* event);
 
+typedef int32_t (*LogosInspectorHostUnsubscribeInstanceFn)(
+    void* host_context,
+    const char* module,
+    const char* instance_id,
+    const char* event);
+
 typedef void (*LogosInspectorHostCancelFn)(
     void* host_context,
     uint64_t module_request_id);
@@ -69,14 +75,17 @@ typedef struct LogosInspectorHostTransportV1 {
 } LogosInspectorHostTransportV1;
 
 /*
- * V2 is additive. Its V1 prefix remains byte-for-byte unchanged, but hosts
- * using V2 must set v1.abi_version to V2 and v1.struct_size to sizeof(V2).
- * Both scoped callbacks are required by the V2 constructor.
+ * V2 is additive. Its V1 prefix remains byte-for-byte unchanged. Hosts using
+ * V2 must set v1.abi_version to V2 and advertise at least through
+ * subscribe_instance. unsubscribe_instance is optional so hosts built before
+ * that callback was added remain compatible; a full-size V2 may provide it.
  */
 typedef struct LogosInspectorHostTransportV2 {
     LogosInspectorHostTransportV1 v1;
     LogosInspectorHostDispatchInstanceFn dispatch_instance;
     LogosInspectorHostSubscribeInstanceFn subscribe_instance;
+    /* Optional. Older V2 hosts may leave this callback absent. */
+    LogosInspectorHostUnsubscribeInstanceFn unsubscribe_instance;
 } LogosInspectorHostTransportV2;
 
 /*
@@ -118,9 +127,10 @@ LogosInspectorCore* logos_inspector_core_new_with_host_transport(
 /*
  * Creates an asynchronous bridge with explicit module-instance routing.
  * A scoped call or subscription is never redirected to a default instance.
- * transport must provide a readable V1 prefix. If its prefix advertises V2
- * and a V2-sized struct, transport must provide the full readable V2 value.
- * The V1 prefix follows the same ownership, concurrency, and quiescence
+ * transport must provide a readable V1 prefix. If its prefix advertises V2,
+ * it must provide the V2 fields through subscribe_instance; the optional
+ * unsubscribe_instance field is read only when the advertised size includes
+ * it. The V1 prefix follows the same ownership, concurrency, and quiescence
  * contract documented above.
  */
 LogosInspectorCore* logos_inspector_core_new_with_host_transport_v2(
