@@ -1,4 +1,4 @@
-use std::{any::Any, time::Duration};
+use std::{any::Any, path::Path, time::Duration};
 
 #[cfg(any(target_os = "linux", test))]
 use anyhow::bail;
@@ -312,7 +312,17 @@ pub(crate) fn local_module_catalog(modules_dir: Option<&str>) -> Result<LocalMod
 
 fn package_catalog_authority(modules_dir: &std::path::Path) -> Result<PackageInstallAuthority> {
     let runtime = action_engine::LocalNodeActionEngine::system()?.runtime_profile()?;
+    package_catalog_authority_for_runtime(runtime.as_ref(), modules_dir)
+}
+
+fn package_catalog_authority_for_runtime(
+    runtime: Option<&runtime::LogoscoreRuntimeProfile>,
+    modules_dir: &Path,
+) -> Result<PackageInstallAuthority> {
     match runtime {
+        Some(runtime) if runtime.is_attached() && runtime.service_target().is_none() => {
+            Ok(PackageInstallAuthority::CurrentUser)
+        }
         Some(runtime) => runtime.package_install_authority_for_module_target(modules_dir),
         None => Ok(PackageInstallAuthority::CurrentUser),
     }
@@ -1167,5 +1177,33 @@ mod tests {
             root,
             Path::new("/tmp/logos-inspector/root2/data")
         ));
+    }
+
+    #[test]
+    fn attached_catalog_authority_uses_current_user_without_verified_service_target() -> Result<()>
+    {
+        let runtime = runtime::LogoscoreRuntimeProfile {
+            id: "local-attached".to_owned(),
+            binary_path: "/bin/sh".to_owned(),
+            config_dir: "/tmp/logoscore-client".to_owned(),
+            modules_dir: None,
+            persistence_path: None,
+            ownership: runtime::LogoscoreRuntimeOwnership::LocalAttached,
+            timeout_profile: runtime::LogoscoreTimeoutProfile::Probe,
+            observation: runtime::LogoscoreRuntimeObservation::Verified,
+            daemon_process_id: Some(42),
+            service_target: None,
+        };
+
+        let authority = package_catalog_authority_for_runtime(
+            Some(&runtime),
+            Path::new("/opt/logos-node/modules"),
+        )?;
+        if authority != PackageInstallAuthority::CurrentUser {
+            bail!(
+                "attached runtime without a service target must use current-user catalog authority"
+            );
+        }
+        Ok(())
     }
 }
