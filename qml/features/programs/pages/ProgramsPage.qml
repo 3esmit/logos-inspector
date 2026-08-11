@@ -20,9 +20,20 @@ ColumnLayout {
     readonly property bool hasResponse: root.model.pageHasOutput("programs")
     readonly property var responseValue: root.hasResponse ? root.model.shell.resultValue : null
     property string shareAccountId: ""
+    property var shareIdlOptions: []
 
     width: parent ? parent.width : 900
     spacing: 16
+
+    Connections {
+        target: root.model.registeredIdls
+
+        function onCountChanged() {
+            root.refreshShareIdlOptions()
+        }
+    }
+
+    Component.onCompleted: root.refreshShareIdlOptions()
 
     ListModel {
         id: programTabs
@@ -591,7 +602,7 @@ ColumnLayout {
                     ComboBox {
                         id: shareIdl
 
-                        model: root.shareIdlLabels()
+                        model: root.shareIdlOptions
                         enabled: root.model.registeredIdls.count > 0
                         hoverEnabled: true
                         Accessible.name: qsTr("IDL to share")
@@ -692,13 +703,13 @@ ColumnLayout {
         return ProgramResultPresentation.sharedPolicyText(root)
     }
 
-    function shareIdlLabels() {
+    function refreshShareIdlOptions() {
         const rows = []
         for (let i = 0; i < root.model.registeredIdls.count; ++i) {
             const entry = root.model.idlEntryAt(i)
             rows.push(String(entry.name || entry.programIdHex || qsTr("IDL %1").arg(i + 1)))
         }
-        return rows
+        root.shareIdlOptions = rows
     }
 
     function shareSelectedIdl(index) {
