@@ -90,6 +90,10 @@ const CONFIG_ACTIVE_RUNTIME_REASON: &str =
     "Stop this Channel Indexer before editing its configuration.";
 const CONFIG_CREDENTIALS_REASON: &str = "Bedrock credentials are not editable in Inspector. Remove them before opening this configuration.";
 
+fn prune_dead_basecamp_lifecycle_locks(locks: &mut BTreeMap<String, Weak<tokio::sync::Mutex<()>>>) {
+    locks.retain(|_, lock| lock.strong_count() > 0);
+}
+
 async fn acquire_basecamp_lifecycle_lock(
     network_scope: &NetworkScope,
     channel_id: &str,
@@ -100,6 +104,7 @@ async fn acquire_basecamp_lifecycle_lock(
             .get_or_init(|| Mutex::new(BTreeMap::new()))
             .lock()
             .map_err(|_| anyhow::anyhow!("Basecamp lifecycle lock map is poisoned"))?;
+        prune_dead_basecamp_lifecycle_locks(&mut locks);
         if let Some(lock) = locks.get(&instance_id).and_then(Weak::upgrade) {
             lock
         } else {
@@ -3602,6 +3607,22 @@ mod tests {
             "distinct channels must produce distinct instance ids"
         );
         Ok(())
+    }
+
+    #[test]
+    fn dead_basecamp_lifecycle_lock_entries_are_pruned() {
+        let live_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let dead_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let mut locks = BTreeMap::from([
+            ("live".to_owned(), Arc::downgrade(&live_lock)),
+            ("dead".to_owned(), Arc::downgrade(&dead_lock)),
+        ]);
+        drop(dead_lock);
+
+        prune_dead_basecamp_lifecycle_locks(&mut locks);
+
+        assert!(locks.contains_key("live"));
+        assert!(!locks.contains_key("dead"));
     }
 
     #[tokio::test]
