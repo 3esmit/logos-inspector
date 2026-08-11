@@ -373,6 +373,8 @@ ColumnLayout {
                 id: detailLoader
 
                 readonly property ZoneDetail detailItem: item as ZoneDetail
+                readonly property real detailImplicitHeight: detailItem
+                    ? detailItem.implicitHeight : 0
 
                 // Do not derive Loader.active from item. Keep a separate
                 // latch for an unsaved draft, while avoiding a ZoneDetail
@@ -380,6 +382,8 @@ ColumnLayout {
                 active: root.zoneState.zoneDetail !== null || root.retainDetailForDraft
                 asynchronous: false
                 Layout.fillWidth: true
+                Layout.preferredHeight: active ? detailImplicitHeight : 0
+                Layout.maximumHeight: active ? detailImplicitHeight : 0
                 sourceComponent: ZoneDetail {
                     theme: root.theme
                     model: root.model
