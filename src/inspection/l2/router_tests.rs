@@ -474,7 +474,7 @@ async fn exact_sequencer_blocks_never_call_indexer_and_bind_cursor_to_source() -
             .block_pages
             .entry(sequencer_id())
             .or_default()
-            .push_back(Ok(vec![block(3, '3'), block_with_warning(2, '2')]));
+            .push_back(Ok(vec![block(3, '3'), block(2, '2')]));
         state
             .blocks_by_id
             .entry((sequencer_id(), 3))
