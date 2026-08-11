@@ -1146,6 +1146,21 @@ TestCase {
         compare(control.catalogState, zoneState)
     }
 
+    function test_zone_detail_contributes_to_page_scroll_height() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        compare(detail.currentTab, "sources")
+        verify(
+            page.implicitHeight >= detail.y + detail.implicitHeight,
+            "Zones page must expose the full Zone detail height to the outer scroller"
+        )
+    }
+
     function test_managed_indexer_start_uses_catalog_state_separate_from_source_editor() {
         separateCatalogState.summaryRowsUsable = true
         const detail = {
