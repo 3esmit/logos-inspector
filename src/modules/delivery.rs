@@ -96,23 +96,50 @@ pub(crate) async fn delivery_report_with_identity_binding(
             probes.push(delivery_probe(module_transport, adapter, &step).await);
         }
     }
-    let module_info = match adapter {
-        ModuleTransportKind::Module if !runtime_diagnostics_enabled => {
-            unavailable_metadata_probe(adapter, DELIVERY_MODULE)
-        }
-        ModuleTransportKind::Module => probes
-            .iter()
-            .find(|probe| {
-                probe.probe_key.as_deref()
-                    == Some(crate::source_routing::SourceProbeKey::DeliveryVersion.as_str())
-            })
-            .cloned()
-            .unwrap_or_else(|| unavailable_metadata_probe(adapter, DELIVERY_MODULE)),
-        ModuleTransportKind::LogoscoreCli => {
+    // Delivery Store capability gating depends on the loaded module contract.
+    // Keep lightweight module metadata available even when passive observations
+    // reduce runtime probes, otherwise module-event refreshes overwrite the
+    // source report with a metadata-free snapshot and disable Store queries.
+    let metadata = match adapter {
+        ModuleTransportKind::Module | ModuleTransportKind::LogoscoreCli => {
             module_info_probe(module_transport, adapter, DELIVERY_MODULE).await
         }
     };
+    let module_info =
+        if runtime_diagnostics_enabled && delivery_module_info_value(&metadata).is_none() {
+            probes
+                .iter()
+                .find(|probe| {
+                    probe.probe_key.as_deref()
+                        == Some(crate::source_routing::SourceProbeKey::DeliveryVersion.as_str())
+                })
+                .cloned()
+                .unwrap_or_else(|| unavailable_metadata_probe(adapter, DELIVERY_MODULE))
+        } else {
+            metadata
+        };
     ModuleReport::new(adapter, DELIVERY_MODULE, module_info, probes)
+}
+
+fn delivery_module_info_value(report: &ProbeReport) -> Option<&serde_json::Value> {
+    let module_info = report.value.as_ref()?;
+    if module_info.get("ok").is_some()
+        && module_info.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    [
+        module_info.pointer("/value/value"),
+        module_info.get("value"),
+        Some(module_info),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| {
+        value
+            .get("methods")
+            .is_some_and(serde_json::Value::is_array)
+    })
 }
 
 #[cfg(test)]
@@ -138,6 +165,12 @@ mod tests {
 
     struct AdvertisedIdentityTransport {
         identity_calls: Arc<AtomicUsize>,
+    }
+
+    struct MetadataValueTransport {
+        adapter: ModuleTransportKind,
+        module_info: serde_json::Value,
+        module_info_calls: Arc<AtomicUsize>,
     }
 
     impl ModuleTransport for RecordingTransport {
@@ -181,8 +214,30 @@ mod tests {
         }
     }
 
+    impl ModuleTransport for MetadataValueTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            self.adapter
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let value = match call.method() {
+                "version" => json!("0.1.10"),
+                "getAvailableNodeInfoIDs" => json!("@[Version]"),
+                _ => json!({}),
+            };
+            let adapter = self.adapter;
+            Box::pin(async move { Ok(ModuleCallReply::new(adapter, value)) })
+        }
+
+        fn module_info(&self, _module: String) -> ModuleDiagnosticFuture<'_> {
+            self.module_info_calls.fetch_add(1, Ordering::Relaxed);
+            let value = self.module_info.clone();
+            Box::pin(async move { Ok(value) })
+        }
+    }
+
     #[tokio::test]
-    async fn metadata_only_report_skips_delivery_runtime_calls() -> Result<()> {
+    async fn metadata_only_report_keeps_delivery_module_metadata() -> Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
         let module_info_calls = Arc::new(AtomicUsize::new(0));
         let transport: SharedModuleTransport = Arc::new(RecordingTransport {
@@ -202,8 +257,14 @@ mod tests {
         if calls.load(Ordering::Relaxed) != 0 {
             bail!("metadata-only Delivery report dispatched a module call");
         }
-        if module_info_calls.load(Ordering::Relaxed) != 0 {
-            bail!("metadata-only Delivery report queried module metadata");
+        if module_info_calls.load(Ordering::Relaxed) != 1 {
+            bail!("metadata-only Delivery report did not query module metadata");
+        }
+        if !report.module_info.ok {
+            bail!(
+                "metadata-only Delivery report did not retain module metadata: {:?}",
+                report.module_info
+            );
         }
         Ok(())
     }
@@ -230,8 +291,8 @@ mod tests {
         if calls.load(Ordering::Relaxed) != 1 {
             bail!("metrics-only Delivery report did not dispatch exactly one module call");
         }
-        if module_info_calls.load(Ordering::Relaxed) != 0 {
-            bail!("metrics-only Delivery report queried module metadata");
+        if module_info_calls.load(Ordering::Relaxed) != 1 {
+            bail!("metrics-only Delivery report did not query module metadata");
         }
         if report.probes.len() != 1
             || report
@@ -273,6 +334,103 @@ mod tests {
         if !report.module_info.ok {
             bail!(
                 "CLI metrics report did not retain module metadata: {:?}",
+                report.module_info
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_module_report_prefers_module_metadata_for_capability_contract() -> Result<()> {
+        let module_info_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(MetadataValueTransport {
+            adapter: ModuleTransportKind::Module,
+            module_info: json!({
+                "name": "delivery_module",
+                "methods": [{
+                    "isInvokable": true,
+                    "name": "storeQuery",
+                    "signature": "storeQuery(QString,QString,int)"
+                }]
+            }),
+            module_info_calls: Arc::clone(&module_info_calls),
+        });
+
+        let report = delivery_report(&transport, ModuleTransportKind::Module, None, true).await;
+
+        if module_info_calls.load(Ordering::Relaxed) != 1 {
+            bail!("full Delivery report did not query module metadata");
+        }
+        let signature = report
+            .module_info
+            .value
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .pointer("/value/methods/0/signature")
+                    .or_else(|| value.pointer("/methods/0/signature"))
+            })
+            .and_then(serde_json::Value::as_str);
+        if signature != Some("storeQuery(QString,QString,int)") {
+            bail!(
+                "full Delivery report discarded module metadata: {:?}",
+                report.module_info
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_module_report_falls_back_to_version_when_metadata_methods_are_invalid()
+    -> Result<()> {
+        let module_info_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(MetadataValueTransport {
+            adapter: ModuleTransportKind::Module,
+            module_info: json!({
+                "name": "delivery_module",
+                "methods": null
+            }),
+            module_info_calls: Arc::clone(&module_info_calls),
+        });
+
+        let report = delivery_report(&transport, ModuleTransportKind::Module, None, true).await;
+
+        if module_info_calls.load(Ordering::Relaxed) != 1 {
+            bail!("full Delivery fallback report did not query module metadata");
+        }
+        if report.module_info.probe_key.as_deref() != Some(SourceProbeKey::DeliveryVersion.as_str())
+        {
+            bail!(
+                "full Delivery fallback report did not reuse version probe: {:?}",
+                report.module_info
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_cli_report_falls_back_to_version_when_metadata_methods_are_invalid() -> Result<()>
+    {
+        let module_info_calls = Arc::new(AtomicUsize::new(0));
+        let transport: SharedModuleTransport = Arc::new(MetadataValueTransport {
+            adapter: ModuleTransportKind::LogoscoreCli,
+            module_info: json!({
+                "name": "delivery_module",
+                "methods": {}
+            }),
+            module_info_calls: Arc::clone(&module_info_calls),
+        });
+
+        let report =
+            delivery_report(&transport, ModuleTransportKind::LogoscoreCli, None, true).await;
+
+        if module_info_calls.load(Ordering::Relaxed) != 1 {
+            bail!("full CLI Delivery fallback report did not query module metadata");
+        }
+        if report.module_info.probe_key.as_deref() != Some(SourceProbeKey::DeliveryVersion.as_str())
+        {
+            bail!(
+                "full CLI Delivery fallback report did not reuse version probe: {:?}",
                 report.module_info
             );
         }

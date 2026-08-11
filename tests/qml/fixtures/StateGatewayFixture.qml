@@ -47,6 +47,13 @@ QtObject {
         error: ""
     })
     property var pendingStorageObservations: []
+    property int messagingObservationCount: 0
+    property var messagingObservationResponse: ({
+        ok: true,
+        value: {},
+        text: "OK",
+        error: ""
+    })
 
     function reset() {
         callCount = 0
@@ -89,6 +96,13 @@ QtObject {
             error: ""
         })
         pendingStorageObservations = []
+        messagingObservationCount = 0
+        messagingObservationResponse = ({
+            ok: true,
+            value: {},
+            text: "OK",
+            error: ""
+        })
     }
 
     function responseFor(method, primary) {
@@ -251,6 +265,11 @@ QtObject {
         return typeof storageRefreshCallback === "function"
             ? storageRefreshCallback(lastStorageRefreshCid)
             : null
+    }
+
+    function refreshMessagingObservation() {
+        messagingObservationCount += 1
+        return messagingObservationResponse
     }
 
     function completeStorageObservationAt(index, response) {

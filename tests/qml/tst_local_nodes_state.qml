@@ -562,6 +562,144 @@ TestCase {
         compare(gateway.history[0].detail, "ok")
     }
 
+    function test_successful_basecamp_messaging_start_refreshes_delivery_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        const report = testnetReport()
+        report.operations = [{
+            action: "start",
+            node: "messaging",
+            status: "running",
+            detail: "Delivery started"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("start", "messaging", "", "", "Start Messaging")
+
+        compare(gateway.messagingObservationCount, 1)
+        compare(gateway.history.length, 1)
+        compare(gateway.history[0].detail, "Delivery started")
+    }
+
+    function test_failed_messaging_action_does_not_refresh_delivery_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        gateway.responses = ({
+            localNodesAction: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "start failed"
+            }
+        })
+
+        state.runAction("start", "messaging", "", "", "Start Messaging")
+
+        compare(gateway.messagingObservationCount, 0)
+    }
+
+    function test_successful_basecamp_messaging_non_start_action_does_not_refresh_delivery_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        const report = testnetReport()
+        report.operations = [{
+            action: "stop",
+            node: "messaging",
+            status: "stopped",
+            detail: "Delivery stopped"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("stop", "messaging", "", "", "Stop Messaging")
+
+        compare(gateway.messagingObservationCount, 0)
+    }
+
+    function test_nonterminal_basecamp_messaging_start_does_not_refresh_delivery_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        const report = testnetReport()
+        report.operations = [{
+            action: "start",
+            node: "messaging",
+            status: "starting",
+            detail: "Delivery is starting"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("start", "messaging", "", "", "Start Messaging")
+
+        compare(gateway.messagingObservationCount, 0)
+    }
+
+    function test_successful_standalone_messaging_start_does_not_refresh_delivery_observation() {
+        state.networkProfile = "default"
+        const report = testnetReport()
+        report.operations = [{
+            action: "start",
+            node: "messaging",
+            status: "running",
+            detail: "Delivery started"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("start", "messaging", "", "", "Start Messaging")
+
+        compare(gateway.messagingObservationCount, 0)
+    }
+
     function test_run_action_rejects_when_busy() {
         gateway.busy = true
 
