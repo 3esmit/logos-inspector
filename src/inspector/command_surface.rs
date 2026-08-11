@@ -290,6 +290,9 @@ impl InspectorCommandSurface {
 
     pub(crate) fn allows_host_synchronous_call(method: &str) -> bool {
         match inspector_command(method) {
+            Some(InspectorCommand::Operation(
+                OperationBridgeCommand::SettingsBackupImportPreview,
+            )) => true,
             Some(InspectorCommand::Runtime(entry)) => entry.allows_host_synchronous_call(),
             Some(InspectorCommand::CapabilityRegistry) => true,
             Some(
@@ -1003,6 +1006,9 @@ mod tests {
         ));
         assert!(InspectorCommandSurface::allows_host_synchronous_call(
             "capabilityRegistryReport"
+        ));
+        assert!(InspectorCommandSurface::allows_host_synchronous_call(
+            "settingsBackupImportPreview"
         ));
         assert!(!InspectorCommandSurface::allows_host_synchronous_call(
             "rawRpc"
