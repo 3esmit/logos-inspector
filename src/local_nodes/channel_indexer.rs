@@ -1,10 +1,10 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write as _,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -67,6 +67,8 @@ const INDEXER_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
 const INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
 const INDEXER_LIFECYCLE_EVENT_READ_INTERVAL: Duration = Duration::from_millis(250);
 static INDEXER_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
+static BASECAMP_LIFECYCLE_LOCKS: OnceLock<Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
 const BASECAMP_CORE_SERVICE_MODULE: &str = "core_service";
 const BASECAMP_HOST_CAPABILITIES_METHOD: &str = "getHostCapabilities";
 const BASECAMP_LOAD_INSTANCE_METHOD: &str = "loadModuleInstance";
@@ -87,6 +89,32 @@ const CONFIG_VALIDATION_SCOPE: &str =
 const CONFIG_ACTIVE_RUNTIME_REASON: &str =
     "Stop this Channel Indexer before editing its configuration.";
 const CONFIG_CREDENTIALS_REASON: &str = "Bedrock credentials are not editable in Inspector. Remove them before opening this configuration.";
+
+fn prune_dead_basecamp_lifecycle_locks(locks: &mut BTreeMap<String, Weak<tokio::sync::Mutex<()>>>) {
+    locks.retain(|_, lock| lock.strong_count() > 0);
+}
+
+async fn acquire_basecamp_lifecycle_lock(
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+    let instance_id = basecamp_instance_id(network_scope, channel_id)?;
+    let lock = {
+        let mut locks = BASECAMP_LIFECYCLE_LOCKS
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Basecamp lifecycle lock map is poisoned"))?;
+        prune_dead_basecamp_lifecycle_locks(&mut locks);
+        if let Some(lock) = locks.get(&instance_id).and_then(Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(instance_id, Arc::downgrade(&lock));
+            lock
+        }
+    };
+    Ok(lock.lock_owned().await)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -488,8 +516,9 @@ pub(super) async fn basecamp_status(
     channel_id: &str,
 ) -> Result<LocalNodeReport> {
     let config_root = config_dir()?;
+    let _lifecycle_lock = acquire_basecamp_lifecycle_lock(network_scope, channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_status_with_configs(
+    basecamp_status_with_configs_locked(
         profile,
         &config_root,
         &configs,
@@ -511,8 +540,10 @@ pub(super) async fn basecamp_config_snapshot(
     module_transport: &SharedModuleTransport,
 ) -> Result<ChannelIndexerConfigSnapshot> {
     let config_root = config_dir()?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_config_snapshot_with_configs(
+    basecamp_config_snapshot_with_configs_locked(
         &config_root,
         profile,
         request,
@@ -522,7 +553,27 @@ pub(super) async fn basecamp_config_snapshot(
     .await
 }
 
+#[cfg(test)]
 async fn basecamp_config_snapshot_with_configs(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
+    basecamp_config_snapshot_with_configs_locked(
+        config_root,
+        profile,
+        request,
+        configs,
+        module_transport,
+    )
+    .await
+}
+
+async fn basecamp_config_snapshot_with_configs_locked(
     config_root: &Path,
     profile: &str,
     request: &ChannelIndexerConfigRequest,
@@ -531,7 +582,7 @@ async fn basecamp_config_snapshot_with_configs(
 ) -> Result<ChannelIndexerConfigSnapshot> {
     let context = config_context_from_configs(request, configs)?;
     let mut snapshot = config_snapshot_with_context(config_root, profile, request, &context)?;
-    let status = basecamp_status_with_configs(
+    let status = basecamp_status_with_configs_locked(
         profile,
         config_root,
         configs,
@@ -559,8 +610,10 @@ pub(super) async fn basecamp_save_config(
 ) -> Result<ChannelIndexerConfigSnapshot> {
     ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
     let config_root = config_dir()?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_save_config_with_configs(
+    basecamp_save_config_with_configs_locked(
         &config_root,
         profile,
         request,
@@ -573,6 +626,7 @@ pub(super) async fn basecamp_save_config(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn basecamp_save_config_with_configs(
     config_root: &Path,
     profile: &str,
@@ -582,8 +636,32 @@ async fn basecamp_save_config_with_configs(
     configs: &[ChannelSourceConfig],
     module_transport: &SharedModuleTransport,
 ) -> Result<ChannelIndexerConfigSnapshot> {
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
+    basecamp_save_config_with_configs_locked(
+        config_root,
+        profile,
+        request,
+        text,
+        expected_revision,
+        configs,
+        module_transport,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn basecamp_save_config_with_configs_locked(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
     let context = config_context_from_configs(request, configs)?;
-    let before = basecamp_config_snapshot_with_configs(
+    let before = basecamp_config_snapshot_with_configs_locked(
         config_root,
         profile,
         request,
@@ -612,7 +690,7 @@ async fn basecamp_save_config_with_configs(
         )?
     };
     let mut snapshot = saved;
-    let status = basecamp_status_with_configs(
+    let status = basecamp_status_with_configs_locked(
         profile,
         config_root,
         configs,
@@ -639,7 +717,28 @@ fn basecamp_config_is_active(status: &LocalNodeReport) -> Result<bool> {
     ))
 }
 
+#[cfg(test)]
 async fn basecamp_status_with_configs(
+    profile: &str,
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> Result<LocalNodeReport> {
+    let _lifecycle_lock = acquire_basecamp_lifecycle_lock(network_scope, channel_id).await?;
+    basecamp_status_with_configs_locked(
+        profile,
+        config_root,
+        configs,
+        module_transport,
+        network_scope,
+        channel_id,
+    )
+    .await
+}
+
+async fn basecamp_status_with_configs_locked(
     profile: &str,
     config_root: &Path,
     configs: &[ChannelSourceConfig],
@@ -1020,11 +1119,30 @@ pub(super) async fn basecamp_action(
 ) -> Result<LocalNodeReport> {
     ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
     let config_root = config_dir()?;
+    let channel_id = normalized_channel_id(&request.channel_id)?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_action_with_configs(profile, &config_root, &configs, request, module_transport).await
+    basecamp_action_with_configs_locked(profile, &config_root, &configs, request, module_transport)
+        .await
 }
 
+#[cfg(test)]
 async fn basecamp_action_with_configs(
+    profile: &str,
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    request: ChannelIndexerActionRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    let channel_id = normalized_channel_id(&request.channel_id)?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &channel_id).await?;
+    basecamp_action_with_configs_locked(profile, config_root, configs, request, module_transport)
+        .await
+}
+
+async fn basecamp_action_with_configs_locked(
     profile: &str,
     config_root: &Path,
     configs: &[ChannelSourceConfig],
@@ -1076,7 +1194,7 @@ async fn basecamp_action_with_configs(
         Err(error) => ("failed", error.to_string()),
     };
     let operation = operation_report(request.action, status, detail);
-    let mut report = basecamp_status_with_configs(
+    let mut report = basecamp_status_with_configs_locked(
         profile,
         config_root,
         configs,
@@ -3438,6 +3556,7 @@ mod tests {
         sync::{Arc, Mutex, mpsc},
         time::Duration,
     };
+    use tokio::sync::oneshot;
 
     use super::*;
     use crate::modules::logos_core::{
@@ -3487,6 +3606,65 @@ mod tests {
             instance_id != other_channel_instance,
             "distinct channels must produce distinct instance ids"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn dead_basecamp_lifecycle_lock_entries_are_pruned() {
+        let live_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let dead_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let mut locks = BTreeMap::from([
+            ("live".to_owned(), Arc::downgrade(&live_lock)),
+            ("dead".to_owned(), Arc::downgrade(&dead_lock)),
+        ]);
+        drop(dead_lock);
+
+        prune_dead_basecamp_lifecycle_locks(&mut locks);
+
+        assert!(locks.contains_key("live"));
+        assert!(!locks.contains_key("dead"));
+    }
+
+    #[tokio::test]
+    async fn basecamp_lifecycle_gate_serializes_same_channel_and_isolates_channels() -> Result<()> {
+        let first_channel = "01".repeat(32);
+        let second_channel = "88".repeat(32);
+        let first_guard = acquire_basecamp_lifecycle_lock(&network_scope(), &first_channel).await?;
+
+        let (same_sender, mut same_receiver) = oneshot::channel();
+        let same_channel = first_channel.clone();
+        let same_waiter = tokio::spawn(async move {
+            let _guard = acquire_basecamp_lifecycle_lock(&network_scope(), &same_channel).await?;
+            let _send_result = same_sender.send(());
+            Ok::<(), anyhow::Error>(())
+        });
+        anyhow::ensure!(
+            tokio::time::timeout(Duration::from_millis(50), &mut same_receiver)
+                .await
+                .is_err(),
+            "same-channel lifecycle operation bypassed its serialization gate"
+        );
+
+        let (other_sender, mut other_receiver) = oneshot::channel();
+        let other_waiter = tokio::spawn(async move {
+            let _guard = acquire_basecamp_lifecycle_lock(&network_scope(), &second_channel).await?;
+            let _send_result = other_sender.send(());
+            Ok::<(), anyhow::Error>(())
+        });
+        tokio::time::timeout(Duration::from_secs(1), &mut other_receiver)
+            .await
+            .context("different-channel lifecycle operation remained blocked")??;
+        tokio::time::timeout(Duration::from_secs(1), other_waiter)
+            .await
+            .context("different-channel lifecycle waiter did not finish")???;
+
+        drop(first_guard);
+        tokio::time::timeout(Duration::from_secs(1), &mut same_receiver)
+            .await
+            .context("same-channel lifecycle waiter did not acquire released gate")??;
+        tokio::time::timeout(Duration::from_secs(1), same_waiter)
+            .await
+            .context("same-channel lifecycle waiter did not finish")???;
         Ok(())
     }
 
