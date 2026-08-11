@@ -220,6 +220,28 @@ TestCase {
         verify(cachedRows[0].enabled === false)
     }
 
+    function test_zones_group_retains_active_dashboard_during_source_restart() {
+        const channelId = "55".repeat(32)
+        const zone = configuredZone(channelId)
+        setVerifiedZoneSummaries([zone], "genesis_id:" + "11".repeat(32))
+        const menuKey = String(model.zoneMenuGroups()[0].fields[0].key || "")
+        verify(model.setZoneMenuEnabled(menuKey, true))
+
+        model.zoneInspection.activeZoneContext = Object.assign({},
+            zone.active_zone_context_fields, { context_revision: 1 })
+        model.zoneInspection.sourceRevision = 2
+        model.zoneInspection.summaryStale = true
+        wait(0)
+
+        verify(!model.zoneInspection.summaryRowsUsable)
+        verify(model.zoneInspection.navigationRowsRetainable)
+        const cachedRows = model.shell.navRows().filter(function (row) {
+            return String(row.channelId || "") === channelId
+        })
+        compare(cachedRows.length, 1)
+        verify(cachedRows[0].enabled)
+    }
+
     function test_active_cached_zone_dashboard_remains_openable_read_only() {
         const channelId = "44".repeat(32)
         const zone = configuredZone(channelId)
