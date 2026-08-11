@@ -416,7 +416,9 @@ TestCase {
         model.zoneInspection.networkScopeKey = "genesis_id:" + scope.genesis_id
         model.zoneInspection.sourceRevision = 1
         model.zoneInspection.sourceConfigEpoch = 1
+        model.zoneInspection.desiredSourceKey = "source-old"
         model.zoneInspection.summaryLoaded = true
+        model.zoneInspection.summarySourceKey = "source-old"
         model.zoneInspection.summarySourceRevision = 1
         model.zoneInspection.summaryNetworkScopeKey
             = model.zoneInspection.networkScopeKey
