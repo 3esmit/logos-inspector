@@ -69,6 +69,14 @@ TestCase {
             model: model
             width: testWindow.width
         }
+
+        StatusFooter {
+            id: statusFooter
+
+            theme: theme
+            model: model
+            visible: false
+        }
     }
 
     function init() {
@@ -104,6 +112,27 @@ TestCase {
         compare(statusBar.lookupLabel("transaction"), "TX")
         verify(statusBar.lookupCanOpen(colonQuery))
         verify(statusBar.lookupCanOpen(spaceQuery))
+    }
+
+    function test_footer_network_label_prefers_profile_over_local_transport() {
+        const originalProfile = model.networkProfile
+        const originalNodeUrl = model.nodeUrl
+
+        model.networkProfile = "default"
+        model.nodeUrl = "http://127.0.0.1:8080/"
+        compare(statusFooter.networkLabel(), "testnet")
+
+        model.networkProfile = "local"
+        compare(statusFooter.networkLabel(), "local")
+
+        model.networkProfile = "custom"
+        compare(statusFooter.networkLabel(), "custom")
+
+        model.networkProfile = "mainnet"
+        compare(statusFooter.networkLabel(), "mainnet")
+
+        model.networkProfile = originalProfile
+        model.nodeUrl = originalNodeUrl
     }
 
     function test_mantle_prefix_search_opens_the_cached_transaction() {

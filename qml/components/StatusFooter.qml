@@ -306,7 +306,7 @@ Pane {
     function networkLabel() {
         const profile = String(root.model.networkProfile || "").toLowerCase()
         const node = String(root.model.nodeUrl || "").toLowerCase()
-        if (node.indexOf("127.0.0.1") >= 0 || node.indexOf("localhost") >= 0) {
+        if (profile === "local") {
             return qsTr("local")
         }
         if (profile.indexOf("mainnet") >= 0 || node.indexOf("mainnet") >= 0) {
@@ -315,8 +315,14 @@ Pane {
         if (profile.indexOf("testnet") >= 0 || node.indexOf("testnet") >= 0) {
             return qsTr("testnet")
         }
+        if (profile === "default") {
+            return qsTr("testnet")
+        }
         if (profile === "custom") {
             return qsTr("custom")
+        }
+        if (node.indexOf("127.0.0.1") >= 0 || node.indexOf("localhost") >= 0) {
+            return qsTr("local")
         }
         return qsTr("testnet")
     }
