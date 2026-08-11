@@ -1123,7 +1123,7 @@ fn edit_blocked_reason(
     if node.lifecycle_state.is_pending()
         || matches!(
             node.lifecycle_state,
-            NodeLifecycleState::Running | NodeLifecycleState::Unknown
+            NodeLifecycleState::Running | NodeLifecycleState::Unknown | NodeLifecycleState::Failed
         )
         || node.process_id.is_some_and(process_group_has_live_members)
     {
@@ -1811,6 +1811,57 @@ mod tests {
 
         let stored: Value = serde_json::from_slice(&fs::read(path)?)?;
         assert_eq!(stored["log-level"], "DEBUG");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_storage_configuration_is_read_only_until_lifecycle_settles() -> Result<()> {
+        let (directory, mut state) = state_for(
+            NodeKind::Storage,
+            json!({
+                "data-dir": "/tmp/placeholder",
+                "listen-ip": "0.0.0.0",
+                "listen-port": 8091,
+                "disc-port": 8090,
+                "nat": "any",
+                "network": "logos.test",
+                "log-level": "INFO"
+            }),
+        )?;
+        let path = directory.path().join("devnet/configs/storage.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        config["data-dir"] =
+            Value::String(directory.path().join("devnet/data").display().to_string());
+        fs::write(&path, serde_json::to_vec_pretty(&config)?)?;
+        let node = state
+            .devnets
+            .first_mut()
+            .and_then(|record| record.nodes.first_mut())
+            .context("Storage fixture node is missing")?;
+        node.installed = true;
+        node.lifecycle_state = NodeLifecycleState::Failed;
+
+        let snapshot = snapshot(&state, None, "local", NodeKind::Storage)?;
+        assert!(!snapshot.editable);
+        assert_eq!(
+            snapshot.blocked_reason.as_deref(),
+            Some(
+                "Stop this node and wait for its lifecycle state to settle before editing configuration."
+            )
+        );
+        let before = fs::read(&path)?;
+        let error = save(
+            &mut state,
+            None,
+            "local",
+            NodeKind::Storage,
+            &snapshot.raw_text,
+            &snapshot.revision,
+            persist_success,
+        )
+        .expect_err("failed Storage configuration must not be saved");
+        assert!(error.to_string().contains("lifecycle state to settle"));
+        assert_eq!(fs::read(path)?, before);
         Ok(())
     }
 
