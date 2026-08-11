@@ -636,7 +636,7 @@ impl HostState {
             };
             self.finish_host_call();
             if accepted != 1 {
-                self.unsubscribe_module_event(subscription_id);
+                self.remove_module_event_subscription(subscription_id, false);
                 return Err(std::io::Error::other(
                     "Basecamp host rejected scoped module event subscription",
                 )
@@ -725,13 +725,18 @@ impl HostState {
         Ok(())
     }
 
-    fn unsubscribe_module_event(&self, subscription_id: HostSubscriptionId) {
+    fn remove_module_event_subscription(
+        &self,
+        subscription_id: HostSubscriptionId,
+        notify_remote: bool,
+    ) {
         let remote_subscription = {
             let mut registry = lock(&self.registry);
             let Some(subscription) = registry.subscriptions.remove(&subscription_id) else {
                 return;
             };
-            if registry.phase == LifecyclePhase::Open
+            if notify_remote
+                && registry.phase == LifecyclePhase::Open
                 && subscription.instance_id.is_some()
                 && self.vtable.unsubscribe_instance.is_some()
             {
@@ -748,6 +753,10 @@ impl HostState {
         if let Some((module, Some(instance_id), event)) = remote_subscription {
             self.call_native_unsubscribe(&module, &instance_id, &event);
         }
+    }
+
+    fn unsubscribe_module_event(&self, subscription_id: HostSubscriptionId) {
+        self.remove_module_event_subscription(subscription_id, true);
     }
 
     fn call_native_unsubscribe(&self, module: &str, instance_id: &str, event: &str) {
@@ -2138,6 +2147,7 @@ mod tests {
 
     struct TestHostRegistry {
         reject_dispatch: bool,
+        reject_subscribe: bool,
         inline_reply: Option<(i32, String)>,
         block_dispatch: bool,
         dispatch_entered: bool,
@@ -2225,6 +2235,7 @@ mod tests {
             Arc::new(Self {
                 registry: Mutex::new(TestHostRegistry {
                     reject_dispatch: false,
+                    reject_subscribe: false,
                     inline_reply: None,
                     block_dispatch: false,
                     dispatch_entered: false,
@@ -2264,6 +2275,10 @@ mod tests {
 
         fn reject_dispatch(&self) {
             lock(&self.registry).reject_dispatch = true;
+        }
+
+        fn reject_subscribe(&self) {
+            lock(&self.registry).reject_subscribe = true;
         }
 
         fn reply_inline(&self, ok: i32, payload_json: &str) {
@@ -2803,6 +2818,9 @@ mod tests {
         }
         // SAFETY: each test keeps its Arc host alive through core close.
         let host = unsafe { &*host_context.cast::<TestHost>() };
+        if lock(&host.registry).reject_subscribe {
+            return 0;
+        }
         let Ok(module) = c_string(module, "module") else {
             return 0;
         };
@@ -3871,6 +3889,38 @@ mod tests {
         {
             return err("dropping a scoped subscription did not notify the host");
         }
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_scoped_subscription_does_not_notify_host_on_cleanup() -> TestResult {
+        let host = TestHost::new();
+        host.reject_subscribe();
+        let vtable = host.vtable_v2();
+        // SAFETY: the local vtable provides a complete readable v2 value.
+        let copied = unsafe { HostVtable::copy_from_v2(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let transport = BasecampHostTransport {
+            state: Arc::clone(&state),
+        };
+        let error = transport
+            .subscribe_module_instance_event(
+                "lez_indexer_module",
+                "indexer-testnet-0101010101010101",
+                "nodeChanged",
+            )
+            .err()
+            .ok_or_else(|| std::io::Error::other("rejected scoped subscription was accepted"))?;
+        if error.to_string() != "Basecamp host rejected scoped module event subscription" {
+            return err("rejected scoped subscription returned the wrong error");
+        }
+        let registry = lock(&host.registry);
+        if !registry.scoped_subscriptions.is_empty() || !registry.scoped_unsubscriptions.is_empty()
+        {
+            return err("rejected scoped subscription left a remote lifecycle record");
+        }
+        drop(registry);
         state.close();
         Ok(())
     }
