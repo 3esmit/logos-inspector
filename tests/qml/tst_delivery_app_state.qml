@@ -559,6 +559,58 @@ TestCase {
         compare(gateway.lastArgs[0].payload.peer_addr, "")
     }
 
+    function test_basecamp_store_query_requires_provider_or_uses_configured_provider() {
+        useBasecampManagedDeliverySource()
+        state.adapterInitialization = ({
+            source_mode: "module",
+            connection_type: "module",
+            target: "module",
+            inputs: {}
+        })
+
+        const blocked = state.runDelivery("deliveryStoreQuery", [
+            "", "/logos/1/chat/proto", "", "", 20, true, true
+        ], "Store query")
+
+        verify(!blocked.ok)
+        compare(gateway.requestCount, 0)
+        verify(gateway.resultText.indexOf("Store provider multiaddress") >= 0)
+
+        state.adapterInitialization = ({
+            source_mode: "module",
+            connection_type: "module",
+            target: "module",
+            inputs: {
+                store_peer_addr: "/dns4/provider.example/tcp/30303/p2p/peer"
+            }
+        })
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "delivery-module-store-1",
+                    domain: "delivery",
+                    method: "deliveryStoreQuery",
+                    status: "completed",
+                    label: "Store query",
+                    result: { messages: [] },
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runDelivery("deliveryStoreQuery", [
+            "", "/logos/1/chat/proto", "", "", 20, true, true
+        ], "Store query")
+
+        compare(gateway.requestCount, 1)
+        compare(gateway.lastArgs[0].adapter.source_mode, "module")
+        compare(gateway.lastArgs[0].adapter.inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
+    }
+
     function test_store_query_projects_polled_terminal_result() {
         state.currentTab = "store"
         gateway.requestResponses = ({
