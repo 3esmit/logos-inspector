@@ -511,8 +511,9 @@ pub(super) async fn basecamp_status(
     channel_id: &str,
 ) -> Result<LocalNodeReport> {
     let config_root = config_dir()?;
+    let _lifecycle_lock = acquire_basecamp_lifecycle_lock(network_scope, channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_status_with_configs(
+    basecamp_status_with_configs_locked(
         profile,
         &config_root,
         &configs,
@@ -534,8 +535,10 @@ pub(super) async fn basecamp_config_snapshot(
     module_transport: &SharedModuleTransport,
 ) -> Result<ChannelIndexerConfigSnapshot> {
     let config_root = config_dir()?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_config_snapshot_with_configs(
+    basecamp_config_snapshot_with_configs_locked(
         &config_root,
         profile,
         request,
@@ -545,6 +548,7 @@ pub(super) async fn basecamp_config_snapshot(
     .await
 }
 
+#[cfg(test)]
 async fn basecamp_config_snapshot_with_configs(
     config_root: &Path,
     profile: &str,
@@ -601,8 +605,10 @@ pub(super) async fn basecamp_save_config(
 ) -> Result<ChannelIndexerConfigSnapshot> {
     ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
     let config_root = config_dir()?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_save_config_with_configs(
+    basecamp_save_config_with_configs_locked(
         &config_root,
         profile,
         request,
@@ -615,6 +621,7 @@ pub(super) async fn basecamp_save_config(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn basecamp_save_config_with_configs(
     config_root: &Path,
     profile: &str,
@@ -626,6 +633,28 @@ async fn basecamp_save_config_with_configs(
 ) -> Result<ChannelIndexerConfigSnapshot> {
     let _lifecycle_lock =
         acquire_basecamp_lifecycle_lock(&request.network_scope, &request.channel_id).await?;
+    basecamp_save_config_with_configs_locked(
+        config_root,
+        profile,
+        request,
+        text,
+        expected_revision,
+        configs,
+        module_transport,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn basecamp_save_config_with_configs_locked(
+    config_root: &Path,
+    profile: &str,
+    request: &ChannelIndexerConfigRequest,
+    text: &str,
+    expected_revision: &str,
+    configs: &[ChannelSourceConfig],
+    module_transport: &SharedModuleTransport,
+) -> Result<ChannelIndexerConfigSnapshot> {
     let context = config_context_from_configs(request, configs)?;
     let before = basecamp_config_snapshot_with_configs_locked(
         config_root,
@@ -683,6 +712,7 @@ fn basecamp_config_is_active(status: &LocalNodeReport) -> Result<bool> {
     ))
 }
 
+#[cfg(test)]
 async fn basecamp_status_with_configs(
     profile: &str,
     config_root: &Path,
@@ -1084,10 +1114,15 @@ pub(super) async fn basecamp_action(
 ) -> Result<LocalNodeReport> {
     ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
     let config_root = config_dir()?;
+    let channel_id = normalized_channel_id(&request.channel_id)?;
+    let _lifecycle_lock =
+        acquire_basecamp_lifecycle_lock(&request.network_scope, &channel_id).await?;
     let configs = load_channel_source_configs()?;
-    basecamp_action_with_configs(profile, &config_root, &configs, request, module_transport).await
+    basecamp_action_with_configs_locked(profile, &config_root, &configs, request, module_transport)
+        .await
 }
 
+#[cfg(test)]
 async fn basecamp_action_with_configs(
     profile: &str,
     config_root: &Path,
@@ -1098,6 +1133,18 @@ async fn basecamp_action_with_configs(
     let channel_id = normalized_channel_id(&request.channel_id)?;
     let _lifecycle_lock =
         acquire_basecamp_lifecycle_lock(&request.network_scope, &channel_id).await?;
+    basecamp_action_with_configs_locked(profile, config_root, configs, request, module_transport)
+        .await
+}
+
+async fn basecamp_action_with_configs_locked(
+    profile: &str,
+    config_root: &Path,
+    configs: &[ChannelSourceConfig],
+    request: ChannelIndexerActionRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<LocalNodeReport> {
+    let channel_id = normalized_channel_id(&request.channel_id)?;
     if !matches!(
         request.action,
         NodeAction::Start | NodeAction::Stop | NodeAction::Purge
