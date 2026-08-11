@@ -116,8 +116,13 @@ QtObject {
     function deliveryStoreProviderRequiredInputs(peerAddress) {
         const adapter = adapterInitialization && typeof adapterInitialization === "object"
             ? adapterInitialization : ({})
-        if (String(sourceMode || "") !== "logoscore_cli"
-                && String(adapter.source_mode || "") !== "logoscore_cli") {
+        const mode = String(sourceMode || "")
+        const adapterMode = String(adapter.source_mode || "")
+        const connectionType = String(adapter.connection_type || "")
+        const target = String(adapter.target || "")
+        if (mode !== "logoscore_cli" && mode !== "module"
+                && adapterMode !== "logoscore_cli" && adapterMode !== "module"
+                && connectionType !== "module" && target !== "module") {
             return []
         }
         const inputs = adapter.inputs && typeof adapter.inputs === "object"

@@ -1034,6 +1034,42 @@ TestCase {
                 "/dns4/provider.example/tcp/30303/p2p/peer")
     }
 
+    function test_basecamp_store_reads_require_configured_provider() {
+        gateEnabled = true
+        social.messagingSourceMode = "module"
+        sourceRoutingStub.deliveryAdapter = ({
+            source_mode: "module",
+            connection_type: "module",
+            target: "module",
+            inputs: {}
+        })
+        wait(0)
+
+        const unavailable = social.commentsView(validCommentTopic("topic"))
+        verify(!unavailable.readGate.enabled)
+        verify(unavailable.readError.indexOf("Store provider multiaddress") >= 0)
+        verify(!social.loadComments(validCommentTopic("topic"), true, 20, ""))
+        verify(!social.refreshSharedIdlsForAccount(
+            autoShareEntity(), "aabb", "program-1"))
+        compare(startRequests.length, 0)
+
+        sourceRoutingStub.deliveryAdapter = ({
+            source_mode: "module",
+            connection_type: "module",
+            target: "module",
+            inputs: {
+                store_peer_addr: "/dns4/provider.example/tcp/30303/p2p/peer"
+            }
+        })
+        wait(0)
+
+        verify(social.commentsView(validCommentTopic("topic")).readGate.enabled)
+        verify(social.loadComments(validCommentTopic("topic"), true, 20, ""))
+        compare(startRequests.length, 1)
+        compare(startRequests[0].adapter.inputs.store_peer_addr,
+                "/dns4/provider.example/tcp/30303/p2p/peer")
+    }
+
     function test_cli_store_provider_configuration_action_requires_the_sole_missing_input() {
         gateEnabled = true
         social.messagingSourceMode = "logoscore_cli"

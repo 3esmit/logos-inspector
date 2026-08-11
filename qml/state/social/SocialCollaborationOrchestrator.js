@@ -580,7 +580,13 @@ function socialStoreProviderGate(root, gate) {
     const adapter = root && root.deliveryAdapterInitialization
         && typeof root.deliveryAdapterInitialization === "object"
         ? root.deliveryAdapterInitialization : ({})
-    if (String(adapter.source_mode || "") !== "logoscore_cli") {
+    const sourceMode = String(root && root.messagingSourceMode || "")
+    const adapterMode = String(adapter.source_mode || "")
+    const connectionType = String(adapter.connection_type || "")
+    const target = String(adapter.target || "")
+    if (sourceMode !== "logoscore_cli" && sourceMode !== "module"
+            && adapterMode !== "logoscore_cli" && adapterMode !== "module"
+            && connectionType !== "module" && target !== "module") {
         return state
     }
     const inputs = adapter.inputs && typeof adapter.inputs === "object"
