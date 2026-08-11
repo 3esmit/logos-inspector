@@ -205,7 +205,13 @@ pub(super) async fn execute(
             return execute_payload_upload(request, control, module_transport).await;
         }
         StorageCommand::UploadBackupCatalogEntry => {
-            return execute_backup_catalog_upload(request, control, module_transport).await;
+            return execute_backup_catalog_upload(
+                request,
+                control,
+                module_transport,
+                cleanup_module_transport,
+            )
+            .await;
         }
         StorageCommand::DownloadBackupCatalogEntry => {
             return execute_backup_catalog_download(
@@ -427,12 +433,13 @@ async fn execute_backup_catalog_upload(
     request: &RuntimeOperationRequest,
     control: &OperationControl,
     module_transport: SharedModuleTransport,
+    cleanup_module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     let request =
         storage_layer::StorageBackupUploadRequest::parse_request(request.node_request()?)?;
     request
         .client()
-        .ensure_managed_byte_upload_supported(&module_transport)?;
+        .ensure_managed_backup_upload_supported(&module_transport, &cleanup_module_transport)?;
     ensure_not_interrupted(control)?;
     let backup_catalog_id = request.backup_catalog_id().to_owned();
     let payload_catalog_id = backup_catalog_id.clone();
@@ -445,23 +452,26 @@ async fn execute_backup_catalog_upload(
     .context("backup payload worker failed")??;
     ensure_settings_backup_size(bytes.len())?;
     ensure_not_interrupted(control)?;
+    let termination_evidence = if request.client().confirms_backup_upload_stop() {
+        TerminationEvidence::Confirmed
+    } else {
+        TerminationEvidence::LocalOnly
+    };
     let result = request
         .client()
-        .upload_bytes_controlled(
+        .upload_backup_bytes_controlled(
             &module_transport,
+            &cleanup_module_transport,
             "logos-inspector-settings-backup.json",
             &bytes,
             request.block_size(),
             command_control(control),
         )
-        .await;
-    let upload = normalize_command_execution(
-        result,
-        control,
-        TerminationEvidence::LocalOnly,
-        TerminationEvidence::LocalOnly,
-    )
-    .context("failed to upload settings backup through Storage")?;
+        .await
+        .map_err(map_storage_operation_error);
+    let upload =
+        normalize_command_execution(result, control, termination_evidence, termination_evidence)
+            .context("failed to upload settings backup through Storage")?;
     let cid = required_backup_upload_cid(&upload)?;
     let metadata_catalog_id = backup_catalog_id.clone();
     let metadata_cid = cid.clone();
@@ -2034,7 +2044,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_upload_executor_rejects_basecamp_before_catalog_read() -> Result<()> {
+    async fn backup_upload_executor_preflights_basecamp_before_catalog_lookup() -> Result<()> {
         let request = runtime_operation_request_from_value(json!({
             "domain": "storage",
             "method": "storageUploadBackupCatalogEntry",
@@ -2048,15 +2058,19 @@ mod tests {
         let transport: SharedModuleTransport =
             Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
-        let error = execute_backup_catalog_upload(&request, &operation_control(), transport)
-            .await
-            .err()
-            .context("Basecamp backup upload should fail")?;
+        let error = execute_backup_catalog_upload(
+            &request,
+            &operation_control(),
+            Arc::clone(&transport),
+            transport,
+        )
+        .await
+        .err()
+        .context("Basecamp backup upload should fail during host preflight")?;
 
         anyhow::ensure!(
-            error.to_string()
-                == "Basecamp module source does not support Inspector-managed byte staging",
-            "unexpected executor error: {error:#}"
+            error.to_string() == "Basecamp host transport does not provide shared file staging",
+            "backup upload reached catalog lookup or the generic byte-staging guard: {error:#}"
         );
         Ok(())
     }

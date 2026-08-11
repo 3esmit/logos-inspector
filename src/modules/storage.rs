@@ -23,6 +23,7 @@ use super::base::{
 
 const STORAGE_DOWNLOAD_PROTOCOL_METHOD: &str = "downloadProtocol";
 const STORAGE_DOWNLOAD_DONE_EVENT: &str = "storageDownloadDoneV2";
+const STORAGE_UPLOAD_DONE_EVENT: &str = "storageUploadDone";
 const BASECAMP_EVENT_TRANSPORT_PROTOCOL: &str = "basecamp.host-events";
 const BASECAMP_EVENT_TRANSPORT_VERSION: u64 = 1;
 
@@ -90,14 +91,66 @@ pub async fn storage_report(
     };
     if runtime_diagnostics_enabled {
         match adapter {
-            ModuleTransportKind::Module => probes
-                .push(basecamp_backup_download_readiness_probe(module_transport, &metadata).await),
+            ModuleTransportKind::Module => {
+                probes.push(
+                    basecamp_backup_download_readiness_probe(module_transport, &metadata).await,
+                );
+                probes.push(
+                    basecamp_backup_upload_readiness_probe(module_transport, &metadata).await,
+                );
+            }
             ModuleTransportKind::LogoscoreCli => {
                 probes.push(logoscore_backup_download_readiness_probe(module_transport).await);
             }
         }
     }
     ModuleReport::new(adapter, STORAGE_MODULE, module_info, probes)
+}
+
+async fn basecamp_backup_upload_readiness_probe(
+    module_transport: &SharedModuleTransport,
+    module_info: &ProbeReport,
+) -> ProbeReport {
+    ProbeReport::from_result(
+        "storage backup upload readiness",
+        "basecamp host-events storage_module storageUploadDone",
+        basecamp_backup_upload_readiness(module_transport, module_info).await,
+    )
+    .with_probe_key(SourceProbeKey::StorageBackupUploadReadiness.as_str())
+}
+
+async fn basecamp_backup_upload_readiness(
+    module_transport: &SharedModuleTransport,
+    module_info: &ProbeReport,
+) -> Result<Value> {
+    anyhow::ensure!(
+        module_transport.kind() == ModuleTransportKind::Module,
+        "Basecamp backup upload readiness requires the host module transport"
+    );
+    ensure_storage_backup_upload_metadata(module_info)?;
+    anyhow::ensure!(
+        module_transport.supports_shared_file_staging(),
+        "Basecamp host transport does not expose shared file staging"
+    );
+    anyhow::ensure!(
+        module_transport.native_runtime_module_events_ready(),
+        "Basecamp host transport does not own healthy native runtime module-event ingress"
+    );
+    let _subscription = module_transport
+        .subscribe_module_event(STORAGE_MODULE, STORAGE_UPLOAD_DONE_EVENT)
+        .context("Basecamp host transport cannot subscribe to Storage upload completion")?;
+
+    Ok(json!({
+        "shared_staging": true,
+        "event_transport": {
+            "protocol": BASECAMP_EVENT_TRANSPORT_PROTOCOL,
+            "version": BASECAMP_EVENT_TRANSPORT_VERSION,
+            "ready": true,
+            "native_runtime_event_owner": true,
+            "module": STORAGE_MODULE,
+            "event": STORAGE_UPLOAD_DONE_EVENT,
+        },
+    }))
 }
 
 async fn basecamp_backup_download_readiness_probe(
@@ -209,6 +262,46 @@ fn ensure_storage_backup_download_metadata(module_info: &ProbeReport) -> Result<
                     == Some("storageDownloadDoneV2(QString)")
         }),
         "Storage module metadata does not expose `storageDownloadDoneV2(QString)`"
+    );
+    Ok(())
+}
+
+fn ensure_storage_backup_upload_metadata(module_info: &ProbeReport) -> Result<()> {
+    let value = storage_module_info_value(module_info).ok_or_else(|| {
+        let detail = module_info
+            .error
+            .as_deref()
+            .unwrap_or("Storage module metadata did not contain callable methods");
+        anyhow::anyhow!("Storage module metadata is unavailable: {detail}")
+    })?;
+    let methods = value
+        .get("methods")
+        .and_then(Value::as_array)
+        .context("Storage module metadata does not contain methods")?;
+    let events = value
+        .get("events")
+        .and_then(Value::as_array)
+        .context("Storage module metadata does not contain events")?;
+    for (name, signature) in [
+        ("uploadUrl", "uploadUrl(QString,int)"),
+        ("uploadCancel", "uploadCancel(QString)"),
+    ] {
+        anyhow::ensure!(
+            methods.iter().any(|method| {
+                method.get("name").and_then(Value::as_str) == Some(name)
+                    && method.get("signature").and_then(Value::as_str) == Some(signature)
+                    && method.get("isInvokable").and_then(Value::as_bool) == Some(true)
+            }),
+            "Storage module metadata does not expose invokable `{signature}`"
+        );
+    }
+    anyhow::ensure!(
+        events.iter().any(|event| {
+            event.get("name").and_then(Value::as_str) == Some(STORAGE_UPLOAD_DONE_EVENT)
+                && event.get("signature").and_then(Value::as_str)
+                    == Some("storageUploadDone(QString)")
+        }),
+        "Storage module metadata does not expose `storageUploadDone(QString)`"
     );
     Ok(())
 }
@@ -367,12 +460,28 @@ mod tests {
                     "isInvokable": true,
                     "name": "downloadCancelV2",
                     "signature": "downloadCancelV2(QString)"
+                },
+                {
+                    "isInvokable": true,
+                    "name": "uploadUrl",
+                    "signature": "uploadUrl(QString,int)"
+                },
+                {
+                    "isInvokable": true,
+                    "name": "uploadCancel",
+                    "signature": "uploadCancel(QString)"
                 }
             ],
-            "events": [{
-                "name": STORAGE_DOWNLOAD_DONE_EVENT,
-                "signature": "storageDownloadDoneV2(QString)"
-            }]
+            "events": [
+                {
+                    "name": STORAGE_DOWNLOAD_DONE_EVENT,
+                    "signature": "storageDownloadDoneV2(QString)"
+                },
+                {
+                    "name": STORAGE_UPLOAD_DONE_EVENT,
+                    "signature": "storageUploadDone(QString)"
+                }
+            ]
         })
     }
 
@@ -402,7 +511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basecamp_report_advertises_exact_backup_download_readiness() -> Result<()> {
+    async fn basecamp_report_advertises_exact_backup_readiness() -> Result<()> {
         let transport: SharedModuleTransport = Arc::new(fake_transport());
 
         let report =
@@ -415,6 +524,14 @@ mod tests {
                     == Some(SourceProbeKey::StorageBackupDownloadReadiness.as_str())
             })
             .ok_or_else(|| anyhow::anyhow!("Basecamp readiness probe missing"))?;
+        let upload_readiness = report
+            .probes
+            .iter()
+            .find(|probe| {
+                probe.probe_key.as_deref()
+                    == Some(SourceProbeKey::StorageBackupUploadReadiness.as_str())
+            })
+            .ok_or_else(|| anyhow::anyhow!("Basecamp upload readiness probe missing"))?;
 
         if storage_module_info_value(&report.module_info).is_none() {
             bail!("Basecamp module metadata was not preserved: {report:?}");
@@ -428,6 +545,16 @@ mod tests {
                 != Some(BASECAMP_EVENT_TRANSPORT_PROTOCOL)
         {
             bail!("Basecamp backup readiness was not established: {readiness:?}");
+        }
+        if !upload_readiness.ok
+            || upload_readiness
+                .value
+                .as_ref()
+                .and_then(|value| value.pointer("/event_transport/event"))
+                .and_then(Value::as_str)
+                != Some(STORAGE_UPLOAD_DONE_EVENT)
+        {
+            bail!("Basecamp backup upload readiness was not established: {upload_readiness:?}");
         }
         Ok(())
     }

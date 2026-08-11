@@ -811,38 +811,73 @@ mod tests {
                                 "isInvokable": true,
                                 "name": "downloadCancelV2",
                                 "signature": "downloadCancelV2(QString)"
+                            },
+                            {
+                                "isInvokable": true,
+                                "name": "uploadUrl",
+                                "signature": "uploadUrl(QString,int)"
+                            },
+                            {
+                                "isInvokable": true,
+                                "name": "uploadCancel",
+                                "signature": "uploadCancel(QString)"
                             }
                         ],
-                        "events": [{
-                            "name": "storageDownloadDoneV2",
-                            "signature": "storageDownloadDoneV2(QString)"
-                        }]
+                        "events": [
+                            {
+                                "name": "storageDownloadDoneV2",
+                                "signature": "storageDownloadDoneV2(QString)"
+                            },
+                            {
+                                "name": "storageUploadDone",
+                                "signature": "storageUploadDone(QString)"
+                            }
+                        ]
                     }
                 },
-                "probes": [{
-                    "probe_key": "backupDownloadReadiness",
-                    "label": "storage backup download readiness",
-                    "source": "basecamp host-events storage_module storageDownloadDoneV2",
-                    "ok": true,
-                    "value": {
-                        "shared_staging": true,
-                        "contract": {
-                            "protocol": "logos.storage.download",
-                            "version": 2,
-                            "moduleOperationIdOwner": "caller",
-                            "cancelTimeoutMs": 15_000,
-                            "maxDownloadBytes": 1_073_741_824_u64
-                        },
-                        "event_transport": {
-                            "protocol": "basecamp.host-events",
-                            "version": 1,
-                            "ready": true,
-                            "native_runtime_event_owner": true,
-                            "module": "storage_module",
-                            "event": "storageDownloadDoneV2"
+                "probes": [
+                    {
+                        "probe_key": "backupDownloadReadiness",
+                        "label": "storage backup download readiness",
+                        "source": "basecamp host-events storage_module storageDownloadDoneV2",
+                        "ok": true,
+                        "value": {
+                            "shared_staging": true,
+                            "contract": {
+                                "protocol": "logos.storage.download",
+                                "version": 2,
+                                "moduleOperationIdOwner": "caller",
+                                "cancelTimeoutMs": 15_000,
+                                "maxDownloadBytes": 1_073_741_824_u64
+                            },
+                            "event_transport": {
+                                "protocol": "basecamp.host-events",
+                                "version": 1,
+                                "ready": true,
+                                "native_runtime_event_owner": true,
+                                "module": "storage_module",
+                                "event": "storageDownloadDoneV2"
+                            }
+                        }
+                    },
+                    {
+                        "probe_key": "backupUploadReadiness",
+                        "label": "storage backup upload readiness",
+                        "source": "basecamp host-events storage_module storageUploadDone",
+                        "ok": true,
+                        "value": {
+                            "shared_staging": true,
+                            "event_transport": {
+                                "protocol": "basecamp.host-events",
+                                "version": 1,
+                                "ready": true,
+                                "native_runtime_event_owner": true,
+                                "module": "storage_module",
+                                "event": "storageUploadDone"
+                            }
                         }
                     }
-                }]
+                ]
             })
         };
         let storage_capability = |storage: Value| -> Result<Value> {
@@ -881,8 +916,8 @@ mod tests {
                 "universal Storage V2 metadata was not credited for Basecamp backup read: {universal_metadata}"
             );
         }
-        if !unavailable_contains(&supported, "storage.backup.sync_upload") {
-            bail!("Basecamp backup upload was overclaimed: {supported}");
+        if unavailable_contains(&supported, "storage.backup.sync_upload") {
+            bail!("exact Basecamp upload contract was not credited: {supported}");
         }
 
         for (pointer, replacement, mismatch) in [
@@ -970,6 +1005,62 @@ mod tests {
             let capability = storage_capability(report)?;
             if !unavailable_contains(&capability, "storage.backup.sync_read_by_cid") {
                 bail!("{mismatch} overclaimed Basecamp backup read: {capability}");
+            }
+        }
+        for (pointer, replacement, mismatch) in [
+            (
+                "/module_info/value/methods/3/isInvokable",
+                json!(false),
+                "non-invokable upload method",
+            ),
+            (
+                "/module_info/value/methods/4/signature",
+                json!("uploadCancel()"),
+                "wrong upload cancellation signature",
+            ),
+            (
+                "/module_info/value/events/1/signature",
+                json!("storageUploadDone()"),
+                "wrong upload terminal event signature",
+            ),
+            (
+                "/probes/1/ok",
+                json!(false),
+                "failed upload readiness probe",
+            ),
+            (
+                "/probes/1/value/shared_staging",
+                json!(false),
+                "missing upload shared staging",
+            ),
+            (
+                "/probes/1/value/event_transport/protocol",
+                json!("logoscore.watch"),
+                "wrong upload host-event protocol",
+            ),
+            (
+                "/probes/1/value/event_transport/ready",
+                json!(false),
+                "unready upload event subscription",
+            ),
+            (
+                "/probes/1/value/event_transport/native_runtime_event_owner",
+                json!(false),
+                "unhealthy upload native event ownership",
+            ),
+            (
+                "/probes/1/value/event_transport/event",
+                json!("storageUploadProgress"),
+                "wrong upload completion event",
+            ),
+        ] {
+            let mut report = source_report();
+            *report
+                .pointer_mut(pointer)
+                .with_context(|| format!("missing test report field `{pointer}`"))? = replacement;
+            let capability = storage_capability(report)?;
+            if !unavailable_contains(&capability, "storage.backup.sync_upload") {
+                bail!("{mismatch} overclaimed Basecamp backup upload: {capability}");
             }
         }
         Ok(())

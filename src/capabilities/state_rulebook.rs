@@ -118,7 +118,7 @@ fn storage_state(
         connector,
         sub_capabilities,
     );
-    match storage_backup_download_transport(&connector.id) {
+    let state = match storage_backup_download_transport(&connector.id) {
         Some(transport)
             if !inputs.source_report_for("storage").is_some_and(|report| {
                 storage_backup_download_contract_supported(report, transport)
@@ -133,6 +133,27 @@ fn storage_state(
                 )],
                 vec![format!(
                     "storage.backup.sync_read_by_cid requires Storage download v2 operation identity and {} readiness",
+                    transport.readiness_label()
+                )],
+            )
+        }
+        _ => state,
+    };
+    match storage_backup_upload_transport(&connector.id) {
+        Some(transport)
+            if !inputs.source_report_for("storage").is_some_and(|report| {
+                storage_backup_upload_contract_supported(report, transport)
+            }) =>
+        {
+            merge_state_constraints(
+                state,
+                vec!["storage.backup.sync_upload".to_owned()],
+                vec![format!(
+                    "Storage module lacks the verified {} backup upload contract",
+                    transport.label()
+                )],
+                vec![format!(
+                    "storage.backup.sync_upload requires invokable upload/cancel methods and {} readiness",
                     transport.readiness_label()
                 )],
             )
@@ -310,6 +331,125 @@ fn storage_backup_event_transport_supported(
                     .pointer("/value/watch_protocol/ready")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageBackupUploadTransport {
+    BasecampHost,
+}
+
+impl StorageBackupUploadTransport {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::BasecampHost => "Basecamp host-event",
+        }
+    }
+
+    const fn readiness_label(self) -> &'static str {
+        match self {
+            Self::BasecampHost => "Basecamp host-events v1",
+        }
+    }
+}
+
+fn storage_backup_upload_transport(connector_id: &str) -> Option<StorageBackupUploadTransport> {
+    match connector_id {
+        "storage_module" => Some(StorageBackupUploadTransport::BasecampHost),
+        _ => None,
+    }
+}
+
+fn storage_backup_upload_contract_supported(
+    report: &serde_json::Value,
+    transport: StorageBackupUploadTransport,
+) -> bool {
+    let Some(module_info) = storage_module_info_value(report) else {
+        return false;
+    };
+    let methods = module_info
+        .get("methods")
+        .and_then(serde_json::Value::as_array);
+    let events = module_info
+        .get("events")
+        .and_then(serde_json::Value::as_array);
+    let method_matches = |name: &str, signature: &str| {
+        methods.is_some_and(|methods| {
+            methods.iter().any(|method| {
+                method.get("name").and_then(serde_json::Value::as_str) == Some(name)
+                    && method.get("signature").and_then(serde_json::Value::as_str)
+                        == Some(signature)
+                    && method
+                        .get("isInvokable")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            })
+        })
+    };
+    let metadata_supported = method_matches("uploadUrl", "uploadUrl(QString,int)")
+        && method_matches("uploadCancel", "uploadCancel(QString)")
+        && events.is_some_and(|events| {
+            events.iter().any(|event| {
+                event.get("name").and_then(serde_json::Value::as_str) == Some("storageUploadDone")
+                    && event.get("signature").and_then(serde_json::Value::as_str)
+                        == Some("storageUploadDone(QString)")
+            })
+        });
+    metadata_supported && storage_backup_upload_readiness_supported(report, transport)
+}
+
+fn storage_backup_upload_readiness_supported(
+    report: &serde_json::Value,
+    transport: StorageBackupUploadTransport,
+) -> bool {
+    report
+        .get("probes")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|probes| {
+            probes.iter().any(|probe| {
+                probe.get("probe_key").and_then(serde_json::Value::as_str)
+                    == Some("backupUploadReadiness")
+                    && probe.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                    && probe
+                        .pointer("/value/shared_staging")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    && storage_backup_upload_event_transport_supported(probe, transport)
+            })
+        })
+}
+
+fn storage_backup_upload_event_transport_supported(
+    probe: &serde_json::Value,
+    transport: StorageBackupUploadTransport,
+) -> bool {
+    match transport {
+        StorageBackupUploadTransport::BasecampHost => {
+            probe
+                .pointer("/value/event_transport/protocol")
+                .and_then(serde_json::Value::as_str)
+                == Some("basecamp.host-events")
+                && probe
+                    .pointer("/value/event_transport/version")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(1)
+                && probe
+                    .pointer("/value/event_transport/ready")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && probe
+                    .pointer("/value/event_transport/native_runtime_event_owner")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && probe
+                    .pointer("/value/event_transport/module")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("storage_module")
+                && probe
+                    .pointer("/value/event_transport/event")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("storageUploadDone")
         }
     }
 }

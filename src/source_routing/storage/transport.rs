@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fmt, fs,
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard, OnceLock, TryLockError},
     time::{Duration, Instant},
@@ -13,6 +13,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
+
+use super::operations::StorageUploadSettlementUnconfirmed;
 
 use crate::{
     modules::logos_core::{
@@ -27,6 +29,7 @@ use crate::{
             CommandTerminationScope,
         },
         raw_source_transport::{request_bytes_bounded, request_success},
+        settings_backup::ensure_settings_backup_size,
         storage_download_contract::{
             STORAGE_DOWNLOAD_V2_METHOD as STORAGE_DOWNLOAD_METHOD,
             STORAGE_DOWNLOAD_V2_METHOD_SIGNATURE as STORAGE_DOWNLOAD_METHOD_SIGNATURE,
@@ -47,6 +50,9 @@ pub(super) const BACKUP_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE: Duration =
 const BACKUP_DOWNLOAD_CANCEL_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const BACKUP_DOWNLOAD_SIZE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_UNRELATED_DOWNLOAD_EVENTS: usize = 64;
+const BACKUP_UPLOAD_CANCEL_COMMAND_TIMEOUT: Duration = Duration::from_secs(16);
+const BACKUP_UPLOAD_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const MAX_UNRELATED_UPLOAD_EVENTS: usize = 64;
 const STORAGE_DOWNLOAD_PROTOCOL: &str = "logos.storage.download";
 const STORAGE_DOWNLOAD_PROTOCOL_VERSION: u64 = 2;
 const STORAGE_DOWNLOAD_PROTOCOL_METHOD: &str = "downloadProtocol";
@@ -54,6 +60,9 @@ const STORAGE_MODULE_METHODS_METHOD: &str = "getPluginMethods";
 const STORAGE_MODULE_EVENTS_METHOD: &str = "getPluginEvents";
 const STORAGE_DOWNLOAD_CANCEL_METHOD: &str = "downloadCancelV2";
 const STORAGE_DOWNLOAD_DONE_EVENT: &str = "storageDownloadDoneV2";
+const STORAGE_UPLOAD_METHOD: &str = "uploadUrl";
+const STORAGE_UPLOAD_CANCEL_METHOD: &str = "uploadCancel";
+const STORAGE_UPLOAD_DONE_EVENT: &str = "storageUploadDone";
 
 const _: () =
     assert!(STORAGE_DOWNLOAD_CANCEL_TIMEOUT_MS < STORAGE_DOWNLOAD_CANCEL_COMMAND_TIMEOUT_MS);
@@ -80,6 +89,25 @@ enum DownloadTerminalEvent {
     Succeeded,
     Canceled,
     Failed(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UploadTerminalEvent {
+    Unrelated,
+    Succeeded(String),
+    Failed(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadDonePayload {
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: String,
+    #[serde(default)]
+    cid: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +306,76 @@ impl HostSharedDownload {
             )
         })
     }
+}
+
+struct HostSharedUpload {
+    directory: tempfile::TempDir,
+    path: PathBuf,
+}
+
+impl HostSharedUpload {
+    fn new(filename: &str, bytes: &[u8]) -> Result<Self> {
+        ensure_settings_backup_size(bytes.len())?;
+        let safe_filename = Path::new(filename)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty() && *value == filename)
+            .context("host upload filename is invalid")?;
+        let directory = tempfile::Builder::new()
+            .prefix("logos-inspector-host-upload-")
+            .tempdir()
+            .context("failed to create host upload workspace")?;
+        let path = directory.path().join(safe_filename);
+        let mut file = create_private_host_upload_file(&path)?;
+        file.write_all(bytes)
+            .context("failed to write host upload staging file")?;
+        file.sync_all()
+            .context("failed to sync host upload staging file")?;
+        let metadata = fs::symlink_metadata(&path).with_context(|| {
+            format!(
+                "failed to inspect host upload staging file `{}`",
+                path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink() && metadata.is_file(),
+            "host upload staging path is not a regular file"
+        );
+        Ok(Self { directory, path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn close(self) -> Result<()> {
+        let path = self.directory.path().to_path_buf();
+        self.directory.close().with_context(|| {
+            format!(
+                "failed to remove host upload workspace `{}`",
+                path.display()
+            )
+        })
+    }
+}
+
+fn create_private_host_upload_file(path: &Path) -> Result<fs::File> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    };
+    #[cfg(not(unix))]
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path);
+    file.context("failed to create private host upload staging file")
 }
 
 pub(super) async fn module_call(
@@ -948,6 +1046,383 @@ fn combine_host_download_cleanup(result: Result<Vec<u8>>, cleanup: Result<()>) -
             let message = format!("{error}; host download staging cleanup failed: {cleanup:#}");
             Err(BackupDownloadCleanupUnconfirmed::new(&error, message).into())
         }
+    }
+}
+
+pub(super) async fn host_module_upload_backup_bytes_controlled(
+    transport: &SharedModuleTransport,
+    cleanup_transport: &SharedModuleTransport,
+    filename: &str,
+    bytes: &[u8],
+    block_size: u64,
+    control: CommandControl,
+) -> Result<Value> {
+    anyhow::ensure!(
+        transport.kind() == ModuleTransportKind::Module
+            && cleanup_transport.kind() == ModuleTransportKind::Module,
+        "Basecamp backup upload requires the host module transport"
+    );
+    let block_size = i32::try_from(block_size)
+        .context("storage upload block size exceeds Basecamp `int` range")?;
+    anyhow::ensure!(block_size > 0, "storage upload block size must be positive");
+    ensure_settings_backup_size(bytes.len())?;
+    anyhow::ensure!(
+        transport.supports_shared_file_staging(),
+        "Basecamp host transport does not provide shared file staging"
+    );
+    anyhow::ensure!(
+        transport.native_runtime_module_events_ready(),
+        "Basecamp host transport does not own healthy native runtime module-event ingress"
+    );
+    control.check_active()?;
+
+    let methods = module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_MODULE_METHODS_METHOD,
+        Vec::new(),
+    )
+    .await
+    .context("failed to inspect Basecamp Storage module methods")?;
+    let events = module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_MODULE_EVENTS_METHOD,
+        Vec::new(),
+    )
+    .await
+    .context("failed to inspect Basecamp Storage module events")?;
+    validate_storage_upload_interface(&methods, &events)?;
+    control.check_active()?;
+
+    let staged = HostSharedUpload::new(filename, bytes)?;
+    let result = execute_staged_host_backup_upload(
+        transport,
+        cleanup_transport,
+        filename,
+        bytes.len(),
+        block_size,
+        control,
+        &staged,
+    )
+    .await;
+    let cleanup = staged.close();
+    combine_host_upload_cleanup(result, cleanup)
+}
+
+fn validate_storage_upload_interface(methods: &Value, events: &Value) -> Result<()> {
+    let methods = methods
+        .as_array()
+        .context("Storage module method metadata is not an array")?;
+    let events = events
+        .as_array()
+        .context("Storage module event metadata is not an array")?;
+    for (name, signature) in [
+        (STORAGE_UPLOAD_METHOD, "uploadUrl(QString,int)"),
+        (STORAGE_UPLOAD_CANCEL_METHOD, "uploadCancel(QString)"),
+    ] {
+        anyhow::ensure!(
+            methods.iter().any(|method| {
+                method.get("name").and_then(Value::as_str) == Some(name)
+                    && method.get("signature").and_then(Value::as_str) == Some(signature)
+                    && method.get("isInvokable").and_then(Value::as_bool) == Some(true)
+                    && method
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_none_or(|kind| kind == "method")
+            }),
+            "Storage module does not expose exact method `{signature}`"
+        );
+    }
+    anyhow::ensure!(
+        events.iter().any(|event| {
+            event.get("name").and_then(Value::as_str) == Some(STORAGE_UPLOAD_DONE_EVENT)
+                && event.get("signature").and_then(Value::as_str)
+                    == Some("storageUploadDone(QString)")
+                && event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|kind| kind == "event")
+        }),
+        "Storage module does not expose exact event `storageUploadDone(QString)`"
+    );
+    Ok(())
+}
+
+async fn execute_staged_host_backup_upload(
+    transport: &SharedModuleTransport,
+    cleanup_transport: &SharedModuleTransport,
+    filename: &str,
+    byte_len: usize,
+    block_size: i32,
+    control: CommandControl,
+    staged: &HostSharedUpload,
+) -> Result<Value> {
+    let subscription = transport
+        .subscribe_module_event(super::layer::module_id(), STORAGE_UPLOAD_DONE_EVENT)
+        .context("Basecamp host transport cannot observe Storage upload completion")?;
+    let path = staged
+        .path()
+        .to_str()
+        .context("host upload staging path is not UTF-8")?
+        .to_owned();
+    let acknowledgement = match module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_UPLOAD_METHOD,
+        vec![json!(path), json!(block_size)],
+    )
+    .await
+    {
+        Ok(acknowledgement) => acknowledgement,
+        Err(error)
+            if error
+                .downcast_ref::<crate::modules::logos_core::ModuleCallTerminated>()
+                .is_some_and(|terminated| {
+                    terminated.evidence() == ModuleCallTerminationEvidence::NotStarted
+                }) =>
+        {
+            return Err(error);
+        }
+        Err(error) => {
+            drop(subscription);
+            return Err(StorageUploadSettlementUnconfirmed::new(format!(
+                "Basecamp storage upload dispatch outcome is unknown: {error:#}"
+            ))
+            .into());
+        }
+    };
+    let session_id = match decode_host_upload_session_id(&acknowledgement) {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            drop(subscription);
+            return Err(StorageUploadSettlementUnconfirmed::new(format!(
+                "Basecamp storage upload dispatch acknowledgement was invalid: {error:#}"
+            ))
+            .into());
+        }
+    };
+
+    let worker_guard = match control.blocking_worker_guard() {
+        Ok(worker_guard) => worker_guard,
+        Err(error) => {
+            return cleanup_active_host_upload_error(cleanup_transport, &session_id, error).await;
+        }
+    };
+    let wait_session_id = session_id.clone();
+    let wait_control = control.clone();
+    let terminal =
+        blocking_module_call("Basecamp Storage backup upload terminal wait", move || {
+            let _worker_guard = worker_guard;
+            wait_for_host_upload_terminal(subscription, &wait_session_id, &wait_control)
+        })
+        .await;
+    let (subscription, terminal) = match terminal {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            return cleanup_active_host_upload_error(cleanup_transport, &session_id, error).await;
+        }
+    };
+    match terminal {
+        UploadTerminalEvent::Succeeded(raw_cid) => {
+            let cid = super::parse_storage_cid(raw_cid.clone()).map_err(|error| {
+                StorageUploadSettlementUnconfirmed::new(format!(
+                    "Basecamp storage upload session `{session_id}` settled with an invalid CID `{raw_cid}`: {error:#}"
+                ))
+            })?;
+            let duplicate_session_id = session_id.clone();
+            let duplicate = blocking_module_call(
+                "Basecamp Storage backup upload terminal duplicate check",
+                move || {
+                    let mut subscription = subscription;
+                    reject_buffered_host_upload_terminals(&mut subscription, &duplicate_session_id)
+                },
+            )
+            .await;
+            if let Err(error) = duplicate {
+                return Err(StorageUploadSettlementUnconfirmed::new(format!(
+                    "Basecamp storage upload session `{session_id}` settled with CID `{cid}`, but terminal validation was ambiguous: {error:#}"
+                ))
+                .into());
+            }
+            Ok(json!({
+                "cid": cid,
+                "sessionId": session_id,
+                "filename": filename,
+                "bytes": byte_len,
+            }))
+        }
+        UploadTerminalEvent::Failed(error) => {
+            bail!("storage_module upload session `{session_id}` failed: {error}")
+        }
+        UploadTerminalEvent::Unrelated => {
+            bail!("storage upload terminal wait returned an unrelated event")
+        }
+    }
+}
+
+fn decode_host_upload_session_id(value: &Value) -> Result<String> {
+    value
+        .as_str()
+        .or_else(|| {
+            value
+                .as_object()
+                .and_then(|object| object.get("sessionId").or_else(|| object.get("session_id")))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .context("storage_module.uploadUrl returned no session ID")
+}
+
+fn wait_for_host_upload_terminal(
+    mut subscription: BoxedModuleEventSubscription,
+    session_id: &str,
+    control: &CommandControl,
+) -> Result<(BoxedModuleEventSubscription, UploadTerminalEvent)> {
+    let mut unrelated = 0_usize;
+    loop {
+        control.check_active()?;
+        let Some(event) = subscription.next_within(BACKUP_UPLOAD_EVENT_POLL_INTERVAL)? else {
+            continue;
+        };
+        match decode_host_upload_terminal_event(&event, session_id)? {
+            UploadTerminalEvent::Unrelated => {
+                unrelated = unrelated.saturating_add(1);
+                if unrelated > MAX_UNRELATED_UPLOAD_EVENTS {
+                    bail!(
+                        "storage upload received more than {MAX_UNRELATED_UPLOAD_EVENTS} unrelated terminal events"
+                    );
+                }
+            }
+            terminal => return Ok((subscription, terminal)),
+        }
+    }
+}
+
+fn reject_buffered_host_upload_terminals(
+    subscription: &mut BoxedModuleEventSubscription,
+    session_id: &str,
+) -> Result<()> {
+    while let Some(event) = subscription.next_within(Duration::ZERO)? {
+        if !matches!(
+            decode_host_upload_terminal_event(&event, session_id)?,
+            UploadTerminalEvent::Unrelated
+        ) {
+            bail!("storage upload received a duplicate terminal event for session `{session_id}`");
+        }
+    }
+    Ok(())
+}
+
+fn decode_host_upload_terminal_event(
+    event: &ModuleTransportEvent,
+    expected_session_id: &str,
+) -> Result<UploadTerminalEvent> {
+    anyhow::ensure!(
+        event.module() == super::layer::module_id(),
+        "host upload subscription returned an event for the wrong module"
+    );
+    anyhow::ensure!(
+        event.event() == STORAGE_UPLOAD_DONE_EVENT,
+        "host upload subscription returned the wrong event type"
+    );
+    let [payload] = event.args() else {
+        bail!("host upload terminal event must contain exactly one payload argument");
+    };
+    let payload_text = payload
+        .as_str()
+        .context("host upload terminal payload must be a JSON string")?;
+    decode_host_upload_terminal_payload(payload_text, expected_session_id)
+}
+
+fn decode_host_upload_terminal_payload(
+    payload_text: &str,
+    expected_session_id: &str,
+) -> Result<UploadTerminalEvent> {
+    let payload: UploadDonePayload = serde_json::from_str(payload_text)
+        .context("storage upload terminal payload is invalid JSON")?;
+    let session_id = payload.session_id.trim();
+    if session_id.is_empty() {
+        bail!("storage upload terminal payload has no session ID");
+    }
+    if session_id != expected_session_id {
+        return Ok(UploadTerminalEvent::Unrelated);
+    }
+    let success = payload
+        .success
+        .context("storage upload terminal payload has no success flag")?;
+    let cid = payload.cid.as_deref().map(str::trim).unwrap_or_default();
+    let error = payload.error.as_deref().map(str::trim).unwrap_or_default();
+    if success {
+        anyhow::ensure!(
+            error.is_empty(),
+            "successful storage upload terminal payload contains an error"
+        );
+        anyhow::ensure!(
+            !cid.is_empty(),
+            "successful storage upload terminal payload has no CID"
+        );
+        return Ok(UploadTerminalEvent::Succeeded(cid.to_owned()));
+    }
+    anyhow::ensure!(
+        cid.is_empty(),
+        "failed storage upload terminal payload contains a CID"
+    );
+    anyhow::ensure!(
+        !error.is_empty(),
+        "failed storage upload terminal payload has no error"
+    );
+    Ok(UploadTerminalEvent::Failed(error.to_owned()))
+}
+
+async fn cleanup_active_host_upload_error<T>(
+    cleanup_transport: &SharedModuleTransport,
+    session_id: &str,
+    primary: anyhow::Error,
+) -> Result<T> {
+    match cancel_host_module_upload(cleanup_transport, session_id).await {
+        Ok(()) => Err(primary),
+        Err(cleanup) => Err(StorageUploadSettlementUnconfirmed::new(format!(
+            "{primary:#}; Basecamp storage upload cleanup was not confirmed: {cleanup:#}"
+        ))
+        .into()),
+    }
+}
+
+async fn cancel_host_module_upload(
+    transport: &SharedModuleTransport,
+    session_id: &str,
+) -> Result<()> {
+    let call = module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_UPLOAD_CANCEL_METHOD,
+        vec![json!(session_id)],
+    );
+    let acknowledgement = tokio::time::timeout(BACKUP_UPLOAD_CANCEL_COMMAND_TIMEOUT, call)
+        .await
+        .context("Basecamp storage upload cancellation timed out")??;
+    anyhow::ensure!(
+        acknowledgement.is_null(),
+        "Basecamp storage upload cancellation returned an invalid acknowledgement"
+    );
+    Ok(())
+}
+
+fn combine_host_upload_cleanup(result: Result<Value>, cleanup: Result<()>) -> Result<Value> {
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(StorageUploadSettlementUnconfirmed::new(format!(
+            "host upload staging cleanup failed: {cleanup:#}"
+        ))
+        .into()),
+        (Err(error), Err(cleanup)) => Err(StorageUploadSettlementUnconfirmed::new(format!(
+            "{error:#}; host upload staging cleanup failed: {cleanup:#}"
+        ))
+        .into()),
     }
 }
 
@@ -2150,7 +2625,256 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HostUploadBehavior {
+        Succeed,
+        ForeignThenSucceed,
+        DuplicateSuccess,
+        Failed,
+        InvalidCid,
+        MalformedTerminal,
+        NoTerminal,
+        CloseBeforeTerminal,
+        WrongInterface,
+        CancelFails,
+        CancelReturnsValue,
+    }
+
+    struct FakeHostUploadTransport {
+        behavior: HostUploadBehavior,
+        subscriptions: Mutex<Vec<mpsc::SyncSender<ModuleTransportEvent>>>,
+        upload_calls: AtomicUsize,
+        cancel_calls: AtomicUsize,
+        subscription_calls: AtomicUsize,
+        staged_paths: Mutex<Vec<PathBuf>>,
+        staged_bytes: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl FakeHostUploadTransport {
+        fn new(behavior: HostUploadBehavior) -> Self {
+            Self {
+                behavior,
+                subscriptions: Mutex::new(Vec::new()),
+                upload_calls: AtomicUsize::new(0),
+                cancel_calls: AtomicUsize::new(0),
+                subscription_calls: AtomicUsize::new(0),
+                staged_paths: Mutex::new(Vec::new()),
+                staged_bytes: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn emit(&self, payload: Value) -> Result<()> {
+            let event = ModuleTransportEvent::new(
+                super::super::layer::module_id(),
+                STORAGE_UPLOAD_DONE_EVENT,
+                vec![Value::String(payload.to_string())],
+            )?;
+            let subscriptions = self.subscriptions.lock().map_err(|error| {
+                anyhow::anyhow!("fake upload subscription lock failed: {error}")
+            })?;
+            for subscription in subscriptions.iter() {
+                subscription.try_send(event.clone()).map_err(|error| {
+                    anyhow::anyhow!("fake upload event delivery failed: {error}")
+                })?;
+            }
+            Ok(())
+        }
+
+        fn clear_subscriptions(&self) -> Result<()> {
+            self.subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake upload subscription lock failed: {error}"))?
+                .clear();
+            Ok(())
+        }
+
+        fn exact_methods(&self) -> Value {
+            let upload_signature = if self.behavior == HostUploadBehavior::WrongInterface {
+                "uploadUrl(QString)"
+            } else {
+                "uploadUrl(QString,int)"
+            };
+            json!([
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": STORAGE_UPLOAD_METHOD,
+                    "signature": upload_signature
+                },
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": STORAGE_UPLOAD_CANCEL_METHOD,
+                    "signature": "uploadCancel(QString)"
+                }
+            ])
+        }
+
+        fn upload_call(&self, call: &crate::modules::logos_core::ModuleCall) -> Result<Value> {
+            anyhow::ensure!(
+                self.subscription_calls.load(Ordering::Acquire) == 1,
+                "uploadUrl was called before the host terminal subscription"
+            );
+            self.upload_calls.fetch_add(1, Ordering::AcqRel);
+            let path = call
+                .args()
+                .first()
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .context("fake host upload path missing")?;
+            anyhow::ensure!(
+                call.args().get(1).and_then(Value::as_i64) == Some(65_536),
+                "fake host upload block size drifted"
+            );
+            let metadata = fs::symlink_metadata(&path)?;
+            anyhow::ensure!(
+                !metadata.file_type().is_symlink() && metadata.is_file(),
+                "host upload staging was not a regular file"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+
+                anyhow::ensure!(
+                    metadata.permissions().mode() & 0o077 == 0,
+                    "host upload staging was not private"
+                );
+            }
+            let bytes = fs::read(&path)?;
+            self.staged_paths
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake upload path lock failed: {error}"))?
+                .push(path);
+            self.staged_bytes
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake upload bytes lock failed: {error}"))?
+                .push(bytes);
+
+            let session_id = "session-host-upload";
+            let succeeded = |session_id: &str, cid: &str| {
+                json!({
+                    "success": true,
+                    "sessionId": session_id,
+                    "cid": cid,
+                })
+            };
+            match self.behavior {
+                HostUploadBehavior::Succeed => {
+                    self.emit(succeeded(session_id, "cid-host-upload"))?
+                }
+                HostUploadBehavior::ForeignThenSucceed => {
+                    self.emit(succeeded("session-foreign", "cid-foreign"))?;
+                    self.emit(succeeded(session_id, "cid-host-upload"))?;
+                }
+                HostUploadBehavior::DuplicateSuccess => {
+                    self.emit(succeeded(session_id, "cid-host-upload"))?;
+                    self.emit(succeeded(session_id, "cid-host-upload"))?;
+                }
+                HostUploadBehavior::Failed => self.emit(json!({
+                    "success": false,
+                    "sessionId": session_id,
+                    "error": "fixture upload failed",
+                }))?,
+                HostUploadBehavior::InvalidCid => {
+                    self.emit(succeeded(session_id, "cid/invalid"))?;
+                }
+                HostUploadBehavior::MalformedTerminal => {
+                    self.emit(json!({ "sessionId": session_id }))?;
+                }
+                HostUploadBehavior::CloseBeforeTerminal => self.clear_subscriptions()?,
+                HostUploadBehavior::NoTerminal
+                | HostUploadBehavior::WrongInterface
+                | HostUploadBehavior::CancelFails
+                | HostUploadBehavior::CancelReturnsValue => {}
+            }
+            Ok(json!(session_id))
+        }
+
+        fn staged_paths(&self) -> Result<Vec<PathBuf>> {
+            self.staged_paths
+                .lock()
+                .map(|paths| paths.clone())
+                .map_err(|error| anyhow::anyhow!("fake upload path lock failed: {error}"))
+        }
+
+        fn staged_bytes(&self) -> Result<Vec<Vec<u8>>> {
+            self.staged_bytes
+                .lock()
+                .map(|bytes| bytes.clone())
+                .map_err(|error| anyhow::anyhow!("fake upload bytes lock failed: {error}"))
+        }
+    }
+
+    impl crate::modules::logos_core::ModuleTransport for FakeHostUploadTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(
+            &self,
+            call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            let result = match call.method() {
+                STORAGE_MODULE_METHODS_METHOD => Ok(self.exact_methods()),
+                STORAGE_MODULE_EVENTS_METHOD => Ok(json!([{
+                    "type": "event",
+                    "name": STORAGE_UPLOAD_DONE_EVENT,
+                    "signature": "storageUploadDone(QString)"
+                }])),
+                STORAGE_UPLOAD_METHOD => self.upload_call(&call),
+                STORAGE_UPLOAD_CANCEL_METHOD => {
+                    self.cancel_calls.fetch_add(1, Ordering::AcqRel);
+                    if self.behavior == HostUploadBehavior::CancelFails {
+                        Err(anyhow::anyhow!("fixture upload cancel failed"))
+                    } else if self.behavior == HostUploadBehavior::CancelReturnsValue {
+                        Ok(json!(false))
+                    } else {
+                        Ok(Value::Null)
+                    }
+                }
+                method => Err(anyhow::anyhow!("unexpected fake host method `{method}`")),
+            };
+            Box::pin(async move {
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    ModuleTransportKind::Module,
+                    result?,
+                ))
+            })
+        }
+
+        fn subscribe_module_event(
+            &self,
+            module: &str,
+            event: &str,
+        ) -> crate::modules::logos_core::ModuleTransportResult<BoxedModuleEventSubscription>
+        {
+            anyhow::ensure!(
+                module == super::super::layer::module_id() && event == STORAGE_UPLOAD_DONE_EVENT,
+                "unexpected fake host upload subscription"
+            );
+            self.subscription_calls.fetch_add(1, Ordering::AcqRel);
+            let (sender, receiver) = mpsc::sync_channel(8);
+            self.subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake upload subscription lock failed: {error}"))?
+                .push(sender);
+            Ok(Box::new(FakeHostSubscription { receiver }))
+        }
+
+        fn supports_shared_file_staging(&self) -> bool {
+            true
+        }
+
+        fn native_runtime_module_events_ready(&self) -> bool {
+            true
+        }
+    }
+
     fn host_download_control(timeout: Duration) -> CommandControl {
+        CommandControl::new(CancellationToken::new(), Instant::now() + timeout)
+    }
+
+    fn host_upload_control(timeout: Duration) -> CommandControl {
         CommandControl::new(CancellationToken::new(), Instant::now() + timeout)
     }
 
@@ -2218,6 +2942,328 @@ mod tests {
             anyhow::ensure!(
                 staged_paths.iter().all(|path| !path.exists()),
                 "successful host backup retained staging state: {staged_paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_upload_stages_subscribes_correlates_and_cleans() -> Result<()> {
+        for behavior in [
+            HostUploadBehavior::Succeed,
+            HostUploadBehavior::ForeignThenSucceed,
+        ] {
+            let fake = Arc::new(FakeHostUploadTransport::new(behavior));
+            let transport: SharedModuleTransport = fake.clone();
+            let value = host_module_upload_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "settings-backup.json",
+                b"private backup bytes",
+                65_536,
+                host_upload_control(Duration::from_secs(2)),
+            )
+            .await?;
+
+            anyhow::ensure!(
+                value
+                    == json!({
+                        "cid": "cid-host-upload",
+                        "sessionId": "session-host-upload",
+                        "filename": "settings-backup.json",
+                        "bytes": 20,
+                    }),
+                "host upload result drifted: {value}"
+            );
+            anyhow::ensure!(
+                fake.subscription_calls.load(Ordering::Acquire) == 1
+                    && fake.upload_calls.load(Ordering::Acquire) == 1,
+                "host upload did not subscribe before exactly-once dispatch"
+            );
+            anyhow::ensure!(
+                fake.staged_bytes()? == [b"private backup bytes".to_vec()],
+                "host upload staging bytes drifted"
+            );
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 0,
+                "settled host upload was canceled"
+            );
+            let staged_paths = fake.staged_paths()?;
+            anyhow::ensure!(
+                staged_paths.iter().all(|path| !path.exists()),
+                "settled host upload retained staging state: {staged_paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_upload_preserves_settlement_for_success_terminal_anomalies() -> Result<()>
+    {
+        for (behavior, expected, unconfirmed) in [
+            (
+                HostUploadBehavior::DuplicateSuccess,
+                "settled with CID",
+                true,
+            ),
+            (HostUploadBehavior::Failed, "fixture upload failed", false),
+            (
+                HostUploadBehavior::InvalidCid,
+                "settled with an invalid CID",
+                true,
+            ),
+        ] {
+            let fake = Arc::new(FakeHostUploadTransport::new(behavior));
+            let transport: SharedModuleTransport = fake.clone();
+            let error = host_module_upload_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "settings-backup.json",
+                b"private backup bytes",
+                65_536,
+                host_upload_control(Duration::from_secs(2)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{behavior:?} host upload should fail"))?;
+
+            anyhow::ensure!(
+                format!("{error:#}").contains(expected),
+                "{behavior:?} returned unrelated error: {error:#}"
+            );
+            anyhow::ensure!(
+                error
+                    .downcast_ref::<StorageUploadSettlementUnconfirmed>()
+                    .is_some()
+                    == unconfirmed,
+                "{behavior:?} settlement classification drifted: {error:#}"
+            );
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 0,
+                "{behavior:?} canceled an already terminal upload"
+            );
+            let staged_paths = fake.staged_paths()?;
+            anyhow::ensure!(
+                staged_paths.iter().all(|path| !path.exists()),
+                "{behavior:?} retained staging state: {staged_paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_upload_cancels_malformed_timeout_and_closed_effects() -> Result<()> {
+        for (behavior, timeout, expected) in [
+            (
+                HostUploadBehavior::MalformedTerminal,
+                Duration::from_secs(2),
+                "no success flag",
+            ),
+            (
+                HostUploadBehavior::NoTerminal,
+                Duration::from_millis(150),
+                "deadline exceeded",
+            ),
+            (
+                HostUploadBehavior::CloseBeforeTerminal,
+                Duration::from_secs(2),
+                "transport closed",
+            ),
+        ] {
+            let fake = Arc::new(FakeHostUploadTransport::new(behavior));
+            let transport: SharedModuleTransport = fake.clone();
+            let error = host_module_upload_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "settings-backup.json",
+                b"private backup bytes",
+                65_536,
+                host_upload_control(timeout),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{behavior:?} host upload should fail"))?;
+
+            anyhow::ensure!(
+                format!("{error:#}").contains(expected),
+                "{behavior:?} returned unrelated error: {error:#}"
+            );
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 1,
+                "{behavior:?} did not cancel the accepted upload"
+            );
+            let staged_paths = fake.staged_paths()?;
+            anyhow::ensure!(
+                staged_paths.iter().all(|path| !path.exists()),
+                "{behavior:?} retained staging state: {staged_paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_upload_external_cancellation_uses_cleanup_transport() -> Result<()> {
+        let fake = Arc::new(FakeHostUploadTransport::new(HostUploadBehavior::NoTerminal));
+        let transport: SharedModuleTransport = fake.clone();
+        let cancellation = CancellationToken::new();
+        let cancellation_request = cancellation.clone();
+        let cancel_fake = Arc::clone(&fake);
+        let canceler = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while cancel_fake.upload_calls.load(Ordering::Acquire) == 0 {
+                anyhow::ensure!(Instant::now() < deadline, "host upload was not dispatched");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            cancellation_request.cancel();
+            Ok::<(), anyhow::Error>(())
+        });
+        let result = host_module_upload_backup_bytes_controlled(
+            &transport,
+            &transport,
+            "settings-backup.json",
+            b"private backup bytes",
+            65_536,
+            CommandControl::new(cancellation, Instant::now() + Duration::from_secs(2)),
+        )
+        .await;
+        canceler
+            .await
+            .context("host upload cancellation task failed")??;
+        let error = result.err().context("canceled host upload should fail")?;
+
+        anyhow::ensure!(
+            error.downcast_ref::<CommandTerminated>().is_some(),
+            "host upload cancellation lost typed interruption: {error:#}"
+        );
+        anyhow::ensure!(
+            fake.cancel_calls.load(Ordering::Acquire) == 1,
+            "host upload cancellation did not use cleanup transport"
+        );
+        let staged_paths = fake.staged_paths()?;
+        anyhow::ensure!(
+            staged_paths.iter().all(|path| !path.exists()),
+            "host upload cancellation retained staging state: {staged_paths:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_upload_fails_closed_for_invalid_interface_size_or_block_size() -> Result<()>
+    {
+        let wrong_interface = Arc::new(FakeHostUploadTransport::new(
+            HostUploadBehavior::WrongInterface,
+        ));
+        let wrong_interface_transport: SharedModuleTransport = wrong_interface.clone();
+        let interface_error = host_module_upload_backup_bytes_controlled(
+            &wrong_interface_transport,
+            &wrong_interface_transport,
+            "settings-backup.json",
+            b"private backup bytes",
+            65_536,
+            host_upload_control(Duration::from_secs(2)),
+        )
+        .await
+        .err()
+        .context("incomplete upload interface was accepted")?;
+        anyhow::ensure!(
+            interface_error
+                .to_string()
+                .contains("uploadUrl(QString,int)"),
+            "wrong upload interface returned unrelated error: {interface_error:#}"
+        );
+        anyhow::ensure!(
+            wrong_interface.upload_calls.load(Ordering::Acquire) == 0
+                && wrong_interface.staged_paths()?.is_empty(),
+            "incomplete upload interface reached staging or dispatch"
+        );
+
+        let oversized = Arc::new(FakeHostUploadTransport::new(HostUploadBehavior::Succeed));
+        let oversized_transport: SharedModuleTransport = oversized.clone();
+        let bytes = vec![0_u8; crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES + 1];
+        let oversized_error = host_module_upload_backup_bytes_controlled(
+            &oversized_transport,
+            &oversized_transport,
+            "settings-backup.json",
+            &bytes,
+            65_536,
+            host_upload_control(Duration::from_secs(2)),
+        )
+        .await
+        .err()
+        .context("oversized host upload was accepted")?;
+        anyhow::ensure!(
+            oversized_error
+                .to_string()
+                .contains("settings backup payload exceeded"),
+            "oversized host upload returned unrelated error: {oversized_error:#}"
+        );
+        anyhow::ensure!(
+            oversized.upload_calls.load(Ordering::Acquire) == 0
+                && oversized.staged_paths()?.is_empty(),
+            "oversized host upload reached staging or dispatch"
+        );
+
+        let oversized_block = Arc::new(FakeHostUploadTransport::new(HostUploadBehavior::Succeed));
+        let oversized_block_transport: SharedModuleTransport = oversized_block.clone();
+        let oversized_block_error = host_module_upload_backup_bytes_controlled(
+            &oversized_block_transport,
+            &oversized_block_transport,
+            "settings-backup.json",
+            b"private backup bytes",
+            u64::try_from(i64::from(i32::MAX))?.saturating_add(1),
+            host_upload_control(Duration::from_secs(2)),
+        )
+        .await
+        .err()
+        .context("out-of-range Basecamp upload block size was accepted")?;
+        anyhow::ensure!(
+            oversized_block_error
+                .to_string()
+                .contains("Basecamp `int` range"),
+            "out-of-range host upload block size returned unrelated error: {oversized_block_error:#}"
+        );
+        anyhow::ensure!(
+            oversized_block.upload_calls.load(Ordering::Acquire) == 0
+                && oversized_block.staged_paths()?.is_empty(),
+            "out-of-range host upload block size reached staging or dispatch"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_upload_marks_unconfirmed_cleanup_failures() -> Result<()> {
+        for behavior in [
+            HostUploadBehavior::CancelFails,
+            HostUploadBehavior::CancelReturnsValue,
+        ] {
+            let fake = Arc::new(FakeHostUploadTransport::new(behavior));
+            let transport: SharedModuleTransport = fake.clone();
+            let error = host_module_upload_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "settings-backup.json",
+                b"private backup bytes",
+                65_536,
+                host_upload_control(Duration::from_millis(150)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{behavior:?} host upload cleanup should fail"))?;
+
+            anyhow::ensure!(
+                error
+                    .downcast_ref::<StorageUploadSettlementUnconfirmed>()
+                    .is_some(),
+                "{behavior:?} host upload cleanup lost settlement uncertainty: {error:#}"
+            );
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 1,
+                "{behavior:?} host upload cleanup did not attempt cancel"
+            );
+            let staged_paths = fake.staged_paths()?;
+            anyhow::ensure!(
+                staged_paths.iter().all(|path| !path.exists()),
+                "{behavior:?} host upload cleanup retained staging state: {staged_paths:?}"
             );
         }
         Ok(())
