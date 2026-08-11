@@ -2222,6 +2222,34 @@ TestCase {
             "A current verified Zone catalog snapshot is required to start Indexer.")
     }
 
+    function test_standalone_managed_indexer_purge_does_not_require_start_configuration() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                managed_channel_id: "zone-a",
+                available_actions: ["purge"]
+            }],
+            operations: []
+        })
+        zoneState.verification = "empty"
+        zoneState.desiredSource = null
+
+        verify(sourceEditorState.runManagedIndexerAction("purge", "zone-a"))
+        const request = gateway.lastRequest("channelIndexerAction")
+        verify(request !== null)
+        compare(request.args[1].action, "purge")
+        compare(request.args[1].channel_id, "zone-a")
+        verify(request.args[1].network_scope !== null)
+        verify(request.args[1].bedrock_endpoint === undefined)
+        verify(request.args[1].source_config_revision === undefined)
+        verify(request.args[1].selected_sequencer_source_id === undefined)
+    }
+
     function test_control_and_resume_request_immediate_status_refresh() {
         configure("https://l1.example", 1)
         statusRefreshSpy.clear()
