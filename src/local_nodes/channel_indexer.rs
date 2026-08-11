@@ -1781,7 +1781,8 @@ fn purge(
             None => record.runtime.wait_until_ready(),
         };
         if let Err(error) = readiness {
-            return match stop_runtime(record, None) {
+            let cleanup_control = fresh_maintenance_cleanup_control();
+            return match stop_runtime(record, Some(&cleanup_control)) {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(error).context(format!(
                     "failed to stop maintenance runtime: {cleanup_error:#}"
@@ -1808,7 +1809,8 @@ fn purge(
         ))
     })();
     let cleanup = if started_runtime {
-        stop_runtime(record, control)
+        let cleanup_control = fresh_maintenance_cleanup_control();
+        stop_runtime(record, Some(&cleanup_control))
     } else {
         Ok(())
     };
@@ -1825,6 +1827,14 @@ fn purge(
             "failed to stop maintenance runtime: {cleanup_error:#}"
         )),
     }
+}
+
+fn fresh_maintenance_cleanup_control() -> CommandControl {
+    let now = Instant::now();
+    let deadline = now
+        .checked_add(INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT)
+        .unwrap_or(now);
+    CommandControl::new(CancellationToken::new(), deadline)
 }
 
 fn start_runtime_and_indexer(
@@ -4678,6 +4688,31 @@ mod tests {
                 call.module() == INDEXER_MODULE && call.method() == "reset_storage"
             }),
             "Basecamp purge did not dispatch reset_storage"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn maintenance_cleanup_control_survives_parent_cancellation() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let parent = CommandControl::new(
+            cancellation.clone(),
+            Instant::now()
+                .checked_add(Duration::from_secs(1))
+                .context("parent cleanup control deadline overflow")?,
+        );
+        cancellation.cancel();
+        parent
+            .check_active()
+            .expect_err("cancelled parent control unexpectedly remained active");
+
+        let cleanup = fresh_maintenance_cleanup_control();
+        cleanup
+            .check_active()
+            .context("maintenance cleanup control inherited parent cancellation")?;
+        anyhow::ensure!(
+            cleanup.deadline() > Instant::now(),
+            "maintenance cleanup control did not receive a bounded future deadline"
         );
         Ok(())
     }
