@@ -1319,9 +1319,24 @@ ColumnLayout {
         })
     }
 
+    function installedModule(packageName) {
+        const name = String(packageName || "")
+        if (!name.length) {
+            return null
+        }
+        const installed = root.model.installedModules()
+        for (let index = 0; index < installed.length; ++index) {
+            const module = installed[index] || {}
+            if (String(module.name || "") === name) {
+                return module
+            }
+        }
+        return null
+    }
+
     function moduleReleaseOptions() {
         const repository = root.selectedModuleRepository || {}
-        return root.model.moduleReleases(
+        const options = root.model.moduleReleases(
             repository.name,
             repository.url,
             root.selectedModulePackageName).map(function (release) {
@@ -1329,11 +1344,35 @@ ColumnLayout {
             return {
                 version: String(value.version || ""),
                 root_hash: String(value.root_hash || ""),
-                label: root.packageReleaseLabel(value)
+                label: root.packageReleaseLabel(value),
+                installed: false,
+                available: true
             }
         }).filter(function (option) {
             return option.version.length > 0 && option.root_hash.length > 0
         })
+        const installed = root.installedModule(root.selectedModulePackageName)
+        const installedVersion = String(installed && installed.version || "")
+        const installedRootHash = String(installed && installed.root_hash || "")
+        if (!installedVersion.length || !installedRootHash.length) {
+            return options
+        }
+        for (let index = 0; index < options.length; ++index) {
+            if (options[index].version === installedVersion
+                    && options[index].root_hash === installedRootHash) {
+                options[index].installed = true
+                options[index].label = qsTr("%1 · installed").arg(options[index].label)
+                return options
+            }
+        }
+        options.unshift({
+            version: installedVersion,
+            root_hash: installedRootHash,
+            label: qsTr("Installed %1 · local-only").arg(installedVersion),
+            installed: true,
+            available: false
+        })
+        return options
     }
 
     function moduleRepositoryIndex(selection) {
@@ -1404,11 +1443,23 @@ ColumnLayout {
         const releaseOptions = root.moduleReleaseOptions()
         let releaseIndex = root.moduleReleaseIndex(root.selectedModuleRelease)
         if (releaseIndex < 0 && releaseOptions.length > 0) {
-            root.selectedModuleRelease = {
-                version: releaseOptions[0].version,
-                root_hash: releaseOptions[0].root_hash
+            const installed = root.installedModule(root.selectedModulePackageName)
+            const installedVersion = String(installed && installed.version || "")
+            const installedRootHash = String(installed && installed.root_hash || "")
+            let installedIndex = -1
+            for (let index = 0; index < releaseOptions.length; ++index) {
+                if (releaseOptions[index].version === installedVersion
+                        && releaseOptions[index].root_hash === installedRootHash) {
+                    installedIndex = index
+                    break
+                }
             }
-            releaseIndex = 0
+            const selectedIndex = installedIndex >= 0 ? installedIndex : 0
+            root.selectedModuleRelease = {
+                version: releaseOptions[selectedIndex].version,
+                root_hash: releaseOptions[selectedIndex].root_hash
+            }
+            releaseIndex = selectedIndex
         } else if (releaseIndex < 0) {
             root.selectedModuleRelease = ({ version: "", root_hash: "" })
         }
@@ -1449,6 +1500,14 @@ ColumnLayout {
             root.selectedModulePackageName,
             value.version,
             value.root_hash)
+        if (!release && value.installed === true) {
+            root.selectedModuleRelease = {
+                version: String(value.version || ""),
+                root_hash: String(value.root_hash || "")
+            }
+            root.syncModuleSelections()
+            return
+        }
         if (!release) {
             return
         }
@@ -1473,6 +1532,15 @@ ColumnLayout {
     function selectedModuleReleaseDetail() {
         const release = root.selectedModuleReleaseValue()
         if (!release) {
+            const installed = root.installedModule(root.selectedModulePackageName)
+            const selected = root.selectedModuleRelease || {}
+            if (installed
+                    && String(installed.version || "") === String(selected.version || "")
+                    && String(installed.root_hash || "") === String(selected.root_hash || "")) {
+                return qsTr("Installed %1 (root %2) is not available in the selected repository. Choose a remote release to replace it.")
+                    .arg(String(installed.version || qsTr("version unavailable")))
+                    .arg(root.shortPackageRootHash(String(installed.root_hash || "")))
+            }
             return root.model.moduleCatalogLoading
                 ? qsTr("Loading exact releases…") : qsTr("No exact release selected.")
         }
