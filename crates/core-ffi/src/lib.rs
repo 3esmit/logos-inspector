@@ -2131,14 +2131,19 @@ fn wait<'a, T>(condition: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, 
 #[cfg(test)]
 mod tests {
     use std::{
+        env, fs,
+        process::{self, Command},
         sync::atomic::{AtomicI32, AtomicUsize},
         time::{Duration, Instant},
     };
 
     use super::*;
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    const BACKUP_IMPORT_PREVIEW_CHILD_ENV: &str =
+        "LOGOS_INSPECTOR_CORE_FFI_BACKUP_IMPORT_PREVIEW_CHILD";
 
     struct TestHost {
         registry: Mutex<TestHostRegistry>,
@@ -4203,6 +4208,126 @@ mod tests {
         }
         if !lock(&host.registry).requests.is_empty() {
             return err("host-local inspector call reached host dispatch");
+        }
+        Ok(())
+    }
+
+    fn host_enabled_handle_runs_backup_import_preview_locally() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let create_args = json!([
+            "Basecamp preview fixture",
+            false,
+            {},
+            {
+                "settings": true,
+                "favorites": false,
+                "idl_registry": false,
+                "wallet_profile": false
+            }
+        ])
+        .to_string();
+        let created =
+            call_test_inspector(handle.as_ptr(), "createLocalSettingsBackup", &create_args)
+                .map_err(std::io::Error::other)?;
+        let backup_catalog_id = created
+            .pointer("/value/backup_catalog_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "local backup creation did not return a catalog id: {created}"
+                ))
+            })?;
+
+        let import_args = json!([backup_catalog_id, {}, {"settings": "replace"}]).to_string();
+        let preview =
+            call_test_inspector(handle.as_ptr(), "settingsBackupImportPreview", &import_args)
+                .map_err(std::io::Error::other)?;
+        if preview.get("ok").and_then(Value::as_bool) != Some(true)
+            || preview.pointer("/value/import_plan") != Some(&Value::Bool(true))
+            || preview
+                .pointer("/value/backupCatalogId")
+                .and_then(Value::as_str)
+                != Some(backup_catalog_id)
+            || preview.pointer("/value/selectedAreas") != Some(&json!(["settings"]))
+            || !preview
+                .pointer("/value/operation_decisions")
+                .is_some_and(Value::is_array)
+        {
+            return Err(std::io::Error::other(format!(
+                "backup import preview did not return a local import plan: {preview}"
+            ))
+            .into());
+        }
+
+        let missing_preview_args =
+            json!(["missing-backup", {}, {"settings": "replace"}]).to_string();
+        let missing_preview = call_test_inspector(
+            handle.as_ptr(),
+            "settingsBackupImportPreview",
+            &missing_preview_args,
+        )
+        .map_err(std::io::Error::other)?;
+        if missing_preview.get("ok").and_then(Value::as_bool) != Some(false)
+            || missing_preview
+                .get("error")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || missing_preview.get("error").and_then(Value::as_str) == Some(ASYNC_REQUIRED_ERROR)
+        {
+            return Err(std::io::Error::other(format!(
+                "missing backup preview did not stay local: {missing_preview}"
+            ))
+            .into());
+        }
+
+        let apply = call_test_inspector(handle.as_ptr(), "settingsBackupImportApply", &import_args)
+            .map_err(std::io::Error::other)?;
+        if apply.get("ok").and_then(Value::as_bool) != Some(false)
+            || apply.get("error").and_then(Value::as_str) != Some(ASYNC_REQUIRED_ERROR)
+        {
+            return Err(std::io::Error::other(format!(
+                "backup import apply did not remain async-required: {apply}"
+            ))
+            .into());
+        }
+        if !lock(&host.registry).requests.is_empty() {
+            return err("backup import preview reached host dispatch");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_enabled_handle_runs_backup_import_preview_locally_without_host_dispatch() -> TestResult
+    {
+        if env::var_os(BACKUP_IMPORT_PREVIEW_CHILD_ENV).is_some() {
+            return host_enabled_handle_runs_backup_import_preview_locally();
+        }
+
+        let config_dir = env::temp_dir().join(format!(
+            "logos-inspector-core-ffi-backup-preview-{}",
+            process::id()
+        ));
+        fs::create_dir(&config_dir)?;
+        let output = Command::new(env::current_exe()?)
+            .arg("--exact")
+            .arg("tests::host_enabled_handle_runs_backup_import_preview_locally_without_host_dispatch")
+            .arg("--nocapture")
+            .env(BACKUP_IMPORT_PREVIEW_CHILD_ENV, "1")
+            .env("LOGOS_INSPECTOR_CONFIG_DIR", &config_dir)
+            .output();
+        let cleanup = fs::remove_dir_all(&config_dir);
+        let output = output?;
+        cleanup?;
+        if !output.status.success() {
+            return Err(std::io::Error::other(format!(
+                "isolated backup import preview test failed (status {}):\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ))
+            .into());
         }
         Ok(())
     }
