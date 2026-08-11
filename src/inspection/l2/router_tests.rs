@@ -474,7 +474,7 @@ async fn exact_sequencer_blocks_never_call_indexer_and_bind_cursor_to_source() -
             .block_pages
             .entry(sequencer_id())
             .or_default()
-            .push_back(Ok(vec![block(3, '3'), block(2, '2')]));
+            .push_back(Ok(vec![block(3, '3'), block_with_warning(2, '2')]));
         state
             .blocks_by_id
             .entry((sequencer_id(), 3))
@@ -607,7 +607,7 @@ async fn block_cursor_continuation_preserves_decode_warnings() -> Result<()> {
             .block_pages
             .entry(sequencer_id())
             .or_default()
-            .push_back(Ok(vec![block(3, '3'), block(2, '2')]));
+            .push_back(Ok(vec![block(3, '3'), block_with_warning(2, '2')]));
         state
             .block_pages
             .entry(sequencer_id())
@@ -631,6 +631,12 @@ async fn block_cursor_continuation_preserves_decode_warnings() -> Result<()> {
     let L2ReadOutcome::Found { value } = first.data else {
         bail!("first block page was not found");
     };
+    if !first.warnings.is_empty() {
+        bail!(
+            "continuation lookahead warning leaked into first page: {:?}",
+            first.warnings
+        );
+    }
     let cursor = value.next_cursor.context("block cursor is missing")?;
 
     let second = router
