@@ -3,7 +3,7 @@ use std::{future::Future, time::Duration};
 use anyhow::{Context as _, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use borsh::BorshDeserialize as _;
-use common::transaction::LeeTransaction;
+use common::{HashType, transaction::LeeTransaction};
 use lee_core::program::ProgramId;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
@@ -200,7 +200,10 @@ async fn fetch_sequencer_transaction(
         raw_json_rpc_optional_result(endpoint, "getTransaction", json!([hash.to_string()]))
             .await
             .with_context(|| format!("failed to fetch sequencer transaction {tx_hash}"))?;
-    decode_sequencer_transaction_result(&result)
+    let Some(transaction) = decode_sequencer_transaction_result(&result)? else {
+        return Ok(None);
+    };
+    verify_sequencer_transaction_hash(transaction, &hash).map(Some)
 }
 
 fn decode_sequencer_transaction_result(result: &Value) -> Result<Option<LeeTransaction>> {
@@ -233,6 +236,18 @@ fn decode_sequencer_transaction_result(result: &Value) -> Result<Option<LeeTrans
     LeeTransaction::try_from_slice(&bytes)
         .map(Some)
         .map_err(|_| super::evidence_protocol_error("Sequencer transaction payload is malformed"))
+}
+
+fn verify_sequencer_transaction_hash(
+    transaction: LeeTransaction,
+    expected_hash: &HashType,
+) -> Result<LeeTransaction> {
+    if transaction.hash() != *expected_hash {
+        return Err(super::evidence_protocol_error(
+            "Sequencer transaction content hash does not match requested hash",
+        ));
+    }
+    Ok(transaction)
 }
 
 pub(crate) async fn with_sequencer_rpc_retry<T, F, Fut>(
@@ -578,6 +593,26 @@ mod tests {
             hex::encode(transaction.hash())
                 == "307f0ee5f458c010b5288e7d261d02fca39ee35faaf70cd6e0f5354f2f3e7402",
             "decoded transaction hash did not match wire payload"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sequencer_transaction_wire_result_rejects_mismatched_requested_hash() -> Result<()> {
+        let result = json!([
+            "ADGfvAVNdyB8uuwLMenMgT7KC0DTENcRLsSg/mQ5XGH8AwAAAC9MRVovQ2xvY2tQcm9ncmFtQWNjb3VudC8wMDAwMDAxL0xFWi9DbG9ja1Byb2dyYW1BY2NvdW50LzAwMDAwMTAvTEVaL0Nsb2NrUHJvZ3JhbUFjY291bnQvMDAwMDA1MAAAAAACAAAAFDfB5p8BAAAAAAAA",
+            2416
+        ]);
+        let transaction = decode_sequencer_transaction_result(&result)?
+            .ok_or_else(|| anyhow::anyhow!("transaction unexpectedly missing"))?;
+        let requested_hash = parse_hash(&"00".repeat(32), "transaction hash")?;
+        let error = match verify_sequencer_transaction_hash(transaction, &requested_hash) {
+            Ok(_) => bail!("mismatched transaction hash unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        ensure!(
+            super::super::is_evidence_protocol_error(&error),
+            "mismatched transaction hash was not classified as protocol failure"
         );
         Ok(())
     }
