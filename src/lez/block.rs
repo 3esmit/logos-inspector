@@ -40,8 +40,14 @@ pub(crate) fn decode_sequencer_block_bytes(bytes: &[u8]) -> Result<Block> {
 }
 
 pub(crate) fn decode_sequencer_block_summary_bytes(bytes: &[u8]) -> Result<BlockSummary> {
-    let block = match borsh::from_slice::<Block>(bytes) {
-        Ok(block) => block,
+    let mut remaining = bytes;
+    let block = match Block::deserialize(&mut remaining) {
+        Ok(block) if remaining.is_empty() => block,
+        Ok(_) => {
+            return Err(super::evidence_protocol_error(
+                "Sequencer block has trailing bytes",
+            ));
+        }
         Err(_) => {
             let mut reader = Cursor::new(bytes);
             let header =
@@ -176,6 +182,23 @@ mod tests {
         ensure!(
             summary.decode_warning.is_some(),
             "fallback warning was lost"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_bytes_are_rejected_before_header_fallback() -> Result<()> {
+        let mut bytes = BASE64_STANDARD.decode(TESTNET_LEGACY_BLOCK_1234)?;
+        bytes.push(0);
+
+        let result = decode_sequencer_block_summary_bytes(&bytes);
+        let error = result
+            .err()
+            .map(|error| error.to_string())
+            .ok_or_else(|| anyhow::anyhow!("trailing block bytes were accepted"))?;
+        ensure!(
+            error == "Sequencer block has trailing bytes",
+            "unexpected trailing-byte error: {error}"
         );
         Ok(())
     }

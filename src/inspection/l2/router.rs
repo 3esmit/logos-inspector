@@ -182,7 +182,9 @@ impl ZoneL2Router {
             .iter()
             .filter_map(ContributorResult::warning)
             .collect();
-        report.warnings.extend(decoded_block_warnings(&successful));
+        report
+            .warnings
+            .extend(decoded_block_warnings(&successful, &page));
         if page.has_more {
             let cursor = self.insert_block_cursor(BlockCursorState {
                 context: request.context,
@@ -269,6 +271,9 @@ impl ZoneL2Router {
                 value: page.clone(),
             },
         );
+        report
+            .warnings
+            .extend(decoded_block_warnings(&results, &page));
         if page.has_more {
             let Some(next_before) = page.rows.iter().map(|row| row.summary.block_id).min() else {
                 return Err(L2ReadFailure::new(
@@ -2280,11 +2285,20 @@ fn compose_block_page(
     )
 }
 
-fn decoded_block_warnings(results: &[ContributorResult]) -> Vec<L2ReadWarning> {
+fn decoded_block_warnings(
+    results: &[ContributorResult],
+    page: &L2BlocksPage,
+) -> Vec<L2ReadWarning> {
+    let visible_block_ids = page
+        .rows
+        .iter()
+        .map(|row| row.summary.block_id)
+        .collect::<BTreeSet<_>>();
     results
         .iter()
         .filter(|result| result.failure.is_none())
         .flat_map(|result| result.blocks.iter())
+        .filter(|block| visible_block_ids.contains(&block.summary.block_id))
         .filter_map(|block| {
             block
                 .summary
