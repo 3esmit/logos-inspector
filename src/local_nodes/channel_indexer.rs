@@ -4,7 +4,7 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -67,7 +67,7 @@ const INDEXER_NODE_CHANGED_SIGNATURE: &str = "nodeChanged(QString)";
 const INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
 const INDEXER_LIFECYCLE_EVENT_READ_INTERVAL: Duration = Duration::from_millis(250);
 static INDEXER_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
-static BASECAMP_LIFECYCLE_LOCKS: OnceLock<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+static BASECAMP_LIFECYCLE_LOCKS: OnceLock<Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
 const BASECAMP_CORE_SERVICE_MODULE: &str = "core_service";
 const BASECAMP_HOST_CAPABILITIES_METHOD: &str = "getHostCapabilities";
@@ -100,10 +100,13 @@ async fn acquire_basecamp_lifecycle_lock(
             .get_or_init(|| Mutex::new(BTreeMap::new()))
             .lock()
             .map_err(|_| anyhow::anyhow!("Basecamp lifecycle lock map is poisoned"))?;
-        locks
-            .entry(instance_id)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+        if let Some(lock) = locks.get(&instance_id).and_then(Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(instance_id, Arc::downgrade(&lock));
+            lock
+        }
     };
     Ok(lock.lock_owned().await)
 }
