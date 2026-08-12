@@ -1371,13 +1371,17 @@ QtObject {
         attempts[target] = attempt
         observationAttempts = attempts
 
-        if (successfulTransport
-                && (preserveFullReport || reducedWithoutEvidence)) {
+        if (successfulTransport && preserveFullReport) {
             return
         }
 
         const metricEvidenceUpdated = successfulTransport && !preserveFullReport
             ? cacheObservationValue(target, value, lease, checkedAtMs) : false
+
+        if (successfulTransport && reducedWithoutEvidence) {
+            gateway.refreshCapabilityRegistryIfLoaded()
+            return
+        }
 
         const nextStatus = copyMap(networkConnectionStatus)
         nextStatus[target] = {

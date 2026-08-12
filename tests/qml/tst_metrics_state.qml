@@ -962,12 +962,13 @@ TestCase {
         gateway.completeRequest(0, success(reducedReport))
 
         const observation = metrics.sourceObservation("messaging")
-        compare(observation.sourceReport, null)
+        compare(observation.sourceReport.marker, "module-event-reduced")
         verify(!observation.status.known)
         verify(!observation.status.ok)
         compare(observation.latestAttempt.origin, "module-event")
         verify(observation.latestAttempt.transportOk)
         verify(observation.latestAttempt.runtimeDiagnosticsReduced)
+        compare(gateway.capabilityRefreshCount, 1)
     }
 
     function test_passive_observations_keep_storage_capability_facts_and_request_delivery_metrics_at_dashboard_start() {
