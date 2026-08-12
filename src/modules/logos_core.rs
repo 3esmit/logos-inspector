@@ -42,6 +42,9 @@ const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
 const LOGOSCORE_JSON_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const LOGOSCORE_MAX_JSON_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 const LOGOSCORE_CLIENT_CONFIG_LIMIT: usize = 64 * 1024;
+// Linux permits multi-megabyte argument and environment vectors. Keep this
+// service-discovery read bounded while accepting unrelated service variables.
+const LOGOSCORE_PROCESS_ENVIRONMENT_CAPTURE_LIMIT: usize = 8 * 1024 * 1024;
 const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
 const LOGOSCORE_EVENT_NAME_LIMIT: usize = 256;
@@ -2046,6 +2049,22 @@ impl LogoscoreCliRuntime {
         })
     }
 
+    pub(crate) fn configured_service_process_environment_reader(
+        binary_path: String,
+        sudo_user: String,
+    ) -> Result<Self> {
+        Ok(Self {
+            runner: LogosCoreRunner {
+                program: binary_path,
+                sudo_user: Some(sudo_user),
+                home: None,
+                config_dir: None,
+                label: "configured logoscore".to_owned(),
+                privileged_command_paths: Some(fixed_system_command_paths()?),
+            },
+        })
+    }
+
     #[must_use]
     pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
         Self {
@@ -2092,7 +2111,7 @@ impl LogoscoreCliRuntime {
                 poll_interval: LOGOSCORE_POLL_INTERVAL,
                 redactions: &[],
                 output_limit: 0,
-                capture_limit: 64 * 1024,
+                capture_limit: LOGOSCORE_PROCESS_ENVIRONMENT_CAPTURE_LIMIT,
             },
         )
         .with_context(|| {
@@ -3533,17 +3552,20 @@ fn runner_process_environment_read_command(
 
 fn runner_privileged_read_command(runner: &LogosCoreRunner, path: &str) -> Option<Command> {
     let user = runner.sudo_user.as_deref()?;
-    let paths = runner.privileged_command_paths.as_ref()?;
-    let mut command = Command::new(paths.sudo.as_str());
+    let paths = runner.privileged_command_paths.as_ref();
+    let mut command = Command::new(paths.map_or("sudo", |configured| configured.sudo.as_str()));
     command
         .arg("-n")
         .arg("-u")
         .arg(user)
-        .arg(paths.env.as_str());
+        .arg(paths.map_or("env", |configured| configured.env.as_str()));
     if let Some(home) = &runner.home {
         command.arg(format!("HOME={home}"));
     }
-    command.arg(paths.cat.as_str()).arg("--").arg(path);
+    command
+        .arg(paths.map_or("cat", |configured| configured.cat.as_str()))
+        .arg("--")
+        .arg(path);
     Some(command)
 }
 
@@ -5152,9 +5174,6 @@ fn configured_runtime() -> LogoscoreCliRuntime {
     let env_program = env::var("LOGOSCORE_BIN")
         .ok()
         .filter(|value| !value.is_empty());
-    let program = env_program
-        .clone()
-        .unwrap_or_else(|| "logoscore".to_owned());
     let env_user = env::var("LOGOSCORE_USER")
         .ok()
         .filter(|value| !value.is_empty());
@@ -5164,12 +5183,27 @@ fn configured_runtime() -> LogoscoreCliRuntime {
     let config_dir = env::var("LOGOSCORE_CONFIG_DIR")
         .ok()
         .filter(|value| !value.is_empty());
+    configured_runtime_with_overrides(env_program, env_user, env_home, config_dir)
+}
+
+fn configured_runtime_with_overrides(
+    env_program: Option<String>,
+    env_user: Option<String>,
+    env_home: Option<String>,
+    config_dir: Option<String>,
+) -> LogoscoreCliRuntime {
+    let program = env_program
+        .clone()
+        .unwrap_or_else(|| "logoscore".to_owned());
     let configured =
         env_program.is_some() || env_user.is_some() || env_home.is_some() || config_dir.is_some();
 
     LogoscoreCliRuntime {
         runner: LogosCoreRunner {
             program,
+            privileged_command_paths: env_user
+                .as_ref()
+                .and_then(|_| fixed_system_command_paths().ok()),
             sudo_user: env_user,
             home: env_home,
             config_dir,
@@ -5178,7 +5212,6 @@ fn configured_runtime() -> LogoscoreCliRuntime {
             } else {
                 "plain logoscore".to_owned()
             },
-            privileged_command_paths: None,
         },
     }
 }
@@ -6169,15 +6202,11 @@ mod tests {
         use std::ffi::OsStr;
 
         let paths = fixed_system_command_paths()?;
-        let runner = LogosCoreRunner {
-            program: "/usr/local/bin/logoscore".to_owned(),
-            sudo_user: Some("logos".to_owned()),
-            home: Some("/var/lib/logos-node".to_owned()),
-            config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
-            label: "configured logoscore".to_owned(),
-            privileged_command_paths: Some(paths.clone()),
-        };
-        let command = runner_process_environment_read_command(&runner, 42)
+        let runtime = LogoscoreCliRuntime::configured_service_process_environment_reader(
+            "/usr/local/bin/logoscore".to_owned(),
+            "logos".to_owned(),
+        )?;
+        let command = runner_process_environment_read_command(&runtime.runner, 42)
             .context("configured service runner did not build process environment reader")?;
         anyhow::ensure!(
             command.get_program() == OsStr::new(paths.sudo.as_str()),
@@ -6193,12 +6222,39 @@ mod tests {
                 "-u",
                 "logos",
                 paths.env.as_str(),
-                "HOME=/var/lib/logos-node",
                 paths.cat.as_str(),
                 "--",
                 "/proc/42/environ",
             ],
             "configured service process environment reader arguments drifted: {args:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_environment_capture_accepts_output_beyond_legacy_limit() -> Result<()> {
+        let bytes = (LOGOSCORE_CLIENT_CONFIG_LIMIT + 1).to_string();
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("head -c \"$1\" /dev/zero")
+            .arg("process-environment-test")
+            .arg(&bytes);
+        let output = run_command(
+            command,
+            CommandRunPolicy {
+                label: "process environment capture test",
+                timeout: Duration::from_secs(5),
+                poll_interval: LOGOSCORE_POLL_INTERVAL,
+                redactions: &[],
+                output_limit: 0,
+                capture_limit: LOGOSCORE_PROCESS_ENVIRONMENT_CAPTURE_LIMIT,
+            },
+        )?;
+        anyhow::ensure!(
+            output.stdout.len() == LOGOSCORE_CLIENT_CONFIG_LIMIT + 1,
+            "process environment capture truncated output above the legacy limit"
         );
         Ok(())
     }
@@ -8604,6 +8660,87 @@ esac
                 "--json",
             ],
             "configured service runtime arguments drifted: {args:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_runtime_user_uses_privileged_config_reader() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let paths = fixed_system_command_paths()?;
+        let runtime = configured_runtime_with_overrides(
+            Some("/usr/local/bin/logoscore".to_owned()),
+            Some("logos".to_owned()),
+            Some("/var/lib/logos-node".to_owned()),
+            Some("/var/lib/logos-node/.logoscore".to_owned()),
+        );
+        let command = runner_client_config_read_command(
+            &runtime.runner,
+            Path::new("/var/lib/logos-node/.logoscore/client/config.json"),
+        )
+        .context("configured LogosCore user did not build config reader")?;
+        anyhow::ensure!(
+            command.get_program() == OsStr::new(paths.sudo.as_str()),
+            "configured LogosCore user config reader bypassed sudo"
+        );
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            args == [
+                "-n",
+                "-u",
+                "logos",
+                paths.env.as_str(),
+                "HOME=/var/lib/logos-node",
+                paths.cat.as_str(),
+                "--",
+                "/var/lib/logos-node/.logoscore/client/config.json",
+            ],
+            "configured LogosCore user config reader arguments drifted: {args:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_user_config_reader_retains_path_fallback() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let runner = LogosCoreRunner {
+            program: "/usr/local/bin/logoscore".to_owned(),
+            sudo_user: Some("logos".to_owned()),
+            home: Some("/var/lib/logos-node".to_owned()),
+            config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
+            label: "configured logoscore".to_owned(),
+            privileged_command_paths: None,
+        };
+        let command = runner_client_config_read_command(
+            &runner,
+            Path::new("/var/lib/logos-node/.logoscore/client/config.json"),
+        )
+        .context("configured LogosCore user did not retain config reader fallback")?;
+        anyhow::ensure!(
+            command.get_program() == OsStr::new("sudo"),
+            "configured LogosCore user config reader lost sudo fallback"
+        );
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            args == [
+                "-n",
+                "-u",
+                "logos",
+                "env",
+                "HOME=/var/lib/logos-node",
+                "cat",
+                "--",
+                "/var/lib/logos-node/.logoscore/client/config.json",
+            ],
+            "configured LogosCore user fallback arguments drifted: {args:?}"
         );
         Ok(())
     }
