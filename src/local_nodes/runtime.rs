@@ -1390,6 +1390,7 @@ fn system_service_cli_identity(
         &output.stdout,
         &identity.home,
         Some(&exec_start_output.stdout),
+        system_service_environment_files_property(&output.stdout)?.as_deref(),
     )?;
     Ok(Some(identity))
 }
@@ -1408,6 +1409,7 @@ fn system_service_cli_identity_command(target: &LogoscoreServiceTarget) -> Comma
         .arg("show")
         .arg("--property=User")
         .arg("--property=Environment")
+        .arg("--property=EnvironmentFiles")
         .arg("--property=MainPID")
         .arg(&target.unit);
     command
@@ -1418,6 +1420,7 @@ fn parse_system_service_cli_identity(output: &[u8]) -> Result<AttachedCliIdentit
     let text = std::str::from_utf8(output).context("system service identity is not UTF-8")?;
     let mut user = None;
     let mut environment = None;
+    let mut environment_files = None;
     let mut main_process_id = None;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -1426,22 +1429,18 @@ fn parse_system_service_cli_identity(output: &[u8]) -> Result<AttachedCliIdentit
         match key {
             "User" => set_system_service_property(&mut user, key, value)?,
             "Environment" => set_system_service_property(&mut environment, key, value)?,
+            "EnvironmentFiles" => set_system_service_property(&mut environment_files, key, value)?,
             "MainPID" => set_system_service_property(&mut main_process_id, key, value)?,
             _ => {}
         }
     }
-    let authority = PackageInstallAuthority::system_service_user(
-        user.as_deref().context("missing system service User")?,
-    )?;
+    let user = user.as_deref().context("missing system service User")?;
+    let authority = PackageInstallAuthority::system_service_user(user)?;
     let sudo_user = authority
         .system_service_user_name()
         .context("system service user is not available for local CLI access")?
         .to_owned();
-    let home = system_service_home_from_environment(
-        environment
-            .as_deref()
-            .context("missing system service Environment")?,
-    )?;
+    let home = system_service_home(user, environment.as_deref())?;
     let main_process_id = main_process_id
         .as_deref()
         .context("missing system service MainPID")?
@@ -1451,7 +1450,7 @@ fn parse_system_service_cli_identity(output: &[u8]) -> Result<AttachedCliIdentit
     if main_process_id == 0 {
         bail!("system service has no running main process");
     }
-    let config_dir = default_system_service_config_dir(&home)?;
+    let config_dir = system_service_config_dir(output, &home, None, environment_files.as_deref())?;
     Ok(AttachedCliIdentity {
         binary_path: String::new(),
         sudo_user,
@@ -1462,7 +1461,67 @@ fn parse_system_service_cli_identity(output: &[u8]) -> Result<AttachedCliIdentit
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn system_service_home_from_environment(environment: &str) -> Result<String> {
+fn system_service_home(user: &str, environment: Option<&str>) -> Result<String> {
+    resolve_system_service_home_with_lookup(user, environment, system_service_home_for_user)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_system_service_home_with_lookup<F>(
+    user: &str,
+    environment: Option<&str>,
+    lookup_home: F,
+) -> Result<String>
+where
+    F: FnOnce(&str) -> Result<Option<String>>,
+{
+    if let Some(home) = system_service_home_from_environment(environment)? {
+        return Ok(home);
+    }
+    let home = lookup_home(user)?
+        .context("system service home directory is unavailable from Environment and passwd")?;
+    validated_system_service_path(&home, "system service HOME")
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_home_for_user(user: &str) -> Result<Option<String>> {
+    let output = Command::new("getent")
+        .arg("passwd")
+        .arg(user)
+        .output()
+        .with_context(|| format!("cannot read passwd entry for system service user {user}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    parse_passwd_home(output.stdout.as_slice()).map(Some)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_passwd_home(output: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(output).context("passwd entry is not UTF-8")?;
+    let line = text.lines().next().context("passwd entry is empty")?;
+    let mut fields = line.split(':');
+    let _name = fields
+        .next()
+        .context("passwd entry is missing account name")?;
+    let _password = fields
+        .next()
+        .context("passwd entry is missing password field")?;
+    let _uid = fields.next().context("passwd entry is missing uid")?;
+    let _gid = fields.next().context("passwd entry is missing gid")?;
+    let _gecos = fields
+        .next()
+        .context("passwd entry is missing gecos field")?;
+    let home = fields
+        .next()
+        .context("passwd entry is missing home directory")?;
+    validated_system_service_path(home, "system service HOME")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_home_from_environment(environment: Option<&str>) -> Result<Option<String>> {
+    let Some(environment) = environment else {
+        return Ok(None);
+    };
     let mut home = None;
     for assignment in environment.split_ascii_whitespace() {
         let Some(value) = assignment.strip_prefix("HOME=") else {
@@ -1472,8 +1531,8 @@ fn system_service_home_from_environment(environment: &str) -> Result<String> {
             bail!("system service Environment declares HOME more than once");
         }
     }
-    let home = home.context("system service Environment does not declare HOME")?;
-    validated_system_service_path(&home, "system service HOME")
+    home.map(|value| validated_system_service_path(&value, "system service HOME"))
+        .transpose()
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1481,10 +1540,14 @@ fn system_service_config_dir(
     output: &[u8],
     home: &str,
     exec_start_output: Option<&[u8]>,
+    environment_files: Option<&str>,
 ) -> Result<String> {
-    let environment = system_service_environment_property(output)?
-        .context("missing system service Environment")?;
-    if let Some(config_dir) = system_service_config_dir_from_environment(&environment)? {
+    if let Some(config_dir) = system_service_config_dir_from_environment(
+        system_service_environment_property(output)?.as_deref(),
+    )? {
+        return Ok(config_dir);
+    }
+    if let Some(config_dir) = system_service_config_dir_from_environment_files(environment_files)? {
         return Ok(config_dir);
     }
     if let Some(exec_start_output) = exec_start_output
@@ -1511,7 +1574,25 @@ fn system_service_environment_property(output: &[u8]) -> Result<Option<String>> 
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn system_service_config_dir_from_environment(environment: &str) -> Result<Option<String>> {
+fn system_service_environment_files_property(output: &[u8]) -> Result<Option<String>> {
+    let text = std::str::from_utf8(output).context("system service identity is not UTF-8")?;
+    let mut environment_files = None::<String>;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key == "EnvironmentFiles" {
+            set_system_service_property(&mut environment_files, key, value)?;
+        }
+    }
+    Ok(environment_files)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_config_dir_from_environment(environment: Option<&str>) -> Result<Option<String>> {
+    let Some(environment) = environment else {
+        return Ok(None);
+    };
     let mut config_dir = None;
     for assignment in environment.split_ascii_whitespace() {
         let Some(value) = assignment.strip_prefix("LOGOSCORE_CONFIG_DIR=") else {
@@ -1523,6 +1604,115 @@ fn system_service_config_dir_from_environment(environment: &str) -> Result<Optio
         }
     }
     Ok(config_dir)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_config_dir_from_environment_files(
+    environment_files: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(environment_files) = environment_files
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut config_dir = None;
+    for entry in parse_system_service_environment_files(environment_files)? {
+        let contents = match fs::read_to_string(&entry.path) {
+            Ok(contents) => contents,
+            Err(_) if entry.ignore_errors => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot read system service EnvironmentFile {}", entry.path)
+                });
+            }
+        };
+        if let Some(value) = parse_environment_file_assignment(
+            &contents,
+            "LOGOSCORE_CONFIG_DIR",
+            "system service EnvironmentFile LogosCore config path",
+        )? && config_dir.replace(value).is_some()
+        {
+            bail!("system service EnvironmentFiles declare LOGOSCORE_CONFIG_DIR more than once");
+        }
+    }
+    Ok(config_dir)
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SystemServiceEnvironmentFileEntry {
+    path: String,
+    ignore_errors: bool,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_system_service_environment_files(
+    value: &str,
+) -> Result<Vec<SystemServiceEnvironmentFileEntry>> {
+    let mut entries = Vec::new();
+    let mut remaining = value.trim();
+    while !remaining.is_empty() {
+        let marker_index = remaining
+            .find(" (ignore_errors=")
+            .context("system service EnvironmentFiles entry is malformed")?;
+        let path = validated_system_service_path(
+            remaining[..marker_index].trim(),
+            "system service EnvironmentFile path",
+        )?;
+        let after_marker = &remaining[marker_index + " (ignore_errors=".len()..];
+        let flag_end = after_marker
+            .find(')')
+            .context("system service EnvironmentFiles entry is missing closing parenthesis")?;
+        let ignore_errors = match &after_marker[..flag_end] {
+            "yes" => true,
+            "no" => false,
+            other => bail!("system service EnvironmentFiles ignore_errors is invalid: {other}"),
+        };
+        entries.push(SystemServiceEnvironmentFileEntry {
+            path,
+            ignore_errors,
+        });
+        remaining = after_marker[flag_end + 1..].trim_start();
+    }
+    Ok(entries)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_environment_file_assignment(
+    contents: &str,
+    key: &str,
+    label: &str,
+) -> Result<Option<String>> {
+    let mut value = None;
+    let prefix = format!("{key}=");
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(raw_value) = line.strip_prefix(&prefix) else {
+            continue;
+        };
+        let parsed = parse_environment_file_value(raw_value)?;
+        let parsed = validated_system_service_path(&parsed, label)?;
+        if value.replace(parsed).is_some() {
+            bail!("{label} declared more than once");
+        }
+    }
+    Ok(value)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_environment_file_value(raw_value: &str) -> Result<String> {
+    let trimmed = raw_value.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return Ok(trimmed[1..trimmed.len() - 1].to_owned());
+    }
+    Ok(trimmed.to_owned())
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -2648,6 +2838,7 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
                 "show",
                 "--property=User",
                 "--property=Environment",
+                "--property=EnvironmentFiles",
                 "--property=MainPID",
                 "logos-node.service",
             ]
@@ -2795,7 +2986,6 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         anyhow::ensure!(identity.main_process_id == 42);
 
         for malformed in [
-            b"User=logos\nEnvironment=PATH=/usr/bin\nMainPID=42\n".as_slice(),
             b"User=logos\nEnvironment=HOME=relative\nMainPID=42\n".as_slice(),
             b"User=logos\nEnvironment=HOME=/first HOME=/second\nMainPID=42\n".as_slice(),
             b"User=logos\nEnvironment=HOME=/var/lib/logos-node\nMainPID=0\n".as_slice(),
@@ -2806,18 +2996,47 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
     }
 
     #[test]
+    fn system_service_home_uses_passwd_fallback_when_environment_home_is_absent() -> Result<()> {
+        let home = resolve_system_service_home_with_lookup("logos", Some("PATH=/usr/bin"), |_| {
+            Ok(Some("/var/lib/logos-node".to_owned()))
+        })?;
+        anyhow::ensure!(home == "/var/lib/logos-node");
+        anyhow::ensure!(
+            resolve_system_service_home_with_lookup("logos", None, |_| Ok(None)).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn system_service_cli_identity_prefers_config_dir_overrides() -> Result<()> {
         let identity = parse_system_service_cli_identity(
             b"User=logos\nEnvironment=HOME=/var/lib/logos-node LOGOSCORE_CONFIG_DIR=/srv/logoscore\nMainPID=42\n",
         )?;
-        anyhow::ensure!(identity.config_dir == "/var/lib/logos-node/.logoscore");
+        anyhow::ensure!(identity.config_dir == "/srv/logoscore");
 
         let env_override = system_service_config_dir(
             b"User=logos\nEnvironment=HOME=/var/lib/logos-node LOGOSCORE_CONFIG_DIR=/srv/logoscore\nMainPID=42\n",
             "/var/lib/logos-node",
             None,
+            None,
         )?;
         anyhow::ensure!(env_override == "/srv/logoscore");
+
+        let environment_file = tempfile::NamedTempFile::new()?;
+        fs::write(
+            environment_file.path(),
+            "LOGOSCORE_CONFIG_DIR=/srv/from-env-file\n",
+        )?;
+        let env_file_override = system_service_config_dir(
+            b"User=logos\nEnvironment=\nMainPID=42\n",
+            "/var/lib/logos-node",
+            None,
+            Some(&format!(
+                "{} (ignore_errors=no)",
+                environment_file.path().display()
+            )),
+        )?;
+        anyhow::ensure!(env_file_override == "/srv/from-env-file");
 
         let exec_override = system_service_config_dir(
             b"User=logos\nEnvironment=HOME=/var/lib/logos-node\nMainPID=42\n",
@@ -2842,8 +3061,29 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
                     0
                 ]]
             }))?),
+            None,
         )?;
         anyhow::ensure!(exec_override == "/srv/from-exec-start");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_system_service_environment_files_rejects_invalid_entries() -> Result<()> {
+        let parsed = parse_system_service_environment_files(
+            "/srv/a.env (ignore_errors=no) /srv/b.env (ignore_errors=yes)",
+        )?;
+        anyhow::ensure!(parsed.len() == 2);
+        let first = parsed
+            .first()
+            .context("missing first EnvironmentFiles entry")?;
+        anyhow::ensure!(first.path == "/srv/a.env");
+        anyhow::ensure!(!first.ignore_errors);
+        let second = parsed
+            .get(1)
+            .context("missing second EnvironmentFiles entry")?;
+        anyhow::ensure!(second.path == "/srv/b.env");
+        anyhow::ensure!(second.ignore_errors);
+        anyhow::ensure!(parse_system_service_environment_files("/srv/a.env").is_err());
         Ok(())
     }
 
