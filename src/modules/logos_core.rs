@@ -2016,6 +2016,24 @@ impl LogoscoreCliRuntime {
     }
 
     #[must_use]
+    pub(crate) fn configured_service(
+        binary_path: String,
+        config_dir: String,
+        sudo_user: String,
+        home: Option<String>,
+    ) -> Self {
+        Self {
+            runner: LogosCoreRunner {
+                program: binary_path,
+                sudo_user: Some(sudo_user),
+                home,
+                config_dir: Some(config_dir),
+                label: "configured logoscore".to_owned(),
+            },
+        }
+    }
+
+    #[must_use]
     pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
         Self {
             runner: LogosCoreRunner {
@@ -6012,7 +6030,6 @@ mod tests {
         let config_path = Path::new("/var/lib/logos-node/.logoscore/client/config.json");
         let command = runner_client_config_read_command(&runner, config_path)
             .context("configured service runner did not build config reader")?;
-
         anyhow::ensure!(
             command.get_program() == OsStr::new("sudo"),
             "configured service config reader bypassed sudo"
@@ -8381,6 +8398,39 @@ esac
             "controlled typed arguments were not preserved: {controlled_arguments:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn configured_service_runtime_uses_fixed_sudo_argv_without_shell() {
+        use std::ffi::OsStr;
+
+        let runtime = LogoscoreCliRuntime::configured_service(
+            "/usr/local/bin/logoscore".to_owned(),
+            "/var/lib/logos-node/.logoscore".to_owned(),
+            "logos".to_owned(),
+            Some("/var/lib/logos-node".to_owned()),
+        );
+        let command = command_for_runner(&runtime.runner, ["status", "--json"]);
+        assert_eq!(command.get_program(), OsStr::new("sudo"));
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "-n",
+                "-u",
+                "logos",
+                "env",
+                "HOME=/var/lib/logos-node",
+                "/usr/local/bin/logoscore",
+                "--config-dir",
+                "/var/lib/logos-node/.logoscore",
+                "status",
+                "--json",
+            ]
+        );
     }
 
     #[test]
