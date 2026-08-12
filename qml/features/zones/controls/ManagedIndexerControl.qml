@@ -30,6 +30,9 @@ ColumnLayout {
     readonly property var snapshotState: root.catalogState || root.zoneState
     readonly property bool catalogSnapshotUsable: root.snapshotState !== null
         && root.snapshotState.summaryRowsUsable === true
+    readonly property bool controlSnapshotUsable: root.catalogSnapshotUsable
+        || (root.snapshotState !== null
+            && root.snapshotState.managedIndexerControlSnapshotUsable === true)
     readonly property var configurationPanel: configurationLoader.item || null
     readonly property bool hasDirtyDraft: root.configurationPanel !== null
         && root.configurationPanel.dirty === true
@@ -46,7 +49,7 @@ ColumnLayout {
     readonly property bool canStart: !root.actionInFlight
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
-        && root.catalogSnapshotUsable
+        && root.controlSnapshotUsable
         && root.availableActions.indexOf("start") >= 0
         && root.installed
         && (root.runState === "stopped" || root.runState === "not_initialized")
@@ -207,6 +210,16 @@ ColumnLayout {
         tone: "error"
         title: qsTr("Managed Indexer action failed")
         message: String(root.zoneState.managedIndexerError || "")
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: String(root.zoneState.managedIndexerRuntimePollError || "").length > 0
+            && String(root.zoneState.managedIndexerError || "").length === 0
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Waiting for Channel Indexer action status")
+        message: String(root.zoneState.managedIndexerRuntimePollError || "")
         Layout.fillWidth: true
     }
 

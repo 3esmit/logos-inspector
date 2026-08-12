@@ -4595,6 +4595,14 @@ mod tests {
         let transport: SharedModuleTransport = Arc::new(RecordingHostTransport::new());
 
         let report = status_with_store("default", &transport, &store).await?;
+        let bedrock = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("Basecamp report omitted Bedrock")?;
+        if bedrock.endpoint.as_deref() != Some(crate::testnet::LOCAL_BEDROCK_ENDPOINT) {
+            bail!("Basecamp Bedrock status omitted its configured HTTP endpoint: {bedrock:?}");
+        }
         let kinds = report
             .nodes
             .iter()

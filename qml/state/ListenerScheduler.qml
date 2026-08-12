@@ -57,6 +57,12 @@ QtObject {
             onTriggered: root.tick("chainOperation")
         },
         Timer {
+            interval: root.intervalFor("zoneIndexerOperation")
+            repeat: true
+            running: root.enabled("zoneIndexerOperation")
+            onTriggered: root.tick("zoneIndexerOperation")
+        },
+        Timer {
             interval: root.intervalFor("liveBlocks")
             repeat: true
             running: root.enabled("liveBlocks")
@@ -104,6 +110,7 @@ QtObject {
         case "deliveryOperation":
         case "socialOperation":
         case "chainOperation":
+        case "zoneIndexerOperation":
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
             return Math.max(1, Number(root.liveBlocksPollInterval))
@@ -138,6 +145,9 @@ QtObject {
             return root.socialState() && root.socialState().operationsRunning === true
         case "chainOperation":
             return root.chainState() && root.chainState().operationsRunning === true
+        case "zoneIndexerOperation":
+            return root.zoneState()
+                && root.zoneState().managedIndexerOperationRunning === true
         case "liveBlocks":
             return model.blocksLiveEnabled === true && model.shell.currentView === "blocks"
         case "zonesStatus":
@@ -166,6 +176,8 @@ QtObject {
             return root.socialState() ? root.socialState().pollOperations() : null
         case "chainOperation":
             return root.chainState() ? root.chainState().pollOperations() : null
+        case "zoneIndexerOperation":
+            return root.zoneState() ? root.zoneState().pollManagedIndexerOperation() : null
         case "liveBlocks":
             return model.chainPages ? model.chainPages.refreshBlocksLivePage() : model.refreshBlocksLivePage()
         case "zonesStatus":

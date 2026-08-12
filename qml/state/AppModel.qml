@@ -80,6 +80,14 @@ QtObject {
                     callback
                 )
             }
+
+            function startRuntimeOperation(request, showResult, callback) {
+                return root.runtimeOperationStart(request, showResult === true, callback)
+            }
+
+            function runtimeOperationStatus(operationId, showResult, callback) {
+                return root.runtimeOperationStatus(operationId, showResult === true, callback)
+            }
         }
     }
     property Domains.NetworkProfileState networkProfiles: Domains.NetworkProfileState {

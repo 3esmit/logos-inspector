@@ -1,5 +1,6 @@
 import QtQml
 import "../ConfirmationPolicy.js" as ConfirmationPolicy
+import "../OperationHistoryVocabulary.js" as OperationHistoryVocabulary
 import "ZoneInspectionContract.js" as ZoneInspectionContract
 
 QtObject {
@@ -9,12 +10,15 @@ QtObject {
     required property var activeZoneContext
     required property string verification
     required property bool catalogSnapshotUsable
+    property bool managedIndexerControlSnapshotUsable: false
     required property var networkScope
     required property string networkScopeKey
     required property int sourceGeneration
     required property double sourceRevision
     property var appModel: null
     property var sourceDescriptor: null
+    readonly property int basecampLocalNodesRevision:
+        Number(appModel && appModel.localNodesRevision || 0)
 
     readonly property string activeZoneId: activeZoneContext
         ? String(activeZoneContext.channel_id || "") : ""
@@ -32,6 +36,17 @@ QtObject {
     property string managedIndexerError: ""
     property string managedIndexerResult: ""
     property int managedIndexerRequestRevision: 0
+    property var managedIndexerRuntimeOperation: null
+    property string managedIndexerRuntimeAction: ""
+    property var managedIndexerRuntimeCallback: null
+    property bool managedIndexerRuntimePollInFlight: false
+    property int managedIndexerRuntimePollToken: 0
+    property string managedIndexerRuntimePollError: ""
+    readonly property bool managedIndexerOperationRunning:
+        managedIndexerControlInFlight
+        && managedIndexerRuntimeOperation !== null
+        && OperationHistoryVocabulary.isRuntimeActiveStatus(
+            managedIndexerRuntimeOperation.status)
 
     property var managedIndexerConfigSnapshot: null
     property var managedIndexerConfigValidation: null
@@ -57,6 +72,7 @@ QtObject {
         managedIndexerRequestRevision += 1
         managedIndexerRefreshInFlight = false
         managedIndexerControlInFlight = false
+        clearManagedIndexerRuntimeOperation()
         managedIndexerStatusStale = true
         managedIndexerError = ""
         managedIndexerResult = ""
@@ -71,18 +87,58 @@ QtObject {
 
     function bedrockEndpoint() {
         const source = sourceDescriptor || null
-        if (!source || String(source.kind || "") !== "direct_http") {
+        if (!source) {
             return ""
         }
-        return String(source.endpoint || "").trim()
+        if (String(source.kind || "") === "direct_http") {
+            return String(source.endpoint || "").trim()
+        }
+        if (String(source.kind || "") !== "module" || !usesBasecampModules()) {
+            return ""
+        }
+        return basecampManagedBedrockEndpoint()
     }
 
-    function managedIndexerConfigRequest() {
+    function usesBasecampModules() {
+        return appModel && typeof appModel.prefersBasecampModules === "function"
+            && appModel.prefersBasecampModules() === true
+    }
+
+    function basecampManagedBedrockEndpoint() {
+        // Include the revision in this binding so lifecycle refreshes replace a
+        // stale endpoint as soon as the managed Bedrock report changes.
+        const revision = basecampLocalNodesRevision
+        const report = revision >= 0 && appModel && appModel.localNodesReport
+            ? appModel.localNodesReport : null
+        const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
+        for (let i = 0; i < nodes.length; ++i) {
+            const node = nodes[i] || ({})
+            if (String(node.key || node.kind || "") !== "bedrock"
+                    || String(node.ownership || "") !== "inspector_managed"
+                    || String(node.run_state || "") !== "running") {
+                continue
+            }
+            const endpoint = String(node.endpoint || "").trim()
+            if (isHttpEndpoint(endpoint)) {
+                return endpoint
+            }
+        }
+        return ""
+    }
+
+    function isHttpEndpoint(endpoint) {
+        return /^https?:\/\/[^\s/]+(?:\/|$)/i.test(String(endpoint || "").trim())
+    }
+
+    function managedIndexerConfigRequest(allowRetainedControlSnapshot) {
         if (!activeZoneContext || !networkScope || activeZoneId.length === 0) {
             managedIndexerConfigError = qsTr("A Zone context is required to configure this Channel Indexer.")
             return null
         }
-        if (verification !== "verified" || catalogSnapshotUsable !== true) {
+        const controlSnapshotUsable = allowRetainedControlSnapshot === true
+            ? managedIndexerControlSnapshotUsable === true
+            : (verification === "verified" && catalogSnapshotUsable === true)
+        if (!controlSnapshotUsable) {
             managedIndexerConfigError = qsTr("A current verified Zone catalog snapshot is required to configure Indexer.")
             return null
         }
@@ -95,7 +151,10 @@ QtObject {
         }
         const endpoint = bedrockEndpoint()
         if (!endpoint.length) {
-            managedIndexerConfigError = qsTr("A Bedrock endpoint is required.")
+            managedIndexerConfigError = usesBasecampModules()
+                && String(sourceDescriptor && sourceDescriptor.kind || "") === "module"
+                ? qsTr("Basecamp-managed Bedrock must be running with a valid HTTP endpoint.")
+                : qsTr("A Bedrock endpoint is required.")
             return null
         }
         return {
@@ -378,6 +437,196 @@ QtObject {
         return null
     }
 
+    function clearManagedIndexerRuntimeOperation() {
+        managedIndexerRuntimeOperation = null
+        managedIndexerRuntimeAction = ""
+        managedIndexerRuntimeCallback = null
+        managedIndexerRuntimePollInFlight = false
+        managedIndexerRuntimePollToken += 1
+        managedIndexerRuntimePollError = ""
+    }
+
+    function managedIndexerRuntimeRequest(action, request) {
+        return {
+            domain: "localNodes",
+            method: "channelIndexerAction",
+            label: managedIndexerActionLabel(action),
+            args: [
+                localNodeProfile(),
+                request,
+                ConfirmationPolicy.token("local-node-action")
+            ]
+        }
+    }
+
+    function managedIndexerActionLabel(action) {
+        switch (String(action || "")) {
+        case "start":
+            return qsTr("Start Channel Indexer")
+        case "stop":
+            return qsTr("Stop Channel Indexer")
+        case "purge":
+            return qsTr("Purge Channel Indexer")
+        default:
+            return qsTr("Channel Indexer action")
+        }
+    }
+
+    function managedIndexerRuntimeMatches(operation, operationId) {
+        const value = operation && typeof operation === "object" ? operation : null
+        return value !== null
+            && String(value.operationId || "").length > 0
+            && String(value.operationId || "") === String(operationId || "")
+            && String(value.domain || "") === "localNodes"
+            && String(value.method || "") === "channelIndexerAction"
+    }
+
+    function managedIndexerRuntimeResponse(operation) {
+        if (appModel && typeof appModel.runtimeOperationResponse === "function") {
+            return appModel.runtimeOperationResponse(operation)
+        }
+        const successful = OperationHistoryVocabulary.isRuntimeSuccessfulTerminalStatus(
+            operation && operation.status)
+        return {
+            ok: successful,
+            value: operation && operation.result !== undefined
+                && operation.result !== null ? operation.result : operation,
+            text: "",
+            error: successful ? "" : String(operation && operation.error || "")
+        }
+    }
+
+    function finishManagedIndexerRuntimeOperation(operation) {
+        const action = managedIndexerRuntimeAction
+        const callback = managedIndexerRuntimeCallback
+        clearManagedIndexerRuntimeOperation()
+        const response = managedIndexerRuntimeResponse(operation)
+        completeManagedIndexerAction(action, response, callback)
+    }
+
+    function completeManagedIndexerAction(action, response, callback) {
+        managedIndexerControlInFlight = false
+        managedIndexerRuntimePollError = ""
+        if (!response || response.ok !== true || !response.value) {
+            managedIndexerStatusStale = true
+            managedIndexerError = ZoneInspectionContract.responseError(
+                response, qsTr("Managed Indexer action failed."))
+            if (callback) {
+                callback(response)
+            }
+            return
+        }
+        acceptManagedIndexerReport(response.value)
+        const operation = managedIndexerOperation(response.value, action)
+        const status = String(operation && operation.status || "")
+        const detail = String(operation && operation.detail || "")
+        if (status === "failed" || status === "needs_configuration") {
+            managedIndexerError = detail.length
+                ? detail : qsTr("Managed Indexer action failed.")
+        } else {
+            managedIndexerError = ""
+            managedIndexerResult = detail.length ? detail : status
+            managedIndexerLifecycleChanged()
+        }
+        if (callback) {
+            callback(response)
+        }
+    }
+
+    function startManagedIndexerRuntimeOperation(action, request, requestRevision,
+            callback) {
+        if (!gateway || typeof gateway.startRuntimeOperation !== "function") {
+            managedIndexerControlInFlight = false
+            managedIndexerStatusStale = true
+            managedIndexerError = qsTr("Runtime operation bridge is unavailable.")
+            if (callback) {
+                callback(ZoneInspectionContract.failedResponse(managedIndexerError))
+            }
+            return null
+        }
+        return gateway.startRuntimeOperation(
+            managedIndexerRuntimeRequest(action, request),
+            false,
+            function (response) {
+                if (requestRevision !== managedIndexerRequestRevision) {
+                    return
+                }
+                if (!response || response.ok !== true || !response.value) {
+                    completeManagedIndexerAction(action, response, callback)
+                    return
+                }
+                const operation = response.value
+                const operationId = String(operation && operation.operationId || "")
+                if (!managedIndexerRuntimeMatches(operation, operationId)) {
+                    completeManagedIndexerAction(action,
+                        ZoneInspectionContract.failedResponse(qsTr("Managed Indexer action returned an invalid runtime operation.")),
+                        callback)
+                    return
+                }
+                if (OperationHistoryVocabulary.isRuntimeTerminalStatus(operation.status)) {
+                    completeManagedIndexerAction(action,
+                        managedIndexerRuntimeResponse(operation), callback)
+                    return
+                }
+                if (!OperationHistoryVocabulary.isRuntimeActiveStatus(operation.status)) {
+                    completeManagedIndexerAction(action,
+                        ZoneInspectionContract.failedResponse(qsTr("Managed Indexer action returned an invalid runtime status.")),
+                        callback)
+                    return
+                }
+                managedIndexerRuntimeOperation = operation
+                managedIndexerRuntimeAction = action
+                managedIndexerRuntimeCallback = callback
+            }
+        )
+    }
+
+    function pollManagedIndexerOperation() {
+        const operation = managedIndexerRuntimeOperation
+        const operationId = String(operation && operation.operationId || "")
+        if (!managedIndexerOperationRunning || managedIndexerRuntimePollInFlight
+                || !operationId.length || !gateway
+                || typeof gateway.runtimeOperationStatus !== "function") {
+            return null
+        }
+        managedIndexerRuntimePollToken += 1
+        const pollToken = managedIndexerRuntimePollToken
+        const requestRevision = managedIndexerRequestRevision
+        managedIndexerRuntimePollInFlight = true
+        return gateway.runtimeOperationStatus(operationId, false, function (response) {
+            if (requestRevision !== managedIndexerRequestRevision
+                    || pollToken !== managedIndexerRuntimePollToken
+                    || !managedIndexerRuntimeMatches(managedIndexerRuntimeOperation,
+                        operationId)) {
+                return
+            }
+            managedIndexerRuntimePollInFlight = false
+            if (!response || response.ok !== true || !response.value) {
+                managedIndexerRuntimePollError = ZoneInspectionContract.responseError(
+                    response, qsTr("Managed Indexer action status is unavailable; retrying."))
+                return
+            }
+            if (!managedIndexerRuntimeMatches(response.value, operationId)) {
+                managedIndexerRuntimePollError = qsTr("Managed Indexer action status did not match the active operation; retrying.")
+                return
+            }
+            if (!OperationHistoryVocabulary.runtimeSnapshotIsNewer(
+                    managedIndexerRuntimeOperation, response.value)) {
+                return
+            }
+            if (OperationHistoryVocabulary.isRuntimeTerminalStatus(response.value.status)) {
+                finishManagedIndexerRuntimeOperation(response.value)
+                return
+            }
+            if (OperationHistoryVocabulary.isRuntimeActiveStatus(response.value.status)) {
+                managedIndexerRuntimeOperation = response.value
+                managedIndexerRuntimePollError = ""
+                return
+            }
+            managedIndexerRuntimePollError = qsTr("Managed Indexer action returned an invalid runtime status; retrying.")
+        })
+    }
+
     function runManagedIndexerAction(action, channelId, callback) {
         if (managedIndexerControlInFlight || managedIndexerRefreshInFlight
                 || managedIndexerConfigLoading || managedIndexerConfigSaving) {
@@ -405,8 +654,11 @@ QtObject {
             return null
         }
         const requiresSourceConfiguration = managedIndexerActionRequiresSourceConfiguration(actionKey)
+        const controlSnapshotUsable = requiresSourceConfiguration
+            && managedIndexerControlSnapshotUsable === true
         if (requiresSourceConfiguration && (!activeZoneContext
-                || verification !== "verified" || catalogSnapshotUsable !== true)) {
+                || (verification !== "verified" || catalogSnapshotUsable !== true)
+                && !controlSnapshotUsable)) {
             managedIndexerError = actionKey === "purge"
                 ? qsTr("A current verified Zone catalog snapshot is required to reset Indexer data.")
                 : qsTr("A current verified Zone catalog snapshot is required to start Indexer.")
@@ -423,7 +675,7 @@ QtObject {
             channel_id: targetChannel
         }
         if (requiresSourceConfiguration) {
-            const configRequest = managedIndexerConfigRequest()
+            const configRequest = managedIndexerConfigRequest(true)
             if (!configRequest) {
                 managedIndexerError = managedIndexerConfigError
                 return null
@@ -443,6 +695,11 @@ QtObject {
         managedIndexerControlInFlight = true
         managedIndexerError = ""
         managedIndexerResult = ""
+        managedIndexerRuntimePollError = ""
+        if (usesBasecampModules()) {
+            return startManagedIndexerRuntimeOperation(actionKey, request,
+                requestRevision, callback)
+        }
         return gateway.request("channelIndexerAction", [
             localNodeProfile(),
             request,
@@ -451,31 +708,7 @@ QtObject {
             if (requestRevision !== managedIndexerRequestRevision) {
                 return
             }
-            managedIndexerControlInFlight = false
-            if (!response || response.ok !== true || !response.value) {
-                managedIndexerStatusStale = true
-                managedIndexerError = ZoneInspectionContract.responseError(
-                    response, qsTr("Managed Indexer action failed."))
-                if (callback) {
-                    callback(response)
-                }
-                return
-            }
-            acceptManagedIndexerReport(response.value)
-            const operation = managedIndexerOperation(response.value, actionKey)
-            const status = String(operation && operation.status || "")
-            const detail = String(operation && operation.detail || "")
-            if (status === "failed" || status === "needs_configuration") {
-                managedIndexerError = detail.length
-                    ? detail : qsTr("Managed Indexer action failed.")
-            } else {
-                managedIndexerError = ""
-                managedIndexerResult = detail.length ? detail : status
-                managedIndexerLifecycleChanged()
-            }
-            if (callback) {
-                callback(response)
-            }
+            completeManagedIndexerAction(actionKey, response, callback)
         })
     }
 
