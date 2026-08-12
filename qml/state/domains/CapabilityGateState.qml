@@ -10,6 +10,7 @@ QtObject {
     property string registryError: ""
     property var compatibilityAvailability: ({})
     property int revision: 0
+    property int latestAsyncRequest: 0
 
     function loadRegistry(prefersBasecamp, runtimeInputs) {
         const response = callGateway("capabilityRegistryReport", [prefersBasecamp === true, runtimeInputs || ({})])
@@ -31,8 +32,12 @@ QtObject {
             }
             return -1
         }
+        const requestToken = latestAsyncRequest + 1
+        latestAsyncRequest = requestToken
         return gateway.requestInspector("capabilityRegistryReport", args, function (response) {
-            applyRegistryResponse(response)
+            if (requestToken === latestAsyncRequest) {
+                applyRegistryResponse(response)
+            }
             if (typeof callback === "function") {
                 callback(response)
             }
