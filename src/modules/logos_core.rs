@@ -2011,26 +2011,27 @@ impl LogoscoreCliRuntime {
                 home: None,
                 config_dir: Some(config_dir),
                 label: "local LogosCore".to_owned(),
+                privileged_command_paths: None,
             },
         }
     }
 
-    #[must_use]
     pub(crate) fn configured_service(
         binary_path: String,
         config_dir: String,
         sudo_user: String,
         home: Option<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             runner: LogosCoreRunner {
                 program: binary_path,
                 sudo_user: Some(sudo_user),
                 home,
                 config_dir: Some(config_dir),
                 label: "configured logoscore".to_owned(),
+                privileged_command_paths: Some(fixed_system_command_paths()?),
             },
-        }
+        })
     }
 
     #[must_use]
@@ -2042,6 +2043,7 @@ impl LogoscoreCliRuntime {
                 home: None,
                 config_dir: Some(config_dir),
                 label: "Inspector-managed logoscore".to_owned(),
+                privileged_command_paths: None,
             },
         }
     }
@@ -3317,6 +3319,13 @@ struct LogosCoreRunner {
     home: Option<String>,
     config_dir: Option<String>,
     label: String,
+    privileged_command_paths: Option<PrivilegedCommandPaths>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivilegedCommandPaths {
+    sudo: String,
+    env: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -3473,8 +3482,13 @@ fn runner_client_config_read_command(
     config_path: &Path,
 ) -> Option<Command> {
     let user = runner.sudo_user.as_deref()?;
-    let mut command = Command::new("sudo");
-    command.arg("-n").arg("-u").arg(user).arg("env");
+    let paths = runner.privileged_command_paths.as_ref();
+    let mut command = Command::new(paths.map_or("sudo", |configured| configured.sudo.as_str()));
+    command
+        .arg("-n")
+        .arg("-u")
+        .arg(user)
+        .arg(paths.map_or("env", |configured| configured.env.as_str()));
     if let Some(home) = &runner.home {
         command.arg(format!("HOME={home}"));
     }
@@ -3873,8 +3887,13 @@ where
     S: AsRef<str>,
 {
     if let Some(user) = &runner.sudo_user {
-        let mut command = Command::new("sudo");
-        command.arg("-n").arg("-u").arg(user).arg("env");
+        let paths = runner.privileged_command_paths.as_ref();
+        let mut command = Command::new(paths.map_or("sudo", |configured| configured.sudo.as_str()));
+        command
+            .arg("-n")
+            .arg("-u")
+            .arg(user)
+            .arg(paths.map_or("env", |configured| configured.env.as_str()));
         if let Some(home) = &runner.home {
             command.arg(format!("HOME={home}"));
         }
@@ -3905,6 +3924,25 @@ where
         }
         command
     }
+}
+
+fn fixed_system_command_paths() -> Result<PrivilegedCommandPaths> {
+    Ok(PrivilegedCommandPaths {
+        sudo: fixed_system_command_path("sudo", &["/usr/bin/sudo", "/bin/sudo"])?,
+        env: fixed_system_command_path("env", &["/usr/bin/env", "/bin/env"])?,
+    })
+}
+
+fn fixed_system_command_path(name: &str, candidates: &[&str]) -> Result<String> {
+    candidates
+        .iter()
+        .find_map(|candidate| {
+            fs::canonicalize(candidate)
+                .ok()
+                .filter(|path| path.is_file())
+                .and_then(|path| path.to_str().map(ToOwned::to_owned))
+        })
+        .with_context(|| format!("required system command `{name}` is unavailable"))
 }
 
 fn read_json_watch_output(
@@ -5072,6 +5110,7 @@ fn configured_runtime() -> LogoscoreCliRuntime {
             } else {
                 "plain logoscore".to_owned()
             },
+            privileged_command_paths: None,
         },
     }
 }
@@ -5405,6 +5444,7 @@ mod tests {
             home: Some("/var/lib/logos-node".to_owned()),
             config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
             label: "configured logoscore".to_owned(),
+            privileged_command_paths: None,
         };
 
         let authority = WatchCleanupAuthority::for_runner(&runner);
@@ -6020,18 +6060,20 @@ mod tests {
     fn configured_service_config_reader_uses_sudo_without_shell() -> Result<()> {
         use std::ffi::OsStr;
 
+        let paths = fixed_system_command_paths()?;
         let runner = LogosCoreRunner {
             program: "/usr/local/bin/logoscore".to_owned(),
             sudo_user: Some("logos".to_owned()),
             home: Some("/var/lib/logos-node".to_owned()),
             config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
             label: "configured logoscore".to_owned(),
+            privileged_command_paths: Some(paths.clone()),
         };
         let config_path = Path::new("/var/lib/logos-node/.logoscore/client/config.json");
         let command = runner_client_config_read_command(&runner, config_path)
             .context("configured service runner did not build config reader")?;
         anyhow::ensure!(
-            command.get_program() == OsStr::new("sudo"),
+            command.get_program() == OsStr::new(paths.sudo.as_str()),
             "configured service config reader bypassed sudo"
         );
         let args = command
@@ -6043,7 +6085,7 @@ mod tests {
                 "-n",
                 "-u",
                 "logos",
-                "env",
+                paths.env.as_str(),
                 "HOME=/var/lib/logos-node",
                 "/bin/cat",
                 "--",
@@ -6065,6 +6107,7 @@ mod tests {
             home: None,
             config_dir: None,
             label: "test logoscore".to_owned(),
+            privileged_command_paths: None,
         };
 
         let error = read_runner_client_config(&runner, &config_path)
@@ -6091,6 +6134,7 @@ mod tests {
             home: None,
             config_dir: None,
             label: "test logoscore".to_owned(),
+            privileged_command_paths: None,
         };
 
         let read = read_runner_client_config(&runner, &config_path)?;
@@ -6759,6 +6803,7 @@ esac
                     home: None,
                     config_dir: None,
                     label: "test logoscore".to_owned(),
+                    privileged_command_paths: None,
                 },
             }),
             close_cancellation: CancellationToken::new(),
@@ -6846,6 +6891,7 @@ esac
                     home: None,
                     config_dir: None,
                     label: "test logoscore".to_owned(),
+                    privileged_command_paths: None,
                 },
             }),
             close_cancellation: CancellationToken::new(),
@@ -7946,6 +7992,7 @@ esac
                     home: None,
                     config_dir: None,
                     label: "test logoscore".to_owned(),
+                    privileged_command_paths: None,
                 },
             }),
             close_cancellation: CancellationToken::new(),
@@ -8401,36 +8448,41 @@ esac
     }
 
     #[test]
-    fn configured_service_runtime_uses_fixed_sudo_argv_without_shell() {
+    fn configured_service_runtime_uses_fixed_sudo_argv_without_shell() -> Result<()> {
         use std::ffi::OsStr;
 
+        let paths = fixed_system_command_paths()?;
         let runtime = LogoscoreCliRuntime::configured_service(
             "/usr/local/bin/logoscore".to_owned(),
             "/var/lib/logos-node/.logoscore".to_owned(),
             "logos".to_owned(),
             Some("/var/lib/logos-node".to_owned()),
-        );
+        )?;
         let command = command_for_runner(&runtime.runner, ["status", "--json"]);
-        assert_eq!(command.get_program(), OsStr::new("sudo"));
+        anyhow::ensure!(
+            command.get_program() == OsStr::new(paths.sudo.as_str()),
+            "configured service runtime bypassed fixed sudo path"
+        );
         let args = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            [
+        anyhow::ensure!(
+            args == [
                 "-n",
                 "-u",
                 "logos",
-                "env",
+                paths.env.as_str(),
                 "HOME=/var/lib/logos-node",
                 "/usr/local/bin/logoscore",
                 "--config-dir",
                 "/var/lib/logos-node/.logoscore",
                 "status",
                 "--json",
-            ]
+            ],
+            "configured service runtime arguments drifted: {args:?}"
         );
+        Ok(())
     }
 
     #[test]
@@ -8441,6 +8493,7 @@ esac
             home: Some("/tmp/home".to_owned()),
             config_dir: Some("/tmp/logoscore".to_owned()),
             label: "configured logoscore".to_owned(),
+            privileged_command_paths: None,
         };
         let command = command_for_runner(&runner, ["call", "storage_module", "get", "--json"]);
         let args = command

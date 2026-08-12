@@ -233,12 +233,6 @@ impl LogoscoreRuntimeProfile {
 
     pub(super) fn discover_local() -> Result<Option<Self>> {
         let explicit_client_config = local_client_config_is_explicit();
-        if let Some(profile) = preferred_running_system_service(
-            explicit_client_config,
-            discover_running_system_service,
-        ) {
-            return Ok(Some(profile));
-        }
         let Ok(binary_path) = canonical_executable(None) else {
             return if explicit_client_config {
                 Ok(None)
@@ -266,8 +260,7 @@ impl LogoscoreRuntimeProfile {
         if profile.service_target.is_none() {
             profile.service_target = stopped_service;
         }
-        if !explicit_client_config
-            && profile.is_unavailable()
+        if should_fallback_to_verified_system_service(explicit_client_config, &profile)
             && let Some(service_profile) = discover_running_system_service()
         {
             return Ok(Some(service_profile));
@@ -461,12 +454,12 @@ impl LogoscoreRuntimeProfile {
         }
         if self.is_attached() {
             if let Some(identity) = self.attached_service_cli_identity()? {
-                return Ok(LogoscoreCliRuntime::configured_service(
+                return LogoscoreCliRuntime::configured_service(
                     self.binary_path.clone(),
                     self.config_dir.clone(),
                     identity.sudo_user,
                     Some(identity.home),
-                ));
+                );
             }
             return Ok(LogoscoreCliRuntime::local(
                 self.binary_path.clone(),
@@ -891,14 +884,11 @@ fn local_client_config_is_explicit() -> bool {
     .any(|key| env::var(key).is_ok_and(|value| !value.trim().is_empty()))
 }
 
-fn preferred_running_system_service<F>(
+fn should_fallback_to_verified_system_service(
     explicit_client_config: bool,
-    discover: F,
-) -> Option<LogoscoreRuntimeProfile>
-where
-    F: FnOnce() -> Option<LogoscoreRuntimeProfile>,
-{
-    (!explicit_client_config).then(discover).flatten()
+    profile: &LogoscoreRuntimeProfile,
+) -> bool {
+    !explicit_client_config && (profile.is_unavailable() || !profile.is_running())
 }
 
 fn local_client_transport_is_proven(config_dir: &Path) -> bool {
@@ -946,12 +936,14 @@ fn discover_running_system_service() -> Option<LogoscoreRuntimeProfile> {
         let Ok(Some(identity)) = system_service_cli_identity(&target) else {
             continue;
         };
-        let runtime = LogoscoreCliRuntime::configured_service(
+        let Ok(runtime) = LogoscoreCliRuntime::configured_service(
             identity.binary_path.clone(),
             identity.config_dir.clone(),
             identity.sudo_user.clone(),
             Some(identity.home.clone()),
-        );
+        ) else {
+            continue;
+        };
         let Ok(output) = runtime.status_with_timeout(PROBE_TIMEOUT) else {
             continue;
         };
@@ -2331,9 +2323,7 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
     }
 
     #[test]
-    fn unconfigured_client_status_cannot_mask_verified_system_service() {
-        use std::cell::Cell;
-
+    fn unconfigured_client_status_requires_system_service_fallback() {
         let mut client = LogoscoreRuntimeProfile::local_attached_profile(
             "/bin/sh".to_owned(),
             "/tmp/logoscore-client".to_owned(),
@@ -2345,35 +2335,24 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         }));
         assert!(!client.is_running());
         assert_eq!(client.observation, LogoscoreRuntimeObservation::Verified);
+        assert!(should_fallback_to_verified_system_service(false, &client));
+        assert!(!should_fallback_to_verified_system_service(true, &client));
+    }
 
-        let mut service = attached_profile(
-            Some(42),
-            Some(LogoscoreServiceTarget {
-                scope: LogoscoreServiceScope::System,
-                unit: "logos-node.service".to_owned(),
-            }),
+    #[test]
+    fn running_implicit_client_status_keeps_local_profile() {
+        let mut client = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
         );
-        service.binary_path = "/usr/local/bin/logoscore".to_owned();
-        service.config_dir = "/var/lib/logos-node/.logoscore".to_owned();
+        client.apply_local_status_probe(Ok(LogosCoreOutput {
+            runner: "fixture".to_owned(),
+            value: json!({ "daemon": { "status": "running", "pid": 42 } }),
+            stderr: None,
+        }));
 
-        let selected = preferred_running_system_service(false, || Some(service.clone()))
-            .expect("verified system service must take precedence");
-        assert_eq!(selected.binary_path, service.binary_path);
-        assert_eq!(selected.config_dir, service.config_dir);
-        assert_ne!(selected.config_dir, client.config_dir);
-
-        let discovery_called = Cell::new(false);
-        assert!(
-            preferred_running_system_service(true, || {
-                discovery_called.set(true);
-                Some(service)
-            })
-            .is_none()
-        );
-        assert!(
-            !discovery_called.get(),
-            "explicit client configuration must not query a system service"
-        );
+        assert!(client.is_running());
+        assert!(!should_fallback_to_verified_system_service(false, &client));
     }
 
     #[test]
