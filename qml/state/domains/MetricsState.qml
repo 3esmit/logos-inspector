@@ -1342,7 +1342,7 @@ QtObject {
         const storedReport = sourceReport(target)
         const reducedWithoutEvidence = successfulTransport
             && (storedReport === null || storedReport === undefined)
-            && reducedStorageObservationHasNoEvidence(target, lease, value)
+            && reducedObservationHasNoHealthEvidence(target, lease, value)
         const statusValue = successfulTransport && preserveFullReport
             ? storedReport : value
         const healthy = successfulTransport
@@ -1438,9 +1438,9 @@ QtObject {
                 === Number(lease.configurationGeneration || 0)
     }
 
-    function reducedStorageObservationHasNoEvidence(kind, lease, report) {
+    function reducedObservationHasNoHealthEvidence(kind, lease, report) {
         const target = String(kind || "")
-        if (!lease || target !== "storage"
+        if (!lease || (target !== "storage" && target !== "messaging")
                 || lease.runtimeDiagnosticsReduced !== true
                 || !passiveSourceObservation(lease.origin)
                 || !report || typeof report !== "object") {

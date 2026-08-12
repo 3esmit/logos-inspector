@@ -943,6 +943,33 @@ TestCase {
         compare(observation.status.origin, "dashboard")
     }
 
+    function test_passive_basecamp_delivery_event_without_health_evidence_stays_unknown() {
+        sourceRouting.deliverySourceMode = "module"
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "module-event")
+
+        verify(metrics.activeObservationLeases.messaging
+            .runtimeDiagnosticsReduced)
+        verify(!gateway.requests[0].args[0].options
+            .runtime_diagnostics_enabled)
+        verify(!gateway.requests[0].args[0].options
+            .runtime_metrics_enabled)
+
+        const reducedReport = sourceReport(false, "module-event-reduced")
+        reducedReport.health.reachable = true
+        reducedReport.module_info = { ok: true, value: { name: "delivery_module" } }
+        reducedReport.probe_facts = []
+        gateway.completeRequest(0, success(reducedReport))
+
+        const observation = metrics.sourceObservation("messaging")
+        compare(observation.sourceReport, null)
+        verify(!observation.status.known)
+        verify(!observation.status.ok)
+        compare(observation.latestAttempt.origin, "module-event")
+        verify(observation.latestAttempt.transportOk)
+        verify(observation.latestAttempt.runtimeDiagnosticsReduced)
+    }
+
     function test_passive_observations_keep_storage_capability_facts_and_request_delivery_metrics_at_dashboard_start() {
         const passiveOrigins = [
             "scheduler",
