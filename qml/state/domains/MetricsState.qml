@@ -1341,8 +1341,7 @@ QtObject {
             ? response.value : null
         const storedReport = sourceReport(target)
         const reducedWithoutEvidence = successfulTransport
-            && (storedReport === null || storedReport === undefined)
-            && reducedStorageObservationHasNoEvidence(target, lease, value)
+            && reducedObservationHasNoHealthEvidence(target, lease, value)
         const statusValue = successfulTransport && preserveFullReport
             ? storedReport : value
         const healthy = successfulTransport
@@ -1371,13 +1370,24 @@ QtObject {
         attempts[target] = attempt
         observationAttempts = attempts
 
-        if (successfulTransport
-                && (preserveFullReport || reducedWithoutEvidence)) {
+        if (successfulTransport && preserveFullReport) {
             return
         }
 
         const metricEvidenceUpdated = successfulTransport && !preserveFullReport
-            ? cacheObservationValue(target, value, lease, checkedAtMs) : false
+            ? cacheObservationValue(
+                target,
+                reducedObservationCachedValue(
+                    target,
+                    value,
+                    reducedWithoutEvidence),
+                lease,
+                checkedAtMs) : false
+
+        if (successfulTransport && reducedWithoutEvidence) {
+            gateway.refreshCapabilityRegistryIfLoaded()
+            return
+        }
 
         const nextStatus = copyMap(networkConnectionStatus)
         nextStatus[target] = {
@@ -1438,9 +1448,9 @@ QtObject {
                 === Number(lease.configurationGeneration || 0)
     }
 
-    function reducedStorageObservationHasNoEvidence(kind, lease, report) {
+    function reducedObservationHasNoHealthEvidence(kind, lease, report) {
         const target = String(kind || "")
-        if (!lease || target !== "storage"
+        if (!lease || (target !== "storage" && target !== "messaging")
                 || lease.runtimeDiagnosticsReduced !== true
                 || !passiveSourceObservation(lease.origin)
                 || !report || typeof report !== "object") {
@@ -1456,6 +1466,16 @@ QtObject {
             && health.ready === false
             && probes.length === 0
             && facts.length === 0
+    }
+
+    function reducedObservationCachedValue(kind, value, reducedWithoutEvidence) {
+        if (reducedWithoutEvidence !== true || String(kind || "") !== "messaging"
+                || !value || typeof value !== "object") {
+            return value
+        }
+        const cached = Object.assign({}, value)
+        delete cached.health
+        return cached
     }
 
     function cacheObservationValue(kind, value, lease, checkedAtMs) {

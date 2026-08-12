@@ -143,13 +143,24 @@ TestCase {
         }
         function connectionAccessibleStatus(kind) {
             const state = model.metrics.networkConnectionState(kind)
+            return state.known ? (state.ok ? "connected" : "disconnected") : "unknown"
+        }
+        function connectionReachableStatus(kind) {
+            const state = model.metrics.networkConnectionState(kind)
             return state.known ? (state.ok ? "yes" : "no") : "unknown"
         }
-        function connectionReachableStatus(kind) { return connectionAccessibleStatus(kind) }
         function yesNo(value) { return "n/a" }
         function portStatus(kind, names) { return "n/a" }
         function syncTone() { return "neutral" }
-        function booleanTone(value) { return value === "yes" ? "success" : "neutral" }
+        function booleanTone(value) {
+            if (value === "yes" || value === "connected") {
+                return "success"
+            }
+            if (value === "no" || value === "disconnected") {
+                return "error"
+            }
+            return "neutral"
+        }
         function portTone(value) { return "neutral" }
         function countProblemTone(value) { return "neutral" }
         function statusWordTone(value) { return "neutral" }
@@ -337,6 +348,36 @@ TestCase {
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.module"), "stopped")
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.node_reachable"), "yes")
         compare(FooterStatusProjection.footerFieldValue(footerRoot, "storage.last_error"), "n/a")
+    }
+
+    function test_delivery_without_authoritative_health_stays_unknown() {
+        model.connectionStates = ({
+            messaging: {
+                known: false,
+                ok: false,
+                detail: "passive report omitted diagnostics"
+            }
+        })
+
+        const item = FooterStatusProjection.footerFieldItem(
+            footerRoot, "messaging.connection_state")
+        compare(item.value, "unknown")
+        compare(item.accessibleValue, "unknown")
+        compare(item.tone, "neutral")
+    }
+
+    function test_delivery_authoritative_health_projects_connected_and_disconnected() {
+        model.connectionStates = ({ messaging: { known: true, ok: true } })
+        let item = FooterStatusProjection.footerFieldItem(
+            footerRoot, "messaging.connection_state")
+        compare(item.value, "connected")
+        compare(item.tone, "success")
+
+        model.connectionStates = ({ messaging: { known: true, ok: false } })
+        item = FooterStatusProjection.footerFieldItem(
+            footerRoot, "messaging.connection_state")
+        compare(item.value, "disconnected")
+        compare(item.tone, "error")
     }
 
     function test_bedrock_observation_times_use_last_accepted_report_time() {
