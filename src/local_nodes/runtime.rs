@@ -233,6 +233,12 @@ impl LogoscoreRuntimeProfile {
 
     pub(super) fn discover_local() -> Result<Option<Self>> {
         let explicit_client_config = local_client_config_is_explicit();
+        if let Some(profile) = preferred_running_system_service(
+            explicit_client_config,
+            discover_running_system_service,
+        ) {
+            return Ok(Some(profile));
+        }
         let Ok(binary_path) = canonical_executable(None) else {
             return if explicit_client_config {
                 Ok(None)
@@ -883,6 +889,16 @@ fn local_client_config_is_explicit() -> bool {
     ]
     .into_iter()
     .any(|key| env::var(key).is_ok_and(|value| !value.trim().is_empty()))
+}
+
+fn preferred_running_system_service<F>(
+    explicit_client_config: bool,
+    discover: F,
+) -> Option<LogoscoreRuntimeProfile>
+where
+    F: FnOnce() -> Option<LogoscoreRuntimeProfile>,
+{
+    (!explicit_client_config).then(discover).flatten()
 }
 
 fn local_client_transport_is_proven(config_dir: &Path) -> bool {
@@ -2312,6 +2328,52 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         assert_eq!(report.ownership, "external");
         assert_eq!(report.run_state, "not_configured");
         assert!(report.process_id.is_none());
+    }
+
+    #[test]
+    fn unconfigured_client_status_cannot_mask_verified_system_service() {
+        use std::cell::Cell;
+
+        let mut client = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
+        );
+        client.apply_local_status_probe(Ok(LogosCoreOutput {
+            runner: "fixture".to_owned(),
+            value: json!({ "daemon": { "status": "not_configured" } }),
+            stderr: None,
+        }));
+        assert!(!client.is_running());
+        assert_eq!(client.observation, LogoscoreRuntimeObservation::Verified);
+
+        let mut service = attached_profile(
+            Some(42),
+            Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: "logos-node.service".to_owned(),
+            }),
+        );
+        service.binary_path = "/usr/local/bin/logoscore".to_owned();
+        service.config_dir = "/var/lib/logos-node/.logoscore".to_owned();
+
+        let selected = preferred_running_system_service(false, || Some(service.clone()))
+            .expect("verified system service must take precedence");
+        assert_eq!(selected.binary_path, service.binary_path);
+        assert_eq!(selected.config_dir, service.config_dir);
+        assert_ne!(selected.config_dir, client.config_dir);
+
+        let discovery_called = Cell::new(false);
+        assert!(
+            preferred_running_system_service(true, || {
+                discovery_called.set(true);
+                Some(service)
+            })
+            .is_none()
+        );
+        assert!(
+            !discovery_called.get(),
+            "explicit client configuration must not query a system service"
+        );
     }
 
     #[test]
