@@ -171,6 +171,7 @@ TestCase {
         property bool managedIndexerStatusStale: false
         property string managedIndexerError: ""
         property string managedIndexerResult: ""
+        property string managedIndexerRuntimePollError: ""
         property bool managedIndexerConfigLoading: false
         property bool managedIndexerConfigSaving: false
 
@@ -191,6 +192,7 @@ TestCase {
         id: separateCatalogState
 
         property bool summaryRowsUsable: true
+        property bool managedIndexerControlSnapshotUsable: true
     }
 
     ApplicationWindow {
@@ -307,6 +309,7 @@ TestCase {
         zoneState.managedIndexerStatusStale = false
         zoneState.managedIndexerError = ""
         zoneState.managedIndexerResult = ""
+        zoneState.managedIndexerRuntimePollError = ""
         zoneState.clearManagedIndexerConfig()
         zoneState.closeL2Transaction()
         zoneState.l2TransactionRequestedSourceId = ""
@@ -1146,6 +1149,25 @@ TestCase {
         compare(control.catalogState, zoneState)
     }
 
+    function test_module_indexer_surfaces_runtime_status_retry_warning() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+        const control = findChild(detail, "managedIndexerControl")
+        zoneState.managedIndexerRuntimePollError = "Temporary status failure"
+
+        tryVerify(function () {
+            return hasVisibleText(control,
+                "Waiting for Channel Indexer action status")
+                && hasVisibleText(control, "Temporary status failure")
+        })
+
+        zoneState.managedIndexerRuntimePollError = ""
+    }
+
     function test_zone_detail_contributes_to_page_scroll_height() {
         const detail = findChild(page, "zoneDetail")
         verify(detail !== null)
@@ -1194,9 +1216,13 @@ TestCase {
             tryCompare(start, "enabled", true)
 
             separateCatalogState.summaryRowsUsable = false
+            separateCatalogState.managedIndexerControlSnapshotUsable = true
+            tryCompare(start, "enabled", true)
+            separateCatalogState.managedIndexerControlSnapshotUsable = false
             tryCompare(start, "enabled", false)
         } finally {
             separateCatalogState.summaryRowsUsable = true
+            separateCatalogState.managedIndexerControlSnapshotUsable = true
             section.destroy()
         }
     }

@@ -50,6 +50,7 @@ QtObject {
     property bool managedIndexerStatusStale: false
     property string managedIndexerError: ""
     property string managedIndexerResult: ""
+    property string managedIndexerRuntimePollError: ""
     property int managedIndexerRefreshCount: 0
     property var managedIndexerConfigSnapshot: null
     property bool managedIndexerConfigLoading: false

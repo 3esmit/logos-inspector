@@ -79,6 +79,8 @@ QtObject {
         && numericRevision(zoneDetailReport.source_config_epoch) === sourceConfigEpoch
         && String(zoneDetail.summary && zoneDetail.summary.channel_id || "")
             === activeZoneId
+    readonly property bool managedIndexerControlSnapshotUsable:
+        summaryRowsUsable || retainedManagedIndexerControlContextUsable()
     property bool configureInFlight: false
     property bool statusInFlight: false
     property bool summaryInFlight: false
@@ -166,6 +168,7 @@ QtObject {
         activeZoneContext: root.activeZoneContext
         verification: root.verification
         catalogSnapshotUsable: root.summaryRowsUsable
+        managedIndexerControlSnapshotUsable: root.managedIndexerControlSnapshotUsable
         networkScope: root.networkScope
         networkScopeKey: root.networkScopeKey
         sourceGeneration: root.sourceGeneration
@@ -177,6 +180,10 @@ QtObject {
 
         onManagedIndexerLifecycleChanged: root.refreshManagedIndexerSource()
     }
+    readonly property bool managedIndexerOperationRunning:
+        sourceEditor.managedIndexerOperationRunning
+    readonly property string managedIndexerRuntimePollError:
+        sourceEditor.managedIndexerRuntimePollError
 
     signal statusRefreshRequested()
 
@@ -965,6 +972,14 @@ QtObject {
         })
     }
 
+    function pollManagedIndexerOperation() {
+        return sourceEditor.pollManagedIndexerOperation()
+    }
+
+    function bedrockEndpoint() {
+        return sourceEditor.bedrockEndpoint()
+    }
+
     function fetchActiveZoneDetail() {
         if (!activeZoneContext || !catalogStatus || detailInFlight
                 || verification !== "verified" || !summaryMatchesStatus()) {
@@ -1389,6 +1404,28 @@ QtObject {
             }
         }
         return null
+    }
+
+    function retainedManagedIndexerControlContextUsable() {
+        const context = activeZoneContext || null
+        if (!summaryRowsRetainable || !context || sourceRevision <= 0
+                || networkScopeKey.length === 0 || activeZoneId.length === 0
+                || summaryNetworkScopeKey !== networkScopeKey) {
+            return false
+        }
+        const row = rowFromRows(zoneSummaries, activeZoneId)
+        const fields = row && row.active_zone_context_fields
+            ? row.active_zone_context_fields : null
+        if (!fields || String(context.channel_id || "") !== activeZoneId
+                || scopeKey(context.network_scope) !== networkScopeKey) {
+            return false
+        }
+        return String(fields.selected_sequencer_source_id || "")
+                === String(context.selected_sequencer_source_id || "")
+            && numericRevision(fields.source_config_revision)
+                === numericRevision(context.source_config_revision)
+            && String(context.selected_sequencer_source_id || "").length > 0
+            && numericRevision(context.source_config_revision) > 0
     }
 
     function rowsByChannel(rows) {

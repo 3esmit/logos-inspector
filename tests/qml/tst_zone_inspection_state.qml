@@ -22,10 +22,14 @@ TestCase {
 
         property int nextRequestId: 1
         property var requests: []
+        property var runtimeStartRequests: []
+        property var runtimeStatusRequests: []
 
         function reset() {
             nextRequestId = 1
             requests = []
+            runtimeStartRequests = []
+            runtimeStatusRequests = []
         }
 
         function request(method, args, callback) {
@@ -78,6 +82,44 @@ TestCase {
         function respond(entry, response) {
             testRoot.verify(entry !== null, "Missing request entry")
             testRoot.verify(!entry.completed, "Request already completed")
+            entry.completed = true
+            entry.callback(response)
+        }
+
+        function startRuntimeOperation(request, showResult, callback) {
+            const entry = {
+                request: request,
+                showResult: showResult === true,
+                callback: callback,
+                completed: false
+            }
+            runtimeStartRequests = runtimeStartRequests.concat([entry])
+            return runtimeStartRequests.length
+        }
+
+        function runtimeOperationStatus(operationId, showResult, callback) {
+            const entry = {
+                operationId: String(operationId || ""),
+                showResult: showResult === true,
+                callback: callback,
+                completed: false
+            }
+            runtimeStatusRequests = runtimeStatusRequests.concat([entry])
+            return runtimeStatusRequests.length
+        }
+
+        function respondRuntimeStart(index, response) {
+            const entry = runtimeStartRequests[index]
+            testRoot.verify(entry !== undefined && !entry.completed,
+                "Missing pending runtime start request")
+            entry.completed = true
+            entry.callback(response)
+        }
+
+        function respondRuntimeStatus(index, response) {
+            const entry = runtimeStatusRequests[index]
+            testRoot.verify(entry !== undefined && !entry.completed,
+                "Missing pending runtime status request")
             entry.completed = true
             entry.callback(response)
         }
@@ -156,6 +198,24 @@ TestCase {
 
         property string networkProfile: "default"
         property string nodeUrl: "http://127.0.0.1:8080/"
+        property bool basecampModules: false
+        property var localNodesReport: null
+
+        function prefersBasecampModules() {
+            return basecampModules
+        }
+
+        function runtimeOperationResponse(operation) {
+            const status = String(operation && operation.status || "")
+            const ok = status === "completed" || status === "dispatched"
+            return {
+                ok: ok,
+                value: operation && operation.result !== undefined
+                    && operation.result !== null ? operation.result : operation,
+                text: "",
+                error: ok ? "" : String(operation && operation.error || "")
+            }
+        }
     }
 
     Component {
@@ -179,6 +239,8 @@ TestCase {
         decodeAppModel.transactionIdlEntries = []
         decodeAppModel.accountIdlSelectionRevision = 0
         decodeSocial.sharedIdlRevision = 0
+        managedIndexerAppModel.basecampModules = false
+        managedIndexerAppModel.localNodesReport = null
         zoneState = stateComponent.createObject(testRoot, {
             gateway: gateway
         })
@@ -2127,6 +2189,224 @@ TestCase {
         compare(sourceEditorState.bedrockEndpoint(), "")
     }
 
+    function test_basecamp_managed_indexer_uses_local_bedrock_and_runtime_operation() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "module" }
+        managedIndexerAppModel.basecampModules = true
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "inspector_managed",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+        compare(sourceEditorState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+        compare(zoneState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a"))
+        compare(gateway.requestCount("channelIndexerAction"), 0)
+        compare(gateway.runtimeStartRequests.length, 1)
+        const runtimeRequest = gateway.runtimeStartRequests[0].request
+        compare(runtimeRequest.domain, "localNodes")
+        compare(runtimeRequest.method, "channelIndexerAction")
+        compare(runtimeRequest.args[0], "default")
+        compare(runtimeRequest.args[1].action, "start")
+        compare(runtimeRequest.args[1].channel_id, "zone-a")
+        compare(runtimeRequest.args[1].bedrock_endpoint, "http://127.0.0.1:8080/")
+        compare(runtimeRequest.args[1].source_config_revision, 7)
+        compare(runtimeRequest.args[1].selected_sequencer_source_id, "seq-a")
+        compare(runtimeRequest.args[2], "confirm-local-node-action")
+
+        gateway.respondRuntimeStart(0, ok({
+            operationId: "indexer-start-1",
+            domain: "localNodes",
+            method: "channelIndexerAction",
+            status: "running",
+            eventCursor: 1
+        }))
+        verify(sourceEditorState.managedIndexerOperationRunning)
+        verify(zoneState.managedIndexerOperationRunning)
+        verify(zoneState.pollManagedIndexerOperation())
+        compare(gateway.runtimeStatusRequests.length, 1)
+        compare(gateway.runtimeStatusRequests[0].operationId, "indexer-start-1")
+
+        gateway.respondRuntimeStatus(0, ok({
+            operationId: "indexer-start-1",
+            domain: "localNodes",
+            method: "channelIndexerAction",
+            status: "completed",
+            eventCursor: 2,
+            result: {
+                runtime: { run_state: "running" },
+                nodes: [{
+                    key: "indexer",
+                    install_state: "installed",
+                    run_state: "running",
+                    managed_channel_id: "zone-a",
+                    available_actions: ["stop"]
+                }],
+                operations: [{
+                    action: "start",
+                    node: "indexer",
+                    status: "running",
+                    detail: "Indexer started"
+                }]
+            }
+        }))
+        compare(sourceEditorState.managedIndexerOperationRunning, false)
+        compare(sourceEditorState.managedIndexerError, "")
+        compare(sourceEditorState.managedIndexerResult, "Indexer started")
+        compare(sourceEditorState.managedIndexerNode.run_state, "running")
+        const sourceRefresh = gateway.lastRequest("channelIndexerSourceRefresh")
+        verify(sourceRefresh !== null)
+    }
+
+    function test_basecamp_managed_indexer_retries_runtime_status_after_transient_failure() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "module" }
+        managedIndexerAppModel.basecampModules = true
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "inspector_managed",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a"))
+        gateway.respondRuntimeStart(0, ok({
+            operationId: "indexer-start-retry",
+            domain: "localNodes",
+            method: "channelIndexerAction",
+            status: "running",
+            eventCursor: 1
+        }))
+        verify(zoneState.pollManagedIndexerOperation())
+        gateway.respondRuntimeStatus(0, failed("temporary status failure"))
+
+        verify(sourceEditorState.managedIndexerOperationRunning)
+        compare(sourceEditorState.managedIndexerRuntimePollError,
+            "temporary status failure")
+        compare(zoneState.managedIndexerRuntimePollError,
+            "temporary status failure")
+        compare(gateway.runtimeStartRequests.length, 1)
+
+        verify(zoneState.pollManagedIndexerOperation())
+        compare(gateway.runtimeStatusRequests.length, 2)
+        gateway.respondRuntimeStatus(1, ok({
+            operationId: "indexer-start-retry",
+            domain: "localNodes",
+            method: "channelIndexerAction",
+            status: "completed",
+            eventCursor: 2,
+            result: {
+                runtime: { run_state: "running" },
+                nodes: [{
+                    key: "indexer",
+                    install_state: "installed",
+                    run_state: "running",
+                    managed_channel_id: "zone-a",
+                    available_actions: ["stop"]
+                }],
+                operations: [{
+                    action: "start",
+                    node: "indexer",
+                    status: "running",
+                    detail: "Indexer started"
+                }]
+            }
+        }))
+
+        compare(sourceEditorState.managedIndexerOperationRunning, false)
+        compare(sourceEditorState.managedIndexerRuntimePollError, "")
+        compare(sourceEditorState.managedIndexerResult, "Indexer started")
+    }
+
+    function test_basecamp_managed_indexer_configuration_uses_local_bedrock_endpoint() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "module" }
+        managedIndexerAppModel.basecampModules = true
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "inspector_managed",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+
+        verify(sourceEditorState.loadManagedIndexerConfig() !== null)
+        const request = gateway.lastRequest("channelIndexerConfig")
+        verify(request !== null)
+        compare(request.args, ["default", {
+            network_scope: scope("network-a"),
+            channel_id: "zone-a",
+            bedrock_endpoint: "http://127.0.0.1:8080/",
+            source_config_revision: 7,
+            selected_sequencer_source_id: "seq-a"
+        }])
+        gateway.respond(request, ok(channelIndexerConfigSnapshot("basecamp-revision")))
+        compare(sourceEditorState.managedIndexerConfigSnapshot.revision,
+            "basecamp-revision")
+    }
+
+    function test_basecamp_managed_indexer_requires_running_managed_bedrock() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "module" }
+        managedIndexerAppModel.basecampModules = true
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "inspector_managed",
+                run_state: "stopped",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        compare(sourceEditorState.bedrockEndpoint(), "")
+        compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
+        compare(sourceEditorState.managedIndexerError,
+            "Basecamp-managed Bedrock must be running with a valid HTTP endpoint.")
+        compare(gateway.runtimeStartRequests.length, 0)
+        compare(gateway.requestCount("channelIndexerAction"), 0)
+    }
+
     function test_managed_indexer_surfaces_needs_configuration_result() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel
@@ -2225,7 +2505,7 @@ TestCase {
             "Refresh managed Indexer status before controlling it.")
     }
 
-    function test_managed_indexer_stop_does_not_require_catalog_verification() {
+    function test_managed_indexer_start_uses_retained_channel_binding_during_catalog_refresh() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel
         sourceEditorState.acceptManagedIndexerReport({
@@ -2277,10 +2557,38 @@ TestCase {
             }],
             operations: []
         })
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a"))
+        request = gateway.lastRequest("channelIndexerAction")
+        verify(request !== null)
+        compare(request.args[1].action, "start")
+        compare(request.args[1].channel_id, "zone-a")
+        compare(request.args[1].bedrock_endpoint, "https://l1.example")
+        compare(request.args[1].source_config_revision, 7)
+        compare(request.args[1].selected_sequencer_source_id, "seq-a")
+    }
+
+    function test_managed_indexer_retained_control_rejects_mismatched_zone_binding() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+        zoneState.zoneSummaries = [zoneRow("zone-a", "sequencer_zone",
+            "other-sequencer", "idx-a", 7)]
+        zoneState.verification = "empty"
+
+        compare(zoneState.managedIndexerControlSnapshotUsable, false)
         compare(sourceEditorState.runManagedIndexerAction("start", "zone-a"), null)
-        compare(gateway.requestCount("channelIndexerAction"), 1)
         compare(sourceEditorState.managedIndexerError,
             "A current verified Zone catalog snapshot is required to start Indexer.")
+        compare(gateway.requestCount("channelIndexerAction"), 0)
     }
 
     function test_standalone_managed_indexer_purge_does_not_require_start_configuration() {

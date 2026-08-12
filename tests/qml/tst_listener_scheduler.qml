@@ -87,10 +87,17 @@ TestCase {
         property bool statusPollingEnabled: false
         property int statusPollInterval: 5000
         property int polls: 0
+        property bool managedIndexerOperationRunning: false
+        property int indexerOperationPolls: 0
         property int resumes: 0
 
         function pollStatus() {
             polls += 1
+            return true
+        }
+
+        function pollManagedIndexerOperation() {
+            indexerOperationPolls += 1
             return true
         }
 
@@ -186,6 +193,8 @@ TestCase {
         zoneState.statusPollingEnabled = false
         zoneState.statusPollInterval = 5000
         zoneState.polls = 0
+        zoneState.managedIndexerOperationRunning = false
+        zoneState.indexerOperationPolls = 0
         zoneState.resumes = 0
     }
 
@@ -230,11 +239,25 @@ TestCase {
         chainState.operationsRunning = true
         verify(scheduler.enabled("chainOperation"))
         compare(scheduler.intervalFor("chainOperation"), 10)
+        verify(!scheduler.enabled("zoneIndexerOperation"))
+        zoneState.managedIndexerOperationRunning = true
+        verify(scheduler.enabled("zoneIndexerOperation"))
+        compare(scheduler.intervalFor("zoneIndexerOperation"), 10)
         verify(scheduler.enabled("dashboard"))
         fakeModel.shell.currentView = "blocks"
         verify(!scheduler.enabled("dashboard"))
         fakeModel.blocksLiveEnabled = true
         verify(scheduler.enabled("liveBlocks"))
+    }
+
+    function test_zone_indexer_operations_poll_on_operation_cadence() {
+        zoneState.managedIndexerOperationRunning = true
+
+        scheduler.tick("zoneIndexerOperation")
+
+        compare(zoneState.indexerOperationPolls, 1)
+        zoneState.managedIndexerOperationRunning = false
+        verify(!scheduler.enabled("zoneIndexerOperation"))
     }
 
     function test_live_blocks_poll_on_dedicated_cadence() {
