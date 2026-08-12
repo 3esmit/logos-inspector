@@ -73,6 +73,7 @@ ColumnLayout {
                 : field.activeFocus ? root.theme.accent : root.theme.outlineMuted
         }
 
+        Accessible.role: Accessible.EditableText
         Accessible.name: root.label.length > 0 ? root.label : root.placeholderText
         Accessible.description: root.invalid
             ? qsTr("Error: %1").arg(root.errorMessage) : ""
