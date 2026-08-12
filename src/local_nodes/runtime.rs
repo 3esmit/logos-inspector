@@ -500,6 +500,20 @@ impl LogoscoreRuntimeProfile {
         Ok(Some(identity))
     }
 
+    /// Replaces a stale client-profile attachment only with a freshly verified
+    /// instance of the same supported system service. This lets a stopped
+    /// service rebind before readiness probes without trusting persisted
+    /// service-account configuration.
+    fn refresh_attached_service_identity_if_running(&mut self) {
+        let Some(target) = self.service_target().cloned() else {
+            return;
+        };
+        let Some(discovered) = discover_running_system_service_target(&target) else {
+            return;
+        };
+        let _rebound = rebind_attached_service_profile(self, discovered);
+    }
+
     pub(super) fn daemon_command(&self) -> Result<Command> {
         if !self.is_managed() {
             bail!("only an Inspector-managed logoscore runtime can be started directly");
@@ -519,16 +533,18 @@ impl LogoscoreRuntimeProfile {
             .daemon_command(persistence_path, modules_dir))
     }
 
-    pub(super) fn wait_until_ready(&self) -> Result<()> {
+    pub(super) fn wait_until_ready(&mut self) -> Result<()> {
         self.wait_until_ready_with_timeout(self.readiness_timeout())
     }
 
-    fn wait_until_ready_with_timeout(&self, timeout: Duration) -> Result<()> {
-        let cli = self.cli_runtime()?;
-        cli.invalidate_observation_snapshot()?;
+    fn wait_until_ready_with_timeout(&mut self, timeout: Duration) -> Result<()> {
+        self.refresh_attached_service_identity_if_running();
+        self.cli_runtime()?.invalidate_observation_snapshot()?;
         let deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < deadline {
+            self.refresh_attached_service_identity_if_running();
+            let cli = self.cli_runtime()?;
             match cli.status_probe_with_timeout(PROBE_TIMEOUT) {
                 Ok(_) => return Ok(()),
                 Err(error) => last_error = Some(error),
@@ -541,20 +557,22 @@ impl LogoscoreRuntimeProfile {
         bail!("local logoscore runtime did not become ready: {detail}")
     }
 
-    pub(super) fn wait_until_ready_controlled(&self, control: &CommandControl) -> Result<()> {
+    pub(super) fn wait_until_ready_controlled(&mut self, control: &CommandControl) -> Result<()> {
         self.wait_until_ready_controlled_with_timeout(control, self.readiness_timeout())
     }
 
     fn wait_until_ready_controlled_with_timeout(
-        &self,
+        &mut self,
         control: &CommandControl,
         timeout: Duration,
     ) -> Result<()> {
-        let cli = self.cli_runtime()?;
+        self.refresh_attached_service_identity_if_running();
         let lifecycle_deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < lifecycle_deadline {
             control.check_active()?;
+            self.refresh_attached_service_identity_if_running();
+            let cli = self.cli_runtime()?;
             let probe_deadline = match Instant::now().checked_add(PROBE_TIMEOUT) {
                 Some(deadline) => deadline,
                 None => control.deadline(),
@@ -950,40 +968,68 @@ fn discover_running_system_service() -> Option<LogoscoreRuntimeProfile> {
             scope: LogoscoreServiceScope::System,
             unit: unit.to_owned(),
         };
-        let Ok(Some(identity)) = system_service_cli_identity(&target) else {
-            continue;
-        };
-        let Ok(runtime) = LogoscoreCliRuntime::configured_service(
-            identity.binary_path.clone(),
-            identity.config_dir.clone(),
-            identity.sudo_user.clone(),
-            Some(identity.home.clone()),
-        ) else {
-            continue;
-        };
-        let Ok(output) = runtime.status_with_timeout(PROBE_TIMEOUT) else {
-            continue;
-        };
-        let Some(process_id) = running_daemon_process_id(&output.value) else {
-            continue;
-        };
-        if !system_service_process_binds_to_target(process_id, &target, identity.main_process_id) {
-            continue;
+        if let Some(profile) = discover_running_system_service_target(&target) {
+            return Some(profile);
         }
-        return Some(LogoscoreRuntimeProfile {
-            id: ATTACHED_RUNTIME_ID.to_owned(),
-            binary_path: identity.binary_path,
-            config_dir: identity.config_dir,
-            modules_dir: None,
-            persistence_path: None,
-            ownership: LogoscoreRuntimeOwnership::LocalAttached,
-            timeout_profile: LogoscoreTimeoutProfile::Probe,
-            observation: LogoscoreRuntimeObservation::Verified,
-            daemon_process_id: Some(process_id),
-            service_target: Some(target),
-        });
     }
     None
+}
+
+#[cfg(target_os = "linux")]
+fn discover_running_system_service_target(
+    target: &LogoscoreServiceTarget,
+) -> Option<LogoscoreRuntimeProfile> {
+    let Ok(Some(identity)) = system_service_cli_identity(target) else {
+        return None;
+    };
+    let Ok(runtime) = LogoscoreCliRuntime::configured_service(
+        identity.binary_path.clone(),
+        identity.config_dir.clone(),
+        identity.sudo_user.clone(),
+        Some(identity.home.clone()),
+    ) else {
+        return None;
+    };
+    let Ok(output) = runtime.status_with_timeout(PROBE_TIMEOUT) else {
+        return None;
+    };
+    let process_id = running_daemon_process_id(&output.value)?;
+    if !system_service_process_binds_to_target(process_id, target, identity.main_process_id) {
+        return None;
+    }
+    Some(LogoscoreRuntimeProfile {
+        id: ATTACHED_RUNTIME_ID.to_owned(),
+        binary_path: identity.binary_path,
+        config_dir: identity.config_dir,
+        modules_dir: None,
+        persistence_path: None,
+        ownership: LogoscoreRuntimeOwnership::LocalAttached,
+        timeout_profile: LogoscoreTimeoutProfile::Probe,
+        observation: LogoscoreRuntimeObservation::Verified,
+        daemon_process_id: Some(process_id),
+        service_target: Some(target.clone()),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn discover_running_system_service_target(
+    _target: &LogoscoreServiceTarget,
+) -> Option<LogoscoreRuntimeProfile> {
+    None
+}
+
+fn rebind_attached_service_profile(
+    profile: &mut LogoscoreRuntimeProfile,
+    discovered: LogoscoreRuntimeProfile,
+) -> bool {
+    if !profile.is_attached()
+        || !discovered.is_attached()
+        || profile.service_target() != discovered.service_target()
+    {
+        return false;
+    }
+    *profile = discovered;
+    true
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -2354,7 +2400,7 @@ fi
 printf '%s\n' '{"daemon":{"status":"running"}}'
 "#,
         )?;
-        let profile = LogoscoreRuntimeProfile::create_or_restart(
+        let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             directory.path(),
             None,
             Some(&binary.display().to_string()),
@@ -2893,6 +2939,33 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         assert!(attached_service_cli_identity_accepts_process_binding(
             None, &target, &identity
         ));
+    }
+
+    #[test]
+    fn rebind_attached_service_profile_accepts_only_the_same_service_target() {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let mut stale = attached_profile(None, Some(target.clone()));
+        let mut fresh = attached_profile(Some(42), Some(target));
+        fresh.binary_path = "/usr/local/bin/logoscore".to_owned();
+        fresh.config_dir = "/var/lib/logos-node/.logoscore".to_owned();
+
+        assert!(rebind_attached_service_profile(&mut stale, fresh));
+        assert_eq!(stale.daemon_process_id, Some(42));
+        assert_eq!(stale.binary_path, "/usr/local/bin/logoscore");
+        assert_eq!(stale.config_dir, "/var/lib/logos-node/.logoscore");
+
+        let other = attached_profile(
+            Some(43),
+            Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: "logoscore.service".to_owned(),
+            }),
+        );
+        assert!(!rebind_attached_service_profile(&mut stale, other));
+        assert_eq!(stale.daemon_process_id, Some(42));
     }
 
     #[test]
