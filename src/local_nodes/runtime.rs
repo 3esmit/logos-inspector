@@ -28,6 +28,8 @@ const RUNTIME_FILE: &str = "logoscore_runtime.json";
 const MANAGED_RUNTIME_ID: &str = "inspector-managed-local";
 const ATTACHED_RUNTIME_ID: &str = "local-attached";
 const CHANNEL_INDEXER_RUNTIME_ID_PREFIX: &str = "inspector-managed-indexer-";
+#[cfg(target_os = "linux")]
+const LOCAL_SYSTEM_SERVICE_UNITS: &[&str] = &["logos-node.service", "logoscore.service"];
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const ATTACHED_MODULES_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(2);
 const ATTACHED_SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -230,20 +232,38 @@ impl LogoscoreRuntimeProfile {
     }
 
     pub(super) fn discover_local() -> Result<Option<Self>> {
+        let explicit_client_config = local_client_config_is_explicit();
         let Ok(binary_path) = canonical_executable(None) else {
-            return Ok(None);
+            return if explicit_client_config {
+                Ok(None)
+            } else {
+                Ok(discover_running_system_service())
+            };
         };
         let Some(config_dir) = local_client_config_dir() else {
-            return Ok(None);
+            return if explicit_client_config {
+                Ok(None)
+            } else {
+                Ok(discover_running_system_service())
+            };
         };
         let transport_proven = local_client_transport_is_proven(Path::new(&config_dir));
         let stopped_service = discover_stopped_system_service_target();
         if !transport_proven && stopped_service.is_none() {
-            return Ok(None);
+            return if explicit_client_config {
+                Ok(None)
+            } else {
+                Ok(discover_running_system_service())
+            };
         }
         let mut profile = Self::discover_proven_local_transport(binary_path, config_dir)?;
         if profile.service_target.is_none() {
             profile.service_target = stopped_service;
+        }
+        if should_fallback_to_verified_system_service(explicit_client_config, &profile)
+            && let Some(service_profile) = discover_running_system_service()
+        {
+            return Ok(Some(service_profile));
         }
         if profile.is_unavailable() && profile.attached_service_is_terminally_stopped() {
             profile.observation = LogoscoreRuntimeObservation::Verified;
@@ -433,6 +453,14 @@ impl LogoscoreRuntimeProfile {
             bail!("local logoscore runtime is missing binary or config path");
         }
         if self.is_attached() {
+            if let Some(identity) = self.attached_service_cli_identity()? {
+                return LogoscoreCliRuntime::configured_service(
+                    self.binary_path.clone(),
+                    self.config_dir.clone(),
+                    identity.sudo_user,
+                    Some(identity.home),
+                );
+            }
             return Ok(LogoscoreCliRuntime::local(
                 self.binary_path.clone(),
                 self.config_dir.clone(),
@@ -445,6 +473,48 @@ impl LogoscoreRuntimeProfile {
             self.binary_path.clone(),
             self.config_dir.clone(),
         ))
+    }
+
+    fn attached_service_cli_identity(&self) -> Result<Option<AttachedCliIdentity>> {
+        let Some(target) = self.service_target() else {
+            return Ok(None);
+        };
+        if !attached_service_cli_identity_is_eligible(target) {
+            return Ok(None);
+        }
+        let Ok(Some(identity)) = system_service_cli_identity(target) else {
+            // The current-user CLI remains the read-only fallback whenever the
+            // system unit cannot be freshly verified. Never impersonate an
+            // account from a persisted profile or an unverified service.
+            return Ok(None);
+        };
+        if !attached_service_cli_identity_matches_profile(self, &identity)
+            || !attached_service_cli_identity_accepts_process_binding(
+                self.daemon_process_id,
+                target,
+                &identity,
+            )
+        {
+            return Ok(None);
+        }
+        Ok(Some(identity))
+    }
+
+    /// Replaces a stale client-profile attachment only with a freshly verified
+    /// instance of the same supported system service. This lets a stopped
+    /// service rebind before readiness probes without trusting persisted
+    /// service-account configuration.
+    fn refresh_attached_service_identity_if_running(&mut self) {
+        if !self.is_attached() || self.daemon_process_id.is_some() {
+            return;
+        }
+        let Some(target) = self.service_target().cloned() else {
+            return;
+        };
+        let Some(discovered) = discover_running_system_service_target(&target) else {
+            return;
+        };
+        let _rebound = rebind_attached_service_profile(self, discovered);
     }
 
     pub(super) fn daemon_command(&self) -> Result<Command> {
@@ -466,16 +536,18 @@ impl LogoscoreRuntimeProfile {
             .daemon_command(persistence_path, modules_dir))
     }
 
-    pub(super) fn wait_until_ready(&self) -> Result<()> {
+    pub(super) fn wait_until_ready(&mut self) -> Result<()> {
         self.wait_until_ready_with_timeout(self.readiness_timeout())
     }
 
-    fn wait_until_ready_with_timeout(&self, timeout: Duration) -> Result<()> {
-        let cli = self.cli_runtime()?;
-        cli.invalidate_observation_snapshot()?;
+    fn wait_until_ready_with_timeout(&mut self, timeout: Duration) -> Result<()> {
+        self.refresh_attached_service_identity_if_running();
+        self.cli_runtime()?.invalidate_observation_snapshot()?;
         let deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < deadline {
+            self.refresh_attached_service_identity_if_running();
+            let cli = self.cli_runtime()?;
             match cli.status_probe_with_timeout(PROBE_TIMEOUT) {
                 Ok(_) => return Ok(()),
                 Err(error) => last_error = Some(error),
@@ -488,20 +560,22 @@ impl LogoscoreRuntimeProfile {
         bail!("local logoscore runtime did not become ready: {detail}")
     }
 
-    pub(super) fn wait_until_ready_controlled(&self, control: &CommandControl) -> Result<()> {
+    pub(super) fn wait_until_ready_controlled(&mut self, control: &CommandControl) -> Result<()> {
         self.wait_until_ready_controlled_with_timeout(control, self.readiness_timeout())
     }
 
     fn wait_until_ready_controlled_with_timeout(
-        &self,
+        &mut self,
         control: &CommandControl,
         timeout: Duration,
     ) -> Result<()> {
-        let cli = self.cli_runtime()?;
+        self.refresh_attached_service_identity_if_running();
         let lifecycle_deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < lifecycle_deadline {
             control.check_active()?;
+            self.refresh_attached_service_identity_if_running();
+            let cli = self.cli_runtime()?;
             let probe_deadline = match Instant::now().checked_add(PROBE_TIMEOUT) {
                 Some(deadline) => deadline,
                 None => control.deadline(),
@@ -820,6 +894,24 @@ fn local_client_config_dir() -> Option<String> {
     Some(absolute.display().to_string())
 }
 
+fn local_client_config_is_explicit() -> bool {
+    [
+        "LOGOSCORE_BIN",
+        "LOGOSCORE_USER",
+        "LOGOSCORE_HOME",
+        "LOGOSCORE_CONFIG_DIR",
+    ]
+    .into_iter()
+    .any(|key| env::var(key).is_ok_and(|value| !value.trim().is_empty()))
+}
+
+fn should_fallback_to_verified_system_service(
+    explicit_client_config: bool,
+    profile: &LogoscoreRuntimeProfile,
+) -> bool {
+    !explicit_client_config && (profile.is_unavailable() || !profile.is_running())
+}
+
 fn local_client_transport_is_proven(config_dir: &Path) -> bool {
     const CLIENT_CONFIG_LIMIT: u64 = 64 * 1024;
 
@@ -840,6 +932,112 @@ fn local_client_transport_is_proven(config_dir: &Path) -> bool {
         .pointer("/daemon/core_service/transport")
         .and_then(Value::as_str)
         .is_some_and(|transport| transport == "local")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttachedCliIdentity {
+    binary_path: String,
+    sudo_user: String,
+    home: String,
+    config_dir: String,
+    main_process_id: u32,
+}
+
+fn attached_service_cli_identity_is_eligible(target: &LogoscoreServiceTarget) -> bool {
+    target.scope == LogoscoreServiceScope::System
+}
+
+fn attached_service_cli_identity_matches_profile(
+    profile: &LogoscoreRuntimeProfile,
+    identity: &AttachedCliIdentity,
+) -> bool {
+    identity.binary_path == profile.binary_path && identity.config_dir == profile.config_dir
+}
+
+fn attached_service_cli_identity_accepts_process_binding(
+    process_id: Option<u32>,
+    target: &LogoscoreServiceTarget,
+    identity: &AttachedCliIdentity,
+) -> bool {
+    process_id.is_none_or(|process_id| {
+        system_service_process_binds_to_target(process_id, target, identity.main_process_id)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn discover_running_system_service() -> Option<LogoscoreRuntimeProfile> {
+    for &unit in LOCAL_SYSTEM_SERVICE_UNITS {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: unit.to_owned(),
+        };
+        if let Some(profile) = discover_running_system_service_target(&target) {
+            return Some(profile);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn discover_running_system_service_target(
+    target: &LogoscoreServiceTarget,
+) -> Option<LogoscoreRuntimeProfile> {
+    let Ok(Some(identity)) = system_service_cli_identity(target) else {
+        return None;
+    };
+    let Ok(runtime) = LogoscoreCliRuntime::configured_service(
+        identity.binary_path.clone(),
+        identity.config_dir.clone(),
+        identity.sudo_user.clone(),
+        Some(identity.home.clone()),
+    ) else {
+        return None;
+    };
+    let Ok(output) = runtime.status_with_timeout(PROBE_TIMEOUT) else {
+        return None;
+    };
+    let process_id = running_daemon_process_id(&output.value)?;
+    if !system_service_process_binds_to_target(process_id, target, identity.main_process_id) {
+        return None;
+    }
+    Some(LogoscoreRuntimeProfile {
+        id: ATTACHED_RUNTIME_ID.to_owned(),
+        binary_path: identity.binary_path,
+        config_dir: identity.config_dir,
+        modules_dir: None,
+        persistence_path: None,
+        ownership: LogoscoreRuntimeOwnership::LocalAttached,
+        timeout_profile: LogoscoreTimeoutProfile::Probe,
+        observation: LogoscoreRuntimeObservation::Verified,
+        daemon_process_id: Some(process_id),
+        service_target: Some(target.clone()),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn discover_running_system_service_target(
+    _target: &LogoscoreServiceTarget,
+) -> Option<LogoscoreRuntimeProfile> {
+    None
+}
+
+fn rebind_attached_service_profile(
+    profile: &mut LogoscoreRuntimeProfile,
+    discovered: LogoscoreRuntimeProfile,
+) -> bool {
+    if !profile.is_attached()
+        || !discovered.is_attached()
+        || profile.service_target() != discovered.service_target()
+    {
+        return false;
+    }
+    *profile = discovered;
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+fn discover_running_system_service() -> Option<LogoscoreRuntimeProfile> {
+    None
 }
 
 fn running_daemon_process_id(status: &Value) -> Option<u32> {
@@ -960,10 +1158,71 @@ fn modules_dir_from_systemd_exec_start_json(output: &[u8]) -> Option<PathBuf> {
     modules_dir
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn systemd_exec_start_binary_path_json(output: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(output).ok()?;
+    (value.get("type")?.as_str()? == "a(sasbttttuii)").then_some(())?;
+    let commands = value.get("data")?.as_array()?;
+    let mut binary_path = None;
+    for command in commands {
+        let command = command.as_array()?;
+        let executable = command.first()?.as_str()?;
+        let executable = canonical_executable(Some(executable)).ok()?;
+        if binary_path.replace(executable).is_some() {
+            return None;
+        }
+    }
+    binary_path
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn systemd_exec_start_config_dir_json(output: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(output).ok()?;
+    (value.get("type")?.as_str()? == "a(sasbttttuii)").then_some(())?;
+    let commands = value.get("data")?.as_array()?;
+    let mut config_dir = None;
+    for command in commands {
+        let arguments = command.as_array()?.get(1)?.as_array()?;
+        let arguments = arguments
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()?;
+        let candidate = config_dir_from_daemon_arguments(arguments)?;
+        if config_dir.replace(candidate).is_some() {
+            return None;
+        }
+    }
+    config_dir
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn config_dir_from_daemon_arguments(arguments: Vec<&str>) -> Option<String> {
+    let mut config_dir = None;
+    let mut iter = arguments.into_iter();
+    while let Some(argument) = iter.next() {
+        let candidate = if let Some(value) = argument.strip_prefix("--config-dir=") {
+            Some(value)
+        } else if argument == "--config-dir" {
+            iter.next()
+        } else {
+            None
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let candidate =
+            validated_system_service_path(candidate, "system service LogosCore config path")
+                .ok()?;
+        if config_dir.replace(candidate).is_some() {
+            return None;
+        }
+    }
+    config_dir
+}
+
 #[cfg(target_os = "linux")]
 fn system_service_target(process_id: u32) -> Option<LogoscoreServiceTarget> {
-    let cgroup = fs::read_to_string(format!("/proc/{process_id}/cgroup")).ok()?;
-    let target = cgroup.lines().find_map(system_service_target_from_cgroup)?;
+    let target = system_service_target_from_process_cgroup(process_id)?;
     system_service_main_process_id(&target)
         .filter(|main_process_id| *main_process_id == process_id)
         .map(|_| target)
@@ -975,9 +1234,28 @@ fn system_service_target(_process_id: u32) -> Option<LogoscoreServiceTarget> {
 }
 
 #[cfg(target_os = "linux")]
+fn system_service_target_from_process_cgroup(process_id: u32) -> Option<LogoscoreServiceTarget> {
+    let cgroup = fs::read_to_string(format!("/proc/{process_id}/cgroup")).ok()?;
+    cgroup.lines().find_map(system_service_target_from_cgroup)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_service_target_from_process_cgroup(_process_id: u32) -> Option<LogoscoreServiceTarget> {
+    None
+}
+
+fn system_service_process_binds_to_target(
+    process_id: u32,
+    target: &LogoscoreServiceTarget,
+    expected_main_process_id: u32,
+) -> bool {
+    process_id == expected_main_process_id
+        && system_service_target_from_process_cgroup(process_id).as_ref() == Some(target)
+}
+
+#[cfg(target_os = "linux")]
 fn discover_stopped_system_service_target() -> Option<LogoscoreServiceTarget> {
-    const CANDIDATES: &[&str] = &["logos-node.service", "logoscore.service"];
-    for &unit in CANDIDATES {
+    for &unit in LOCAL_SYSTEM_SERVICE_UNITS {
         if is_systemd_unit_loaded(LogoscoreServiceScope::System, unit) {
             return Some(LogoscoreServiceTarget {
                 scope: LogoscoreServiceScope::System,
@@ -1071,6 +1349,394 @@ fn system_service_install_authority(
     let user = String::from_utf8(output.stdout)
         .context("local LogosCore service account is not valid UTF-8")?;
     PackageInstallAuthority::system_service_user(&user)
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_cli_identity(
+    target: &LogoscoreServiceTarget,
+) -> Result<Option<AttachedCliIdentity>> {
+    if !attached_service_cli_identity_is_eligible(target) {
+        return Ok(None);
+    }
+    let output = run_command_controlled(
+        system_service_cli_identity_command(target),
+        CommandRunPolicy {
+            label: "local LogosCore service identity",
+            timeout: ATTACHED_SERVICE_STATUS_TIMEOUT,
+            poll_interval: Duration::from_millis(25),
+            redactions: &[],
+            output_limit: 16 * 1024,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
+        },
+        attached_service_query_control(),
+    )?;
+    let exec_start_output = run_command_controlled(
+        system_service_exec_start_command(target),
+        CommandRunPolicy {
+            label: "local LogosCore service executable",
+            timeout: ATTACHED_SERVICE_STATUS_TIMEOUT,
+            poll_interval: Duration::from_millis(25),
+            redactions: &[],
+            output_limit: 16 * 1024,
+            capture_limit: DEFAULT_COMMAND_CAPTURE_LIMIT,
+        },
+        attached_service_query_control(),
+    )?;
+    let binary_path = systemd_exec_start_binary_path_json(&exec_start_output.stdout)
+        .context("cannot verify local LogosCore system service executable")?;
+    let mut identity = parse_system_service_cli_identity(&output.stdout)?;
+    identity.binary_path = binary_path;
+    identity.config_dir = system_service_config_dir(
+        &output.stdout,
+        &identity.home,
+        Some(&exec_start_output.stdout),
+        system_service_environment_files_property(&output.stdout)?.as_deref(),
+    )?;
+    Ok(Some(identity))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_service_cli_identity(
+    _target: &LogoscoreServiceTarget,
+) -> Result<Option<AttachedCliIdentity>> {
+    Ok(None)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_cli_identity_command(target: &LogoscoreServiceTarget) -> Command {
+    let mut command = Command::new("systemctl");
+    command
+        .arg("show")
+        .arg("--property=User")
+        .arg("--property=Environment")
+        .arg("--property=EnvironmentFiles")
+        .arg("--property=MainPID")
+        .arg(&target.unit);
+    command
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_system_service_cli_identity(output: &[u8]) -> Result<AttachedCliIdentity> {
+    let text = std::str::from_utf8(output).context("system service identity is not UTF-8")?;
+    let mut user = None;
+    let mut environment = None;
+    let mut environment_files = None;
+    let mut main_process_id = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "User" => set_system_service_property(&mut user, key, value)?,
+            "Environment" => set_system_service_property(&mut environment, key, value)?,
+            "EnvironmentFiles" => set_system_service_property(&mut environment_files, key, value)?,
+            "MainPID" => set_system_service_property(&mut main_process_id, key, value)?,
+            _ => {}
+        }
+    }
+    let user = user.as_deref().context("missing system service User")?;
+    let authority = PackageInstallAuthority::system_service_user(user)?;
+    let sudo_user = authority
+        .system_service_user_name()
+        .context("system service user is not available for local CLI access")?
+        .to_owned();
+    let home = system_service_home(user, environment.as_deref())?;
+    let main_process_id = main_process_id
+        .as_deref()
+        .context("missing system service MainPID")?
+        .trim()
+        .parse::<u32>()
+        .context("system service MainPID is not a valid process id")?;
+    if main_process_id == 0 {
+        bail!("system service has no running main process");
+    }
+    let config_dir = system_service_config_dir(output, &home, None, environment_files.as_deref())?;
+    Ok(AttachedCliIdentity {
+        binary_path: String::new(),
+        sudo_user,
+        home,
+        config_dir,
+        main_process_id,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_home(user: &str, environment: Option<&str>) -> Result<String> {
+    resolve_system_service_home_with_lookup(user, environment, system_service_home_for_user)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_system_service_home_with_lookup<F>(
+    user: &str,
+    environment: Option<&str>,
+    lookup_home: F,
+) -> Result<String>
+where
+    F: FnOnce(&str) -> Result<Option<String>>,
+{
+    if let Some(home) = system_service_home_from_environment(environment)? {
+        return Ok(home);
+    }
+    let home = lookup_home(user)?
+        .context("system service home directory is unavailable from Environment and passwd")?;
+    validated_system_service_path(&home, "system service HOME")
+}
+
+#[cfg(target_os = "linux")]
+fn system_service_home_for_user(user: &str) -> Result<Option<String>> {
+    let output = Command::new("getent")
+        .arg("passwd")
+        .arg(user)
+        .output()
+        .with_context(|| format!("cannot read passwd entry for system service user {user}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    parse_passwd_home(output.stdout.as_slice()).map(Some)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_passwd_home(output: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(output).context("passwd entry is not UTF-8")?;
+    let line = text.lines().next().context("passwd entry is empty")?;
+    let mut fields = line.split(':');
+    let _name = fields
+        .next()
+        .context("passwd entry is missing account name")?;
+    let _password = fields
+        .next()
+        .context("passwd entry is missing password field")?;
+    let _uid = fields.next().context("passwd entry is missing uid")?;
+    let _gid = fields.next().context("passwd entry is missing gid")?;
+    let _gecos = fields
+        .next()
+        .context("passwd entry is missing gecos field")?;
+    let home = fields
+        .next()
+        .context("passwd entry is missing home directory")?;
+    validated_system_service_path(home, "system service HOME")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_home_from_environment(environment: Option<&str>) -> Result<Option<String>> {
+    let Some(environment) = environment else {
+        return Ok(None);
+    };
+    let mut home = None;
+    for assignment in environment.split_ascii_whitespace() {
+        let Some(value) = assignment.strip_prefix("HOME=") else {
+            continue;
+        };
+        if home.replace(value.to_owned()).is_some() {
+            bail!("system service Environment declares HOME more than once");
+        }
+    }
+    home.map(|value| validated_system_service_path(&value, "system service HOME"))
+        .transpose()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_config_dir(
+    output: &[u8],
+    home: &str,
+    exec_start_output: Option<&[u8]>,
+    environment_files: Option<&str>,
+) -> Result<String> {
+    if let Some(config_dir) = system_service_config_dir_from_environment(
+        system_service_environment_property(output)?.as_deref(),
+    )? {
+        return Ok(config_dir);
+    }
+    if let Some(config_dir) = system_service_config_dir_from_environment_files(environment_files)? {
+        return Ok(config_dir);
+    }
+    if let Some(exec_start_output) = exec_start_output
+        && let Some(config_dir) = systemd_exec_start_config_dir_json(exec_start_output)
+    {
+        return Ok(config_dir);
+    }
+    default_system_service_config_dir(home)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_environment_property(output: &[u8]) -> Result<Option<String>> {
+    let text = std::str::from_utf8(output).context("system service identity is not UTF-8")?;
+    let mut environment = None::<String>;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key == "Environment" {
+            set_system_service_property(&mut environment, key, value)?;
+        }
+    }
+    Ok(environment)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_environment_files_property(output: &[u8]) -> Result<Option<String>> {
+    let text = std::str::from_utf8(output).context("system service identity is not UTF-8")?;
+    let mut environment_files = None::<String>;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key == "EnvironmentFiles" {
+            set_system_service_property(&mut environment_files, key, value)?;
+        }
+    }
+    Ok(environment_files)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_config_dir_from_environment(environment: Option<&str>) -> Result<Option<String>> {
+    let Some(environment) = environment else {
+        return Ok(None);
+    };
+    let mut config_dir = None;
+    for assignment in environment.split_ascii_whitespace() {
+        let Some(value) = assignment.strip_prefix("LOGOSCORE_CONFIG_DIR=") else {
+            continue;
+        };
+        let value = validated_system_service_path(value, "system service LogosCore config path")?;
+        if config_dir.replace(value).is_some() {
+            bail!("system service Environment declares LOGOSCORE_CONFIG_DIR more than once");
+        }
+    }
+    Ok(config_dir)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn system_service_config_dir_from_environment_files(
+    environment_files: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(environment_files) = environment_files
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut config_dir = None;
+    for entry in parse_system_service_environment_files(environment_files)? {
+        let contents = match fs::read_to_string(&entry.path) {
+            Ok(contents) => contents,
+            Err(_) if entry.ignore_errors => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot read system service EnvironmentFile {}", entry.path)
+                });
+            }
+        };
+        if let Some(value) = parse_environment_file_assignment(
+            &contents,
+            "LOGOSCORE_CONFIG_DIR",
+            "system service EnvironmentFile LogosCore config path",
+        )? && config_dir.replace(value).is_some()
+        {
+            bail!("system service EnvironmentFiles declare LOGOSCORE_CONFIG_DIR more than once");
+        }
+    }
+    Ok(config_dir)
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SystemServiceEnvironmentFileEntry {
+    path: String,
+    ignore_errors: bool,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_system_service_environment_files(
+    value: &str,
+) -> Result<Vec<SystemServiceEnvironmentFileEntry>> {
+    let mut entries = Vec::new();
+    let mut remaining = value.trim();
+    while !remaining.is_empty() {
+        let marker_index = remaining
+            .find(" (ignore_errors=")
+            .context("system service EnvironmentFiles entry is malformed")?;
+        let path = validated_system_service_path(
+            remaining[..marker_index].trim(),
+            "system service EnvironmentFile path",
+        )?;
+        let after_marker = &remaining[marker_index + " (ignore_errors=".len()..];
+        let flag_end = after_marker
+            .find(')')
+            .context("system service EnvironmentFiles entry is missing closing parenthesis")?;
+        let ignore_errors = match &after_marker[..flag_end] {
+            "yes" => true,
+            "no" => false,
+            other => bail!("system service EnvironmentFiles ignore_errors is invalid: {other}"),
+        };
+        entries.push(SystemServiceEnvironmentFileEntry {
+            path,
+            ignore_errors,
+        });
+        remaining = after_marker[flag_end + 1..].trim_start();
+    }
+    Ok(entries)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_environment_file_assignment(
+    contents: &str,
+    key: &str,
+    label: &str,
+) -> Result<Option<String>> {
+    let mut value = None;
+    let prefix = format!("{key}=");
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(raw_value) = line.strip_prefix(&prefix) else {
+            continue;
+        };
+        let parsed = parse_environment_file_value(raw_value)?;
+        let parsed = validated_system_service_path(&parsed, label)?;
+        if value.replace(parsed).is_some() {
+            bail!("{label} declared more than once");
+        }
+    }
+    Ok(value)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_environment_file_value(raw_value: &str) -> Result<String> {
+    let trimmed = raw_value.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return Ok(trimmed[1..trimmed.len() - 1].to_owned());
+    }
+    Ok(trimmed.to_owned())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn default_system_service_config_dir(home: &str) -> Result<String> {
+    let config_dir = Path::new(home).join(".logoscore");
+    let config_dir = config_dir
+        .to_str()
+        .context("system service LogosCore config path is not valid UTF-8")?;
+    validated_system_service_path(config_dir, "system service LogosCore config path")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn validated_system_service_path(path: &str, label: &str) -> Result<String> {
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("{label} must be an absolute normalized path");
+    }
+    path.to_str()
+        .map(str::to_owned)
+        .context(format!("{label} is not valid UTF-8"))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1927,7 +2593,7 @@ fi
 printf '%s\n' '{"daemon":{"status":"running"}}'
 "#,
         )?;
-        let profile = LogoscoreRuntimeProfile::create_or_restart(
+        let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             directory.path(),
             None,
             Some(&binary.display().to_string()),
@@ -2015,6 +2681,39 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         assert_eq!(report.ownership, "external");
         assert_eq!(report.run_state, "not_configured");
         assert!(report.process_id.is_none());
+    }
+
+    #[test]
+    fn unconfigured_client_status_requires_system_service_fallback() {
+        let mut client = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
+        );
+        client.apply_local_status_probe(Ok(LogosCoreOutput {
+            runner: "fixture".to_owned(),
+            value: json!({ "daemon": { "status": "not_configured" } }),
+            stderr: None,
+        }));
+        assert!(!client.is_running());
+        assert_eq!(client.observation, LogoscoreRuntimeObservation::Verified);
+        assert!(should_fallback_to_verified_system_service(false, &client));
+        assert!(!should_fallback_to_verified_system_service(true, &client));
+    }
+
+    #[test]
+    fn running_implicit_client_status_keeps_local_profile() {
+        let mut client = LogoscoreRuntimeProfile::local_attached_profile(
+            "/bin/sh".to_owned(),
+            "/tmp/logoscore-client".to_owned(),
+        );
+        client.apply_local_status_probe(Ok(LogosCoreOutput {
+            runner: "fixture".to_owned(),
+            value: json!({ "daemon": { "status": "running", "pid": 42 } }),
+            stderr: None,
+        }));
+
+        assert!(client.is_running());
+        assert!(!should_fallback_to_verified_system_service(false, &client));
     }
 
     #[test]
@@ -2119,6 +2818,30 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
                 .map(|argument| argument.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
             ["show", "--property=User", "--value", "logos-node.service"]
+        );
+    }
+
+    #[test]
+    fn service_cli_identity_query_uses_fixed_system_unit_argv() {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let command = system_service_cli_identity_command(&target);
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "show",
+                "--property=User",
+                "--property=Environment",
+                "--property=EnvironmentFiles",
+                "--property=MainPID",
+                "logos-node.service",
+            ]
         );
     }
 
@@ -2250,6 +2973,242 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
             b"ActiveState=inactive\nActiveState=failed\nSubState=dead\nResult=success\nExecMainCode=exited\nExecMainStatus=0\n",
         );
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn system_service_cli_identity_requires_verified_home_and_main_process() -> Result<()> {
+        let identity = parse_system_service_cli_identity(
+            b"User=logos\nEnvironment=HOME=/var/lib/logos-node\nMainPID=42\n",
+        )?;
+        anyhow::ensure!(identity.sudo_user == "logos");
+        anyhow::ensure!(identity.home == "/var/lib/logos-node");
+        anyhow::ensure!(identity.config_dir == "/var/lib/logos-node/.logoscore");
+        anyhow::ensure!(identity.main_process_id == 42);
+
+        for malformed in [
+            b"User=logos\nEnvironment=HOME=relative\nMainPID=42\n".as_slice(),
+            b"User=logos\nEnvironment=HOME=/first HOME=/second\nMainPID=42\n".as_slice(),
+            b"User=logos\nEnvironment=HOME=/var/lib/logos-node\nMainPID=0\n".as_slice(),
+        ] {
+            anyhow::ensure!(parse_system_service_cli_identity(malformed).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn system_service_home_uses_passwd_fallback_when_environment_home_is_absent() -> Result<()> {
+        let home = resolve_system_service_home_with_lookup("logos", Some("PATH=/usr/bin"), |_| {
+            Ok(Some("/var/lib/logos-node".to_owned()))
+        })?;
+        anyhow::ensure!(home == "/var/lib/logos-node");
+        anyhow::ensure!(
+            resolve_system_service_home_with_lookup("logos", None, |_| Ok(None)).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn system_service_cli_identity_prefers_config_dir_overrides() -> Result<()> {
+        let identity = parse_system_service_cli_identity(
+            b"User=logos\nEnvironment=HOME=/var/lib/logos-node LOGOSCORE_CONFIG_DIR=/srv/logoscore\nMainPID=42\n",
+        )?;
+        anyhow::ensure!(identity.config_dir == "/srv/logoscore");
+
+        let env_override = system_service_config_dir(
+            b"User=logos\nEnvironment=HOME=/var/lib/logos-node LOGOSCORE_CONFIG_DIR=/srv/logoscore\nMainPID=42\n",
+            "/var/lib/logos-node",
+            None,
+            None,
+        )?;
+        anyhow::ensure!(env_override == "/srv/logoscore");
+
+        let environment_file = tempfile::NamedTempFile::new()?;
+        fs::write(
+            environment_file.path(),
+            "LOGOSCORE_CONFIG_DIR=/srv/from-env-file\n",
+        )?;
+        let env_file_override = system_service_config_dir(
+            b"User=logos\nEnvironment=\nMainPID=42\n",
+            "/var/lib/logos-node",
+            None,
+            Some(&format!(
+                "{} (ignore_errors=no)",
+                environment_file.path().display()
+            )),
+        )?;
+        anyhow::ensure!(env_file_override == "/srv/from-env-file");
+
+        let exec_override = system_service_config_dir(
+            b"User=logos\nEnvironment=HOME=/var/lib/logos-node\nMainPID=42\n",
+            "/var/lib/logos-node",
+            Some(&serde_json::to_vec(&json!({
+                "type": "a(sasbttttuii)",
+                "data": [[
+                    "/usr/local/bin/logoscore",
+                    [
+                        "/usr/local/bin/logoscore",
+                        "--config-dir",
+                        "/srv/from-exec-start",
+                        "-D"
+                    ],
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ]]
+            }))?),
+            None,
+        )?;
+        anyhow::ensure!(exec_override == "/srv/from-exec-start");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_system_service_environment_files_rejects_invalid_entries() -> Result<()> {
+        let parsed = parse_system_service_environment_files(
+            "/srv/a.env (ignore_errors=no) /srv/b.env (ignore_errors=yes)",
+        )?;
+        anyhow::ensure!(parsed.len() == 2);
+        let first = parsed
+            .first()
+            .context("missing first EnvironmentFiles entry")?;
+        anyhow::ensure!(first.path == "/srv/a.env");
+        anyhow::ensure!(!first.ignore_errors);
+        let second = parsed
+            .get(1)
+            .context("missing second EnvironmentFiles entry")?;
+        anyhow::ensure!(second.path == "/srv/b.env");
+        anyhow::ensure!(second.ignore_errors);
+        anyhow::ensure!(parse_system_service_environment_files("/srv/a.env").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn systemd_exec_start_config_dir_parser_rejects_duplicates_and_relative_paths() -> Result<()> {
+        let single = serde_json::to_vec(&json!({
+            "type": "a(sasbttttuii)",
+            "data": [[
+                "/usr/local/bin/logoscore",
+                ["/usr/local/bin/logoscore", "--config-dir=/srv/logoscore", "-D"],
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ]]
+        }))?;
+        anyhow::ensure!(
+            systemd_exec_start_config_dir_json(&single).as_deref() == Some("/srv/logoscore")
+        );
+
+        let duplicate = serde_json::to_vec(&json!({
+            "type": "a(sasbttttuii)",
+            "data": [[
+                "/usr/local/bin/logoscore",
+                [
+                    "/usr/local/bin/logoscore",
+                    "--config-dir=/srv/first",
+                    "--config-dir",
+                    "/srv/second"
+                ],
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ]]
+        }))?;
+        anyhow::ensure!(systemd_exec_start_config_dir_json(&duplicate).is_none());
+
+        let relative = serde_json::to_vec(&json!({
+            "type": "a(sasbttttuii)",
+            "data": [[
+                "/usr/local/bin/logoscore",
+                ["/usr/local/bin/logoscore", "--config-dir", "relative"],
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ]]
+        }))?;
+        anyhow::ensure!(systemd_exec_start_config_dir_json(&relative).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn attached_cli_identity_only_allows_system_service_targets() {
+        let system = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let user = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::User,
+            unit: "logos-node.service".to_owned(),
+        };
+        assert!(attached_service_cli_identity_is_eligible(&system));
+        assert!(
+            !attached_service_cli_identity_is_eligible(&user),
+            "a user service must retain the current-user CLI identity"
+        );
+    }
+
+    #[test]
+    fn attached_cli_identity_accepts_fresh_service_process_without_cached_pid() {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let identity = AttachedCliIdentity {
+            binary_path: "/bin/sh".to_owned(),
+            sudo_user: "logos".to_owned(),
+            home: "/var/lib/logos-node".to_owned(),
+            config_dir: "/tmp/logoscore-client".to_owned(),
+            main_process_id: 42,
+        };
+        assert!(attached_service_cli_identity_accepts_process_binding(
+            None, &target, &identity
+        ));
+    }
+
+    #[test]
+    fn rebind_attached_service_profile_accepts_only_the_same_service_target() {
+        let target = LogoscoreServiceTarget {
+            scope: LogoscoreServiceScope::System,
+            unit: "logos-node.service".to_owned(),
+        };
+        let mut stale = attached_profile(None, Some(target.clone()));
+        let mut fresh = attached_profile(Some(42), Some(target));
+        fresh.binary_path = "/usr/local/bin/logoscore".to_owned();
+        fresh.config_dir = "/var/lib/logos-node/.logoscore".to_owned();
+
+        assert!(rebind_attached_service_profile(&mut stale, fresh));
+        assert_eq!(stale.daemon_process_id, Some(42));
+        assert_eq!(stale.binary_path, "/usr/local/bin/logoscore");
+        assert_eq!(stale.config_dir, "/var/lib/logos-node/.logoscore");
+
+        let other = attached_profile(
+            Some(43),
+            Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: "logoscore.service".to_owned(),
+            }),
+        );
+        assert!(!rebind_attached_service_profile(&mut stale, other));
+        assert_eq!(stale.daemon_process_id, Some(42));
     }
 
     #[test]
@@ -2590,6 +3549,45 @@ exit 9
         anyhow::ensure!(
             modules_dir_from_systemd_exec_start_json(wrong_type).is_none(),
             "wrong typed D-Bus response was accepted"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_exec_start_binary_parser_requires_one_canonical_command() -> Result<()> {
+        let expected = canonical_executable(Some("/bin/sh"))?;
+        let response = json!({
+            "type": "a(sasbttttuii)",
+            "data": [[
+                expected.clone(),
+                ["/bin/sh"],
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ]]
+        });
+        let response = serde_json::to_vec(&response)?;
+        anyhow::ensure!(
+            systemd_exec_start_binary_path_json(&response).as_deref() == Some(expected.as_str()),
+            "systemd ExecStart did not yield its canonical executable"
+        );
+
+        let duplicate = json!({
+            "type": "a(sasbttttuii)",
+            "data": [
+                ["/bin/sh", ["/bin/sh"], false, 0, 0, 0, 0, 0, 0, 0],
+                ["/bin/sh", ["/bin/sh"], false, 0, 0, 0, 0, 0, 0, 0]
+            ]
+        });
+        anyhow::ensure!(
+            systemd_exec_start_binary_path_json(&serde_json::to_vec(&duplicate)?).is_none(),
+            "multiple system service commands were accepted for CLI impersonation"
         );
         Ok(())
     }
