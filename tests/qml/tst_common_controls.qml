@@ -71,6 +71,15 @@ TestCase {
                 value: "http://127.0.0.1:3040/"
             }
 
+            FieldRow {
+                id: fieldRow
+
+                theme: theme
+                label: qsTr("CID")
+                placeholderText: qsTr("Storage CID")
+                Layout.fillWidth: true
+            }
+
             SourceSettingsPanel {
                 id: sourceSettingsPanel
 
@@ -189,6 +198,13 @@ TestCase {
 
         tryCompare(status.Accessible, "name", "Bedrock Blockchain status: OK")
         tryCompare(status.Accessible, "description", "slot 77 at now")
+    }
+
+    function test_field_row_exposes_editable_text_accessibility() {
+        const field = findAccessibleByName(fieldRow, "CID")
+
+        verify(field !== null)
+        compare(field.Accessible.role, Accessible.EditableText)
     }
 
     function test_confirm_popup_accept_action() {
