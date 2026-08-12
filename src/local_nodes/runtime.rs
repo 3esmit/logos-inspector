@@ -38,6 +38,24 @@ const ATTACHED_SERVICE_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 static ATTACHED_SERVICE_STATUS_BUDGET: LazyLock<CommandBudget> =
     LazyLock::new(CommandBudget::single);
 
+// System-wide locations only. Do not consult PATH: attached-service discovery
+// uses these commands to establish authority for a different account.
+const SYSTEMCTL_COMMAND_CANDIDATES: &[&str] = &[
+    "/run/current-system/sw/bin/systemctl",
+    "/usr/bin/systemctl",
+    "/bin/systemctl",
+];
+const BUSCTL_COMMAND_CANDIDATES: &[&str] = &[
+    "/run/current-system/sw/bin/busctl",
+    "/usr/bin/busctl",
+    "/bin/busctl",
+];
+const GETENT_COMMAND_CANDIDATES: &[&str] = &[
+    "/run/current-system/sw/bin/getent",
+    "/usr/bin/getent",
+    "/bin/getent",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum LogoscoreRuntimeOwnership {
@@ -1710,17 +1728,17 @@ fn fixed_system_service_command_path_is_valid(path: &Path) -> bool {
 }
 
 fn fixed_systemctl_path() -> Result<String> {
-    fixed_system_service_command_path("systemctl", &["/usr/bin/systemctl", "/bin/systemctl"])
+    fixed_system_service_command_path("systemctl", SYSTEMCTL_COMMAND_CANDIDATES)
 }
 
 #[cfg(any(target_os = "linux", test))]
 fn fixed_busctl_path() -> Result<String> {
-    fixed_system_service_command_path("busctl", &["/usr/bin/busctl", "/bin/busctl"])
+    fixed_system_service_command_path("busctl", BUSCTL_COMMAND_CANDIDATES)
 }
 
 #[cfg(any(target_os = "linux", test))]
 fn fixed_getent_path() -> Result<String> {
-    fixed_system_service_command_path("getent", &["/usr/bin/getent", "/bin/getent"])
+    fixed_system_service_command_path("getent", GETENT_COMMAND_CANDIDATES)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -2787,6 +2805,22 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
             &target,
             Some(&other),
         ));
+    }
+
+    #[test]
+    fn service_identity_command_candidates_include_global_nixos_paths() {
+        assert_eq!(
+            SYSTEMCTL_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/systemctl")
+        );
+        assert_eq!(
+            BUSCTL_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/busctl")
+        );
+        assert_eq!(
+            GETENT_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/getent")
+        );
     }
 
     #[test]

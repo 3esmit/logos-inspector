@@ -60,6 +60,18 @@ const LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV: &str = "LOGOS_INSPECTOR_WATCH_TOKEN";
 const LOGOSCORE_WATCH_OWNER_PID_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_PID";
 const LOGOSCORE_WATCH_OWNER_START_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_START";
 const LOGOSCORE_WATCH_OWNER_NONCE_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_NONCE";
+// Fixed global locations for service-owned CLI calls. Never resolve these
+// commands from PATH, which may be controlled by the desktop launcher.
+const SUDO_COMMAND_CANDIDATES: &[&str] = &[
+    "/run/wrappers/bin/sudo",
+    "/run/current-system/sw/bin/sudo",
+    "/usr/bin/sudo",
+    "/bin/sudo",
+];
+const ENV_COMMAND_CANDIDATES: &[&str] =
+    &["/run/current-system/sw/bin/env", "/usr/bin/env", "/bin/env"];
+const CAT_COMMAND_CANDIDATES: &[&str] =
+    &["/run/current-system/sw/bin/cat", "/usr/bin/cat", "/bin/cat"];
 #[cfg(target_os = "linux")]
 const LOGOSCORE_WATCH_LEASE_DIRECTORY: &str = "runtime/watch-leases";
 #[cfg(target_os = "linux")]
@@ -3967,9 +3979,9 @@ where
 
 fn fixed_system_command_paths() -> Result<PrivilegedCommandPaths> {
     Ok(PrivilegedCommandPaths {
-        sudo: fixed_system_command_path("sudo", &["/usr/bin/sudo", "/bin/sudo"])?,
-        env: fixed_system_command_path("env", &["/usr/bin/env", "/bin/env"])?,
-        cat: fixed_system_command_path("cat", &["/usr/bin/cat", "/bin/cat"])?,
+        sudo: fixed_system_command_path("sudo", SUDO_COMMAND_CANDIDATES)?,
+        env: fixed_system_command_path("env", ENV_COMMAND_CANDIDATES)?,
+        cat: fixed_system_command_path("cat", CAT_COMMAND_CANDIDATES)?,
     })
 }
 
@@ -6189,6 +6201,22 @@ mod tests {
             "configured service process environment reader arguments drifted: {args:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn configured_service_command_candidates_include_global_nixos_paths() {
+        assert_eq!(
+            SUDO_COMMAND_CANDIDATES.first(),
+            Some(&"/run/wrappers/bin/sudo")
+        );
+        assert_eq!(
+            ENV_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/env")
+        );
+        assert_eq!(
+            CAT_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/cat")
+        );
     }
 
     #[test]
