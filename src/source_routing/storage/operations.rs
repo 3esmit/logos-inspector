@@ -295,6 +295,13 @@ impl StorageClient {
         )
     }
 
+    pub(crate) const fn confirms_backup_upload_stop(&self) -> bool {
+        matches!(
+            self.adapter,
+            StorageOperationAdapter::Module(ModuleTransportKind::Module)
+        )
+    }
+
     pub(crate) const fn backup_download_termination_handshake_grace(&self) -> Option<Duration> {
         if matches!(
             self.adapter,
@@ -354,6 +361,79 @@ impl StorageClient {
                 transport::upload_bytes_controlled(endpoint, filename, bytes, block_size, control)
                     .await
             }
+        }
+    }
+
+    pub(crate) async fn upload_backup_bytes_controlled(
+        &self,
+        module_transport: &SharedModuleTransport,
+        cleanup_module_transport: &SharedModuleTransport,
+        filename: &str,
+        bytes: &[u8],
+        block_size: u64,
+        control: CommandControl,
+    ) -> Result<Value> {
+        self.ensure_managed_backup_upload_supported(module_transport, cleanup_module_transport)?;
+        match &self.adapter {
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
+                transport::host_module_upload_backup_bytes_controlled(
+                    module_transport,
+                    cleanup_module_transport,
+                    filename,
+                    bytes,
+                    block_size,
+                    control,
+                )
+                .await
+            }
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
+                let runtime = module_transport
+                    .logoscore_cli_transport()
+                    .context("active LogosCore CLI transport does not expose its runtime")?
+                    .runtime()?;
+                transport::module_upload_bytes_controlled(
+                    runtime, filename, bytes, block_size, control,
+                )
+                .await
+            }
+            StorageOperationAdapter::Rest { endpoint } => {
+                transport::upload_bytes_controlled(endpoint, filename, bytes, block_size, control)
+                    .await
+            }
+        }
+    }
+
+    pub(crate) fn ensure_managed_backup_upload_supported(
+        &self,
+        module_transport: &SharedModuleTransport,
+        cleanup_module_transport: &SharedModuleTransport,
+    ) -> Result<()> {
+        match &self.adapter {
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
+                anyhow::ensure!(
+                    module_transport.kind() == ModuleTransportKind::Module
+                        && cleanup_module_transport.kind() == ModuleTransportKind::Module,
+                    "Basecamp backup upload requires the host module transport"
+                );
+                anyhow::ensure!(
+                    module_transport.supports_shared_file_staging(),
+                    "Basecamp host transport does not provide shared file staging"
+                );
+                anyhow::ensure!(
+                    module_transport.native_runtime_module_events_ready(),
+                    "Basecamp host transport does not own healthy native runtime module-event ingress"
+                );
+                Ok(())
+            }
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
+                anyhow::ensure!(
+                    module_transport.kind() == ModuleTransportKind::LogoscoreCli,
+                    "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
+                    module_transport.kind().as_str()
+                );
+                Ok(())
+            }
+            StorageOperationAdapter::Rest { .. } => Ok(()),
         }
     }
 
@@ -3441,6 +3521,62 @@ esac
             error.to_string()
                 == "Basecamp module source does not support Inspector-managed byte staging",
             "unexpected Basecamp byte-staging error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_backup_upload_uses_dedicated_host_adapter() -> Result<()> {
+        let client = StorageClient::from_initialization(&json!({
+            "source_mode": "module",
+            "inputs": {}
+        }))?;
+        let module_transport: SharedModuleTransport = Arc::new(
+            crate::modules::logos_core::UnavailableModuleTransport::basecamp_host_not_configured(),
+        );
+
+        let error = client
+            .upload_backup_bytes_controlled(
+                &module_transport,
+                &module_transport,
+                "backup.json",
+                b"payload",
+                65_536,
+                command_control()?,
+            )
+            .await
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("Basecamp backup upload should require host staging"))?;
+
+        anyhow::ensure!(
+            error.to_string().contains("Basecamp host transport")
+                && error.to_string()
+                    != "Basecamp module source does not support Inspector-managed byte staging",
+            "backup upload did not use the dedicated host adapter: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backup_upload_stop_confirmation_is_direct_host_only() -> Result<()> {
+        let basecamp = StorageClient::from_initialization(&json!({
+            "source_mode": "module",
+            "inputs": {}
+        }))?;
+        let cli = StorageClient::from_initialization(&json!({
+            "source_mode": "logoscore_cli",
+            "inputs": {}
+        }))?;
+        let rest = StorageClient::from_initialization(&json!({
+            "source_mode": "rest",
+            "inputs": { "rest_endpoint": "http://storage" }
+        }))?;
+
+        anyhow::ensure!(
+            basecamp.confirms_backup_upload_stop()
+                && !cli.confirms_backup_upload_stop()
+                && !rest.confirms_backup_upload_stop(),
+            "backup upload cancellation settlement must be direct-host-only"
         );
         Ok(())
     }

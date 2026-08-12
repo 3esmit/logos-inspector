@@ -401,6 +401,7 @@ const MODULE_CAPABILITIES: &[&str] = &[
     "storage.content.read_by_cid",
     "storage.content.upload",
     "storage.backup.sync_read_by_cid",
+    "storage.backup.sync_upload",
     "storage.content.download_to_file",
     "storage.content.remove",
 ];
