@@ -451,10 +451,13 @@ pub(super) fn status(
     let store = ChannelIndexerStore::for_config_dir(config_root);
     let mut channel_state = store.load()?;
     let (report, changed) = build_report(
-        profile,
-        state,
-        base_runtime,
-        projector,
+        ReportContext {
+            config_root,
+            profile,
+            state,
+            base_runtime,
+            projector,
+        },
         &mut channel_state,
         network_scope,
         &channel_id,
@@ -1680,6 +1683,7 @@ pub(super) fn apply(
             control,
         ),
         NodeAction::Purge => purge(
+            config_root,
             &mut channel_state,
             &request.network_scope,
             &channel_id,
@@ -1699,10 +1703,13 @@ pub(super) fn apply(
     store.save(&channel_state)?;
 
     let (mut report, changed) = build_report(
-        profile,
-        state,
-        base_runtime,
-        projector,
+        ReportContext {
+            config_root,
+            profile,
+            state,
+            base_runtime,
+            projector,
+        },
         &mut channel_state,
         &request.network_scope,
         &channel_id,
@@ -1874,6 +1881,7 @@ fn stop(
 }
 
 fn purge(
+    config_root: &Path,
     channel_state: &mut ChannelIndexerState,
     network_scope: &NetworkScope,
     channel_id: &str,
@@ -1884,6 +1892,12 @@ fn purge(
             "no isolated Channel Indexer data is configured for this Channel",
         ));
     };
+    record
+        .runtime
+        .validate_for_config_root(config_root)
+        .context(
+            "Channel Indexer runtime belongs to a previous Inspector configuration; start it before resetting data",
+        )?;
     anyhow::ensure!(
         record.state == "stopped",
         "stop this Channel Indexer before resetting its data"
@@ -2545,25 +2559,32 @@ fn stop_runtime(record: &mut ChannelIndexerRecord, control: Option<&CommandContr
     Ok(())
 }
 
-fn build_report(
-    profile: &str,
-    state: &LocalNodesState,
-    base_runtime: Option<&LogoscoreRuntimeProfile>,
+struct ReportContext<'a> {
+    config_root: &'a Path,
+    profile: &'a str,
+    state: &'a LocalNodesState,
+    base_runtime: Option<&'a LogoscoreRuntimeProfile>,
     projector: LocalNodeReportProjector,
+}
+
+fn build_report(
+    context: ReportContext<'_>,
     channel_state: &mut ChannelIndexerState,
     network_scope: &NetworkScope,
     channel_id: &str,
 ) -> Result<(LocalNodeReport, bool)> {
-    let profile = normalized_profile(profile);
-    let package = package_prerequisite(state, profile, base_runtime);
+    let profile = normalized_profile(context.profile);
+    let package = package_prerequisite(context.state, profile, context.base_runtime);
     let current_binding = current_source_binding(network_scope, channel_id);
-    let legacy_problem = legacy_indexer_problem(state, profile);
+    let legacy_problem = legacy_indexer_problem(context.state, profile);
     let mut changed = false;
     if let Some(record) = find_record_mut(channel_state, network_scope, channel_id) {
         changed = reconcile_record(record);
     }
 
-    let mut report = projector.report(profile, state, base_runtime);
+    let mut report = context
+        .projector
+        .report(profile, context.state, context.base_runtime);
     let record = find_record(channel_state, network_scope, channel_id);
     let mut node = report
         .nodes
@@ -2572,6 +2593,12 @@ fn build_report(
         .cloned()
         .unwrap_or_else(empty_indexer_status);
     let record_is_running = record.is_some_and(|record| record.runtime.is_running());
+    let record_data_is_managed = record.is_some_and(|record| {
+        record
+            .runtime
+            .validate_for_config_root(context.config_root)
+            .is_ok()
+    });
     let record_state = record
         .map(|record| record.state.as_str())
         .unwrap_or("stopped");
@@ -2608,7 +2635,7 @@ fn build_report(
         current_binding.is_ok(),
         legacy_problem.is_none(),
         record_is_running,
-        record.is_some(),
+        record_data_is_managed,
         record_state,
     );
     node.detail = indexer_detail(
@@ -3434,7 +3461,12 @@ fn validate_state(state: &ChannelIndexerState, config_root: &Path) -> Result<()>
         if !identities.insert(identity) {
             bail!("Channel Indexer state has duplicate Channel records");
         }
-        record.runtime.validate_for_config_root(config_root)?;
+        if let Err(error) = record.runtime.validate_for_config_root(config_root) {
+            if can_defer_stopped_runtime_recovery(record, &scope_key) {
+                continue;
+            }
+            return Err(error);
+        }
         let expected = LogoscoreRuntimeProfile::create_channel_indexer(
             config_root,
             &scope_key,
@@ -3449,6 +3481,37 @@ fn validate_state(state: &ChannelIndexerState, config_root: &Path) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// A stopped Channel Indexer can survive an Inspector config-root move. Its
+/// runtime paths are deterministic, but only `start` has the current base
+/// runtime needed to recreate them. Let that one safe stale record load so the
+/// Start action remains reachable; any active or otherwise malformed record
+/// remains subject to the normal strict validation above.
+fn can_defer_stopped_runtime_recovery(record: &ChannelIndexerRecord, scope_key: &str) -> bool {
+    if record.state != "stopped"
+        || record.runtime.is_running()
+        || record
+            .runtime
+            .daemon_process_id
+            .is_some_and(process_group_has_live_members)
+        || !record.runtime.is_managed()
+        || record.runtime.id
+            != format!(
+                "inspector-managed-indexer-{scope_key}-{}",
+                record.channel_id
+            )
+    {
+        return false;
+    }
+    let Some(previous_config_root) = Path::new(&record.runtime.config_dir).ancestors().nth(4)
+    else {
+        return false;
+    };
+    record
+        .runtime
+        .validate_for_config_root(previous_config_root)
+        .is_ok()
 }
 
 fn empty_indexer_status() -> LocalNodeStatus {
@@ -3736,6 +3799,16 @@ mod tests {
         })
     }
 
+    fn write_unvalidated_channel_indexer_state(
+        config_root: &Path,
+        state: &ChannelIndexerState,
+    ) -> Result<()> {
+        let path = ChannelIndexerStore::for_config_dir(config_root).state_path();
+        let text = serde_json::to_string_pretty(state)?;
+        fs::write(path, text)?;
+        Ok(())
+    }
+
     fn config_request(channel_id: &str) -> ChannelIndexerConfigRequest {
         ChannelIndexerConfigRequest {
             network_scope: network_scope(),
@@ -3967,6 +4040,105 @@ mod tests {
         anyhow::ensure!(
             channel_actions(true, true, true, true, true, "stopped")
                 == vec![NodeAction::Start, NodeAction::Stop]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_record_from_previous_config_root_loads_for_start_recovery() -> Result<()> {
+        let current_root = tempfile::tempdir()?;
+        let previous_root = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(previous_root.path(), &source)?;
+        record.runtime.daemon_process_id = None;
+        record.state = "stopped".to_owned();
+        let state = ChannelIndexerState {
+            version: STATE_VERSION,
+            records: vec![record],
+        };
+        write_unvalidated_channel_indexer_state(current_root.path(), &state)?;
+
+        let mut loaded = ChannelIndexerStore::for_config_dir(current_root.path()).load()?;
+        {
+            let record = find_record(&loaded, &source.network_scope, &channel_id)
+                .context("stopped Channel Indexer record was not loaded")?;
+            anyhow::ensure!(
+                record
+                    .runtime
+                    .validate_for_config_root(current_root.path())
+                    .is_err(),
+                "fixture runtime unexpectedly belongs to the current config root"
+            );
+            anyhow::ensure!(
+                channel_actions(true, true, true, false, false, &record.state)
+                    == vec![NodeAction::Start],
+                "stopped stale Channel Indexer did not restrict recovery to Start"
+            );
+        }
+        let purge_error = purge(
+            current_root.path(),
+            &mut loaded,
+            &source.network_scope,
+            &channel_id,
+            None,
+        )
+        .expect_err("stale Channel Indexer must not reset data at its previous root");
+        anyhow::ensure!(
+            purge_error
+                .to_string()
+                .contains("previous Inspector configuration")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_record_with_live_process_from_previous_root_remains_invalid() -> Result<()> {
+        let current_root = tempfile::tempdir()?;
+        let previous_root = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(previous_root.path(), &source)?;
+        record.state = "stopped".to_owned();
+        let state = ChannelIndexerState {
+            version: STATE_VERSION,
+            records: vec![record],
+        };
+        write_unvalidated_channel_indexer_state(current_root.path(), &state)?;
+
+        let error = ChannelIndexerStore::for_config_dir(current_root.path())
+            .load()
+            .expect_err("live Channel Indexer record must not be rebound");
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("outside the Inspector runtime root")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn active_record_from_previous_config_root_remains_invalid() -> Result<()> {
+        let current_root = tempfile::tempdir()?;
+        let previous_root = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(previous_root.path(), &source)?;
+        record.runtime.daemon_process_id = None;
+        record.state = "starting".to_owned();
+        let state = ChannelIndexerState {
+            version: STATE_VERSION,
+            records: vec![record],
+        };
+        write_unvalidated_channel_indexer_state(current_root.path(), &state)?;
+
+        let error = ChannelIndexerStore::for_config_dir(current_root.path())
+            .load()
+            .expect_err("active Channel Indexer record must remain strictly validated");
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("outside the Inspector runtime root")
         );
         Ok(())
     }
