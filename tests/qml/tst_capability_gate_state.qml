@@ -24,6 +24,7 @@ TestCase {
         gates.registryLoaded = false
         gates.registryError = ""
         gates.compatibilityAvailability = ({})
+        gates.latestAsyncRequest = 0
     }
 
     function test_load_registry_report_uses_build_mode_argument() {
@@ -85,6 +86,51 @@ TestCase {
         verify(callbackResponse !== null)
         verify(gates.registryLoaded)
         compare(gates.registryReport.build_mode, "basecamp")
+    }
+
+    function test_newer_async_registry_response_wins_over_older_response() {
+        const unavailable = {
+            ok: true,
+            value: {
+                schema_version: 1,
+                capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "unavailable",
+                    sub_capabilities: ["delivery.store.query"],
+                    unavailable_sub_capabilities: ["delivery.store.query"]
+                }]
+            },
+            text: "OK",
+            error: ""
+        }
+        const available = {
+            ok: true,
+            value: {
+                schema_version: 1,
+                capabilities: [{
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "available",
+                    sub_capabilities: ["delivery.store.query"]
+                }]
+            },
+            text: "OK",
+            error: ""
+        }
+        gateway.deferRequests = true
+
+        gates.loadRegistryAsync(true, { revision: 1 })
+        gates.loadRegistryAsync(true, { revision: 2 })
+
+        compare(gateway.pendingRequests.length, 2)
+        verify(gateway.completeRequestAt(1, available))
+        verify(gates.deliveryGate("store_query").enabled)
+        const afterNewer = gates.revision
+
+        verify(gateway.completeRequestAt(0, unavailable))
+        verify(gates.deliveryGate("store_query").enabled)
+        compare(gates.revision, afterNewer)
     }
 
     function test_all_of_reports_missing_dependencies_in_order() {
