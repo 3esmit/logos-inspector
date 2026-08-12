@@ -18,8 +18,8 @@ use super::operations::StorageUploadSettlementUnconfirmed;
 
 use crate::{
     modules::logos_core::{
-        BoxedModuleEventSubscription, ModuleCallTerminationEvidence, ModuleTransportEvent,
-        ModuleTransportKind, SharedModuleTransport,
+        BoxedModuleEventSubscription, ModuleCallRejected, ModuleCallTerminationEvidence,
+        ModuleTransportEvent, ModuleTransportKind, SharedModuleTransport,
     },
     source_routing::shared::{http, module_bridge},
     source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
@@ -827,6 +827,13 @@ async fn execute_staged_host_backup_download(
     .await
     {
         Ok(acknowledgement) => acknowledgement,
+        Err(error) if error.downcast_ref::<ModuleCallRejected>().is_some() => {
+            // Storage V2 rejects before creating a download session. Its
+            // canonical rejection is therefore terminal and must not be
+            // converted into a cancellation attempt for an absent session.
+            drop(subscription);
+            return Err(error);
+        }
         Err(error)
             if error
                 .downcast_ref::<crate::modules::logos_core::ModuleCallTerminated>()
@@ -2337,6 +2344,7 @@ mod tests {
         CloseBeforeTerminal,
         Oversized,
         WrongInterface,
+        RejectedBeforeEffect,
     }
 
     struct FakeHostSubscription {
@@ -2494,6 +2502,12 @@ mod tests {
                 .lock()
                 .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?
                 .push(path.clone());
+            if self.behavior == HostDownloadBehavior::RejectedBeforeEffect {
+                return Err(ModuleCallRejected::new(
+                    "storage_module.downloadToUrlV2 failed: Failed to read download manifest.",
+                )
+                .into());
+            }
             let bytes = if self.behavior == HostDownloadBehavior::Oversized {
                 vec![b'x'; self.payload.len().saturating_add(1)]
             } else {
@@ -2530,7 +2544,8 @@ mod tests {
                 HostDownloadBehavior::NoTerminal
                 | HostDownloadBehavior::PendingAcknowledgement
                 | HostDownloadBehavior::Oversized
-                | HostDownloadBehavior::WrongInterface => {}
+                | HostDownloadBehavior::WrongInterface
+                | HostDownloadBehavior::RejectedBeforeEffect => {}
             }
             Ok(json!({
                 "protocol": STORAGE_DOWNLOAD_PROTOCOL,
@@ -3323,6 +3338,48 @@ mod tests {
                 "{behavior:?} retained staging state: {staged_paths:?}"
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_rejection_before_effect_skips_cancellation() -> Result<()> {
+        let fake = Arc::new(FakeHostDownloadTransport::new(
+            HostDownloadBehavior::RejectedBeforeEffect,
+            b"backup",
+        ));
+        let transport: SharedModuleTransport = fake.clone();
+        let error = host_module_download_backup_bytes_controlled(
+            &transport,
+            &transport,
+            "cid-host",
+            false,
+            64,
+            host_download_control(Duration::from_secs(2)),
+        )
+        .await
+        .err()
+        .context("pre-effect host rejection should fail")?;
+
+        anyhow::ensure!(
+            error.downcast_ref::<ModuleCallRejected>().is_some()
+                && error
+                    .to_string()
+                    .contains("Failed to read download manifest"),
+            "pre-effect rejection lost its typed module error: {error:#}"
+        );
+        anyhow::ensure!(
+            fake.download_calls.load(Ordering::Acquire) == 1
+                && fake.cancel_calls.load(Ordering::Acquire) == 0,
+            "pre-effect rejection dispatched an unnecessary cancellation"
+        );
+        let staged_paths = fake
+            .staged_paths
+            .lock()
+            .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?;
+        anyhow::ensure!(
+            staged_paths.iter().all(|path| !path.exists()),
+            "pre-effect rejection retained staging state: {staged_paths:?}"
+        );
         Ok(())
     }
 

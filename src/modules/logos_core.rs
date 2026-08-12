@@ -569,6 +569,34 @@ impl std::fmt::Display for ModuleCallTerminated {
 
 impl std::error::Error for ModuleCallTerminated {}
 
+/// A direct module returned an explicit canonical rejection.
+///
+/// This identifies a module-level response rather than a transport failure. It
+/// does not itself establish whether the invoked method had a side effect;
+/// callers must apply the contract for the specific method before making that
+/// decision.
+#[derive(Debug)]
+pub struct ModuleCallRejected {
+    message: String,
+}
+
+impl ModuleCallRejected {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ModuleCallRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModuleCallRejected {}
+
 #[derive(Debug)]
 pub struct ModuleTransportClosed {
     message: String,
