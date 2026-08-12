@@ -60,6 +60,18 @@ const LOGOSCORE_WATCH_CLEANUP_TOKEN_ENV: &str = "LOGOS_INSPECTOR_WATCH_TOKEN";
 const LOGOSCORE_WATCH_OWNER_PID_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_PID";
 const LOGOSCORE_WATCH_OWNER_START_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_START";
 const LOGOSCORE_WATCH_OWNER_NONCE_ENV: &str = "LOGOS_INSPECTOR_WATCH_OWNER_NONCE";
+// Fixed global locations for service-owned CLI calls. Never resolve these
+// commands from PATH, which may be controlled by the desktop launcher.
+const SUDO_COMMAND_CANDIDATES: &[&str] = &[
+    "/run/wrappers/bin/sudo",
+    "/run/current-system/sw/bin/sudo",
+    "/usr/bin/sudo",
+    "/bin/sudo",
+];
+const ENV_COMMAND_CANDIDATES: &[&str] =
+    &["/run/current-system/sw/bin/env", "/usr/bin/env", "/bin/env"];
+const CAT_COMMAND_CANDIDATES: &[&str] =
+    &["/run/current-system/sw/bin/cat", "/usr/bin/cat", "/bin/cat"];
 #[cfg(target_os = "linux")]
 const LOGOSCORE_WATCH_LEASE_DIRECTORY: &str = "runtime/watch-leases";
 #[cfg(target_os = "linux")]
@@ -2064,6 +2076,31 @@ impl LogoscoreCliRuntime {
         self.cached_status_controlled(control)
     }
 
+    pub(crate) fn process_environment(
+        &self,
+        process_id: u32,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
+        ensure!(process_id != 0, "process id is required");
+        let command = runner_process_environment_read_command(&self.runner, process_id)
+            .context("configured service runner did not build process environment reader")?;
+        let output = run_command(
+            command,
+            CommandRunPolicy {
+                label: &self.runner.label,
+                timeout,
+                poll_interval: LOGOSCORE_POLL_INTERVAL,
+                redactions: &[],
+                output_limit: 0,
+                capture_limit: 64 * 1024,
+            },
+        )
+        .with_context(|| {
+            format!("failed to read process environment for configured service pid {process_id}")
+        })?;
+        Ok(output.stdout)
+    }
+
     fn cached_status(&self, timeout: Duration) -> Result<LogosCoreOutput> {
         if let Some(snapshot) =
             fresh_logoscore_cli_snapshot(&self.runner, LogoscoreCliSnapshotKind::Status)?
@@ -3326,6 +3363,7 @@ struct LogosCoreRunner {
 struct PrivilegedCommandPaths {
     sudo: String,
     env: String,
+    cat: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -3481,18 +3519,31 @@ fn runner_client_config_read_command(
     runner: &LogosCoreRunner,
     config_path: &Path,
 ) -> Option<Command> {
+    let path = config_path.to_str()?;
+    runner_privileged_read_command(runner, path)
+}
+
+fn runner_process_environment_read_command(
+    runner: &LogosCoreRunner,
+    process_id: u32,
+) -> Option<Command> {
+    let path = format!("/proc/{process_id}/environ");
+    runner_privileged_read_command(runner, &path)
+}
+
+fn runner_privileged_read_command(runner: &LogosCoreRunner, path: &str) -> Option<Command> {
     let user = runner.sudo_user.as_deref()?;
-    let paths = runner.privileged_command_paths.as_ref();
-    let mut command = Command::new(paths.map_or("sudo", |configured| configured.sudo.as_str()));
+    let paths = runner.privileged_command_paths.as_ref()?;
+    let mut command = Command::new(paths.sudo.as_str());
     command
         .arg("-n")
         .arg("-u")
         .arg(user)
-        .arg(paths.map_or("env", |configured| configured.env.as_str()));
+        .arg(paths.env.as_str());
     if let Some(home) = &runner.home {
         command.arg(format!("HOME={home}"));
     }
-    command.arg("/bin/cat").arg("--").arg(config_path);
+    command.arg(paths.cat.as_str()).arg("--").arg(path);
     Some(command)
 }
 
@@ -3928,8 +3979,9 @@ where
 
 fn fixed_system_command_paths() -> Result<PrivilegedCommandPaths> {
     Ok(PrivilegedCommandPaths {
-        sudo: fixed_system_command_path("sudo", &["/usr/bin/sudo", "/bin/sudo"])?,
-        env: fixed_system_command_path("env", &["/usr/bin/env", "/bin/env"])?,
+        sudo: fixed_system_command_path("sudo", SUDO_COMMAND_CANDIDATES)?,
+        env: fixed_system_command_path("env", ENV_COMMAND_CANDIDATES)?,
+        cat: fixed_system_command_path("cat", CAT_COMMAND_CANDIDATES)?,
     })
 }
 
@@ -3939,10 +3991,26 @@ fn fixed_system_command_path(name: &str, candidates: &[&str]) -> Result<String> 
         .find_map(|candidate| {
             fs::canonicalize(candidate)
                 .ok()
-                .filter(|path| path.is_file())
+                .filter(|path| fixed_system_command_path_is_valid(path))
                 .and_then(|path| path.to_str().map(ToOwned::to_owned))
         })
         .with_context(|| format!("required system command `{name}` is unavailable"))
+}
+
+fn fixed_system_command_path_is_valid(path: &Path) -> bool {
+    if !path.is_absolute() || !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::metadata(path)
+            .ok()
+            .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    true
 }
 
 fn read_json_watch_output(
@@ -6087,13 +6155,68 @@ mod tests {
                 "logos",
                 paths.env.as_str(),
                 "HOME=/var/lib/logos-node",
-                "/bin/cat",
+                paths.cat.as_str(),
                 "--",
                 "/var/lib/logos-node/.logoscore/client/config.json",
             ],
             "configured service config reader arguments drifted: {args:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn configured_service_process_environment_reader_uses_fixed_utilities() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let paths = fixed_system_command_paths()?;
+        let runner = LogosCoreRunner {
+            program: "/usr/local/bin/logoscore".to_owned(),
+            sudo_user: Some("logos".to_owned()),
+            home: Some("/var/lib/logos-node".to_owned()),
+            config_dir: Some("/var/lib/logos-node/.logoscore".to_owned()),
+            label: "configured logoscore".to_owned(),
+            privileged_command_paths: Some(paths.clone()),
+        };
+        let command = runner_process_environment_read_command(&runner, 42)
+            .context("configured service runner did not build process environment reader")?;
+        anyhow::ensure!(
+            command.get_program() == OsStr::new(paths.sudo.as_str()),
+            "configured service process environment reader bypassed sudo"
+        );
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            args == [
+                "-n",
+                "-u",
+                "logos",
+                paths.env.as_str(),
+                "HOME=/var/lib/logos-node",
+                paths.cat.as_str(),
+                "--",
+                "/proc/42/environ",
+            ],
+            "configured service process environment reader arguments drifted: {args:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_service_command_candidates_include_global_nixos_paths() {
+        assert_eq!(
+            SUDO_COMMAND_CANDIDATES.first(),
+            Some(&"/run/wrappers/bin/sudo")
+        );
+        assert_eq!(
+            ENV_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/env")
+        );
+        assert_eq!(
+            CAT_COMMAND_CANDIDATES.first(),
+            Some(&"/run/current-system/sw/bin/cat")
+        );
     }
 
     #[test]
