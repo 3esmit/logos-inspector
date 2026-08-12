@@ -1420,41 +1420,32 @@ fn system_service_cli_identity(
     let binary_path = systemd_exec_start_binary_path_json(&exec_start_output.stdout)
         .context("cannot verify local LogosCore system service executable")?;
     let seed = parse_system_service_cli_identity_seed(&output.stdout)?;
-    let sudo_user = seed.sudo_user;
-    let home = system_service_home(&sudo_user, None)?;
-    let mut identity = AttachedCliIdentity {
-        binary_path,
-        sudo_user,
-        home,
-        config_dir: String::new(),
-        main_process_id: seed.main_process_id,
-    };
-    if !system_service_main_process_matches_target(target, identity.main_process_id) {
+    if !system_service_main_process_matches_target(target, seed.main_process_id) {
         return Ok(None);
     }
-    identity.config_dir =
-        system_service_bootstrap_config_dir(&identity.home, Some(&exec_start_output.stdout))?;
-    let runtime = LogoscoreCliRuntime::configured_service(
-        identity.binary_path.clone(),
-        identity.config_dir.clone(),
-        identity.sudo_user.clone(),
-        Some(identity.home.clone()),
+    let runtime = LogoscoreCliRuntime::configured_service_process_environment_reader(
+        binary_path.clone(),
+        seed.sudo_user.clone(),
     )?;
     let process_environment =
-        runtime.process_environment(identity.main_process_id, ATTACHED_SERVICE_STATUS_TIMEOUT)?;
-    if !system_service_main_process_matches_target(target, identity.main_process_id) {
+        runtime.process_environment(seed.main_process_id, ATTACHED_SERVICE_STATUS_TIMEOUT)?;
+    if !system_service_main_process_matches_target(target, seed.main_process_id) {
         return Ok(None);
     }
     let effective_environment = parse_system_service_process_environment(&process_environment)?;
-    if let Some(home) = effective_environment.home.as_ref() {
-        identity.home = home.clone();
-    }
-    identity.config_dir = system_service_effective_config_dir(
+    let home = system_service_home(&seed.sudo_user, effective_environment.home.as_deref())?;
+    let config_dir = system_service_effective_config_dir(
         &effective_environment,
-        &identity.home,
+        &home,
         Some(&exec_start_output.stdout),
     )?;
-    Ok(Some(identity))
+    Ok(Some(AttachedCliIdentity {
+        binary_path,
+        sudo_user: seed.sudo_user,
+        home,
+        config_dir,
+        main_process_id: seed.main_process_id,
+    }))
 }
 
 #[cfg(target_os = "linux")]
@@ -1588,19 +1579,6 @@ fn parse_passwd_home(output: &[u8]) -> Result<String> {
         .next()
         .context("passwd entry is missing home directory")?;
     validated_system_service_path(home, "system service HOME")
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn system_service_bootstrap_config_dir(
-    home: &str,
-    exec_start_output: Option<&[u8]>,
-) -> Result<String> {
-    if let Some(exec_start_output) = exec_start_output
-        && let Some(config_dir) = systemd_exec_start_config_dir_json(exec_start_output)
-    {
-        return Ok(config_dir);
-    }
-    default_system_service_config_dir(home)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -3146,8 +3124,22 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
     }
 
     #[test]
+    fn system_service_process_home_precedes_passwd_lookup() -> Result<()> {
+        let environment = parse_system_service_process_environment(
+            b"HOME=/srv/runtime-home\0LOGOSCORE_CONFIG_DIR=/srv/logoscore\0",
+        )?;
+        let home =
+            resolve_system_service_home_with_lookup("logos", environment.home.as_deref(), |_| {
+                bail!("passwd lookup must not run when process HOME is available")
+            })?;
+        anyhow::ensure!(home == "/srv/runtime-home");
+        Ok(())
+    }
+
+    #[test]
     fn system_service_config_dir_uses_effective_environment_then_exec_start() -> Result<()> {
-        let bootstrap = system_service_bootstrap_config_dir(
+        let bootstrap = system_service_effective_config_dir(
+            &SystemServiceProcessEnvironment::default(),
             "/var/lib/logos-node",
             Some(&serde_json::to_vec(&json!({
                 "type": "a(sasbttttuii)",
