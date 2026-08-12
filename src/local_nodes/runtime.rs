@@ -505,6 +505,9 @@ impl LogoscoreRuntimeProfile {
     /// service rebind before readiness probes without trusting persisted
     /// service-account configuration.
     fn refresh_attached_service_identity_if_running(&mut self) {
+        if !self.is_attached() || self.daemon_process_id.is_some() {
+            return;
+        }
         let Some(target) = self.service_target().cloned() else {
             return;
         };
