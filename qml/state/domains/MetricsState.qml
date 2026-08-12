@@ -1375,7 +1375,14 @@ QtObject {
         }
 
         const metricEvidenceUpdated = successfulTransport && !preserveFullReport
-            ? cacheObservationValue(target, value, lease, checkedAtMs) : false
+            ? cacheObservationValue(
+                target,
+                reducedObservationCachedValue(
+                    target,
+                    value,
+                    reducedWithoutEvidence),
+                lease,
+                checkedAtMs) : false
 
         if (successfulTransport && reducedWithoutEvidence) {
             gateway.refreshCapabilityRegistryIfLoaded()
@@ -1459,6 +1466,16 @@ QtObject {
             && health.ready === false
             && probes.length === 0
             && facts.length === 0
+    }
+
+    function reducedObservationCachedValue(kind, value, reducedWithoutEvidence) {
+        if (reducedWithoutEvidence !== true || String(kind || "") !== "messaging"
+                || !value || typeof value !== "object") {
+            return value
+        }
+        const cached = Object.assign({}, value)
+        delete cached.health
+        return cached
     }
 
     function cacheObservationValue(kind, value, lease, checkedAtMs) {

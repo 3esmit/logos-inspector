@@ -963,6 +963,7 @@ TestCase {
 
         const observation = metrics.sourceObservation("messaging")
         compare(observation.sourceReport.marker, "module-event-reduced")
+        verify(observation.sourceReport.health === undefined)
         verify(!observation.status.known)
         verify(!observation.status.ok)
         compare(observation.latestAttempt.origin, "module-event")
@@ -981,6 +982,7 @@ TestCase {
         const repeatedObservation = metrics.sourceObservation("messaging")
         compare(repeatedObservation.sourceReport.marker,
             "module-event-reduced-repeat")
+        verify(repeatedObservation.sourceReport.health === undefined)
         verify(!repeatedObservation.status.known)
         verify(!repeatedObservation.status.ok)
         compare(gateway.capabilityRefreshCount, 2)
