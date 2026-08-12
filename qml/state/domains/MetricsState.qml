@@ -1341,7 +1341,6 @@ QtObject {
             ? response.value : null
         const storedReport = sourceReport(target)
         const reducedWithoutEvidence = successfulTransport
-            && (storedReport === null || storedReport === undefined)
             && reducedObservationHasNoHealthEvidence(target, lease, value)
         const statusValue = successfulTransport && preserveFullReport
             ? storedReport : value

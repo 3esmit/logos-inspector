@@ -969,6 +969,21 @@ TestCase {
         verify(observation.latestAttempt.transportOk)
         verify(observation.latestAttempt.runtimeDiagnosticsReduced)
         compare(gateway.capabilityRefreshCount, 1)
+
+        metrics.queryNetworkConnection(
+            "messaging", false, false, "module-event")
+        const repeatedReport = sourceReport(false, "module-event-reduced-repeat")
+        repeatedReport.health.reachable = true
+        repeatedReport.module_info = { ok: true, value: { name: "delivery_module" } }
+        repeatedReport.probe_facts = []
+        gateway.completeRequest(0, success(repeatedReport))
+
+        const repeatedObservation = metrics.sourceObservation("messaging")
+        compare(repeatedObservation.sourceReport.marker,
+            "module-event-reduced-repeat")
+        verify(!repeatedObservation.status.known)
+        verify(!repeatedObservation.status.ok)
+        compare(gateway.capabilityRefreshCount, 2)
     }
 
     function test_passive_observations_keep_storage_capability_facts_and_request_delivery_metrics_at_dashboard_start() {
