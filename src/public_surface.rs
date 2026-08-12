@@ -5,10 +5,10 @@ pub mod bridge {
 pub mod module_transport {
     pub use crate::modules::logos_core::{
         BoxedModuleEventSubscription, BridgeCallbackId, ModuleCall, ModuleCallControl,
-        ModuleCallFuture, ModuleCallReply, ModuleCallStopReason, ModuleCallTerminated,
-        ModuleCallTerminationEvidence, ModuleDiagnosticFuture, ModuleEventSubscription,
-        ModuleTransport, ModuleTransportClosed, ModuleTransportEvent, ModuleTransportKind,
-        ModuleTransportResult, SharedModuleTransport,
+        ModuleCallFuture, ModuleCallRejected, ModuleCallReply, ModuleCallStopReason,
+        ModuleCallTerminated, ModuleCallTerminationEvidence, ModuleDiagnosticFuture,
+        ModuleEventSubscription, ModuleTransport, ModuleTransportClosed, ModuleTransportEvent,
+        ModuleTransportKind, ModuleTransportResult, SharedModuleTransport,
     };
 }
 

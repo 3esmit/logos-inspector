@@ -5191,6 +5191,26 @@ TestCase {
         }))
     }
 
+    function test_settings_download_to_catalog_surfaces_immediate_start_failure() {
+        fakeHost.responses = {
+            runtimeOperationStart: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "storage_module.downloadToUrlV2 failed: Failed to read download manifest."
+            }
+        }
+
+        verify(model.downloadSettingsBackupToCatalog("cid-preflight"))
+        tryVerify(function () { return !model.backupCatalogDownloadRunning })
+        tryVerify(function () { return !model.backupCatalogTransferRunning })
+        tryVerify(function () {
+            return model.settingsBackupStatus.indexOf("Failed to read download manifest") >= 0
+                && model.settingsBackupStatus.indexOf("started") < 0
+        })
+        compare(model.backupCatalogRows().length, 0)
+    }
+
     function test_backup_import_preview_uses_backend_transaction_plan() {
         fakeHost.responses = {
             settingsBackupImportPreview: {

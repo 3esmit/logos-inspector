@@ -15,9 +15,9 @@ use logos_inspector::{
     bridge::{InspectorBridge, InspectorBridgeCloseHandle},
     module_transport::{
         BoxedModuleEventSubscription, BridgeCallbackId, ModuleCall, ModuleCallFuture,
-        ModuleCallReply, ModuleDiagnosticFuture, ModuleEventSubscription, ModuleTransport,
-        ModuleTransportClosed, ModuleTransportEvent, ModuleTransportKind, ModuleTransportResult,
-        SharedModuleTransport,
+        ModuleCallRejected, ModuleCallReply, ModuleDiagnosticFuture, ModuleEventSubscription,
+        ModuleTransport, ModuleTransportClosed, ModuleTransportEvent, ModuleTransportKind,
+        ModuleTransportResult, SharedModuleTransport,
     },
 };
 use serde_json::Value;
@@ -516,7 +516,7 @@ impl HostState {
                 Err(error) => return Err(std::io::Error::other(error).into()),
             };
             let value = normalize_basecamp_module_reply(&module, &method, value)
-                .map_err(std::io::Error::other)?;
+                .map_err(|error| ModuleCallRejected::new(error.to_string()))?;
             Ok(ModuleCallReply::new(ModuleTransportKind::Module, value)
                 .with_bridge_callback(BridgeCallbackId::new(module_request_id.0)))
         })
@@ -3637,7 +3637,7 @@ mod tests {
             false,
         )?;
         let error = match std::future::Future::poll(future.as_mut(), &mut context) {
-            std::task::Poll::Ready(Err(error)) => error.to_string(),
+            std::task::Poll::Ready(Err(error)) => error,
             std::task::Poll::Ready(Ok(_)) => {
                 return err("failed Basecamp module result was accepted");
             }
@@ -3645,9 +3645,14 @@ mod tests {
                 return err("host module future remained pending after its reply");
             }
         };
-        if error != "blockchain_module.get_blocks failed: node is not running" {
+        if error
+            .downcast_ref::<ModuleCallRejected>()
+            .is_none_or(|rejection| {
+                rejection.to_string() != "blockchain_module.get_blocks failed: node is not running"
+            })
+        {
             return err(&format!(
-                "failed Basecamp module result lost its error: {error}"
+                "failed Basecamp module result lost its typed rejection: {error:#}"
             ));
         }
         drop(future);
