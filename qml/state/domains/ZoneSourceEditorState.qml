@@ -91,7 +91,8 @@ QtObject {
             return ""
         }
         if (String(source.kind || "") === "direct_http") {
-            return String(source.endpoint || "").trim()
+            const endpoint = String(source.endpoint || "").trim()
+            return isHttpEndpoint(endpoint) ? endpoint : ""
         }
         if (String(source.kind || "") !== "module" || !usesBasecampModules()) {
             return ""

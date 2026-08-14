@@ -307,6 +307,7 @@ TestCase {
         zoneState.sourceReloadFailure = ""
         zoneState.sourceReloadCount = 0
         zoneState.managedIndexerStatusStale = false
+        zoneState.bedrockEndpointValue = "http://127.0.0.1:8080/"
         zoneState.managedIndexerError = ""
         zoneState.managedIndexerResult = ""
         zoneState.managedIndexerRuntimePollError = ""
@@ -1147,6 +1148,32 @@ TestCase {
         compare(control.selectedChannelId, zoneState.activeZoneId)
         compare(sources.catalogState, zoneState)
         compare(control.catalogState, zoneState)
+    }
+
+    function test_managed_indexer_requires_bedrock_endpoint_before_start_or_configure() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const configure = findChild(control, "configureManagedIndexerButton")
+        const start = findChild(control, "startManagedIndexerButton")
+        verify(configure !== null && start !== null)
+
+        zoneState.bedrockEndpointValue = ""
+        try {
+            tryVerify(function () {
+                return !configure.enabled && !start.enabled
+            })
+            verify(hasVisibleText(control, "Bedrock endpoint required"))
+            verify(hasVisibleText(control,
+                "Select a Direct RPC Bedrock source, or start a managed Bedrock node, before configuring or starting this Channel Indexer."))
+        } finally {
+            zoneState.bedrockEndpointValue = "http://127.0.0.1:8080/"
+        }
     }
 
     function test_module_indexer_surfaces_runtime_status_retry_warning() {
