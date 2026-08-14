@@ -1614,6 +1614,10 @@ QtObject {
 
     function refreshLocalNodes(showResult) { return localNodes.refresh(showResult) }
 
+    function refreshSettingsImportObservations() {
+        return metricsState.refreshDashboard()
+    }
+
     function refreshAttachedRuntimeObservations() {
         if (!localNodes.localAttachedRuntime()) {
             return false

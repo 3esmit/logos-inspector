@@ -105,6 +105,10 @@ QtObject {
         if (settingsApplied || walletApplied) {
             model.loadCapabilityRegistry()
         }
+        if (settingsApplied
+                && typeof model.refreshSettingsImportObservations === "function") {
+            model.refreshSettingsImportObservations()
+        }
 
         model.settingsBackupStatus = result.encrypted === true
             ? qsTr("Imported encrypted backup: %1 IDLs and %2 favorites.")
