@@ -1176,7 +1176,19 @@ TestCase {
             return findChild(detail, "managedIndexerControl") !== null
         })
 
+        const sourceLoader = findChild(detail, "zoneDetailSourceLoader")
+        verify(sourceLoader !== null)
         compare(detail.currentTab, "sources")
+        tryVerify(function () {
+            return sourceLoader.loadedImplicitHeight > 0
+                && sourceLoader.height >= sourceLoader.loadedImplicitHeight - 1
+        })
+        verify(
+            detail.implicitHeight >= sourceLoader.y + sourceLoader.height,
+            "Zone detail must include the loaded Sources component height: detail=%1 sourceY=%2 sourceHeight=%3 loaderImplicit=%4".arg(
+                detail.implicitHeight).arg(sourceLoader.y).arg(sourceLoader.height).arg(
+                sourceLoader.loadedImplicitHeight)
+        )
         verify(
             page.implicitHeight >= detail.y + detail.implicitHeight,
             "Zones page must expose the full Zone detail height to the outer scroller"
