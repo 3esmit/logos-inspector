@@ -555,6 +555,7 @@ mod tests {
 
     use anyhow::{Context as _, Result, ensure};
     use serde_json::json;
+    use sha2::{Digest as _, Sha256};
 
     use super::*;
     use crate::modules::logos_core::{
@@ -669,8 +670,9 @@ mod tests {
             let instance_id = call
                 .instance_id()
                 .context("Basecamp Indexer read fell back to a default instance")?;
+            let channel_key = hex::encode(Sha256::digest(channel_id.as_bytes()));
             ensure!(
-                instance_id.ends_with(channel_id),
+                instance_id.ends_with(&channel_key[..32]),
                 "Indexer read used an instance for another Channel"
             );
         }

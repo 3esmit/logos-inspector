@@ -114,7 +114,8 @@ QtObject {
         for (let i = 0; i < nodes.length; ++i) {
             const node = nodes[i] || ({})
             if (String(node.key || node.kind || "") !== "bedrock"
-                    || String(node.ownership || "") !== "inspector_managed"
+                    || ["inspector_managed", "basecamp_host"].indexOf(
+                        String(node.ownership || "")) < 0
                     || String(node.run_state || "") !== "running") {
                 continue
             }

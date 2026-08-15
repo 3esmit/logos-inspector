@@ -2273,6 +2273,24 @@ TestCase {
         verify(sourceRefresh !== null)
     }
 
+    function test_basecamp_host_bedrock_endpoint_enables_indexer_configuration() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "module" }
+        managedIndexerAppModel.basecampModules = true
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "basecamp_host",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+
+        compare(sourceEditorState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+        compare(zoneState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+    }
+
     function test_basecamp_managed_indexer_retries_runtime_status_after_transient_failure() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel
