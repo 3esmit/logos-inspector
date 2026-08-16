@@ -1586,6 +1586,39 @@ TestCase {
         verify(zoneState.summaryRowsUsable)
     }
 
+    function test_source_summary_preserves_pending_channel_attestation() {
+        configure("https://l1.example", 1)
+        const original = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(original)
+        zoneState.zoneDetail = detailReport(original).detail
+
+        zoneState.acceptSourceMutationReport({
+            source_config_epoch: 2,
+            active_zone_context_fields: original.active_zone_context_fields,
+            config: {
+                config_revision: 2,
+                selected_sequencer_source_id: "src-a",
+                sequencer_sources: [{
+                    source_id: "src-a",
+                    label: "Pending Sequencer",
+                    target: {
+                        kind: "rpc",
+                        endpoint: "https://sequencer.example/"
+                    },
+                    channel_attestation: { state: "pending" },
+                    binding_state: "runtime_attested"
+                }],
+                indexer_source: null
+            },
+            observations: [],
+            agreement: {}
+        })
+
+        const projected = zoneState.zoneDetail.channel_source_config.sequencer_sources[0]
+        compare(projected.binding_state, "runtime_attested")
+        compare(projected.channel_attestation.state, "pending")
+    }
+
     function test_network_scope_change_clears_cached_rows_and_context() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")

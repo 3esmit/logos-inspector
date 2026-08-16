@@ -1178,6 +1178,11 @@ QtObject {
                 source_id: String(source.source_id || ""),
                 label: source.label === undefined ? null : source.label,
                 target: source.target || ({}),
+                channel_attestation: {
+                    state: String(source.channel_attestation
+                        && source.channel_attestation.state
+                        || source.binding_state || "pending")
+                },
                 binding_state: String(source.binding_state || attestation.state || "pending")
             })
         }
