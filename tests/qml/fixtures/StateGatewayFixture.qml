@@ -48,6 +48,7 @@ QtObject {
     })
     property var pendingStorageObservations: []
     property int messagingObservationCount: 0
+    property int messagingObservationInvalidationCount: 0
     property var messagingObservationResponse: ({
         ok: true,
         value: {},
@@ -97,6 +98,7 @@ QtObject {
         })
         pendingStorageObservations = []
         messagingObservationCount = 0
+        messagingObservationInvalidationCount = 0
         messagingObservationResponse = ({
             ok: true,
             value: {},
@@ -180,6 +182,10 @@ QtObject {
 
     function prefersBasecampModules() {
         return basecampModules
+    }
+
+    function invalidateMessagingObservation(reason) {
+        messagingObservationInvalidationCount += 1
     }
 
     function completeRequestAt(index, response) {

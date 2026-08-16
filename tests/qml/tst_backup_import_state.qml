@@ -18,6 +18,7 @@ TestCase {
         property int walletLoads: 0
         property int walletChecks: 0
         property int capabilityLoads: 0
+        property int settingsImportObservationRefreshes: 0
         property int runtimeUpdates: 0
 
         function walletProfile() {
@@ -42,6 +43,10 @@ TestCase {
 
         function loadCapabilityRegistry() {
             capabilityLoads += 1
+        }
+
+        function refreshSettingsImportObservations() {
+            settingsImportObservationRefreshes += 1
         }
 
         function updateRuntimeOperation(operation) {
@@ -112,6 +117,7 @@ TestCase {
         model.walletLoads = 0
         model.walletChecks = 0
         model.capabilityLoads = 0
+        model.settingsImportObservationRefreshes = 0
         model.runtimeUpdates = 0
         catalog.error = ""
         catalog.importRunning = false
@@ -184,6 +190,7 @@ TestCase {
         compare(model.walletLoads, 0)
         compare(model.walletChecks, 0)
         compare(model.capabilityLoads, 0)
+        compare(model.settingsImportObservationRefreshes, 0)
     }
 
     function test_restore_is_admission_only_and_projects_backend_applied_areas() {
@@ -244,6 +251,7 @@ TestCase {
         compare(model.walletLoads, 1)
         compare(model.walletChecks, 1)
         compare(model.capabilityLoads, 1)
+        compare(model.settingsImportObservationRefreshes, 1)
         compare(operationHistory.rows.length, 1)
         compare(operationHistory.rows[0].operation.status, "applied_for_import")
     }
@@ -264,6 +272,7 @@ TestCase {
         compare(model.idlLoads, 0)
         compare(model.walletLoads, 0)
         compare(model.capabilityLoads, 0)
+        compare(model.settingsImportObservationRefreshes, 0)
         verify(model.settingsBackupEncrypted)
         compare(operationHistory.rows.length, 1)
     }

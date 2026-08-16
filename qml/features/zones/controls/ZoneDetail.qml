@@ -118,12 +118,16 @@ ColumnLayout {
     }
 
     Loader {
+        readonly property ZoneOverview overviewItem: item as ZoneOverview
+        readonly property real loadedImplicitHeight: overviewItem
+            ? overviewItem.implicitHeight : 0
+
         active: root.currentTab === "overview"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
+        Layout.preferredHeight: active ? loadedImplicitHeight : 0
+        Layout.maximumHeight: active ? loadedImplicitHeight : 0
         sourceComponent: ZoneOverview {
             theme: root.theme
             detail: root.detail
@@ -131,12 +135,16 @@ ColumnLayout {
     }
 
     Loader {
+        readonly property ZoneL2Inspector l2Item: item as ZoneL2Inspector
+        readonly property real loadedImplicitHeight: l2Item
+            ? l2Item.implicitHeight : 0
+
         active: root.currentTab === "l2"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
+        Layout.preferredHeight: active ? loadedImplicitHeight : 0
+        Layout.maximumHeight: active ? loadedImplicitHeight : 0
         sourceComponent: ZoneL2Inspector {
             theme: root.theme
             zoneState: root.l2BlockState
@@ -146,12 +154,16 @@ ColumnLayout {
     }
 
     Loader {
+        readonly property ZoneL2Accounts accountsItem: item as ZoneL2Accounts
+        readonly property real loadedImplicitHeight: accountsItem
+            ? accountsItem.implicitHeight : 0
+
         active: root.currentTab === "accounts"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
+        Layout.preferredHeight: active ? loadedImplicitHeight : 0
+        Layout.maximumHeight: active ? loadedImplicitHeight : 0
         sourceComponent: ZoneL2Accounts {
             theme: root.theme
             zoneState: root.l2AccountState
@@ -163,12 +175,16 @@ ColumnLayout {
     }
 
     Loader {
+        readonly property ZoneL2Programs programsItem: item as ZoneL2Programs
+        readonly property real loadedImplicitHeight: programsItem
+            ? programsItem.implicitHeight : 0
+
         active: root.currentTab === "programs"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
+        Layout.preferredHeight: active ? loadedImplicitHeight : 0
+        Layout.maximumHeight: active ? loadedImplicitHeight : 0
         sourceComponent: ZoneL2Programs {
             theme: root.theme
             zoneState: root.l2ToolState
@@ -183,12 +199,16 @@ ColumnLayout {
     }
 
     Loader {
+        readonly property ZoneL2Transfers transfersItem: item as ZoneL2Transfers
+        readonly property real loadedImplicitHeight: transfersItem
+            ? transfersItem.implicitHeight : 0
+
         active: root.currentTab === "transfers"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
+        Layout.preferredHeight: active ? loadedImplicitHeight : 0
+        Layout.maximumHeight: active ? loadedImplicitHeight : 0
         sourceComponent: ZoneL2Transfers {
             theme: root.theme
             zoneState: root.l2ToolState
@@ -199,37 +219,54 @@ ColumnLayout {
         }
     }
 
-    Loader {
-        id: sourceLoader
+    Item {
+        id: sourceContainer
+        objectName: "zoneDetailSourceLoader"
 
-        readonly property ChannelSourcesSection section: item as ChannelSourcesSection
+        readonly property real loadedImplicitHeight: sourceLoader.section
+            ? sourceLoader.section.implicitHeight : 0
 
-        active: root.currentTab === "sources"
-        asynchronous: false
-        visible: active
+        implicitHeight: root.currentTab === "sources" ? loadedImplicitHeight : 0
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
-        sourceComponent: ChannelSourcesSection {
-            theme: root.theme
-            zoneState: root.sourceEditorState
-            catalogState: root.zoneState
-            detail: root.detail
-        }
-        onLoaded: {
-            if (root.sourceEditorInitiallyOpen && section) {
-                section.beginEditor("sequencer", null)
+        Layout.preferredHeight: root.currentTab === "sources"
+            ? loadedImplicitHeight : 0
+        Layout.maximumHeight: root.currentTab === "sources"
+            ? loadedImplicitHeight : 0
+
+        Loader {
+            id: sourceLoader
+
+            readonly property ChannelSourcesSection section: item as ChannelSourcesSection
+
+            anchors.fill: parent
+            active: root.currentTab === "sources"
+            asynchronous: false
+            visible: active
+            sourceComponent: ChannelSourcesSection {
+                theme: root.theme
+                zoneState: root.sourceEditorState
+                catalogState: root.zoneState
+                detail: root.detail
+            }
+            onLoaded: {
+                if (root.sourceEditorInitiallyOpen && section) {
+                    section.beginEditor("sequencer", null)
+                }
             }
         }
     }
 
     Loader {
+        readonly property ZoneEvidenceViewer evidenceItem: item as ZoneEvidenceViewer
+        readonly property real loadedImplicitHeight: evidenceItem
+            ? evidenceItem.implicitHeight : 0
+
         active: root.currentTab === "evidence"
         asynchronous: false
         visible: active
         Layout.fillWidth: true
-        Layout.preferredHeight: active ? implicitHeight : 0
-        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
+        Layout.preferredHeight: active ? loadedImplicitHeight : 0
+        Layout.maximumHeight: active ? loadedImplicitHeight : 0
         sourceComponent: ZoneEvidenceViewer {
             theme: root.theme
             zoneState: root.evidenceState

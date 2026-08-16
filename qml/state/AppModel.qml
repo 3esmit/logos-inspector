@@ -842,6 +842,10 @@ QtObject {
                     "source-inspection")
             }
 
+            function invalidateMessagingObservation(reason) {
+                return root.invalidateMessagingObservation(reason)
+            }
+
             function prefersBasecampModules() {
                 return root.prefersBasecampModules()
             }
@@ -1614,6 +1618,10 @@ QtObject {
 
     function refreshLocalNodes(showResult) { return localNodes.refresh(showResult) }
 
+    function refreshSettingsImportObservations() {
+        return metricsState.refreshDashboard()
+    }
+
     function refreshAttachedRuntimeObservations() {
         if (!localNodes.localAttachedRuntime()) {
             return false
@@ -1633,6 +1641,16 @@ QtObject {
         }
         metricsState.invalidateDashboard(reason)
         return true
+    }
+
+    function invalidateMessagingObservation(reason) {
+        const invalidated = metricsState.invalidateConfiguration(
+            "messaging",
+            reason || qsTr("Delivery module was uninstalled."))
+        if (invalidated) {
+            refreshCapabilityRegistryIfLoaded()
+        }
+        return invalidated
     }
 
     function scheduleAttachedRuntimeObservationRefresh() {

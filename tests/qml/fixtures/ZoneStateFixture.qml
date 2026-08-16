@@ -77,6 +77,7 @@ QtObject {
         available_actions: ["start"],
         detail: "Ready"
     })
+    property string bedrockEndpointValue: "http://127.0.0.1:8080/"
     property bool summaryStale: false
     property double summarySourceRevision: root.sourceRevision
     property string summaryNetworkScopeKey: root.networkScopeKey
@@ -368,7 +369,7 @@ QtObject {
     }
 
     function bedrockEndpoint() {
-        return "http://127.0.0.1:8080/"
+        return bedrockEndpointValue
     }
 
     function refreshManagedIndexer() {

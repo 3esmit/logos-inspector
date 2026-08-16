@@ -475,6 +475,13 @@ QtObject {
                         && String(operation.status || "").toLowerCase() === "running"
                         && typeof gateway.refreshMessagingObservation === "function") {
                     gateway.refreshMessagingObservation();
+                } else if (basecampHost
+                        && request.action === "uninstall"
+                        && request.node === "messaging"
+                        && String(operation.status || "").toLowerCase() === "uninstalled"
+                        && typeof gateway.invalidateMessagingObservation === "function") {
+                    gateway.invalidateMessagingObservation(
+                        qsTr("Delivery module was uninstalled."));
                 }
                 refreshDevnets();
                 if (request.node === "indexer"

@@ -2222,6 +2222,31 @@ TestCase {
         compare(sourceEditorState.bedrockEndpoint(), "")
     }
 
+    function test_managed_indexer_rejects_invalid_bedrock_endpoint() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = {
+            kind: "direct_http",
+            endpoint: "not-an-http-endpoint"
+        }
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        compare(sourceEditorState.bedrockEndpoint(), "")
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a") === null)
+        compare(sourceEditorState.managedIndexerError,
+            "A Bedrock endpoint is required.")
+        compare(gateway.requestCount("channelIndexerAction"), 0)
+    }
+
     function test_basecamp_managed_indexer_uses_local_bedrock_and_runtime_operation() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel

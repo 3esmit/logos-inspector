@@ -42,6 +42,10 @@ ColumnLayout {
         || root.zoneState.managedIndexerRefreshInFlight === true
         || root.configurationBusy
     readonly property bool runtimeRunning: String(root.runtime.run_state || "") === "running"
+    readonly property string bedrockEndpoint: root.zoneState
+        && typeof root.zoneState.bedrockEndpoint === "function"
+        ? String(root.zoneState.bedrockEndpoint() || "").trim() : ""
+    readonly property bool bedrockEndpointAvailable: root.bedrockEndpoint.length > 0
     readonly property bool basecampHosted: root.zoneState && root.zoneState.appModel
         && typeof root.zoneState.appModel.prefersBasecampModules === "function"
         && root.zoneState.appModel.prefersBasecampModules() === true
@@ -52,6 +56,7 @@ ColumnLayout {
         && root.controlSnapshotUsable
         && root.availableActions.indexOf("start") >= 0
         && root.installed
+        && root.bedrockEndpointAvailable
         && (root.runState === "stopped" || root.runState === "not_initialized")
     readonly property bool canStop: !root.actionInFlight
         && !root.interactionBlocked
@@ -68,6 +73,7 @@ ColumnLayout {
         && !root.interactionBlocked
         && root.zoneState.managedIndexerStatusStale !== true
         && root.catalogSnapshotUsable
+        && root.bedrockEndpointAvailable
         && (root.runState === "stopped" || root.runState === "not_initialized")
 
     objectName: "managedIndexerControl"
@@ -196,6 +202,16 @@ ColumnLayout {
     }
 
     StatusMessage {
+        visible: root.installed && !root.bedrockEndpointAvailable
+            && (root.runState === "stopped" || root.runState === "not_initialized")
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Bedrock endpoint required")
+        message: qsTr("Select a Direct RPC Bedrock source, or start a managed Bedrock node, before configuring or starting this Channel Indexer.")
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
         visible: String(root.node.indexer_error || "").length > 0
         theme: root.theme
         tone: "error"
@@ -320,7 +336,7 @@ ColumnLayout {
             ? (root.basecampHosted
                 ? qsTr("Start the Basecamp-hosted lez_indexer_module instance for Channel %1 using Bedrock %2?")
                 : qsTr("Start an isolated lez_indexer_module runtime for Channel %1 using Bedrock %2?"))
-                .arg(root.pendingChannelId).arg(root.zoneState.bedrockEndpoint())
+                .arg(root.pendingChannelId).arg(root.bedrockEndpoint)
             : root.pendingAction === "stop"
             ? (root.basecampHosted
                 ? qsTr("Stop the Basecamp-hosted Indexer instance for Channel %1?")
