@@ -23,6 +23,13 @@ Rectangle {
         ? "configured" : Presentation.bindingState(root.source, root.observation)
     readonly property string bindingLabel: root.binding === "runtime_evidence_matched"
         ? qsTr("Evidence matched") : Presentation.words(root.binding)
+    readonly property bool pendingAttestation:
+        String(root.source && root.source.channel_attestation
+            && root.source.channel_attestation.state || "") === "pending"
+    readonly property bool retryVerificationVisible:
+        root.role === "sequencer"
+        && (root.binding === "pending" || root.binding === "channel_mismatch"
+            || root.pendingAttestation)
     signal selectRequested()
     signal editRequested()
     signal removeRequested()
@@ -233,8 +240,7 @@ Rectangle {
         }
 
         MenuItem {
-            visible: root.role === "sequencer"
-                && (root.binding === "pending" || root.binding === "channel_mismatch")
+            visible: root.retryVerificationVisible
             text: qsTr("Retry verification")
             onTriggered: root.retryRequested()
         }

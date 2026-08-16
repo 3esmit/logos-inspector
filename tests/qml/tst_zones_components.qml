@@ -1031,6 +1031,40 @@ TestCase {
         }
     }
 
+    function test_pending_persisted_attestation_keeps_retry_available() {
+        const row = sourceRowFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            source: {
+                source_id: "src_pending",
+                label: "Pending Sequencer",
+                target: {
+                    kind: "rpc",
+                    endpoint: "https://sequencer.example/"
+                },
+                channel_attestation: {
+                    state: "pending"
+                }
+            },
+            observation: {
+                source_id: "src_pending",
+                role: "sequencer",
+                binding_state: "runtime_attested",
+                health: "reachable"
+            },
+            role: "sequencer",
+            selected: true,
+            width: 720
+        })
+        verify(row !== null)
+        try {
+            compare(row.binding, "runtime_attested")
+            verify(row.pendingAttestation)
+            verify(row.retryVerificationVisible)
+        } finally {
+            row.destroy()
+        }
+    }
+
     function test_persisted_evidence_match_keeps_legacy_identity_disclosure() {
         const channelId = FixtureData.identity("1")
         const detail = FixtureData.detailFor(channelId)
