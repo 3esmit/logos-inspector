@@ -1017,7 +1017,12 @@ QtObject {
             }
             const report = response.value
             if (!detailReportMatchesCurrent(report, channelId)) {
-                reconcileDetail()
+                // The detail command refreshes the catalog and source monitor
+                // before validating fences. A monitor observation can advance
+                // between status/summary and this request, so retry only
+                // after a fresh status cycle publishes the current fences.
+                detailStale = zoneDetail !== null
+                statusRefreshRequested()
                 return
             }
             zoneDetailReport = report

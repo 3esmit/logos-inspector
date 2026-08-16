@@ -1686,6 +1686,49 @@ TestCase {
         verify(!zoneState.detailDisplayUsable)
     }
 
+    function test_stale_detail_fence_requests_status_before_retry() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+        statusRefreshSpy.clear()
+
+        gateway.respondNext("zoneDetail", ok(detailReport(row, null, {
+            observation_revision: 2
+        })))
+
+        verify(!zoneState.detailDisplayUsable)
+        verify(!zoneState.detailInFlight)
+        compare(statusRefreshSpy.count, 1)
+        compare(gateway.requestCount("zoneDetail"), 1)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            observation_revision: 2,
+            summary_revision: 1
+        })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(1, {
+            kind: "delta",
+            upserts: [],
+            removed_zone_ids: []
+        }, null, {
+            observation_revision: 2,
+            summary_revision: 1
+        })));
+
+        verify(zoneState.detailInFlight)
+        compare(gateway.requestCount("zoneDetail"), 2)
+        gateway.respondNext("zoneDetail", ok(detailReport(row, null, {
+            observation_revision: 2
+        })))
+
+        verify(!zoneState.detailStale)
+        verify(zoneState.detailDisplayUsable)
+    }
+
     function test_live_summary_delta_commits_rows_before_completion_without_context_reset() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
