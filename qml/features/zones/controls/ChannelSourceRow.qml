@@ -29,7 +29,8 @@ Rectangle {
     readonly property bool retryVerificationVisible:
         root.role === "sequencer"
         && (root.binding === "pending" || root.binding === "channel_mismatch"
-            || root.pendingAttestation)
+            || root.pendingAttestation
+            || String(root.source && root.source.binding_state || "") === "pending")
     signal selectRequested()
     signal editRequested()
     signal removeRequested()

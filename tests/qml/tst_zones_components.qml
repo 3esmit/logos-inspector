@@ -1043,7 +1043,8 @@ TestCase {
                 },
                 channel_attestation: {
                     state: "pending"
-                }
+                },
+                binding_state: "pending"
             },
             observation: {
                 source_id: "src_pending",
