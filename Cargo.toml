@@ -94,13 +94,20 @@ tokio-util = { version = "0.7", features = ["io"] }
 url = "2.5"
 logos-inspector-testnet-v02-helper-protocol = { path = "crates/testnet-v02-helper-protocol" }
 
-common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
-indexer_service_protocol = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["convert"] }
-lb-core = { package = "logos-blockchain-core", git = "https://github.com/logos-blockchain/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
-lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
-sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["client"] }
-wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", optional = true }
+common = { git = "https://github.com/3esmit/logos-execution-zone.git", rev = "e37876a64028a335eb693198a1ed6a0e875ec5b4" }
+indexer_service_protocol = { git = "https://github.com/3esmit/logos-execution-zone.git", rev = "e37876a64028a335eb693198a1ed6a0e875ec5b4", features = ["convert"] }
+lb-core = { package = "logos-blockchain-core", git = "https://github.com/3esmit/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
+lee = { git = "https://github.com/3esmit/logos-execution-zone.git", rev = "e37876a64028a335eb693198a1ed6a0e875ec5b4" }
+lee_core = { git = "https://github.com/3esmit/logos-execution-zone.git", rev = "e37876a64028a335eb693198a1ed6a0e875ec5b4" }
+sequencer_service_rpc = { git = "https://github.com/3esmit/logos-execution-zone.git", rev = "e37876a64028a335eb693198a1ed6a0e875ec5b4", features = ["client"] }
+wallet = { git = "https://github.com/3esmit/logos-execution-zone.git", rev = "e37876a64028a335eb693198a1ed6a0e875ec5b4", optional = true }
+
+[patch."https://github.com/logos-blockchain/logos-blockchain.git"]
+logos-blockchain-common-http-client = { git = "https://github.com/3esmit/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
+logos-blockchain-core = { git = "https://github.com/3esmit/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
+logos-blockchain-chain-broadcast-service = { git = "https://github.com/3esmit/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
+logos-blockchain-chain-service = { git = "https://github.com/3esmit/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
+logos-blockchain-http-api-common = { git = "https://github.com/3esmit/logos-blockchain.git", rev = "d8711bbc3d43d3ef9755ef9b73af32fd0f703160" }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["fs", "process", "signal"] }

@@ -89,6 +89,7 @@
 
       rapidsnarkVersion = buildArtifacts.rapidsnark.version;
       rapidsnarkTargets = buildArtifacts.rapidsnark.targets;
+      lezRepo = buildArtifacts.lez.repo;
       lezRevision = buildArtifacts.lez.revision;
       lezSourceHash = buildArtifacts.lez.sourceHash;
       # Testnet v0.2 sequencers were deployed with these proof artifacts.
@@ -127,13 +128,13 @@
 
       mkLezSource = pkgs:
         pkgs.fetchzip {
-          url = "https://github.com/logos-blockchain/logos-execution-zone/archive/${lezRevision}.tar.gz";
+          url = "https://github.com/${lezRepo}/archive/${lezRevision}.tar.gz";
           hash = lezSourceHash;
         };
 
       mkTestnetV02LezSource = pkgs:
         pkgs.fetchzip {
-          url = "https://github.com/logos-blockchain/logos-execution-zone/archive/${testnetV02LezRevision}.tar.gz";
+          url = "https://github.com/${lezRepo}/archive/${testnetV02LezRevision}.tar.gz";
           hash = testnetV02LezSourceHash;
         };
 

@@ -215,7 +215,7 @@ class BuildArtifactCatalogTests(unittest.TestCase):
             },
             "lez": {
                 "repo": "example/lez",
-                "cargoTag": "v0.2.0",
+                "cargoRev": "revision",
                 "revision": "revision",
                 "sourceHash": "sha256-source",
             },
