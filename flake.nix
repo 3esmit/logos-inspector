@@ -11,9 +11,8 @@
     logos-protocol.inputs.logos-nix.follows = "logos-module-builder/logos-nix";
     logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
     blockchain_module = {
-      # Testnet 0.2.2 declaration/profile compatibility and bounded IBD
-      # recovery. Keep immutable until the candidate release is published.
-      url = "github:3esmit/logos-blockchain-module?rev=f3fc19b89e0466361c7ed2ac5b0e309a9c6efa8c";
+      # Testnet profile plus connected-peer IBD recovery.
+      url = "github:3esmit/logos-blockchain-module?rev=1b4ea219ce71c431ad271d2d89d7e2a058856880";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {

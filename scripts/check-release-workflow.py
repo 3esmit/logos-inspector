@@ -23,7 +23,7 @@ ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
 FORK_INPUTS = {
     "blockchain_module": (
         "3esmit/logos-blockchain-module",
-        "f3fc19b89e0466361c7ed2ac5b0e309a9c6efa8c",
+        "1b4ea219ce71c431ad271d2d89d7e2a058856880",
     ),
     "storage_module": (
         "3esmit/logos-storage-module",
