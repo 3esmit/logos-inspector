@@ -47,6 +47,9 @@ Popup {
     }
 
     contentItem: ColumnLayout {
+        Accessible.role: Accessible.Dialog
+        Accessible.name: root.title.length > 0 ? root.title : qsTr("Confirmation")
+        Accessible.description: root.message
         spacing: root.theme.gapSmall
 
         Text {

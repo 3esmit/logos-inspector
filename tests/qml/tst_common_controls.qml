@@ -211,6 +211,10 @@ TestCase {
         confirmPopup.open()
         tryCompare(confirmPopup, "opened", true)
 
+        compare(confirmPopup.contentItem.Accessible.role, Accessible.Dialog)
+        compare(confirmPopup.contentItem.Accessible.name, "Deploy")
+        compare(confirmPopup.contentItem.Accessible.description, "Deploy selected binary")
+
         const messageText = findChild(confirmPopup.contentItem, "messageText")
         verify(messageText !== null)
         compare(messageText.wrapMode, Text.WrapAnywhere)
