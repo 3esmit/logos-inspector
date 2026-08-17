@@ -12,7 +12,7 @@
     logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
     blockchain_module = {
       # Testnet profile plus connected-peer IBD recovery.
-      url = "github:3esmit/logos-blockchain-module?rev=1b4ea219ce71c431ad271d2d89d7e2a058856880";
+      url = "github:3esmit/logos-blockchain-module?rev=54db8d8654d8916ea126155e70c56d57de0937f9";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {

@@ -8,17 +8,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1786964552,
-        "narHash": "sha256-bvDzz/iMPSLOE9cFLGM8pl4SuHjWEYO/HCTy6r0INjQ=",
+        "lastModified": 1786967866,
+        "narHash": "sha256-4PRMK2GDoXprfkw1UFVxpocCL0i8T2X89HD+oWVMfoA=",
         "owner": "3esmit",
         "repo": "logos-blockchain-module",
-        "rev": "1b4ea219ce71c431ad271d2d89d7e2a058856880",
+        "rev": "54db8d8654d8916ea126155e70c56d57de0937f9",
         "type": "github"
       },
       "original": {
         "owner": "3esmit",
         "repo": "logos-blockchain-module",
-        "rev": "1b4ea219ce71c431ad271d2d89d7e2a058856880",
+        "rev": "54db8d8654d8916ea126155e70c56d57de0937f9",
         "type": "github"
       }
     },
@@ -523,13 +523,13 @@
         "narHash": "sha256-j6fYKQdcBgMAUzQtO4BT9LXwPZTmq8u3QLqRtEz+UB4=",
         "owner": "3esmit",
         "repo": "logos-blockchain",
-        "rev": "c6da59d5d870c062d8ea14932b2c94499ff12097",
+        "rev": "82a7b31ee4108262a9025ac41c5a41db6fd5ad00",
         "type": "github"
       },
       "original": {
         "owner": "3esmit",
         "repo": "logos-blockchain",
-        "rev": "c6da59d5d870c062d8ea14932b2c94499ff12097",
+        "rev": "82a7b31ee4108262a9025ac41c5a41db6fd5ad00",
         "type": "github"
       }
     },
