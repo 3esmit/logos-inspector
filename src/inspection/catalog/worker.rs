@@ -835,8 +835,8 @@ fn map_catalog_error(_error: super::CatalogError) -> ZoneCatalogServiceError {
     ZoneCatalogServiceError::Catalog("catalog storage or validation failed".to_owned())
 }
 
-fn map_engine_error(_error: super::CatalogEngineError) -> ZoneCatalogServiceError {
-    ZoneCatalogServiceError::Worker("catalog ingestion validation failed".to_owned())
+fn map_engine_error(error: super::CatalogEngineError) -> ZoneCatalogServiceError {
+    ZoneCatalogServiceError::Worker(format!("catalog ingestion validation failed: {error}"))
 }
 
 #[cfg(test)]
@@ -1116,6 +1116,20 @@ mod tests {
         {
             bail!("catalog source namespace or error leaked endpoint: {combined}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn worker_error_preserves_catalog_engine_detail() -> Result<()> {
+        let error = map_engine_error(super::super::CatalogEngineError::InvalidState(
+            "catalog frontier is missing".to_owned(),
+        ));
+
+        ensure!(
+            error.to_string()
+                == "Zone Catalog worker failed: catalog ingestion validation failed: invalid catalog engine state: catalog frontier is missing",
+            "catalog engine detail was discarded: {error}"
+        );
         Ok(())
     }
 
