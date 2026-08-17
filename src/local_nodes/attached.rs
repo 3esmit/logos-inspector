@@ -207,8 +207,11 @@ fn overlay_node(
     config_path: Option<String>,
     initialization_configuration_ready: Option<bool>,
 ) {
+    let bedrock_endpoint = (spec.kind == NodeKind::Bedrock)
+        .then(|| node.endpoint.clone())
+        .flatten();
     node.ownership = "local_attached".to_owned();
-    node.endpoint = None;
+    node.endpoint = bedrock_endpoint;
     node.data_dir = None;
     node.config_path = config_path;
     node.initialization_configuration_ready = initialization_configuration_ready;
@@ -1157,7 +1160,8 @@ mod tests {
                     install_state: "needs_configuration".to_owned(),
                     run_state: "unknown".to_owned(),
                     ownership: "external".to_owned(),
-                    endpoint: None,
+                    endpoint: (spec.kind == NodeKind::Bedrock)
+                        .then(|| "http://127.0.0.1:8080/".to_owned()),
                     data_dir: None,
                     config_path: None,
                     initialization_configuration_ready: None,
@@ -1243,6 +1247,15 @@ mod tests {
                 && messaging.initialization_configuration_ready == Some(false)
                 && messaging.config_path.as_deref()
                     == Some("/var/lib/logoscore/inspector/attached-node-configs/messaging.json")
+        );
+        let bedrock = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("missing bedrock node")?;
+        anyhow::ensure!(
+            bedrock.endpoint.as_deref() == Some("http://127.0.0.1:8080/"),
+            "attached Bedrock report lost its configured HTTP endpoint"
         );
         Ok(())
     }

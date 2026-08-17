@@ -94,10 +94,13 @@ QtObject {
             const endpoint = String(source.endpoint || "").trim()
             return isHttpEndpoint(endpoint) ? endpoint : ""
         }
+        if (String(source.kind || "") === "logoscore_cli") {
+            return managedBedrockEndpoint()
+        }
         if (String(source.kind || "") !== "module" || !usesBasecampModules()) {
             return ""
         }
-        return basecampManagedBedrockEndpoint()
+        return managedBedrockEndpoint()
     }
 
     function usesBasecampModules() {
@@ -105,7 +108,7 @@ QtObject {
             && appModel.prefersBasecampModules() === true
     }
 
-    function basecampManagedBedrockEndpoint() {
+    function managedBedrockEndpoint() {
         // Include the revision in this binding so lifecycle refreshes replace a
         // stale endpoint as soon as the managed Bedrock report changes.
         const revision = basecampLocalNodesRevision
@@ -115,7 +118,7 @@ QtObject {
         for (let i = 0; i < nodes.length; ++i) {
             const node = nodes[i] || ({})
             if (String(node.key || node.kind || "") !== "bedrock"
-                    || ["inspector_managed", "basecamp_host"].indexOf(
+                    || ["inspector_managed", "basecamp_host", "local_attached"].indexOf(
                         String(node.ownership || "")) < 0
                     || String(node.run_state || "") !== "running") {
                 continue

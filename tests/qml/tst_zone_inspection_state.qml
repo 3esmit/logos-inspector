@@ -2265,6 +2265,39 @@ TestCase {
         compare(sourceEditorState.bedrockEndpoint(), "")
     }
 
+    function test_logoscore_cli_managed_indexer_uses_running_attached_bedrock() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "logoscore_cli" }
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "local_attached",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+
+        compare(sourceEditorState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a"))
+        const request = gateway.lastRequest("channelIndexerAction")
+        verify(request !== null)
+        compare(request.args[1].bedrock_endpoint, "http://127.0.0.1:8080/")
+        compare(request.args[1].selected_sequencer_source_id,
+            zoneState.activeZoneContext.selected_sequencer_source_id)
+    }
+
     function test_managed_indexer_rejects_invalid_bedrock_endpoint() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel
