@@ -2617,11 +2617,20 @@ fn build_report(
 
 fn reconcile_record(record: &mut ChannelIndexerRecord) -> bool {
     if !record.runtime.is_running() {
-        let changed = record.runtime.daemon_process_id.take().is_some()
+        let was_active = record.state != "stopped";
+        let mut changed = record.runtime.daemon_process_id.take().is_some()
             || record.state != "stopped"
             || record.indexed_block_id.is_some();
         record.state = "stopped".to_owned();
         record.indexed_block_id = None;
+        if was_active
+            && settle_pending_start_operation(
+                record,
+                "Channel Indexer runtime stopped before Start reached a terminal state",
+            )
+        {
+            changed = true;
+        }
         return changed;
     }
     if record.state == "stopped" {
@@ -2728,22 +2737,51 @@ fn update_record_status(record: &mut ChannelIndexerRecord, status: IndexerStatus
             indexed_block_id,
             last_error,
         } => {
-            let changed = record.state != state
+            let mut changed = record.state != state
                 || record.indexed_block_id != indexed_block_id
                 || record.last_error != last_error;
             record.state = state;
             record.indexed_block_id = indexed_block_id;
             record.last_error = last_error;
+            let failure_detail = record
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Channel Indexer entered a terminal failure state".to_owned());
+            if matches!(record.state.as_str(), "error" | "stalled")
+                && settle_pending_start_operation(record, &failure_detail)
+            {
+                changed = true;
+            }
             changed
         }
     }
 }
 
 fn update_record_failure(record: &mut ChannelIndexerRecord, detail: String) -> bool {
-    let changed = record.state != "unknown" || record.last_error.as_deref() != Some(&detail);
+    let mut changed = record.state != "unknown" || record.last_error.as_deref() != Some(&detail);
     record.state = "unknown".to_owned();
     record.last_error = Some(detail);
+    let failure_detail = record
+        .last_error
+        .clone()
+        .unwrap_or_else(|| "Channel Indexer status could not be verified".to_owned());
+    if settle_pending_start_operation(record, &failure_detail) {
+        changed = true;
+    }
     changed
+}
+
+fn settle_pending_start_operation(record: &mut ChannelIndexerRecord, detail: &str) -> bool {
+    let Some(operation) =
+        record.operations.iter_mut().rev().find(|operation| {
+            operation.action == NodeAction::Start && operation.status == "starting"
+        })
+    else {
+        return false;
+    };
+    operation.status = "failed".to_owned();
+    operation.detail = detail.to_owned();
+    true
 }
 
 fn requested_source_binding(
@@ -4064,6 +4102,71 @@ mod tests {
         anyhow::ensure!(state == "caught_up");
         anyhow::ensure!(indexed_block_id.as_deref() == Some("42"));
         anyhow::ensure!(last_error.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_error_settles_pending_start_operation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(directory.path(), &source)?;
+        record.state = "starting".to_owned();
+        record.operations.push(operation_report(
+            NodeAction::Start,
+            "starting",
+            "Start dispatched".to_owned(),
+        ));
+
+        let changed = update_record_status(
+            &mut record,
+            IndexerStatus::Running {
+                state: "error".to_owned(),
+                indexed_block_id: None,
+                last_error: Some("Bedrock response shape is incompatible".to_owned()),
+            },
+        );
+
+        anyhow::ensure!(changed);
+        anyhow::ensure!(record.state == "error");
+        let operation = record
+            .operations
+            .last()
+            .context("pending Start operation was not retained")?;
+        anyhow::ensure!(operation.status == "failed");
+        anyhow::ensure!(operation.detail == "Bedrock response shape is incompatible");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_error_does_not_rewrite_settled_operation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(directory.path(), &source)?;
+        record.state = "starting".to_owned();
+        record.operations.push(operation_report(
+            NodeAction::Start,
+            "failed",
+            "Original failure".to_owned(),
+        ));
+
+        let changed = update_record_status(
+            &mut record,
+            IndexerStatus::Running {
+                state: "error".to_owned(),
+                indexed_block_id: None,
+                last_error: Some("Later status detail".to_owned()),
+            },
+        );
+
+        anyhow::ensure!(changed);
+        let operation = record
+            .operations
+            .last()
+            .context("settled Start operation was not retained")?;
+        anyhow::ensure!(operation.status == "failed");
+        anyhow::ensure!(operation.detail == "Original failure");
         Ok(())
     }
 
