@@ -13,7 +13,7 @@
     blockchain_module = {
       # Testnet 0.2.2 declaration/profile compatibility and bounded IBD
       # recovery. Keep immutable until the candidate release is published.
-      url = "github:3esmit/logos-blockchain-module?rev=94534edb1252daf1408249c003e7fa6b1f8fb98e";
+      url = "github:3esmit/logos-blockchain-module?rev=f3fc19b89e0466361c7ed2ac5b0e309a9c6efa8c";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {
