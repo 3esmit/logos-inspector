@@ -2252,6 +2252,17 @@ fn resolve_local_runtime_observation(
             profile
         });
     };
+    // Keep an explicitly configured Inspector-managed runtime when the only
+    // discovered attachment is a stopped external service. A stopped service
+    // is not an active source of truth and must not silently redirect package
+    // installation into its module tree. A running attached service still
+    // wins, so normal daemon discovery remains unchanged.
+    if discovered.is_attached()
+        && !discovered.is_running()
+        && let Some(previous) = persisted.as_ref().filter(|profile| profile.is_managed())
+    {
+        return Some(previous.clone());
+    }
     if !discovered.is_attached() {
         return Some(discovered);
     }
@@ -3382,6 +3393,36 @@ printf '%s\n' '{"daemon":{"status":"running","pid":42}}'
         .expect("unavailable attached runtime observation");
         assert!(retained.is_unavailable());
         assert_eq!(retained.service_target, Some(service_target));
+    }
+
+    #[test]
+    fn stopped_attached_discovery_does_not_replace_persisted_managed_runtime() -> Result<()> {
+        let config_root = tempfile::tempdir()?;
+        let modules = tempfile::tempdir()?;
+        let managed = LogoscoreRuntimeProfile::create_or_restart(
+            config_root.path(),
+            None,
+            Some("/bin/sh"),
+            Some(
+                modules
+                    .path()
+                    .to_str()
+                    .context("modules path is not UTF-8")?,
+            ),
+        )?;
+        let attached = attached_profile(
+            None,
+            Some(LogoscoreServiceTarget {
+                scope: LogoscoreServiceScope::System,
+                unit: "logos-node.service".to_owned(),
+            }),
+        );
+
+        let resolved = resolve_local_runtime_observation(Some(attached), Some(managed))
+            .context("runtime observation was not resolved")?;
+        anyhow::ensure!(resolved.is_managed());
+        anyhow::ensure!(resolved.id == MANAGED_RUNTIME_ID);
+        Ok(())
     }
 
     #[test]
