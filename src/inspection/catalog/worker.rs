@@ -32,6 +32,7 @@ const CATALOG_RANGE_BLOCK_LIMIT: usize = MAX_CATALOG_L1_RANGE_BLOCKS;
 const CATALOG_CATCH_UP_PAGE_INTERVAL: Duration = Duration::from_millis(500);
 const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CATALOG_REPAIR_INTERVAL_SECONDS: u64 = 30;
+const CATALOG_NO_PROGRESS_WARNING_ROUNDS: u32 = 3;
 const CATALOG_CLI_CONTRACT_TIMEOUT: Duration = Duration::from_secs(30);
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const CATALOG_CLI_METHODS: [(&str, &str); 4] = [
@@ -469,6 +470,14 @@ async fn run_catalog_scan_with_pacer(
             CATALOG_POLL_INTERVAL
         } else {
             no_progress_round = no_progress_round.saturating_add(1);
+            if should_publish_no_progress_warning(no_progress_round) {
+                let _published = context.publish(ZoneCatalogPublication {
+                    verification_state: CatalogVerificationState::Verified,
+                    catalog: Some(Arc::new(snapshot.clone())),
+                    readiness: None,
+                    current_error: Some(no_progress_warning_message().to_owned()),
+                });
+            }
             no_progress_delay(no_progress_round)
         };
         wait_for_retry(context, delay).await?;
@@ -483,6 +492,14 @@ fn no_progress_delay(round: u32) -> Duration {
         _ => 30,
     };
     Duration::from_secs(seconds)
+}
+
+fn no_progress_warning_message() -> &'static str {
+    "L1 source is not advancing finalized data; Zone Catalog is waiting for a reachable Bedrock provider. Check Bedrock bootstrap peers and node logs."
+}
+
+const fn should_publish_no_progress_warning(round: u32) -> bool {
+    round == CATALOG_NO_PROGRESS_WARNING_ROUNDS
 }
 
 async fn apply_catalog_page(
@@ -864,6 +881,16 @@ mod tests {
 
     struct BlockingPacer {
         wait_events: mpsc::UnboundedSender<()>,
+    }
+
+    #[test]
+    fn no_progress_warning_waits_for_bounded_repeated_rounds() {
+        assert!(!should_publish_no_progress_warning(1));
+        assert!(!should_publish_no_progress_warning(2));
+        assert!(should_publish_no_progress_warning(
+            CATALOG_NO_PROGRESS_WARNING_ROUNDS
+        ));
+        assert!(no_progress_warning_message().contains("Bedrock provider"));
     }
 
     impl CatalogPagePacer for BlockingPacer {
