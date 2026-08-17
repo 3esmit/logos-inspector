@@ -19,10 +19,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     inspection::NetworkScope,
     modules::logos_core::{
-        BoxedModuleEventSubscription, LogoscoreCliRuntime, LogoscoreCliTransport,
-        LogoscoreEventWatch, ModuleCall, ModuleTransportEvent, ModuleTransportKind,
-        ScopedModuleTransport, SharedModuleTransport, dispatch_module_call,
-        module_transport_event_from_watch_frame, normalize_module_call_value,
+        LogoscoreCliRuntime, LogoscoreCliTransport, LogoscoreEventWatch, ModuleCall,
+        ModuleTransportEvent, ModuleTransportKind, ScopedModuleTransport, SharedModuleTransport,
+        dispatch_module_call, module_transport_event_from_watch_frame, normalize_module_call_value,
     },
     source_routing::channel_sources::{
         ChannelSourceConfig, ChannelSourceTarget, indexer, load_channel_source_configs,
@@ -69,18 +68,25 @@ const INDEXER_LIFECYCLE_EVENT_READ_INTERVAL: Duration = Duration::from_millis(25
 static INDEXER_LIFECYCLE_OPERATION_SERIAL: AtomicU64 = AtomicU64::new(0);
 static BASECAMP_LIFECYCLE_LOCKS: OnceLock<Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
+// Basecamp's capability handshake mints one token per caller/target pair.
+// Keep core_service requests serialized so overlapping async probes cannot
+// rotate the token while an earlier request is still in flight.
+static BASECAMP_CORE_SERVICE_CALL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 const BASECAMP_CORE_SERVICE_MODULE: &str = "core_service";
 const BASECAMP_HOST_CAPABILITIES_METHOD: &str = "getHostCapabilities";
 const BASECAMP_LOAD_INSTANCE_METHOD: &str = "loadModuleInstance";
 const BASECAMP_INSTANCE_LOADED_METHOD: &str = "isModuleInstanceLoaded";
 const BASECAMP_INDEXER_INSTANCE_PREFIX: &str = "indexer";
-// LogosCore ModuleAddress allows instance IDs of at most 128 bytes in
-// [A-Za-z0-9_-]. The naive form indexer-{sha256(scope)}-{channel64} is 137
-// bytes and is rejected as "invalid runtime address". Keep the full Channel
-// ID for operator readability; truncate the scope digest to 32 hex chars
-// (128 bits), which still disambiguates network scopes.
-const BASECAMP_INDEXER_SCOPE_KEY_PREFIX_LEN: usize = 32;
+// LogosCore ModuleAddress allows instance IDs of at most 128 bytes, but the
+// local transport also embeds the ID in a Unix socket name (`/tmp/logos_*`).
+// A full 64-byte Channel ID therefore overflows `sockaddr_un.sun_path` even
+// though it passes the ModuleAddress validator. Keep a deterministic scope
+// prefix and a 128-bit channel digest so each Zone remains isolated while the
+// socket name stays within the platform limit.
+const BASECAMP_INDEXER_SCOPE_KEY_PREFIX_LEN: usize = 16;
+const BASECAMP_INDEXER_CHANNEL_KEY_LEN: usize = 32;
 const BASECAMP_MAX_INSTANCE_ID_BYTES: usize = 128;
+const BASECAMP_MAX_LOCAL_SOCKET_NAME_BYTES: usize = 100;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CONFIG_BYTES_USIZE: usize = 1024 * 1024;
 const CONFIG_ROLE: &str = "Zone-owned Indexer";
@@ -892,11 +898,21 @@ fn basecamp_instance_id(network_scope: &NetworkScope, channel_id: &str) -> Resul
     let scope_prefix = scope_key
         .get(..scope_prefix_len)
         .context("Channel Indexer network scope key is shorter than expected")?;
-    let instance_id = format!("{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_prefix}-{channel_id}");
+    let channel_key = hex::encode(Sha256::digest(channel_id.as_bytes()));
+    let channel_prefix = channel_key
+        .get(..BASECAMP_INDEXER_CHANNEL_KEY_LEN)
+        .context("Channel Indexer channel key is shorter than expected")?;
+    let instance_id = format!("{BASECAMP_INDEXER_INSTANCE_PREFIX}-{scope_prefix}-{channel_prefix}");
+    let socket_name = format!("logos_{INDEXER_MODULE}_{instance_id}");
     anyhow::ensure!(
         instance_id.len() <= BASECAMP_MAX_INSTANCE_ID_BYTES,
         "Channel Indexer Basecamp instance id exceeds the runtime address limit ({} > {BASECAMP_MAX_INSTANCE_ID_BYTES})",
         instance_id.len()
+    );
+    anyhow::ensure!(
+        socket_name.len() <= BASECAMP_MAX_LOCAL_SOCKET_NAME_BYTES,
+        "Channel Indexer Basecamp socket name exceeds the local transport budget ({} > {BASECAMP_MAX_LOCAL_SOCKET_NAME_BYTES})",
+        socket_name.len()
     );
     anyhow::ensure!(
         instance_id
@@ -967,6 +983,10 @@ async fn basecamp_core_service_value(
     method: &str,
     args: Vec<Value>,
 ) -> Result<Value> {
+    let _call_guard = BASECAMP_CORE_SERVICE_CALL_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     anyhow::ensure!(
         module_transport.kind() == ModuleTransportKind::Module,
         "Basecamp scoped Channel Indexer requires the host module transport"
@@ -1247,7 +1267,6 @@ async fn basecamp_start_indexer(
     )?;
     execute_basecamp_indexer_lifecycle_action(
         &scoped,
-        &instance_id,
         channel_id,
         NodeAction::Start,
         Some(&config_path),
@@ -1272,14 +1291,7 @@ async fn basecamp_stop_indexer(
         &request.network_scope,
         channel_id,
     )?;
-    execute_basecamp_indexer_lifecycle_action(
-        &scoped,
-        &instance_id,
-        channel_id,
-        NodeAction::Stop,
-        None,
-    )
-    .await
+    execute_basecamp_indexer_lifecycle_action(&scoped, channel_id, NodeAction::Stop, None).await
 }
 
 async fn basecamp_purge_indexer(
@@ -1380,7 +1392,6 @@ fn ensure_basecamp_indexer_config(
 
 async fn execute_basecamp_indexer_lifecycle_action(
     scoped_transport: &SharedModuleTransport,
-    scoped_instance_id: &str,
     channel_id: &str,
     action: NodeAction,
     config_path: Option<&str>,
@@ -1394,9 +1405,6 @@ async fn execute_basecamp_indexer_lifecycle_action(
         action_name,
         expected_transition,
     )?;
-    let subscription = scoped_transport
-        .subscribe_module_event(INDEXER_MODULE, INDEXER_NODE_CHANGED_EVENT)
-        .context("Basecamp host cannot subscribe to Channel Indexer nodeChanged confirmation")?;
     let serial = INDEXER_LIFECYCLE_OPERATION_SERIAL.fetch_add(1, Ordering::Relaxed);
     let operation_id = format!(
         "logos-inspector-indexer-{action_name}-{}-{serial}",
@@ -1431,19 +1439,17 @@ async fn execute_basecamp_indexer_lifecycle_action(
         &operation_id,
         expected_transition,
     )?;
-    let terminal = wait_for_basecamp_indexer_lifecycle_terminal_event(
-        subscription,
-        scoped_instance_id,
+    let terminal = wait_for_basecamp_indexer_lifecycle_terminal_status(
+        scoped_transport,
         &snapshot,
         channel_id,
-        &operation_id,
         action_name,
         expected_transition,
         expected_terminal,
     )
     .await?;
     Ok(format!(
-        "Basecamp V1 nodeChanged confirmed {action_name} for Channel `{channel_id}` at lifecycle sequence {}",
+        "Basecamp V1 nodeStatus polling confirmed {action_name} for Channel `{channel_id}` at lifecycle sequence {}",
         terminal.sequence
     ))
 }
@@ -1500,105 +1506,52 @@ fn validate_basecamp_indexer_snapshot_for_action(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn wait_for_basecamp_indexer_lifecycle_terminal_event(
-    mut subscription: BoxedModuleEventSubscription,
-    scoped_instance_id: &str,
+async fn wait_for_basecamp_indexer_lifecycle_terminal_status(
+    scoped_transport: &SharedModuleTransport,
     snapshot: &IndexerLifecycleSnapshot,
     channel_id: &str,
-    operation_id: &str,
     action: &str,
     expected_transition: &str,
     expected_terminal: &str,
 ) -> Result<IndexerLifecycleSnapshot> {
-    let scoped_instance_id = scoped_instance_id.to_owned();
-    let initial_instance_id = snapshot.instance_id.clone();
+    let deadline = Instant::now() + INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT;
     let initial_epoch = snapshot.epoch;
     let initial_sequence = snapshot.sequence;
-    let channel_id = channel_id.to_owned();
-    let operation_id = operation_id.to_owned();
-    let action = action.to_owned();
-    let expected_transition = expected_transition.to_owned();
-    let expected_terminal = expected_terminal.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let deadline = Instant::now() + INDEXER_LIFECYCLE_CONFIRMATION_TIMEOUT;
-        let mut accepted = false;
-        let mut last_sequence = initial_sequence;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let transport = subscription.next_within(remaining)?.with_context(|| {
-                "Basecamp Channel Indexer did not emit nodeChanged before lifecycle confirmation timeout"
-            })?;
-            anyhow::ensure!(
-                transport.module() == INDEXER_MODULE
-                    && transport.event() == INDEXER_NODE_CHANGED_EVENT
-                    && transport.instance_id() == Some(scoped_instance_id.as_str()),
-                "Basecamp Channel Indexer lifecycle subscription received an unexpected module instance event"
+    let mut saw_transition = false;
+    loop {
+        if Instant::now() >= deadline {
+            bail!(
+                "Basecamp Channel Indexer did not reach `{expected_terminal}` after `{action}` before lifecycle confirmation timeout"
             );
-            let event = IndexerLifecycleEvent::from_transport_event(&transport)?;
-            if event.operation_id.as_deref() != Some(operation_id.as_str())
-                || event.instance_id != initial_instance_id
-            {
-                continue;
-            }
-            anyhow::ensure!(
-                event.sequence > last_sequence && event.epoch >= initial_epoch,
-                "Basecamp Indexer nodeChanged event has a stale lifecycle cursor"
-            );
-            anyhow::ensure!(
-                event.action == action,
-                "Basecamp Indexer nodeChanged event has an unexpected action"
-            );
-            anyhow::ensure!(
-                event.status.instance_id == event.instance_id
-                    && event.status.epoch == event.epoch
-                    && event.status.sequence == event.sequence,
-                "Basecamp Indexer nodeChanged event has an inconsistent status snapshot"
-            );
-            last_sequence = event.sequence;
-            match event.phase.as_str() {
-                "accepted" => {
-                    anyhow::ensure!(
-                        !accepted
-                            && event.outcome == "accepted"
-                            && event.status.state == expected_transition,
-                        "Basecamp Indexer nodeChanged accepted event has an invalid lifecycle state"
-                    );
-                    if let Some(event_channel_id) = event.channel_id.as_deref() {
-                        anyhow::ensure!(
-                            event_channel_id == channel_id,
-                            "Basecamp Indexer nodeChanged accepted event is scoped to a different Channel"
-                        );
-                    }
-                    accepted = true;
-                }
-                "settled" => {
-                    if event.outcome != "succeeded" {
-                        let detail = event
-                            .error
-                            .as_ref()
-                            .map(|error| format!("{}: {}", error.code, error.message))
-                            .unwrap_or_else(|| format!("outcome `{}`", event.outcome));
-                        bail!(
-                            "Indexer V1 nodeChanged terminal event reported failure: {detail}"
-                        );
-                    }
-                    anyhow::ensure!(
-                        accepted && event.status.state == expected_terminal,
-                        "Basecamp Indexer nodeChanged terminal event did not confirm the requested action"
-                    );
-                    anyhow::ensure!(
-                        event.channel_id.as_deref() == Some(channel_id.as_str())
-                            && event.status.channel_id.as_deref() == Some(channel_id.as_str()),
-                        "Basecamp Indexer nodeChanged terminal event is scoped to a different Channel"
-                    );
-                    return Ok(event.status);
-                }
-                _ => bail!("Basecamp Indexer nodeChanged event has an unsupported phase"),
-            }
         }
-    })
-    .await
-    .context("Basecamp Channel Indexer lifecycle event worker failed")?
+        let current = basecamp_indexer_snapshot(scoped_transport, channel_id).await?;
+        anyhow::ensure!(
+            current.epoch >= initial_epoch,
+            "Basecamp Channel Indexer status has a stale lifecycle epoch"
+        );
+        anyhow::ensure!(
+            current.sequence >= initial_sequence,
+            "Basecamp Channel Indexer status has a stale lifecycle sequence"
+        );
+        if current.sequence > initial_sequence && current.state == expected_transition {
+            saw_transition = true;
+        }
+        if current.sequence > initial_sequence && current.state == expected_terminal {
+            return Ok(current);
+        }
+        anyhow::ensure!(
+            !matches!(current.state.as_str(), "failed" | "error"),
+            "Basecamp Channel Indexer reported `{}` while confirming `{action}`",
+            current.state
+        );
+        if !saw_transition && current.state != snapshot.state {
+            bail!(
+                "Basecamp Channel Indexer entered unexpected state `{}` while confirming `{action}`",
+                current.state
+            );
+        }
+        tokio::time::sleep(INDEXER_LIFECYCLE_EVENT_READ_INTERVAL).await;
+    }
 }
 
 fn runtime_for_module_source(
@@ -2664,11 +2617,20 @@ fn build_report(
 
 fn reconcile_record(record: &mut ChannelIndexerRecord) -> bool {
     if !record.runtime.is_running() {
-        let changed = record.runtime.daemon_process_id.take().is_some()
+        let was_active = record.state != "stopped";
+        let mut changed = record.runtime.daemon_process_id.take().is_some()
             || record.state != "stopped"
             || record.indexed_block_id.is_some();
         record.state = "stopped".to_owned();
         record.indexed_block_id = None;
+        if was_active
+            && settle_pending_start_operation(
+                record,
+                "Channel Indexer runtime stopped before Start reached a terminal state",
+            )
+        {
+            changed = true;
+        }
         return changed;
     }
     if record.state == "stopped" {
@@ -2775,22 +2737,51 @@ fn update_record_status(record: &mut ChannelIndexerRecord, status: IndexerStatus
             indexed_block_id,
             last_error,
         } => {
-            let changed = record.state != state
+            let mut changed = record.state != state
                 || record.indexed_block_id != indexed_block_id
                 || record.last_error != last_error;
             record.state = state;
             record.indexed_block_id = indexed_block_id;
             record.last_error = last_error;
+            let failure_detail = record
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Channel Indexer entered a terminal failure state".to_owned());
+            if matches!(record.state.as_str(), "error" | "stalled")
+                && settle_pending_start_operation(record, &failure_detail)
+            {
+                changed = true;
+            }
             changed
         }
     }
 }
 
 fn update_record_failure(record: &mut ChannelIndexerRecord, detail: String) -> bool {
-    let changed = record.state != "unknown" || record.last_error.as_deref() != Some(&detail);
+    let mut changed = record.state != "unknown" || record.last_error.as_deref() != Some(&detail);
     record.state = "unknown".to_owned();
     record.last_error = Some(detail);
+    let failure_detail = record
+        .last_error
+        .clone()
+        .unwrap_or_else(|| "Channel Indexer status could not be verified".to_owned());
+    if settle_pending_start_operation(record, &failure_detail) {
+        changed = true;
+    }
     changed
+}
+
+fn settle_pending_start_operation(record: &mut ChannelIndexerRecord, detail: &str) -> bool {
+    let Some(operation) =
+        record.operations.iter_mut().rev().find(|operation| {
+            operation.action == NodeAction::Start && operation.status == "starting"
+        })
+    else {
+        return false;
+    };
+    operation.status = "failed".to_owned();
+    operation.detail = detail.to_owned();
+    true
 }
 
 fn requested_source_binding(
@@ -3616,15 +3607,19 @@ mod tests {
     use serde_json::json;
     use std::{
         collections::BTreeMap,
-        sync::{Arc, Mutex, mpsc},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+            mpsc,
+        },
         time::Duration,
     };
     use tokio::sync::oneshot;
 
     use super::*;
     use crate::modules::logos_core::{
-        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleEventSubscription, ModuleTransport,
-        ModuleTransportResult,
+        BoxedModuleEventSubscription, ModuleCall, ModuleCallFuture, ModuleCallReply,
+        ModuleEventSubscription, ModuleTransport, ModuleTransportResult,
     };
     use crate::source_routing::channel_sources::{
         ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
@@ -3647,13 +3642,23 @@ mod tests {
             instance_id.len(),
             BASECAMP_MAX_INSTANCE_ID_BYTES
         );
+        let socket_name = format!("logos_{INDEXER_MODULE}_{instance_id}");
+        anyhow::ensure!(
+            socket_name.len() <= BASECAMP_MAX_LOCAL_SOCKET_NAME_BYTES,
+            "scoped Indexer socket name length {} exceeds safe local-transport budget {}",
+            socket_name.len(),
+            BASECAMP_MAX_LOCAL_SOCKET_NAME_BYTES
+        );
         anyhow::ensure!(
             instance_id.starts_with(&format!("{BASECAMP_INDEXER_INSTANCE_PREFIX}-")),
             "instance id must keep the indexer prefix"
         );
         anyhow::ensure!(
-            instance_id.ends_with(&channel_id),
-            "instance id must retain the full channel id for operators"
+            instance_id.ends_with(
+                &hex::encode(Sha256::digest(channel_id.as_bytes()))
+                    [..BASECAMP_INDEXER_CHANNEL_KEY_LEN],
+            ),
+            "instance id must retain the channel digest"
         );
         let other_scope = NetworkScope::GenesisId {
             genesis_id: "cd".repeat(32),
@@ -3686,6 +3691,71 @@ mod tests {
 
         assert!(locks.contains_key("live"));
         assert!(!locks.contains_key("dead"));
+    }
+
+    #[derive(Clone)]
+    struct CoreServiceSerializationTransport {
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+    }
+
+    impl ModuleTransport for CoreServiceSerializationTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            if call.module() != BASECAMP_CORE_SERVICE_MODULE {
+                return Box::pin(async { bail!("serialization fixture received a non-core call") });
+            }
+            let in_flight = Arc::clone(&self.in_flight);
+            let max_in_flight = Arc::clone(&self.max_in_flight);
+            Box::pin(async move {
+                let active = in_flight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                max_in_flight.fetch_max(active, AtomicOrdering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                in_flight.fetch_sub(1, AtomicOrdering::SeqCst);
+                Ok(ModuleCallReply::new(
+                    ModuleTransportKind::Module,
+                    json!({"status": "ok"}),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn basecamp_core_service_calls_are_serialized_for_token_stability() -> Result<()> {
+        let implementation = CoreServiceSerializationTransport {
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            max_in_flight: Arc::new(AtomicUsize::new(0)),
+        };
+        let max_in_flight = Arc::clone(&implementation.max_in_flight);
+        let transport: SharedModuleTransport = Arc::new(implementation);
+        let first_transport = Arc::clone(&transport);
+        let second_transport = Arc::clone(&transport);
+        let first = tokio::spawn(async move {
+            basecamp_core_service_value(
+                &first_transport,
+                BASECAMP_HOST_CAPABILITIES_METHOD,
+                Vec::new(),
+            )
+            .await
+        });
+        let second = tokio::spawn(async move {
+            basecamp_core_service_value(
+                &second_transport,
+                BASECAMP_INSTANCE_LOADED_METHOD,
+                vec![json!(INDEXER_MODULE), json!("indexer-test")],
+            )
+            .await
+        });
+        first.await??;
+        second.await??;
+        anyhow::ensure!(
+            max_in_flight.load(AtomicOrdering::SeqCst) == 1,
+            "Basecamp core_service calls overlapped and could rotate the caller token"
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -4032,6 +4102,71 @@ mod tests {
         anyhow::ensure!(state == "caught_up");
         anyhow::ensure!(indexed_block_id.as_deref() == Some("42"));
         anyhow::ensure!(last_error.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_error_settles_pending_start_operation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(directory.path(), &source)?;
+        record.state = "starting".to_owned();
+        record.operations.push(operation_report(
+            NodeAction::Start,
+            "starting",
+            "Start dispatched".to_owned(),
+        ));
+
+        let changed = update_record_status(
+            &mut record,
+            IndexerStatus::Running {
+                state: "error".to_owned(),
+                indexed_block_id: None,
+                last_error: Some("Bedrock response shape is incompatible".to_owned()),
+            },
+        );
+
+        anyhow::ensure!(changed);
+        anyhow::ensure!(record.state == "error");
+        let operation = record
+            .operations
+            .last()
+            .context("pending Start operation was not retained")?;
+        anyhow::ensure!(operation.status == "failed");
+        anyhow::ensure!(operation.detail == "Bedrock response shape is incompatible");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_error_does_not_rewrite_settled_operation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let channel_id = "01".repeat(32);
+        let source = module_source_config(&channel_id);
+        let mut record = running_record(directory.path(), &source)?;
+        record.state = "starting".to_owned();
+        record.operations.push(operation_report(
+            NodeAction::Start,
+            "failed",
+            "Original failure".to_owned(),
+        ));
+
+        let changed = update_record_status(
+            &mut record,
+            IndexerStatus::Running {
+                state: "error".to_owned(),
+                indexed_block_id: None,
+                last_error: Some("Later status detail".to_owned()),
+            },
+        );
+
+        anyhow::ensure!(changed);
+        let operation = record
+            .operations
+            .last()
+            .context("settled Start operation was not retained")?;
+        anyhow::ensure!(operation.status == "failed");
+        anyhow::ensure!(operation.detail == "Original failure");
         Ok(())
     }
 

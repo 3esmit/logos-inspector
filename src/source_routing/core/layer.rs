@@ -96,7 +96,7 @@ pub(crate) fn managed_config(
     } else {
         &[]
     };
-    json!({
+    let mut config = json!({
         "initial_peers": initial_peers,
         "output": output_path,
         "net_port": 3000,
@@ -107,7 +107,11 @@ pub(crate) fn managed_config(
         "logs_path": format!("{data_dir}/logs"),
         "skip_ibd": false,
         "log_filter": "info",
-    })
+    });
+    if public_testnet && let Some(object) = config.as_object_mut() {
+        object.insert("prolonged_bootstrap_period_secs".to_owned(), json!(5));
+    }
+    config
 }
 
 const RPC_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
@@ -481,6 +485,36 @@ mod tests {
                 ManagedNodeAction::Start,
                 ManagedNodeAction::Stop,
             ],
+        );
+    }
+
+    #[test]
+    fn public_testnet_managed_config_bounds_prolonged_bootstrap_period() {
+        let config = managed_config(
+            "logos.test",
+            "/tmp/logos-testnet/data/bedrock",
+            Some("http://127.0.0.1:8080/"),
+            Some(8080),
+            "/tmp/logos-testnet/configs/bedrock.yaml",
+            true,
+        );
+        assert_eq!(
+            config.get("prolonged_bootstrap_period_secs"),
+            Some(&json!(5))
+        );
+
+        let private_config = managed_config(
+            "private",
+            "/tmp/private/data/bedrock",
+            Some("http://127.0.0.1:8080/"),
+            Some(8080),
+            "/tmp/private/configs/bedrock.yaml",
+            false,
+        );
+        assert!(
+            private_config
+                .get("prolonged_bootstrap_period_secs")
+                .is_none()
         );
     }
 

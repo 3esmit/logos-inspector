@@ -302,6 +302,17 @@ impl ConfiguredSourceReports {
             .iter()
             .position(|entry| entry.configuration == configuration)
         {
+            // Passive module-event observations intentionally omit runtime
+            // probes. They still carry module metadata and degraded health,
+            // but must not replace a richer report for the same source
+            // configuration or capability gates regress after a message event.
+            let preserve_existing = self
+                .entries
+                .get(index)
+                .is_some_and(|entry| !reduced_source_report_without_health_evidence(&entry.value));
+            if reduced_source_report_without_health_evidence(&value) && preserve_existing {
+                return;
+            }
             self.entries.remove(index);
         }
         self.entries.push_back(ConfiguredSourceReport {
@@ -326,6 +337,22 @@ impl ConfiguredSourceReports {
             .find(|entry| entry.configuration == configuration)
             .map(|entry| &entry.value)
     }
+}
+
+fn reduced_source_report_without_health_evidence(value: &Value) -> bool {
+    let Some(health) = value.get("health").and_then(Value::as_object) else {
+        return false;
+    };
+    health.get("reachable").and_then(Value::as_bool) == Some(true)
+        && health.get("ready").and_then(Value::as_bool) == Some(false)
+        && value
+            .get("probes")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && value
+            .get("probe_facts")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
 }
 
 #[derive(Debug, Default)]
@@ -930,6 +957,14 @@ mod tests {
         }])
     }
 
+    fn delivery_module_source_args() -> Value {
+        json!([{
+            "source_mode": "module",
+            "inputs": {},
+            "configuration_generation": 0,
+        }])
+    }
+
     fn with_configuration_generation(mut args: Value, generation: u64) -> Result<Value> {
         let initialization = args
             .as_array_mut()
@@ -1053,6 +1088,74 @@ mod tests {
             if capability.get("status").and_then(Value::as_str) != Some("available") {
                 bail!("{key} evidence was not applied: {capability}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reduced_delivery_observation_does_not_replace_ready_same_configuration() -> Result<()> {
+        let registry = CapabilityRegistry::default();
+        let args = delivery_module_source_args();
+        let module_info = json!({
+            "ok": true,
+            "value": {
+                "name": "delivery_module",
+                "methods": [{
+                    "isInvokable": true,
+                    "name": "storeQuery",
+                    "signature": "storeQuery(QString,QString,int)"
+                }]
+            }
+        });
+        complete_success(
+            &registry,
+            "deliverySourceReport",
+            &args,
+            &json!({
+                "module_info": module_info,
+                "health": {
+                    "ready": true,
+                    "reachable": true,
+                    "status": "healthy"
+                },
+                "probes": [{ "probe_key": "delivery.version", "ok": true }],
+                "probe_facts": [{ "key": "delivery.version", "ok": true }]
+            }),
+        )?;
+        complete_success(
+            &registry,
+            "deliverySourceReport",
+            &args,
+            &json!({
+                "module_info": module_info,
+                "health": {
+                    "ready": false,
+                    "reachable": true,
+                    "status": "degraded"
+                },
+                "probes": [],
+                "probe_facts": []
+            }),
+        )?;
+
+        let report = registry.report(
+            CapabilityBuildMode::Basecamp,
+            Some(&json!({
+                "network_connector_config": {
+                    "scopes": {
+                        "delivery": { "connector_id": "delivery_module" }
+                    }
+                },
+                "configuration_generations": { "delivery": 0 }
+            })),
+        )?;
+        let delivery = capability(&report, "delivery")?;
+        if delivery
+            .unavailable_sub_capabilities
+            .iter()
+            .any(|key| key == "delivery.store.query")
+        {
+            bail!("reduced Delivery observation replaced ready capability evidence: {delivery:?}");
         }
         Ok(())
     }

@@ -1586,6 +1586,39 @@ TestCase {
         verify(zoneState.summaryRowsUsable)
     }
 
+    function test_source_summary_preserves_pending_channel_attestation() {
+        configure("https://l1.example", 1)
+        const original = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(original)
+        zoneState.zoneDetail = detailReport(original).detail
+
+        zoneState.acceptSourceMutationReport({
+            source_config_epoch: 2,
+            active_zone_context_fields: original.active_zone_context_fields,
+            config: {
+                config_revision: 2,
+                selected_sequencer_source_id: "src-a",
+                sequencer_sources: [{
+                    source_id: "src-a",
+                    label: "Pending Sequencer",
+                    target: {
+                        kind: "rpc",
+                        endpoint: "https://sequencer.example/"
+                    },
+                    channel_attestation: { state: "pending" },
+                    binding_state: "runtime_attested"
+                }],
+                indexer_source: null
+            },
+            observations: [],
+            agreement: {}
+        })
+
+        const projected = zoneState.zoneDetail.channel_source_config.sequencer_sources[0]
+        compare(projected.binding_state, "runtime_attested")
+        compare(projected.channel_attestation.state, "pending")
+    }
+
     function test_network_scope_change_clears_cached_rows_and_context() {
         configure("https://l1.example", 1)
         const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
@@ -1651,6 +1684,49 @@ TestCase {
             summary_revision: 3
         })))
         verify(!zoneState.detailDisplayUsable)
+    }
+
+    function test_stale_detail_fence_requests_status_before_retry() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "src-a", "idx-a")
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+        statusRefreshSpy.clear()
+
+        gateway.respondNext("zoneDetail", ok(detailReport(row, null, {
+            observation_revision: 2
+        })))
+
+        verify(!zoneState.detailDisplayUsable)
+        verify(!zoneState.detailInFlight)
+        compare(statusRefreshSpy.count, 1)
+        compare(gateway.requestCount("zoneDetail"), 1)
+
+        verify(zoneState.pollStatus())
+        gateway.respondNext("zoneCatalogStatus", ok(statusReport({
+            verification: "verified",
+            coverage: { status: "complete" },
+            ingestion: { worker_running: false },
+            observation_revision: 2,
+            summary_revision: 1
+        })))
+        gateway.respondNext("zonesSummary", ok(summaryReport(1, {
+            kind: "delta",
+            upserts: [],
+            removed_zone_ids: []
+        }, null, {
+            observation_revision: 2,
+            summary_revision: 1
+        })));
+
+        verify(zoneState.detailInFlight)
+        compare(gateway.requestCount("zoneDetail"), 2)
+        gateway.respondNext("zoneDetail", ok(detailReport(row, null, {
+            observation_revision: 2
+        })))
+
+        verify(!zoneState.detailStale)
+        verify(zoneState.detailDisplayUsable)
     }
 
     function test_live_summary_delta_commits_rows_before_completion_without_context_reset() {
@@ -2189,6 +2265,64 @@ TestCase {
         compare(sourceEditorState.bedrockEndpoint(), "")
     }
 
+    function test_logoscore_cli_managed_indexer_uses_running_attached_bedrock() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "logoscore_cli" }
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "local_attached",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+
+        compare(sourceEditorState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a"))
+        const request = gateway.lastRequest("channelIndexerAction")
+        verify(request !== null)
+        compare(request.args[1].bedrock_endpoint, "http://127.0.0.1:8080/")
+        compare(request.args[1].selected_sequencer_source_id,
+            zoneState.activeZoneContext.selected_sequencer_source_id)
+    }
+
+    function test_managed_indexer_rejects_invalid_bedrock_endpoint() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = {
+            kind: "direct_http",
+            endpoint: "not-an-http-endpoint"
+        }
+        sourceEditorState.acceptManagedIndexerReport({
+            runtime: { run_state: "running" },
+            nodes: [{
+                key: "indexer",
+                install_state: "installed",
+                run_state: "stopped",
+                available_actions: ["start"]
+            }],
+            operations: []
+        })
+
+        compare(sourceEditorState.bedrockEndpoint(), "")
+        verify(sourceEditorState.runManagedIndexerAction("start", "zone-a") === null)
+        compare(sourceEditorState.managedIndexerError,
+            "A Bedrock endpoint is required.")
+        compare(gateway.requestCount("channelIndexerAction"), 0)
+    }
+
     function test_basecamp_managed_indexer_uses_local_bedrock_and_runtime_operation() {
         loadConfiguredL2Zone()
         zoneState.appModel = managedIndexerAppModel
@@ -2271,6 +2405,24 @@ TestCase {
         compare(sourceEditorState.managedIndexerNode.run_state, "running")
         const sourceRefresh = gateway.lastRequest("channelIndexerSourceRefresh")
         verify(sourceRefresh !== null)
+    }
+
+    function test_basecamp_host_bedrock_endpoint_enables_indexer_configuration() {
+        loadConfiguredL2Zone()
+        zoneState.appModel = managedIndexerAppModel
+        zoneState.desiredSource = { kind: "module" }
+        managedIndexerAppModel.basecampModules = true
+        managedIndexerAppModel.localNodesReport = {
+            nodes: [{
+                key: "bedrock",
+                ownership: "basecamp_host",
+                run_state: "running",
+                endpoint: "http://127.0.0.1:8080/"
+            }]
+        }
+
+        compare(sourceEditorState.bedrockEndpoint(), "http://127.0.0.1:8080/")
+        compare(zoneState.bedrockEndpoint(), "http://127.0.0.1:8080/")
     }
 
     function test_basecamp_managed_indexer_retries_runtime_status_after_transient_failure() {

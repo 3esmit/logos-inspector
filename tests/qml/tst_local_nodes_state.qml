@@ -641,6 +641,37 @@ TestCase {
         compare(gateway.messagingObservationCount, 0)
     }
 
+    function test_successful_basecamp_messaging_uninstall_invalidates_delivery_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        const report = testnetReport()
+        report.operations = [{
+            action: "uninstall",
+            node: "messaging",
+            status: "uninstalled",
+            detail: "Delivery uninstalled"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("uninstall", "messaging", "", "", "Uninstall Messaging")
+
+        compare(gateway.messagingObservationCount, 0)
+        compare(gateway.messagingObservationInvalidationCount, 1)
+    }
+
     function test_nonterminal_basecamp_messaging_start_does_not_refresh_delivery_observation() {
         state.networkProfile = "default"
         gateway.basecampModules = true

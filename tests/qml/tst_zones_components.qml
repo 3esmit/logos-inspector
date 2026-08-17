@@ -307,6 +307,7 @@ TestCase {
         zoneState.sourceReloadFailure = ""
         zoneState.sourceReloadCount = 0
         zoneState.managedIndexerStatusStale = false
+        zoneState.bedrockEndpointValue = "http://127.0.0.1:8080/"
         zoneState.managedIndexerError = ""
         zoneState.managedIndexerResult = ""
         zoneState.managedIndexerRuntimePollError = ""
@@ -1031,6 +1032,41 @@ TestCase {
         }
     }
 
+    function test_pending_persisted_attestation_keeps_retry_available() {
+        const row = sourceRowFactory.createObject(testWindow.contentItem, {
+            theme: testRoot.testTheme,
+            source: {
+                source_id: "src_pending",
+                label: "Pending Sequencer",
+                target: {
+                    kind: "rpc",
+                    endpoint: "https://sequencer.example/"
+                },
+                channel_attestation: {
+                    state: "pending"
+                },
+                binding_state: "pending"
+            },
+            observation: {
+                source_id: "src_pending",
+                role: "sequencer",
+                binding_state: "runtime_attested",
+                health: "reachable"
+            },
+            role: "sequencer",
+            selected: true,
+            width: 720
+        })
+        verify(row !== null)
+        try {
+            compare(row.binding, "runtime_attested")
+            verify(row.pendingAttestation)
+            verify(row.retryVerificationVisible)
+        } finally {
+            row.destroy()
+        }
+    }
+
     function test_persisted_evidence_match_keeps_legacy_identity_disclosure() {
         const channelId = FixtureData.identity("1")
         const detail = FixtureData.detailFor(channelId)
@@ -1149,6 +1185,32 @@ TestCase {
         compare(control.catalogState, zoneState)
     }
 
+    function test_managed_indexer_requires_bedrock_endpoint_before_start_or_configure() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "managedIndexerControl") !== null
+        })
+
+        const control = findChild(detail, "managedIndexerControl")
+        const configure = findChild(control, "configureManagedIndexerButton")
+        const start = findChild(control, "startManagedIndexerButton")
+        verify(configure !== null && start !== null)
+
+        zoneState.bedrockEndpointValue = ""
+        try {
+            tryVerify(function () {
+                return !configure.enabled && !start.enabled
+            })
+            verify(hasVisibleText(control, "Bedrock endpoint required"))
+            verify(hasVisibleText(control,
+                "Select a Direct RPC Bedrock source, or start a managed Bedrock node, before configuring or starting this Channel Indexer."))
+        } finally {
+            zoneState.bedrockEndpointValue = "http://127.0.0.1:8080/"
+        }
+    }
+
     function test_module_indexer_surfaces_runtime_status_retry_warning() {
         const detail = findChild(page, "zoneDetail")
         verify(detail !== null)
@@ -1176,7 +1238,19 @@ TestCase {
             return findChild(detail, "managedIndexerControl") !== null
         })
 
+        const sourceLoader = findChild(detail, "zoneDetailSourceLoader")
+        verify(sourceLoader !== null)
         compare(detail.currentTab, "sources")
+        tryVerify(function () {
+            return sourceLoader.loadedImplicitHeight > 0
+                && sourceLoader.height >= sourceLoader.loadedImplicitHeight - 1
+        })
+        verify(
+            detail.implicitHeight >= sourceLoader.y + sourceLoader.height,
+            "Zone detail must include the loaded Sources component height: detail=%1 sourceY=%2 sourceHeight=%3 loaderImplicit=%4".arg(
+                detail.implicitHeight).arg(sourceLoader.y).arg(sourceLoader.height).arg(
+                sourceLoader.loadedImplicitHeight)
+        )
         verify(
             page.implicitHeight >= detail.y + detail.implicitHeight,
             "Zones page must expose the full Zone detail height to the outer scroller"
