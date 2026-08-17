@@ -46,9 +46,14 @@
     }
   },
   "lez": {
-    "repo": "logos-blockchain/logos-execution-zone",
-    "cargoTag": "v0.2.0-rc6",
+    "repo": "3esmit/logos-execution-zone",
+    "cargoRev": "e37876a64028a335eb693198a1ed6a0e875ec5b4",
     "revision": "e37876a64028a335eb693198a1ed6a0e875ec5b4",
     "sourceHash": "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo="
+  },
+  "blockchain": {
+    "repo": "3esmit/logos-blockchain",
+    "cargoRev": "d8711bbc3d43d3ef9755ef9b73af32fd0f703160",
+    "revision": "d8711bbc3d43d3ef9755ef9b73af32fd0f703160"
   }
 }

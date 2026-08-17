@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = Path("build-artifacts.json")
 LEZ_DEPENDENCIES = (
     "common",
+    "indexer_service_protocol",
     "lee",
     "lee_core",
     "sequencer_service_rpc",
@@ -77,7 +78,7 @@ class BuildArtifacts:
         cargo = self.load_toml(Path("Cargo.toml"))
         deps = cargo.get("dependencies", {})
         lez = catalog.get("lez", {})
-        tag = lez.get("cargoTag")
+        revision = lez.get("cargoRev")
         repo = f"https://github.com/{lez.get('repo')}.git"
         for dep_name in LEZ_DEPENDENCIES:
             dep = deps.get(dep_name)
@@ -86,8 +87,19 @@ class BuildArtifacts:
                 continue
             if dep.get("git") != repo:
                 errors.append(f"Cargo.toml dependency `{dep_name}` git URL drifted from catalog")
-            if dep.get("tag") != tag:
-                errors.append(f"Cargo.toml dependency `{dep_name}` tag drifted from catalog")
+            if dep.get("rev") != revision:
+                errors.append(f"Cargo.toml dependency `{dep_name}` rev drifted from catalog")
+
+        blockchain = catalog.get("blockchain", {})
+        blockchain_dep = deps.get("lb-core")
+        blockchain_repo = f"https://github.com/{blockchain.get('repo')}.git"
+        if not isinstance(blockchain_dep, dict):
+            errors.append("Cargo.toml dependency `lb-core` must be a table")
+        else:
+            if blockchain_dep.get("git") != blockchain_repo:
+                errors.append("Cargo.toml dependency `lb-core` git URL drifted from catalog")
+            if blockchain_dep.get("rev") != blockchain.get("cargoRev"):
+                errors.append("Cargo.toml dependency `lb-core` rev drifted from catalog")
 
         standalone = self.load_toml(Path("crates/standalone-gui/Cargo.toml"))
         rapidsnark = standalone.get("dependencies", {}).get("rust-rapidsnark")
@@ -103,10 +115,20 @@ class BuildArtifacts:
         lez = catalog.get("lez", {})
         lez_source = (
             f"https://github.com/{lez.get('repo')}.git?"
-            f"tag={lez.get('cargoTag')}#{lez.get('revision')}"
+            f"rev={lez.get('cargoRev')}#{lez.get('revision')}"
         )
         if lez_source not in lockfile:
             errors.append("Cargo.lock LEZ source drifted from build artifact catalog")
+
+        blockchain = catalog.get("blockchain", {})
+        blockchain_source = (
+            f"https://github.com/{blockchain.get('repo')}.git?"
+            f"rev={blockchain.get('cargoRev')}#{blockchain.get('revision')}"
+        )
+        if blockchain_source not in lockfile:
+            errors.append("Cargo.lock blockchain source drifted from build artifact catalog")
+        if "https://github.com/logos-blockchain/logos-blockchain.git?" in lockfile:
+            errors.append("Cargo.lock retains upstream blockchain source")
 
         rapidsnark_rev = str(catalog.get("rapidsnark", {}).get("cargoRev", ""))
         rapidsnark_source = (
@@ -175,9 +197,17 @@ def catalog_shape_errors(catalog: dict[str, Any]) -> list[str]:
     if not isinstance(lez, dict):
         errors.append("build-artifacts.json must contain a lez object")
     else:
-        for key in ("repo", "cargoTag", "revision", "sourceHash"):
+        for key in ("repo", "cargoRev", "revision", "sourceHash"):
             if not lez.get(key):
                 errors.append(f"lez.{key} is required")
+
+    blockchain = catalog.get("blockchain")
+    if not isinstance(blockchain, dict):
+        errors.append("build-artifacts.json must contain a blockchain object")
+    else:
+        for key in ("repo", "cargoRev", "revision"):
+            if not blockchain.get(key):
+                errors.append(f"blockchain.{key} is required")
     return errors
 
 
