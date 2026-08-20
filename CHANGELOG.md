@@ -4,6 +4,14 @@ All notable user-facing changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and version numbers
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.0-rc15] - 2026-08-20
+
+### Fixed
+
+- Basecamp Storage managed-node configuration now uses the supported `nat: "auto"` token, allowing Inspector to initialize against current forked Storage builds.
+
 ## [0.2.0-rc14] - 2026-08-10
 
 ### Fixed
@@ -16,8 +24,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unambiguous.
 - Published connectors include the current LogosCore CLI Bedrock and module
   dependency fixes.
-
-## [Unreleased]
 
 ## [0.2.0-rc13] - 2026-08-07
 
