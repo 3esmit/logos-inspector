@@ -44,6 +44,7 @@ const LOGOSCORE_MAX_JSON_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 const LOGOSCORE_CLIENT_CONFIG_LIMIT: usize = 64 * 1024;
 // Linux permits multi-megabyte argument and environment vectors. Keep this
 // service-discovery read bounded while accepting unrelated service variables.
+#[cfg(target_os = "linux")]
 const LOGOSCORE_PROCESS_ENVIRONMENT_CAPTURE_LIMIT: usize = 8 * 1024 * 1024;
 const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
@@ -2049,6 +2050,7 @@ impl LogoscoreCliRuntime {
         })
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn configured_service_process_environment_reader(
         binary_path: String,
         sudo_user: String,
@@ -2095,6 +2097,7 @@ impl LogoscoreCliRuntime {
         self.cached_status_controlled(control)
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn process_environment(
         &self,
         process_id: u32,
@@ -3542,6 +3545,7 @@ fn runner_client_config_read_command(
     runner_privileged_read_command(runner, path)
 }
 
+#[cfg(target_os = "linux")]
 fn runner_process_environment_read_command(
     runner: &LogosCoreRunner,
     process_id: u32,
@@ -6197,6 +6201,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn configured_service_process_environment_reader_uses_fixed_utilities() -> Result<()> {
         use std::ffi::OsStr;
@@ -6231,7 +6236,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn process_environment_capture_accepts_output_beyond_legacy_limit() -> Result<()> {
         let bytes = (LOGOSCORE_CLIENT_CONFIG_LIMIT + 1).to_string();

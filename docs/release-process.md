@@ -15,11 +15,18 @@ UI metadata, and this changelog in one issue and pull request.
 ## Desktop and Basecamp release entry point
 
 One confirmed dispatch from `main` publishes every desktop and Basecamp
-artifact for the current source version:
+artifact for the current source version. The canonical combined release tag is
+`logos_inspector-v<version>` and contains all three artifact classes:
+
+- Core LGX and its `sidecar.json`;
+- UI LGX and `logos_inspector_ui-sidecar.json`; and
+- standalone Linux AppImage, macOS archive, and `SHA256SUMS`.
+
+The same dispatch also publishes source-owned stream tags for package clients:
 
 | Product | Tag | Assets |
 | --- | --- | --- |
-| Basecamp Core module | `logos_inspector-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
+| Basecamp Core module | `logos_inspector-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar; this is also the combined Inspector release tag |
 | Basecamp UI module | `logos_inspector_ui-v<version>` | One merged LGX containing Linux AMD64 and Darwin ARM64 variants, plus its release sidecar |
 | Standalone app | `standalone-v<version>` | Linux AMD64 AppImage, Darwin ARM64 `.app` archive, and `SHA256SUMS` |
 
@@ -31,17 +38,18 @@ gh workflow run release.yml -f confirm=true --ref main
 
 `release.yml` validates source identity and release contracts, refuses any
 existing Core/UI/standalone tag or release for the current version, then
-publishes all three streams in parallel. A final job downloads every published
-asset and verifies the complete set before the run succeeds.
+publishes all three streams in parallel. A final aggregation job adds the UI
+and standalone assets to the canonical Core tag, and verifies the complete set
+before the run succeeds.
 
 The headless CLI is intentionally excluded from this workflow. It has no Qt,
 QML, desktop bundle, or Basecamp dependency and is released through its own
 independent stream.
 
-Catalog tags remain independent so Basecamp can resolve each package by its
-source-owned release URL. The catalog indexes those immutable URLs after the
-source assets exist; publication does not require a catalog URL or prior
-Basecamp install result.
+Catalog package tags remain source-owned so Basecamp can resolve each module's
+own `sidecar.json` and immutable LGX URL. The combined tag is the convenient
+single-download Inspector distribution; catalog indexing still uses the
+package-specific stream tags after source assets exist.
 
 ## Independent stream republish
 

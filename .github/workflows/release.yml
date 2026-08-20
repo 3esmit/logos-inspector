@@ -98,12 +98,93 @@ jobs:
       confirm: true
     secrets: inherit
 
+  publish-aggregate:
+    needs:
+      - preflight
+      - publish-core
+      - publish-ui
+      - publish-standalone
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and stage the complete Inspector release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          core_tag="logos_inspector-v$VERSION"
+          ui_tag="logos_inspector_ui-v$VERSION"
+          standalone_tag="standalone-v$VERSION"
+
+          mkdir -p aggregate/core aggregate/ui aggregate/standalone
+          gh release download "$core_tag" --repo "$GITHUB_REPOSITORY" \
+            --dir aggregate/core
+          gh release download "$ui_tag" --repo "$GITHUB_REPOSITORY" \
+            --dir aggregate/ui
+          gh release download "$standalone_tag" --repo "$GITHUB_REPOSITORY" \
+            --dir aggregate/standalone
+
+          test -f "aggregate/core/logos_inspector-$VERSION.lgx"
+          test -f aggregate/core/sidecar.json
+          test -f "aggregate/ui/logos_inspector_ui-$VERSION.lgx"
+          test -f aggregate/ui/sidecar.json
+          python3 scripts/standalone_release.py verify \
+            --input-dir aggregate/standalone --version "$VERSION"
+
+          mkdir -p aggregate/upload
+          cp "aggregate/core/logos_inspector-$VERSION.lgx" aggregate/upload/
+          cp aggregate/core/sidecar.json aggregate/upload/
+          cp "aggregate/ui/logos_inspector_ui-$VERSION.lgx" aggregate/upload/
+          cp aggregate/ui/sidecar.json \
+            aggregate/upload/logos_inspector_ui-sidecar.json
+          cp aggregate/standalone/*.AppImage aggregate/upload/
+          cp aggregate/standalone/*.app.tar.gz aggregate/upload/
+          cp aggregate/standalone/SHA256SUMS aggregate/upload/
+
+      - name: Add complete artifact set to the canonical Inspector tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="logos_inspector-v$VERSION"
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" \
+            aggregate/upload/logos_inspector_ui-"$VERSION".lgx \
+            aggregate/upload/logos_inspector_ui-sidecar.json \
+            aggregate/upload/logos-inspector-standalone-"$VERSION"-linux-amd64.AppImage \
+            aggregate/upload/logos-inspector-standalone-"$VERSION"-darwin-arm64.app.tar.gz \
+            aggregate/upload/SHA256SUMS
+
+      - name: Verify canonical Inspector tag contains every artifact class
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="logos_inspector-v$VERSION"
+          mkdir -p aggregate/verified
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --dir aggregate/verified
+          test -f "aggregate/verified/logos_inspector-$VERSION.lgx"
+          test -f aggregate/verified/sidecar.json
+          test -f "aggregate/verified/logos_inspector_ui-$VERSION.lgx"
+          test -f aggregate/verified/logos_inspector_ui-sidecar.json
+          test -f "aggregate/verified/logos-inspector-standalone-$VERSION-linux-amd64.AppImage"
+          test -f "aggregate/verified/logos-inspector-standalone-$VERSION-darwin-arm64.app.tar.gz"
+          test -f aggregate/verified/SHA256SUMS
+
   verify-complete:
     needs:
       - preflight
       - publish-core
       - publish-ui
       - publish-standalone
+      - publish-aggregate
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,14 +213,31 @@ jobs:
             --input-dir published/standalone \
             --version "$VERSION"
 
+          mkdir -p published/aggregate
+          gh release download "$core_tag" --repo "$GITHUB_REPOSITORY" \
+            --dir published/aggregate
+          test -f "published/aggregate/logos_inspector-$VERSION.lgx"
+          test -f published/aggregate/sidecar.json
+          test -f "published/aggregate/logos_inspector_ui-$VERSION.lgx"
+          test -f published/aggregate/logos_inspector_ui-sidecar.json
+          test -f "published/aggregate/logos-inspector-standalone-$VERSION-linux-amd64.AppImage"
+          test -f "published/aggregate/logos-inspector-standalone-$VERSION-darwin-arm64.app.tar.gz"
+          test -f published/aggregate/SHA256SUMS
+
           {
             echo "# Logos Inspector v$VERSION complete release"
             echo
-            echo "Published source-owned alpha streams:"
+            echo "Canonical combined release tag: \`$core_tag\`"
             echo
-            echo "- Core module: \`$core_tag\`"
-            echo "- UI module: \`$ui_tag\`"
-            echo "- Standalone app: \`$standalone_tag\`"
+            echo "- Core module LGX and sidecar"
+            echo "- UI module LGX and sidecar"
+            echo "- Standalone Linux AppImage and macOS archive"
+            echo
+            echo "Source-owned stream tags remain available for catalog resolution:"
+            echo
+            echo "- Core: \`$core_tag\`"
+            echo "- UI: \`$ui_tag\`"
+            echo "- Standalone: \`$standalone_tag\`"
             echo
             echo "Assets verified after download from GitHub Releases."
           } >> "$GITHUB_STEP_SUMMARY"
