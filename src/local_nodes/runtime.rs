@@ -45,11 +45,13 @@ const SYSTEMCTL_COMMAND_CANDIDATES: &[&str] = &[
     "/usr/bin/systemctl",
     "/bin/systemctl",
 ];
+#[cfg(any(target_os = "linux", test))]
 const BUSCTL_COMMAND_CANDIDATES: &[&str] = &[
     "/run/current-system/sw/bin/busctl",
     "/usr/bin/busctl",
     "/bin/busctl",
 ];
+#[cfg(any(target_os = "linux", test))]
 const GETENT_COMMAND_CANDIDATES: &[&str] = &[
     "/run/current-system/sw/bin/getent",
     "/usr/bin/getent",
