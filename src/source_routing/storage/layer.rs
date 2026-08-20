@@ -81,7 +81,9 @@ pub(crate) fn managed_config(data_dir: &str) -> Value {
         "listen-ip": "0.0.0.0",
         "listen-port": 8091,
         "disc-port": 8090,
-        "nat": "any",
+        // Current Logos Storage accepts `auto` here. The older `any` token
+        // is rejected during JSON configuration loading.
+        "nat": "auto",
         "network": crate::testnet::LOGOS_TESTNET_PRESET,
     })
 }
@@ -704,6 +706,12 @@ mod tests {
                 ManagedNodeAction::Destroy,
             ],
         );
+    }
+
+    #[test]
+    fn storage_managed_config_uses_current_nat_token() {
+        let config = managed_config("/tmp/logos-testnet/data/storage");
+        assert_eq!(config.get("nat"), Some(&json!("auto")));
     }
 
     #[test]
