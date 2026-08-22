@@ -594,6 +594,114 @@ TestCase {
         compare(gateway.history[0].detail, "Delivery started")
     }
 
+    function test_successful_basecamp_storage_start_refreshes_storage_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        const report = testnetReport()
+        report.operations = [{
+            action: "start",
+            node: "storage",
+            status: "running",
+            detail: "Storage started"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("start", "storage", "", "", "Start Storage")
+
+        compare(gateway.storageCapabilityObservationCount, 1)
+        compare(gateway.history.length, 1)
+        compare(gateway.history[0].detail, "Storage started")
+    }
+
+    function test_failed_storage_action_does_not_refresh_storage_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        gateway.responses = ({
+            localNodesAction: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "start failed"
+            }
+        })
+
+        state.runAction("start", "storage", "", "", "Start Storage")
+
+        compare(gateway.storageCapabilityObservationCount, 0)
+    }
+
+    function test_nonterminal_basecamp_storage_start_does_not_refresh_storage_observation() {
+        state.networkProfile = "default"
+        gateway.basecampModules = true
+        const report = testnetReport()
+        report.operations = [{
+            action: "start",
+            node: "storage",
+            status: "starting",
+            detail: "Storage is starting"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("start", "storage", "", "", "Start Storage")
+
+        compare(gateway.storageCapabilityObservationCount, 0)
+    }
+
+    function test_successful_standalone_storage_start_does_not_refresh_storage_observation() {
+        state.networkProfile = "default"
+        const report = testnetReport()
+        report.operations = [{
+            action: "start",
+            node: "storage",
+            status: "running",
+            detail: "Storage started"
+        }]
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: report,
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.runAction("start", "storage", "", "", "Start Storage")
+
+        compare(gateway.storageCapabilityObservationCount, 0)
+    }
+
     function test_failed_messaging_action_does_not_refresh_delivery_observation() {
         state.networkProfile = "default"
         gateway.basecampModules = true
