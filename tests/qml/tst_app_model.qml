@@ -5625,6 +5625,48 @@ TestCase {
         }).length, 1)
     }
 
+    function test_idl_registration_rejects_duplicate_metadata_named_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const idlJson = JSON.stringify({
+            metadata: { name: "MetadataSample" },
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).name, "MetadataSample")
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultText,
+            "IDL MetadataSample is already registered for this program.")
+        verify(model.shell.resultIsError)
+    }
+
+    function test_idl_registration_rejects_duplicate_completely_nameless_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const idlJson = JSON.stringify({
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).name, "IDL 1")
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultText, "IDL 1 is already registered for this program.")
+        verify(model.shell.resultIsError)
+    }
+
     function test_deploy_program_binary_uses_wallet_confirmation_and_logs_execution_operation() {
         configureReadyWallet()
         fakeHost.responses = {

@@ -72,34 +72,42 @@ function updateKnownProgramIds(root, value) {
     }
 }
 
-function hasRegisteredIdl(root, name, programIdHex, json, idl) {
+function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
     with (root) {
-        const expectedName = String(name || "")
+        const expectedName = String(name || "").trim()
         const expectedProgramId = root.normalizedHexText(programIdHex)
         const expectedVersion = idlVersion(idl)
+        const expectedJson = String(json || "")
         for (let i = 0; i < registeredIdls.count; ++i) {
             const entry = root.idlEntryAt(i)
-            if (String(entry.name || "") !== expectedName) {
-                continue
-            }
             const entryProgramId = root.normalizedHexText(entry.programIdHex)
                 || root.canonicalProgramIdHex(entry.programId)
             if (entryProgramId !== expectedProgramId) {
+                continue
+            }
+            const entryJson = String(entry.json || "")
+            if (!expectedName.length) {
+                if (entryJson === expectedJson) {
+                    return entry
+                }
+                continue
+            }
+            if (String(entry.name || "") !== expectedName) {
                 continue
             }
             const parsedEntry = BridgeHelpers.parseJson(String(entry.json || ""))
             const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
             if (expectedVersion.length > 0 || entryVersion.length > 0) {
                 if (expectedVersion === entryVersion) {
-                    return true
+                    return entry
                 }
                 continue
             }
-            if (String(entry.json || "") === String(json || "")) {
-                return true
+            if (entryJson === expectedJson) {
+                return entry
             }
         }
-        return false
+        return null
     }
 }
 
@@ -116,6 +124,19 @@ function idlVersion(idl) {
         ? String(metadata.version).trim() : ""
 }
 
+function idlLogicalName(idl) {
+    if (!idl || typeof idl !== "object" || Array.isArray(idl)) {
+        return ""
+    }
+    const name = String(idl.name || "").trim()
+    if (name.length) {
+        return name
+    }
+    const metadata = idl.metadata
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? String(metadata.name || "").trim() : ""
+}
+
 function registerIdl(root, name, programId, json, programBinary) {
     with (root) {
         if (!json.trim().length) {
@@ -130,7 +151,10 @@ function registerIdl(root, name, programId, json, programBinary) {
         }
 
         const idl = parsed.value
-        const resolvedName = name.trim().length ? name.trim() : (idl.name || qsTr("IDL %1").arg(registeredIdls.count + 1))
+        const requestedName = String(name || "").trim()
+        const logicalName = requestedName.length ? requestedName : idlLogicalName(idl)
+        const resolvedName = logicalName.length
+            ? logicalName : qsTr("IDL %1").arg(registeredIdls.count + 1)
         const resolvedProgramId = programId.trim()
         const resolvedProgramIdHex = resolvedProgramId.length ? root.canonicalProgramIdHex(resolvedProgramId) : ""
         if (!resolvedProgramId.length) {
@@ -141,10 +165,15 @@ function registerIdl(root, name, programId, json, programBinary) {
             shell.setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
             return
         }
-        if (hasRegisteredIdl(root, resolvedName, resolvedProgramIdHex, json, idl)) {
+        const duplicate = registeredIdlDuplicate(
+            root, logicalName, resolvedProgramIdHex, json, idl)
+        if (duplicate !== null) {
+            const duplicateName = String(duplicate.name || resolvedName)
+            const duplicateLabel = duplicateName.indexOf("IDL ") === 0
+                ? duplicateName : qsTr("IDL %1").arg(duplicateName)
             shell.setResult(
                 qsTr("IDL registry"),
-                qsTr("IDL %1 is already registered for this program.").arg(resolvedName),
+                qsTr("%1 is already registered for this program.").arg(duplicateLabel),
                 true)
             return
         }
