@@ -5691,6 +5691,37 @@ TestCase {
         }).length, 2)
     }
 
+    function test_idl_registration_does_not_pair_binary_with_changed_json() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const originalJson = JSON.stringify({
+            name: "VersionedSample",
+            version: "1",
+            instructions: [],
+            accounts: []
+        })
+        const changedJson = JSON.stringify({
+            name: "VersionedSample",
+            version: "1",
+            instructions: [{ name: "changed" }],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, originalJson, "original.bin")
+        compare(model.registeredIdls.count, 1)
+
+        model.registerIdl("", programId, changedJson, "changed.bin")
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).programBinary, "original.bin")
+        compare(model.shell.resultText,
+            "IDL VersionedSample is already registered for this program.")
+        verify(model.shell.resultIsError)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "saveIdlState"
+        }).length, 1)
+    }
+
     function test_idl_registration_rejects_legacy_metadata_named_artifact() {
         const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
         const programIdHex = programId.slice(2)

@@ -91,7 +91,7 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
             const entryJson = String(entry.json || "")
             if (!expectedName.length) {
                 if (entryJson === expectedJson) {
-                    return { entry: entry, index: i }
+                    return { entry: entry, index: i, jsonMatches: true }
                 }
                 continue
             }
@@ -106,12 +106,16 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
             const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
             if (expectedVersion.length > 0 || entryVersion.length > 0) {
                 if (expectedVersion === entryVersion) {
-                    return { entry: entry, index: i }
+                    return {
+                        entry: entry,
+                        index: i,
+                        jsonMatches: entryJson === expectedJson
+                    }
                 }
                 continue
             }
             if (entryJson === expectedJson) {
-                return { entry: entry, index: i }
+                return { entry: entry, index: i, jsonMatches: true }
             }
         }
         return null
@@ -180,7 +184,8 @@ function registerIdl(root, name, programId, json, programBinary) {
             const duplicateLabel = duplicateName.indexOf("IDL ") === 0
                 ? duplicateName : qsTr("IDL %1").arg(duplicateName)
             const resolvedProgramBinary = String(programBinary || "").trim()
-            if (resolvedProgramBinary.length
+            if (duplicateRecord.jsonMatches === true
+                    && resolvedProgramBinary.length
                     && resolvedProgramBinary !== String(duplicate.programBinary || "").trim()) {
                 registeredIdls.setProperty(
                     duplicateRecord.index, "programBinary", resolvedProgramBinary)
