@@ -842,6 +842,19 @@ QtObject {
                     "source-inspection")
             }
 
+            function refreshStorageObservation() {
+                return metricsState.observeNetworkConnection(
+                    "storage",
+                    false,
+                    false,
+                    function () {
+                        if (root.capabilityRegistryLoaded !== true) {
+                            root.loadCapabilityRegistryAsync()
+                        }
+                    },
+                    "source-inspection")
+            }
+
             function invalidateMessagingObservation(reason) {
                 return root.invalidateMessagingObservation(reason)
             }

@@ -476,6 +476,12 @@ QtObject {
                         && typeof gateway.refreshMessagingObservation === "function") {
                     gateway.refreshMessagingObservation();
                 } else if (basecampHost
+                        && request.action === "start"
+                        && request.node === "storage"
+                        && String(operation.status || "").toLowerCase() === "running"
+                        && typeof gateway.refreshStorageObservation === "function") {
+                    gateway.refreshStorageObservation();
+                } else if (basecampHost
                         && request.action === "uninstall"
                         && request.node === "messaging"
                         && String(operation.status || "").toLowerCase() === "uninstalled"
