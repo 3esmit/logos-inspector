@@ -72,6 +72,50 @@ function updateKnownProgramIds(root, value) {
     }
 }
 
+function hasRegisteredIdl(root, name, programIdHex, json, idl) {
+    with (root) {
+        const expectedName = String(name || "")
+        const expectedProgramId = root.normalizedHexText(programIdHex)
+        const expectedVersion = idlVersion(idl)
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            const entry = root.idlEntryAt(i)
+            if (String(entry.name || "") !== expectedName) {
+                continue
+            }
+            const entryProgramId = root.normalizedHexText(entry.programIdHex)
+                || root.canonicalProgramIdHex(entry.programId)
+            if (entryProgramId !== expectedProgramId) {
+                continue
+            }
+            const parsedEntry = BridgeHelpers.parseJson(String(entry.json || ""))
+            const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
+            if (expectedVersion.length > 0 || entryVersion.length > 0) {
+                if (expectedVersion === entryVersion) {
+                    return true
+                }
+                continue
+            }
+            if (String(entry.json || "") === String(json || "")) {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+function idlVersion(idl) {
+    if (!idl || typeof idl !== "object" || Array.isArray(idl)) {
+        return ""
+    }
+    if (idl.version !== undefined && idl.version !== null) {
+        return String(idl.version).trim()
+    }
+    const metadata = idl.metadata
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        && metadata.version !== undefined && metadata.version !== null
+        ? String(metadata.version).trim() : ""
+}
+
 function registerIdl(root, name, programId, json, programBinary) {
     with (root) {
         if (!json.trim().length) {
@@ -95,6 +139,13 @@ function registerIdl(root, name, programId, json, programBinary) {
         }
         if (resolvedProgramId.length && !resolvedProgramIdHex.length) {
             shell.setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
+            return
+        }
+        if (hasRegisteredIdl(root, resolvedName, resolvedProgramIdHex, json, idl)) {
+            shell.setResult(
+                qsTr("IDL registry"),
+                qsTr("IDL %1 is already registered for this program.").arg(resolvedName),
+                true)
             return
         }
         registeredIdls.append({

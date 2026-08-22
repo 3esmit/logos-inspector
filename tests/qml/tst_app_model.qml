@@ -5613,6 +5613,16 @@ TestCase {
         compare(model.registeredIdls.get(0).name, "Sample")
         compare(model.registeredIdls.get(0).programIdHex, programId.slice(2))
         compare(fakeHost.lastMethod, "saveIdlState")
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultTitle, "IDL registry")
+        compare(model.shell.resultText, "IDL Sample is already registered for this program.")
+        verify(model.shell.resultIsError)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "saveIdlState"
+        }).length, 1)
     }
 
     function test_deploy_program_binary_uses_wallet_confirmation_and_logs_execution_operation() {
