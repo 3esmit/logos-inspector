@@ -91,23 +91,27 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
             const entryJson = String(entry.json || "")
             if (!expectedName.length) {
                 if (entryJson === expectedJson) {
-                    return entry
+                    return { entry: entry, index: i }
                 }
                 continue
             }
-            if (String(entry.name || "") !== expectedName) {
+            const parsedEntry = BridgeHelpers.parseJson(entryJson)
+            const entryLogicalName = parsedEntry.ok ? idlLogicalName(parsedEntry.value) : ""
+            const entryName = String(entry.name || "").trim()
+            const legacyLogicalNameMatch = entryName.indexOf("IDL ") === 0
+                && entryLogicalName === expectedName
+            if (entryName !== expectedName && !legacyLogicalNameMatch) {
                 continue
             }
-            const parsedEntry = BridgeHelpers.parseJson(String(entry.json || ""))
             const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
             if (expectedVersion.length > 0 || entryVersion.length > 0) {
                 if (expectedVersion === entryVersion) {
-                    return entry
+                    return { entry: entry, index: i }
                 }
                 continue
             }
             if (entryJson === expectedJson) {
-                return entry
+                return { entry: entry, index: i }
             }
         }
         return null
@@ -168,12 +172,22 @@ function registerIdl(root, name, programId, json, programBinary) {
             shell.setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
             return
         }
-        const duplicate = registeredIdlDuplicate(
+        const duplicateRecord = registeredIdlDuplicate(
             root, logicalName, resolvedProgramIdHex, json, idl)
-        if (duplicate !== null) {
+        if (duplicateRecord !== null) {
+            const duplicate = duplicateRecord.entry
             const duplicateName = String(duplicate.name || resolvedName)
             const duplicateLabel = duplicateName.indexOf("IDL ") === 0
                 ? duplicateName : qsTr("IDL %1").arg(duplicateName)
+            const resolvedProgramBinary = String(programBinary || "").trim()
+            if (resolvedProgramBinary.length
+                    && resolvedProgramBinary !== String(duplicate.programBinary || "").trim()) {
+                registeredIdls.setProperty(
+                    duplicateRecord.index, "programBinary", resolvedProgramBinary)
+                saveIdlState()
+                shell.setResult(qsTr("IDL registry"), qsTr("Updated %1.").arg(duplicateName), false)
+                return
+            }
             shell.setResult(
                 qsTr("IDL registry"),
                 qsTr("%1 is already registered for this program.").arg(duplicateLabel),

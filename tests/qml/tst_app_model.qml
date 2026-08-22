@@ -5667,6 +5667,61 @@ TestCase {
         verify(model.shell.resultIsError)
     }
 
+    function test_idl_registration_updates_existing_program_binary() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const idlJson = JSON.stringify({
+            name: "BinarySample",
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, idlJson)
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).programBinary, "")
+
+        model.registerIdl("", programId, idlJson, "program.bin")
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).programBinary, "program.bin")
+        compare(model.shell.resultText, "Updated BinarySample.")
+        verify(!model.shell.resultIsError)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "saveIdlState"
+        }).length, 2)
+    }
+
+    function test_idl_registration_rejects_legacy_metadata_named_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const programIdHex = programId.slice(2)
+        const idlJson = JSON.stringify({
+            metadata: { name: "LegacyMetadataSample" },
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registeredIdls.append({
+            key: "legacy-metadata",
+            name: "IDL 1",
+            programId: programId,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: idlJson,
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: "",
+            accountType: ""
+        })
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultText, "IDL 1 is already registered for this program.")
+        verify(model.shell.resultIsError)
+    }
+
     function test_idl_registration_allows_local_copy_of_shared_artifact() {
         const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
         const programIdHex = programId.slice(2)
