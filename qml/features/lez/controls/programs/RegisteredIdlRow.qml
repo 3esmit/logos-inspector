@@ -19,6 +19,12 @@ Item {
     Layout.fillWidth: true
     implicitHeight: Math.max(52, rowLayout.implicitHeight + root.theme.gapLarge)
 
+    Accessible.role: Accessible.ListItem
+    Accessible.name: root.idlName.length ? root.idlName : qsTr("Unnamed IDL")
+    Accessible.description: root.programIdText.length
+        ? qsTr("Program %1. %2 field(s)").arg(root.programIdText).arg(root.fieldCount)
+        : qsTr("%1 field(s). No program binding").arg(root.fieldCount)
+
     GridLayout {
         id: rowLayout
 
@@ -43,6 +49,7 @@ Item {
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+                Accessible.ignored: true
             }
 
             Text {
@@ -53,6 +60,7 @@ Item {
                 font.pixelSize: root.theme.dataText
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+                Accessible.ignored: true
             }
         }
 
@@ -63,6 +71,7 @@ Item {
             font.pixelSize: root.theme.dataText
             Layout.preferredWidth: 96
             Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+            Accessible.ignored: true
         }
 
         ActionButton {
