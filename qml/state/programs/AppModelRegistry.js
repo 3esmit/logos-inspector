@@ -80,6 +80,9 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
         const expectedJson = String(json || "")
         for (let i = 0; i < registeredIdls.count; ++i) {
             const entry = root.idlEntryAt(i)
+            if (String(entry.source || "") === "shared") {
+                continue
+            }
             const entryProgramId = root.normalizedHexText(entry.programIdHex)
                 || root.canonicalProgramIdHex(entry.programId)
             if (entryProgramId !== expectedProgramId) {

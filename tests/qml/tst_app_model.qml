@@ -5667,6 +5667,39 @@ TestCase {
         verify(model.shell.resultIsError)
     }
 
+    function test_idl_registration_allows_local_copy_of_shared_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const programIdHex = programId.slice(2)
+        const idlJson = JSON.stringify({
+            name: "SharedSample",
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registeredIdls.append({
+            key: "shared-sample",
+            name: "SharedSample",
+            programId: programId,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: idlJson,
+            source: "shared",
+            sharedTopic: "/lez/account/account-1/idl",
+            sharedIdentity: {},
+            sharedAccountId: "account-1",
+            accountType: "State"
+        })
+
+        model.registerIdl("SharedSample", programId, idlJson, "program.bin")
+
+        compare(model.registeredIdls.count, 2)
+        compare(model.registeredIdls.get(1).source, "local")
+        compare(model.registeredIdls.get(1).programBinary, "program.bin")
+        compare(model.shell.resultText, "Saved SharedSample.")
+        verify(!model.shell.resultIsError)
+    }
+
     function test_deploy_program_binary_uses_wallet_confirmation_and_logs_execution_operation() {
         configureReadyWallet()
         fakeHost.responses = {
