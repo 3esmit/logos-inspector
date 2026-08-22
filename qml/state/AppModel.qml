@@ -850,6 +850,8 @@ QtObject {
                     function () {
                         if (root.capabilityRegistryLoaded !== true) {
                             root.loadCapabilityRegistryAsync()
+                        } else {
+                            root.refreshCapabilityRegistryIfLoaded()
                         }
                     },
                     "source-inspection")
