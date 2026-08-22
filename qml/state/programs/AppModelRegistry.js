@@ -200,7 +200,7 @@ function registerIdl(root, name, programId, json, programBinary) {
             return
         }
         registeredIdls.append({
-            key: idlKey(resolvedName, resolvedProgramIdHex, json),
+            key: "local:" + idlKey(resolvedName, resolvedProgramIdHex, json),
             name: resolvedName,
             programId: resolvedProgramId,
             programIdHex: resolvedProgramIdHex,

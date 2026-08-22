@@ -5761,10 +5761,11 @@ TestCase {
             instructions: [],
             accounts: []
         })
+        const sharedKey = model.idlKey("SharedSample", programIdHex, idlJson)
 
         model.idlStateLoaded = true
         model.registeredIdls.append({
-            key: "shared-sample",
+            key: sharedKey,
             name: "SharedSample",
             programId: programId,
             programIdHex: programIdHex,
@@ -5781,7 +5782,10 @@ TestCase {
 
         compare(model.registeredIdls.count, 2)
         compare(model.registeredIdls.get(1).source, "local")
+        compare(model.registeredIdls.get(1).key, "local:" + sharedKey)
         compare(model.registeredIdls.get(1).programBinary, "program.bin")
+        compare(model.idlEntryForKey(sharedKey).source, "shared")
+        compare(model.idlEntryForKey(model.registeredIdls.get(1).key).source, "local")
         compare(model.shell.resultText, "Saved SharedSample.")
         verify(!model.shell.resultIsError)
     }
