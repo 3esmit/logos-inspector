@@ -5613,6 +5613,181 @@ TestCase {
         compare(model.registeredIdls.get(0).name, "Sample")
         compare(model.registeredIdls.get(0).programIdHex, programId.slice(2))
         compare(fakeHost.lastMethod, "saveIdlState")
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultTitle, "IDL registry")
+        compare(model.shell.resultText, "IDL Sample is already registered for this program.")
+        verify(model.shell.resultIsError)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "saveIdlState"
+        }).length, 1)
+    }
+
+    function test_idl_registration_rejects_duplicate_metadata_named_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const idlJson = JSON.stringify({
+            metadata: { name: "MetadataSample" },
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).name, "MetadataSample")
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultText,
+            "IDL MetadataSample is already registered for this program.")
+        verify(model.shell.resultIsError)
+    }
+
+    function test_idl_registration_rejects_duplicate_completely_nameless_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const idlJson = JSON.stringify({
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).name, "IDL 1")
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultText, "IDL 1 is already registered for this program.")
+        verify(model.shell.resultIsError)
+    }
+
+    function test_idl_registration_updates_existing_program_binary() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const idlJson = JSON.stringify({
+            name: "BinarySample",
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, idlJson)
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).programBinary, "")
+
+        model.registerIdl("", programId, idlJson, "program.bin")
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).programBinary, "program.bin")
+        compare(model.shell.resultText, "Updated BinarySample.")
+        verify(!model.shell.resultIsError)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "saveIdlState"
+        }).length, 2)
+    }
+
+    function test_idl_registration_does_not_pair_binary_with_changed_json() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const originalJson = JSON.stringify({
+            name: "VersionedSample",
+            version: "1",
+            instructions: [],
+            accounts: []
+        })
+        const changedJson = JSON.stringify({
+            name: "VersionedSample",
+            version: "1",
+            instructions: [{ name: "changed" }],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registerIdl("", programId, originalJson, "original.bin")
+        compare(model.registeredIdls.count, 1)
+
+        model.registerIdl("", programId, changedJson, "changed.bin")
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).programBinary, "original.bin")
+        compare(model.shell.resultText,
+            "IDL VersionedSample is already registered for this program.")
+        verify(model.shell.resultIsError)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "saveIdlState"
+        }).length, 1)
+    }
+
+    function test_idl_registration_rejects_legacy_metadata_named_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const programIdHex = programId.slice(2)
+        const idlJson = JSON.stringify({
+            metadata: { name: "LegacyMetadataSample" },
+            instructions: [],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registeredIdls.append({
+            key: "legacy-metadata",
+            name: "IDL 1",
+            programId: programId,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: idlJson,
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: "",
+            accountType: ""
+        })
+
+        model.registerIdl("", programId, idlJson)
+
+        compare(model.registeredIdls.count, 1)
+        compare(model.shell.resultText, "IDL 1 is already registered for this program.")
+        verify(model.shell.resultIsError)
+    }
+
+    function test_idl_registration_allows_local_copy_of_shared_artifact() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const programIdHex = programId.slice(2)
+        const idlJson = JSON.stringify({
+            name: "SharedSample",
+            instructions: [],
+            accounts: []
+        })
+        const sharedKey = model.idlKey("SharedSample", programIdHex, idlJson)
+
+        model.idlStateLoaded = true
+        model.registeredIdls.append({
+            key: sharedKey,
+            name: "SharedSample",
+            programId: programId,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: idlJson,
+            source: "shared",
+            sharedTopic: "/lez/account/account-1/idl",
+            sharedIdentity: {},
+            sharedAccountId: "account-1",
+            accountType: "State"
+        })
+
+        model.registerIdl("SharedSample", programId, idlJson, "program.bin")
+
+        compare(model.registeredIdls.count, 2)
+        compare(model.registeredIdls.get(1).source, "local")
+        compare(model.registeredIdls.get(1).key, "local:" + sharedKey)
+        compare(model.registeredIdls.get(1).programBinary, "program.bin")
+        compare(model.idlEntryForKey(sharedKey).source, "shared")
+        compare(model.idlEntryForKey(model.registeredIdls.get(1).key).source, "local")
+        compare(model.shell.resultText, "Saved SharedSample.")
+        verify(!model.shell.resultIsError)
     }
 
     function test_deploy_program_binary_uses_wallet_confirmation_and_logs_execution_operation() {

@@ -72,6 +72,82 @@ function updateKnownProgramIds(root, value) {
     }
 }
 
+function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
+    with (root) {
+        const expectedName = String(name || "").trim()
+        const expectedProgramId = root.normalizedHexText(programIdHex)
+        const expectedVersion = idlVersion(idl)
+        const expectedJson = String(json || "")
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            const entry = root.idlEntryAt(i)
+            if (String(entry.source || "") === "shared") {
+                continue
+            }
+            const entryProgramId = root.normalizedHexText(entry.programIdHex)
+                || root.canonicalProgramIdHex(entry.programId)
+            if (entryProgramId !== expectedProgramId) {
+                continue
+            }
+            const entryJson = String(entry.json || "")
+            if (!expectedName.length) {
+                if (entryJson === expectedJson) {
+                    return { entry: entry, index: i, jsonMatches: true }
+                }
+                continue
+            }
+            const parsedEntry = BridgeHelpers.parseJson(entryJson)
+            const entryLogicalName = parsedEntry.ok ? idlLogicalName(parsedEntry.value) : ""
+            const entryName = String(entry.name || "").trim()
+            const legacyLogicalNameMatch = entryName.indexOf("IDL ") === 0
+                && entryLogicalName === expectedName
+            if (entryName !== expectedName && !legacyLogicalNameMatch) {
+                continue
+            }
+            const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
+            if (expectedVersion.length > 0 || entryVersion.length > 0) {
+                if (expectedVersion === entryVersion) {
+                    return {
+                        entry: entry,
+                        index: i,
+                        jsonMatches: entryJson === expectedJson
+                    }
+                }
+                continue
+            }
+            if (entryJson === expectedJson) {
+                return { entry: entry, index: i, jsonMatches: true }
+            }
+        }
+        return null
+    }
+}
+
+function idlVersion(idl) {
+    if (!idl || typeof idl !== "object" || Array.isArray(idl)) {
+        return ""
+    }
+    if (idl.version !== undefined && idl.version !== null) {
+        return String(idl.version).trim()
+    }
+    const metadata = idl.metadata
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        && metadata.version !== undefined && metadata.version !== null
+        ? String(metadata.version).trim() : ""
+}
+
+function idlLogicalName(idl) {
+    if (!idl || typeof idl !== "object" || Array.isArray(idl)) {
+        return ""
+    }
+    const name = String(idl.name || "").trim()
+    if (name.length) {
+        return name
+    }
+    const metadata = idl.metadata
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? String(metadata.name || "").trim() : ""
+}
+
 function registerIdl(root, name, programId, json, programBinary) {
     with (root) {
         if (!json.trim().length) {
@@ -86,7 +162,10 @@ function registerIdl(root, name, programId, json, programBinary) {
         }
 
         const idl = parsed.value
-        const resolvedName = name.trim().length ? name.trim() : (idl.name || qsTr("IDL %1").arg(registeredIdls.count + 1))
+        const requestedName = String(name || "").trim()
+        const logicalName = requestedName.length ? requestedName : idlLogicalName(idl)
+        const resolvedName = logicalName.length
+            ? logicalName : qsTr("IDL %1").arg(registeredIdls.count + 1)
         const resolvedProgramId = programId.trim()
         const resolvedProgramIdHex = resolvedProgramId.length ? root.canonicalProgramIdHex(resolvedProgramId) : ""
         if (!resolvedProgramId.length) {
@@ -97,8 +176,31 @@ function registerIdl(root, name, programId, json, programBinary) {
             shell.setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
             return
         }
+        const duplicateRecord = registeredIdlDuplicate(
+            root, logicalName, resolvedProgramIdHex, json, idl)
+        if (duplicateRecord !== null) {
+            const duplicate = duplicateRecord.entry
+            const duplicateName = String(duplicate.name || resolvedName)
+            const duplicateLabel = duplicateName.indexOf("IDL ") === 0
+                ? duplicateName : qsTr("IDL %1").arg(duplicateName)
+            const resolvedProgramBinary = String(programBinary || "").trim()
+            if (duplicateRecord.jsonMatches === true
+                    && resolvedProgramBinary.length
+                    && resolvedProgramBinary !== String(duplicate.programBinary || "").trim()) {
+                registeredIdls.setProperty(
+                    duplicateRecord.index, "programBinary", resolvedProgramBinary)
+                saveIdlState()
+                shell.setResult(qsTr("IDL registry"), qsTr("Updated %1.").arg(duplicateName), false)
+                return
+            }
+            shell.setResult(
+                qsTr("IDL registry"),
+                qsTr("%1 is already registered for this program.").arg(duplicateLabel),
+                true)
+            return
+        }
         registeredIdls.append({
-            key: idlKey(resolvedName, resolvedProgramIdHex, json),
+            key: "local:" + idlKey(resolvedName, resolvedProgramIdHex, json),
             name: resolvedName,
             programId: resolvedProgramId,
             programIdHex: resolvedProgramIdHex,
