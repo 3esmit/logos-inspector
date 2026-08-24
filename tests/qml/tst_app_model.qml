@@ -5722,6 +5722,59 @@ TestCase {
         }).length, 1)
     }
 
+    function test_idl_registration_finds_exact_json_after_same_version_conflict() {
+        const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const programIdHex = programId.slice(2)
+        const firstJson = JSON.stringify({
+            name: "DuplicateVersionSample",
+            version: "1",
+            instructions: [{ name: "first" }],
+            accounts: []
+        })
+        const exactJson = JSON.stringify({
+            name: "DuplicateVersionSample",
+            version: "1",
+            instructions: [{ name: "exact" }],
+            accounts: []
+        })
+
+        model.idlStateLoaded = true
+        model.registeredIdls.append({
+            key: "duplicate-version-first",
+            name: "DuplicateVersionSample",
+            programId: programId,
+            programIdHex: programIdHex,
+            programBinary: "first.bin",
+            json: firstJson,
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: "",
+            accountType: ""
+        })
+        model.registeredIdls.append({
+            key: "duplicate-version-exact",
+            name: "DuplicateVersionSample",
+            programId: programId,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: exactJson,
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: "",
+            accountType: ""
+        })
+
+        model.registerIdl("", programId, exactJson, "exact.bin")
+
+        compare(model.registeredIdls.count, 2)
+        compare(model.registeredIdls.get(0).programBinary, "first.bin")
+        compare(model.registeredIdls.get(1).programBinary, "exact.bin")
+        compare(model.shell.resultText, "Updated DuplicateVersionSample.")
+        verify(!model.shell.resultIsError)
+    }
+
     function test_idl_registration_rejects_legacy_metadata_named_artifact() {
         const programId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
         const programIdHex = programId.slice(2)

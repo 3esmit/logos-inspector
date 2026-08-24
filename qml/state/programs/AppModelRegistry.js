@@ -78,6 +78,7 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
         const expectedProgramId = root.normalizedHexText(programIdHex)
         const expectedVersion = idlVersion(idl)
         const expectedJson = String(json || "")
+        let versionConflict = null
         for (let i = 0; i < registeredIdls.count; ++i) {
             const entry = root.idlEntryAt(i)
             if (String(entry.source || "") === "shared") {
@@ -106,10 +107,15 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
             const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
             if (expectedVersion.length > 0 || entryVersion.length > 0) {
                 if (expectedVersion === entryVersion) {
-                    return {
-                        entry: entry,
-                        index: i,
-                        jsonMatches: entryJson === expectedJson
+                    if (entryJson === expectedJson) {
+                        return { entry: entry, index: i, jsonMatches: true }
+                    }
+                    if (versionConflict === null) {
+                        versionConflict = {
+                            entry: entry,
+                            index: i,
+                            jsonMatches: false
+                        }
                     }
                 }
                 continue
@@ -118,7 +124,7 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
                 return { entry: entry, index: i, jsonMatches: true }
             }
         }
-        return null
+        return versionConflict
     }
 }
 
