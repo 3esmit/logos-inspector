@@ -90,6 +90,16 @@ TestCase {
                 Layout.fillWidth: true
             }
 
+            StatusMessage {
+                id: resultErrorMessage
+
+                theme: theme
+                title: qsTr("Call failed")
+                message: qsTr("The operation failed.")
+                visible: false
+                Layout.fillWidth: true
+            }
+
             DataTableFrame {
                 id: dataTableFrame
 
@@ -198,6 +208,17 @@ TestCase {
 
         tryCompare(status.Accessible, "name", "Bedrock Blockchain status: OK")
         tryCompare(status.Accessible, "description", "slot 77 at now")
+    }
+
+    function test_hidden_status_message_is_not_exposed_to_accessibility() {
+        verify(!resultErrorMessage.visible)
+        verify(resultErrorMessage.Accessible.ignored)
+
+        resultErrorMessage.visible = true
+        tryCompare(resultErrorMessage.Accessible, "ignored", false)
+
+        resultErrorMessage.visible = false
+        tryCompare(resultErrorMessage.Accessible, "ignored", true)
     }
 
     function test_field_row_exposes_editable_text_accessibility() {

@@ -100,4 +100,5 @@ Rectangle {
 
     Accessible.role: Accessible.StaticText
     Accessible.name: root.title.length > 0 ? qsTr("%1. %2").arg(root.title).arg(root.message) : root.message
+    Accessible.ignored: !root.visible
 }
