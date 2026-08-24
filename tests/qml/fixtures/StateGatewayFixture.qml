@@ -36,6 +36,7 @@ QtObject {
     property string openedSubSection: ""
     property int attachedRuntimeInvalidationCount: 0
     property int storageObservationCount: 0
+    property int storageCapabilityObservationCount: 0
     property int storageRefreshCount: 0
     property string lastStorageRefreshCid: ""
     property var storageRefreshCallback: null
@@ -86,6 +87,7 @@ QtObject {
         openedSubSection = ""
         attachedRuntimeInvalidationCount = 0
         storageObservationCount = 0
+        storageCapabilityObservationCount = 0
         storageRefreshCount = 0
         lastStorageRefreshCid = ""
         storageRefreshCallback = null
@@ -276,6 +278,11 @@ QtObject {
     function refreshMessagingObservation() {
         messagingObservationCount += 1
         return messagingObservationResponse
+    }
+
+    function refreshStorageObservation() {
+        storageCapabilityObservationCount += 1
+        return storageObservationResponse
     }
 
     function completeStorageObservationAt(index, response) {
