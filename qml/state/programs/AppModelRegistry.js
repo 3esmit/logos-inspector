@@ -90,19 +90,19 @@ function registeredIdlDuplicate(root, name, programIdHex, json, idl) {
                 continue
             }
             const entryJson = String(entry.json || "")
-            if (!expectedName.length) {
-                if (entryJson === expectedJson) {
-                    return { entry: entry, index: i, jsonMatches: true }
-                }
-                continue
-            }
             const parsedEntry = BridgeHelpers.parseJson(entryJson)
             const entryLogicalName = parsedEntry.ok ? idlLogicalName(parsedEntry.value) : ""
-            const entryName = String(entry.name || "").trim()
-            const legacyLogicalNameMatch = entryName.indexOf("IDL ") === 0
-                && entryLogicalName === expectedName
-            if (entryName !== expectedName && !legacyLogicalNameMatch) {
-                continue
+            if (!expectedName.length) {
+                if (entryLogicalName.length) {
+                    continue
+                }
+            } else {
+                const entryName = String(entry.name || "").trim()
+                const legacyLogicalNameMatch = entryName.indexOf("IDL ") === 0
+                    && entryLogicalName === expectedName
+                if (entryName !== expectedName && !legacyLogicalNameMatch) {
+                    continue
+                }
             }
             const entryVersion = parsedEntry.ok ? idlVersion(parsedEntry.value) : ""
             if (expectedVersion.length > 0 || entryVersion.length > 0) {
