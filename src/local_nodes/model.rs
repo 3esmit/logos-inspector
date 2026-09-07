@@ -332,11 +332,26 @@ impl NodeLifecycleState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PendingHostOperation {
+    pub(super) topology_id: String,
+    pub(super) history_id: String,
+    pub(super) operation_id: String,
+    pub(super) instance_id: String,
+    pub(super) epoch: u64,
+    pub(super) sequence: u64,
+    pub(super) action: NodeAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) observation_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct LocalNodesState {
     pub(super) version: u32,
     pub(super) active_devnet: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) module_context_topology_by_kind: BTreeMap<NodeKind, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) pending_host_operations: BTreeMap<NodeKind, PendingHostOperation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) testnet: Option<LocalDevnetRecord>,
     pub(super) managed_workspace_root: String,
@@ -350,6 +365,7 @@ impl LocalNodesState {
             version: LOCAL_NODES_STATE_VERSION,
             active_devnet: None,
             module_context_topology_by_kind: BTreeMap::new(),
+            pending_host_operations: BTreeMap::new(),
             testnet: None,
             managed_workspace_root: config.join("local-nodes").display().to_string(),
             devnets: Vec::new(),

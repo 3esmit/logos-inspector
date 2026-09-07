@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
@@ -34,7 +35,7 @@ use super::{
     model::{
         LocalNodeActionRequest, LocalNodeConfigRecord, LocalNodeOperationReport, LocalNodeReport,
         LocalNodeStatus, LocalNodeSummary, LocalNodeTools, LocalNodesState, NodeAction, NodeKind,
-        NodeLifecycleState, ToolStatus,
+        NodeLifecycleState, PendingHostOperation, ToolStatus,
     },
     presentation,
     runtime::LogoscoreRuntimeStatus,
@@ -76,6 +77,7 @@ struct HostNodeObservation {
     liveness: Option<bool>,
     liveness_error: Option<String>,
     managed_actions: Option<Vec<String>>,
+    managed_snapshot: Option<ManagedNodeLifecycleSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +102,7 @@ impl HostNodeObservation {
             liveness: None,
             liveness_error: None,
             managed_actions: None,
+            managed_snapshot: None,
         }
     }
 
@@ -120,11 +123,21 @@ struct PreparedHostAction {
 struct HostActionExecution {
     lifecycle_detail: Option<String>,
     dispatched_method: &'static str,
+    pending_operation: Option<PendingHostOperation>,
 }
 
 struct HostLifecycleSubscription {
     event: &'static str,
     subscription: BoxedModuleEventSubscription,
+}
+
+enum ManagedLifecycleConfirmation {
+    Settled(String),
+    Pending {
+        epoch: u64,
+        sequence: u64,
+        observation_error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +222,16 @@ struct ManagedNodeLifecycleSnapshot {
     state: ManagedNodeLifecycleState,
     supported_actions: Vec<String>,
     last_error: Option<String>,
+    pending_operation: Option<ManagedNodeOperation>,
+    last_completed_operation: Option<ManagedNodeOperation>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ManagedNodeOperation {
+    operation_id: Option<String>,
+    action: String,
+    #[serde(default)]
+    outcome: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -259,6 +282,10 @@ struct ManagedNodeLifecycleSnapshotPayload {
     supported_actions: Vec<String>,
     #[serde(default)]
     last_error: Option<ManagedNodeLifecycleError>,
+    #[serde(default)]
+    pending_operation: Option<ManagedNodeOperation>,
+    #[serde(default)]
+    last_completed_operation: Option<ManagedNodeOperation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -342,6 +369,8 @@ fn managed_node_lifecycle_snapshot(
         state,
         supported_actions: payload.supported_actions,
         last_error,
+        pending_operation: payload.pending_operation,
+        last_completed_operation: payload.last_completed_operation,
     })
 }
 
@@ -460,6 +489,7 @@ async fn observe_node(
             liveness: None,
             liveness_error: None,
             managed_actions: None,
+            managed_snapshot: None,
         };
     }
 
@@ -476,6 +506,7 @@ async fn observe_node(
             liveness: None,
             liveness_error: None,
             managed_actions: None,
+            managed_snapshot: None,
         };
     };
     if let Err(error) = require_method(&metadata, module, method, signature) {
@@ -487,6 +518,7 @@ async fn observe_node(
             liveness: None,
             liveness_error: Some(error.to_string()),
             managed_actions: None,
+            managed_snapshot: None,
         };
     }
     let call = match ModuleCall::new(ModuleTransportKind::Module, module, method, args) {
@@ -500,6 +532,7 @@ async fn observe_node(
                 liveness: None,
                 liveness_error: Some(error.to_string()),
                 managed_actions: None,
+                managed_snapshot: None,
             };
         }
     };
@@ -515,6 +548,7 @@ async fn observe_node(
                     .or_else(|| (kind == NodeKind::Bedrock).then_some(true)),
                 liveness_error: service.detail,
                 managed_actions: None,
+                managed_snapshot: None,
             },
             Err(error) => HostNodeObservation {
                 kind,
@@ -524,6 +558,7 @@ async fn observe_node(
                 liveness: None,
                 liveness_error: Some(error.to_string()),
                 managed_actions: None,
+                managed_snapshot: None,
             },
         },
         Err(error) => {
@@ -544,6 +579,7 @@ async fn observe_node(
                     .or_else(|| context_missing.then_some(false)),
                 liveness_error: Some(error.to_string()),
                 managed_actions: None,
+                managed_snapshot: None,
             }
         }
     }
@@ -574,6 +610,7 @@ async fn observe_managed_node_lifecycle_v1(
                 liveness: None,
                 liveness_error: Some(error.to_string()),
                 managed_actions: None,
+                managed_snapshot: None,
             };
         }
     };
@@ -592,7 +629,8 @@ async fn observe_managed_node_lifecycle_v1(
             context_initialized: snapshot.state().context_initialized(),
             liveness: snapshot.state().liveness(),
             liveness_error: snapshot.last_error().map(ToOwned::to_owned),
-            managed_actions: Some(snapshot.supported_actions),
+            managed_actions: Some(snapshot.supported_actions.clone()),
+            managed_snapshot: Some(snapshot),
         },
         Err(error) => HostNodeObservation {
             kind,
@@ -602,6 +640,7 @@ async fn observe_managed_node_lifecycle_v1(
             liveness: None,
             liveness_error: Some(error.to_string()),
             managed_actions: None,
+            managed_snapshot: None,
         },
     }
 }
@@ -625,6 +664,7 @@ async fn observe_storage_lifecycle(
             liveness: None,
             liveness_error: None,
             managed_actions: None,
+            managed_snapshot: None,
         };
     }
     let call = match ModuleCall::new(ModuleTransportKind::Module, module, METHOD, Vec::new()) {
@@ -638,6 +678,7 @@ async fn observe_storage_lifecycle(
                 liveness: None,
                 liveness_error: Some(error.to_string()),
                 managed_actions: None,
+                managed_snapshot: None,
             };
         }
     };
@@ -655,6 +696,7 @@ async fn observe_storage_lifecycle(
             liveness: status.liveness(),
             liveness_error: None,
             managed_actions: None,
+            managed_snapshot: None,
         },
         Err(error) => HostNodeObservation {
             kind: NodeKind::Storage,
@@ -664,6 +706,7 @@ async fn observe_storage_lifecycle(
             liveness: None,
             liveness_error: Some(error.to_string()),
             managed_actions: None,
+            managed_snapshot: None,
         },
     }
 }
@@ -688,6 +731,7 @@ async fn observe_storage_node_lifecycle_v1(
                 liveness: None,
                 liveness_error: Some(error.to_string()),
                 managed_actions: None,
+                managed_snapshot: None,
             };
         }
     };
@@ -706,6 +750,7 @@ async fn observe_storage_node_lifecycle_v1(
             liveness: None,
             liveness_error: Some(error.to_string()),
             managed_actions: None,
+            managed_snapshot: None,
         },
     }
 }
@@ -721,6 +766,7 @@ fn storage_node_lifecycle_observation(
         liveness: snapshot.state().liveness(),
         liveness_error: snapshot.last_error().map(ToOwned::to_owned),
         managed_actions: None,
+        managed_snapshot: None,
     }
 }
 
@@ -1042,6 +1088,11 @@ fn prepare_action(
     }
     let action = request.action;
     anyhow::ensure!(
+        !state.pending_host_operations.contains_key(&kind),
+        "{} already has an accepted lifecycle operation awaiting confirmation",
+        adapter_for(kind).label()
+    );
+    anyhow::ensure!(
         matches!(
             action,
             NodeAction::Initialize | NodeAction::Start | NodeAction::Stop | NodeAction::Uninstall
@@ -1238,6 +1289,7 @@ async fn execute_host_action_with_lifecycle_timeout(
     Ok(HostActionExecution {
         lifecycle_detail,
         dispatched_method: call.method,
+        pending_operation: None,
     })
 }
 
@@ -1300,7 +1352,7 @@ async fn execute_managed_node_lifecycle_v1_action(
         &snapshot,
         lifecycle_action.expected_transition,
     )?;
-    let lifecycle_detail = if acknowledged {
+    let confirmation = if acknowledged {
         wait_for_managed_node_lifecycle_event(
             plan,
             lifecycle,
@@ -1311,18 +1363,41 @@ async fn execute_managed_node_lifecycle_v1_action(
         )
         .await?
     } else {
-        wait_for_managed_node_lifecycle_status(
-            plan,
-            module_transport,
-            &snapshot,
-            lifecycle_action,
-            lifecycle_timeout,
+        ManagedLifecycleConfirmation::Settled(
+            wait_for_managed_node_lifecycle_status(
+                plan,
+                module_transport,
+                &snapshot,
+                lifecycle_action,
+                lifecycle_timeout,
+            )
+            .await?,
         )
-        .await?
+    };
+    let (lifecycle_detail, pending_operation) = match confirmation {
+        ManagedLifecycleConfirmation::Settled(detail) => (Some(detail), None),
+        ManagedLifecycleConfirmation::Pending {
+            epoch,
+            sequence,
+            observation_error,
+        } => (
+            None,
+            Some(PendingHostOperation {
+                topology_id: String::new(), // Filled under the owning topology when recorded.
+                history_id: String::new(),
+                operation_id,
+                instance_id: snapshot.instance_id().to_owned(),
+                epoch,
+                sequence,
+                action: plan.action,
+                observation_error,
+            }),
+        ),
     };
     Ok(HostActionExecution {
-        lifecycle_detail: Some(lifecycle_detail),
+        lifecycle_detail,
         dispatched_method: contract.action_method,
+        pending_operation,
     })
 }
 
@@ -1669,7 +1744,7 @@ async fn wait_for_managed_node_lifecycle_event(
     snapshot: &ManagedNodeLifecycleSnapshot,
     expected: ManagedNodeLifecycleAction,
     timeout: Duration,
-) -> Result<String> {
+) -> Result<ManagedLifecycleConfirmation> {
     let operation_id = operation_id.to_owned();
     let initial_instance_id = snapshot.instance_id().to_owned();
     let initial_epoch = snapshot.epoch();
@@ -1684,17 +1759,46 @@ async fn wait_for_managed_node_lifecycle_event(
     tokio::task::spawn_blocking(move || {
         let deadline = Instant::now() + timeout;
         let mut accepted = false;
+        let mut last_sequence = initial_sequence;
+        let mut last_epoch = initial_epoch;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let event = lifecycle
-                .subscription
-                .next_within(remaining)?
-                .with_context(|| {
-                    format!(
-                        "Basecamp {label} did not emit {} before lifecycle confirmation timeout",
-                        lifecycle.event
-                    )
-                })?;
+            // Start/Stop acknowledgement must return before the enclosing GUI
+            // request deadline. Drain already queued terminal events, then
+            // persist accepted work for subsequent status reconciliation.
+            let remaining = if accepted && matches!(expected_action.as_str(), "start" | "stop") {
+                Duration::ZERO
+            } else {
+                deadline.saturating_duration_since(Instant::now())
+            };
+            let received = match lifecycle.subscription.next_within(remaining) {
+                Ok(event) => event,
+                Err(error) if accepted && matches!(expected_action.as_str(), "start" | "stop") => {
+                    return Ok(ManagedLifecycleConfirmation::Pending {
+                        epoch: last_epoch,
+                        sequence: last_sequence,
+                        observation_error: Some(format!(
+                            "Lifecycle event observation interrupted: {error:#}"
+                        )),
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            let Some(event) = received else {
+                // A confirmed asynchronous Start/Stop still belongs to the
+                // module after our observation window ends. Reconcile its
+                // exact operation from nodeStatus; never claim it settled.
+                if accepted && matches!(expected_action.as_str(), "start" | "stop") {
+                    return Ok(ManagedLifecycleConfirmation::Pending {
+                        epoch: last_epoch,
+                        sequence: last_sequence,
+                        observation_error: None,
+                    });
+                }
+                bail!(
+                    "Basecamp {label} did not emit {} before lifecycle confirmation timeout",
+                    lifecycle.event
+                );
+            };
             let event = managed_node_lifecycle_event(kind, &module, lifecycle.event, &event)?;
             if event.operation_id.as_deref() != Some(operation_id.as_str()) {
                 continue;
@@ -1702,9 +1806,11 @@ async fn wait_for_managed_node_lifecycle_event(
             anyhow::ensure!(
                 event.instance_id == initial_instance_id
                     && event.epoch >= initial_epoch
-                    && event.sequence > initial_sequence,
+                    && event.sequence > last_sequence,
                 "Basecamp {label} nodeChanged has an invalid lifecycle cursor"
             );
+            last_sequence = event.sequence;
+            last_epoch = event.epoch;
             anyhow::ensure!(
                 event.action == expected_action,
                 "Basecamp {label} nodeChanged does not match the requested action"
@@ -1735,7 +1841,9 @@ async fn wait_for_managed_node_lifecycle_event(
                         event.status.state().as_str() == expected_terminal,
                         "Basecamp {label} nodeChanged has an unexpected terminal state"
                     );
-                    return Ok(format!("V1 {action} transition settled"));
+                    return Ok(ManagedLifecycleConfirmation::Settled(format!(
+                        "V1 {action} transition settled"
+                    )));
                 }
                 _ => bail!("Basecamp {label} nodeChanged has an unknown lifecycle phase"),
             }
@@ -1792,6 +1900,7 @@ async fn execute_storage_node_lifecycle_v1_action(
     Ok(HostActionExecution {
         lifecycle_detail: None,
         dispatched_method: STORAGE_NODE_ACTION_METHOD,
+        pending_operation: None,
     })
 }
 
@@ -2009,10 +2118,32 @@ fn record_action_result(
     store: &LocalNodeStore,
 ) -> Result<()> {
     let timestamp = now_millis();
+    // Correlation must not select another action recorded in the same millisecond.
+    let history_id = execution
+        .as_ref()
+        .ok()
+        .and_then(|execution| execution.pending_operation.as_ref())
+        .map_or_else(
+            || format!("op-{timestamp}"),
+            |pending| format!("op-{}", pending.operation_id),
+        );
     let (status, detail, succeeded, lifecycle_detail, dispatched_method) = match execution {
         Ok(execution) => {
+            let observation_error = execution
+                .pending_operation
+                .as_ref()
+                .and_then(|pending| pending.observation_error.clone());
+            if let Some(mut pending) = execution.pending_operation {
+                pending.topology_id = state
+                    .active_topology(profile)
+                    .context("active topology missing while recording pending operation")?
+                    .id
+                    .clone();
+                pending.history_id.clone_from(&history_id);
+                state.pending_host_operations.insert(plan.kind, pending);
+            }
             let lifecycle_confirmed = execution.lifecycle_detail.is_some();
-            let detail = execution.lifecycle_detail.as_deref().map_or_else(
+            let mut detail = execution.lifecycle_detail.as_deref().map_or_else(
                 || {
                     if execution.dispatched_method == STORAGE_NODE_ACTION_METHOD {
                         format!(
@@ -2041,6 +2172,11 @@ fn record_action_result(
                     }
                 },
             );
+            if let Some(error) = observation_error {
+                detail.push_str(&format!(
+                    "; {error}; awaiting correlated nodeStatus confirmation"
+                ));
+            }
             (
                 action_success_status(plan.action, lifecycle_confirmed).to_owned(),
                 detail,
@@ -2061,7 +2197,7 @@ fn record_action_result(
         apply_successful_action(state, profile, plan, lifecycle_detail.as_deref())?;
     }
     state.push_operation(LocalNodeOperationReport {
-        id: format!("op-{timestamp}"),
+        id: history_id,
         time: timestamp.to_string(),
         timestamp_millis: timestamp,
         action: request.action,
@@ -2151,6 +2287,141 @@ fn apply_successful_action(
     Ok(())
 }
 
+enum PendingHostOutcome {
+    Waiting,
+    Succeeded,
+    Failed(String),
+    Unconfirmed(String),
+}
+
+fn pending_host_outcome(
+    pending: &PendingHostOperation,
+    snapshot: Option<&ManagedNodeLifecycleSnapshot>,
+) -> PendingHostOutcome {
+    let Some(snapshot) = snapshot else {
+        // A failed observation is not a terminal module operation result.
+        return PendingHostOutcome::Waiting;
+    };
+    if snapshot.instance_id() != pending.instance_id || snapshot.epoch() != pending.epoch {
+        return PendingHostOutcome::Unconfirmed(
+            "Module lifecycle identity changed before operation confirmation".to_owned(),
+        );
+    }
+    if snapshot.sequence() <= pending.sequence {
+        return PendingHostOutcome::Waiting;
+    }
+    let matches = |operation: &ManagedNodeOperation| {
+        operation.operation_id.as_deref() == Some(pending.operation_id.as_str())
+            && operation.action == pending.action.as_str()
+    };
+    if snapshot.pending_operation.as_ref().is_some_and(matches) {
+        return PendingHostOutcome::Waiting;
+    }
+    if let Some(completed) = snapshot
+        .last_completed_operation
+        .as_ref()
+        .filter(|operation| matches(operation))
+    {
+        match completed.outcome.as_deref() {
+            Some("succeeded" | "no_op") => {
+                let terminal = match pending.action {
+                    NodeAction::Start => ManagedNodeLifecycleState::Running,
+                    NodeAction::Stop => ManagedNodeLifecycleState::Stopped,
+                    _ => {
+                        return PendingHostOutcome::Unconfirmed(
+                            "Unsupported pending lifecycle action".to_owned(),
+                        );
+                    }
+                };
+                if snapshot.state() == terminal && snapshot.last_error().is_none() {
+                    return PendingHostOutcome::Succeeded;
+                }
+            }
+            Some("failed") => {
+                return PendingHostOutcome::Failed(
+                    snapshot
+                        .last_error()
+                        .unwrap_or("Module reported a lifecycle failure")
+                        .to_owned(),
+                );
+            }
+            _ => {}
+        }
+    }
+    PendingHostOutcome::Unconfirmed(
+        "Module snapshot does not confirm the accepted lifecycle operation".to_owned(),
+    )
+}
+
+fn reconcile_pending_host_operations(
+    state: &mut LocalNodesState,
+    profile: &str,
+    observations: &[HostNodeObservation],
+) -> Result<(BTreeSet<NodeKind>, bool)> {
+    let mut protected = BTreeSet::new();
+    let mut changed = false;
+    for observation in observations {
+        let Some(pending) = state
+            .pending_host_operations
+            .get(&observation.kind)
+            .cloned()
+        else {
+            continue;
+        };
+        if state
+            .active_topology(profile)
+            .is_none_or(|record| record.id != pending.topology_id)
+        {
+            continue;
+        }
+        protected.insert(observation.kind);
+        let outcome = pending_host_outcome(&pending, observation.managed_snapshot.as_ref());
+        let (lifecycle, status, detail) = match outcome {
+            PendingHostOutcome::Waiting => continue,
+            PendingHostOutcome::Succeeded => (
+                if pending.action == NodeAction::Start {
+                    NodeLifecycleState::Running
+                } else {
+                    NodeLifecycleState::Stopped
+                },
+                action_success_status(pending.action, true),
+                format!(
+                    "Basecamp {} {} completed after correlated lifecycle status confirmation",
+                    adapter_for(observation.kind).label(),
+                    pending.action.as_str()
+                ),
+            ),
+            PendingHostOutcome::Failed(detail) => (NodeLifecycleState::Failed, "failed", detail),
+            PendingHostOutcome::Unconfirmed(detail) => {
+                (NodeLifecycleState::Unknown, "unconfirmed", detail)
+            }
+        };
+        let record = state
+            .active_topology_mut(profile)
+            .context("pending topology disappeared")?;
+        let config = record
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == observation.kind)
+            .context("pending node disappeared")?;
+        config.lifecycle_state = lifecycle;
+        config.pending_lifecycle_action = None;
+        record.updated_at = now_millis();
+        write_devnet_manifest(record)?;
+        if let Some(operation) = state
+            .operations
+            .iter_mut()
+            .find(|operation| operation.id == pending.history_id)
+        {
+            operation.status = status.to_owned();
+            operation.detail = detail;
+        }
+        state.pending_host_operations.remove(&observation.kind);
+        changed = true;
+    }
+    Ok((protected, changed))
+}
+
 fn reconcile_observations(
     state: &mut LocalNodesState,
     profile: &str,
@@ -2158,17 +2429,22 @@ fn reconcile_observations(
     store: &LocalNodeStore,
 ) -> Result<()> {
     let profile = normalized_profile(profile);
+    let (protected, pending_changed) =
+        reconcile_pending_host_operations(state, profile, observations)?;
     let topology_id = state
         .active_topology(profile)
         .map(|topology| topology.id.clone());
     let Some(record) = state.active_topology_mut(profile) else {
         return Ok(());
     };
-    let mut changed = false;
+    let mut changed = pending_changed;
     let mut cleared_contexts = Vec::new();
     let mut failed_lifecycle_actions = Vec::new();
     let mut settled_lifecycle_actions = Vec::new();
     for observation in observations {
+        if protected.contains(&observation.kind) {
+            continue;
+        }
         if !observation.contract_ready() {
             continue;
         }
@@ -2624,6 +2900,20 @@ mod tests {
         receiver: Receiver<ModuleTransportEvent>,
     }
 
+    struct AcceptedOnlySubscription {
+        event: Option<ModuleTransportEvent>,
+    }
+
+    impl ModuleEventSubscription for AcceptedOnlySubscription {
+        fn next_within(&mut self, timeout: Duration) -> Result<Option<ModuleTransportEvent>> {
+            if let Some(event) = self.event.take() {
+                return Ok(Some(event));
+            }
+            anyhow::ensure!(timeout.is_zero(), "accepted operation blocked GUI response");
+            Ok(None)
+        }
+    }
+
     impl ModuleEventSubscription for RecordingEventSubscription {
         fn next_within(&mut self, timeout: Duration) -> Result<Option<ModuleTransportEvent>> {
             match self.receiver.recv_timeout(timeout) {
@@ -3017,6 +3307,7 @@ mod tests {
         state: ManagedNodeLifecycleState,
         epoch: u64,
         sequence: u64,
+        failed: bool,
     }
 
     #[derive(Debug, Clone)]
@@ -3024,8 +3315,12 @@ mod tests {
         calls: Arc<Mutex<Vec<ModuleCall>>>,
         event_subscribers: Arc<Mutex<Vec<RecordingEventSubscriber>>>,
         state: Arc<Mutex<RecordingManagedNodeLifecycleState>>,
+        operation: Arc<Mutex<Option<Value>>>,
         native_events_ready: bool,
         event_metadata_available: bool,
+        defer_settlement: bool,
+        omit_acceptance: bool,
+        disconnect_after_dispatch: bool,
         supports_destroy: bool,
         module: &'static str,
         scope: &'static str,
@@ -3071,9 +3366,14 @@ mod tests {
                     state: ManagedNodeLifecycleState::Uninitialized,
                     epoch: 0,
                     sequence: 0,
+                    failed: false,
                 })),
+                operation: Arc::new(Mutex::new(None)),
                 native_events_ready,
                 event_metadata_available: true,
+                defer_settlement: false,
+                omit_acceptance: false,
+                disconnect_after_dispatch: false,
                 supports_destroy,
                 module,
                 scope,
@@ -3096,16 +3396,34 @@ mod tests {
         }
 
         fn set_state(&self, state: ManagedNodeLifecycleState) -> Result<()> {
-            self.state
-                .lock()
-                .map_err(|_| {
-                    anyhow::anyhow!("recording {} lifecycle lock is poisoned", self.label)
-                })?
-                .state = state;
+            let mut current = self.state.lock().map_err(|_| {
+                anyhow::anyhow!("recording {} lifecycle lock is poisoned", self.label)
+            })?;
+            current.state = state;
+            current.sequence += 1;
             Ok(())
         }
 
         fn snapshot_value(&self, state: RecordingManagedNodeLifecycleState) -> Value {
+            let operation = self
+                .operation
+                .lock()
+                .ok()
+                .and_then(|operation| operation.clone());
+            let pending = matches!(
+                state.state,
+                ManagedNodeLifecycleState::Initializing
+                    | ManagedNodeLifecycleState::Starting
+                    | ManagedNodeLifecycleState::Stopping
+                    | ManagedNodeLifecycleState::Destroying
+            );
+            let completed = operation.as_ref().map(|operation| {
+                json!({
+                    "operation_id": operation.get("operation_id"),
+                    "action": operation.get("action"),
+                    "outcome": if state.failed { "failed" } else { "succeeded" },
+                })
+            });
             json!({
                 "schema": "logos.managed_node_lifecycle.snapshot",
                 "version": 1,
@@ -3120,9 +3438,9 @@ mod tests {
                     "unknown"
                 },
                 "supported_actions": self.supported_actions(state.state),
-                "pending_operation": null,
-                "last_completed_operation": null,
-                "last_error": null,
+                "pending_operation": if pending { operation } else { None },
+                "last_completed_operation": if pending { None } else { completed },
+                "last_error": if state.failed { json!({"code":"start_failed", "message":"Recovery failed"}) } else { Value::Null },
                 "updated_at_ms": 1,
             })
         }
@@ -3306,6 +3624,11 @@ mod tests {
             };
             state.state = transition;
             state.sequence += 1;
+            *self
+                .operation
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording operation lock poisoned"))? =
+                Some(json!({"operation_id":operation_id, "action":action}));
             let acknowledgement = json!({
                 "schema": "logos.managed_node_lifecycle.ack",
                 "version": 1,
@@ -3326,6 +3649,22 @@ mod tests {
                 previous_state,
                 *state,
             );
+            if self.defer_settlement {
+                drop(state);
+                if !self.omit_acceptance {
+                    self.publish_node_changed(accepted);
+                }
+                if self.disconnect_after_dispatch {
+                    self.event_subscribers
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("recording subscriber lock poisoned"))?
+                        .clear();
+                }
+                return Ok(ModuleCallReply::new(
+                    ModuleTransportKind::Module,
+                    Value::String(acknowledgement.to_string()),
+                ));
+            }
             state.state = settled;
             if action == "initialize" {
                 state.epoch += 1;
@@ -3840,6 +4179,7 @@ mod tests {
             liveness: liveness.observed,
             liveness_error: liveness.detail,
             managed_actions: None,
+            managed_snapshot: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3883,6 +4223,7 @@ mod tests {
             liveness: None,
             liveness_error: Some("Basecamp Messaging REST health is NOT_READY".to_owned()),
             managed_actions: None,
+            managed_snapshot: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -3949,6 +4290,7 @@ mod tests {
             liveness: liveness.observed,
             liveness_error: liveness.detail,
             managed_actions: None,
+            managed_snapshot: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -4006,6 +4348,7 @@ mod tests {
             liveness: liveness.observed,
             liveness_error: liveness.detail,
             managed_actions: None,
+            managed_snapshot: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -4060,6 +4403,7 @@ mod tests {
             liveness: liveness.observed,
             liveness_error: liveness.detail,
             managed_actions: None,
+            managed_snapshot: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -4115,6 +4459,7 @@ mod tests {
             liveness: liveness.observed,
             liveness_error: liveness.detail,
             managed_actions: None,
+            managed_snapshot: None,
         }];
         reconcile_observations(&mut state, "default", &observations, &store)?;
         let messaging = state
@@ -4843,6 +5188,424 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn basecamp_bedrock_v1_accepted_start_stays_pending_after_observation_timeout()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut transport_impl = RecordingManagedNodeLifecycleTransport::new(true);
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Bedrock),
+            &transport,
+            &store,
+        )
+        .await?;
+        transport_impl.defer_settlement = true;
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        let request = node_action_request(NodeKind::Bedrock, NodeAction::Start);
+        let mut state = store.load()?;
+        let plan = prepare_action("default", &state, &request)?;
+        let execution =
+            execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
+        record_action_result(&mut state, "default", &request, &plan, execution, &store)?;
+        let report = status_with_store("default", &transport, &store).await?;
+        let node = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("missing Bedrock")?;
+        anyhow::ensure!(
+            node.run_state == "starting",
+            "accepted start became terminal: {report:?}"
+        );
+        anyhow::ensure!(
+            node.available_actions.is_empty(),
+            "pending start allowed duplicate actions"
+        );
+        anyhow::ensure!(
+            report
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "starting")
+        );
+        transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+        let report = status_with_store("default", &transport, &store).await?;
+        anyhow::ensure!(
+            report
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "running")
+        );
+        Ok(())
+    }
+
+    async fn deferred_bedrock_fixture() -> Result<(
+        tempfile::TempDir,
+        LocalNodeStore,
+        RecordingManagedNodeLifecycleTransport,
+    )> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut transport_impl = RecordingManagedNodeLifecycleTransport::new(true);
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        action_with_store(
+            "default",
+            initialize_request(NodeKind::Bedrock),
+            &transport,
+            &store,
+        )
+        .await?;
+        transport_impl.defer_settlement = true;
+        Ok((directory, store, transport_impl))
+    }
+
+    async fn record_deferred_bedrock_action(
+        store: &LocalNodeStore,
+        transport_impl: &RecordingManagedNodeLifecycleTransport,
+        action: NodeAction,
+    ) -> Result<()> {
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        let request = node_action_request(NodeKind::Bedrock, action);
+        let mut state = store.load()?;
+        let plan = prepare_action("default", &state, &request)?;
+        let execution =
+            execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
+        record_action_result(&mut state, "default", &request, &plan, execution, store)
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_acceptance_returns_without_waiting_for_gui_deadline() -> Result<()>
+    {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        let snapshot = managed_node_lifecycle_snapshot_for_action(
+            NodeKind::Bedrock,
+            "blockchain_module",
+            &transport,
+        )
+        .await?;
+        let plan = prepare_action(
+            "default",
+            &store.load()?,
+            &node_action_request(NodeKind::Bedrock, NodeAction::Start),
+        )?;
+        let (expected, _) = managed_node_lifecycle_action_request(&plan)?;
+        let event = transport_impl.lifecycle_event(
+            "start",
+            "accepted-only",
+            "accepted",
+            "accepted",
+            ManagedNodeLifecycleState::Stopped,
+            RecordingManagedNodeLifecycleState {
+                state: ManagedNodeLifecycleState::Starting,
+                epoch: snapshot.epoch(),
+                sequence: snapshot.sequence() + 1,
+                failed: false,
+            },
+        );
+        let confirmation = wait_for_managed_node_lifecycle_event(
+            &plan,
+            HostLifecycleSubscription {
+                event: "nodeChanged",
+                subscription: Box::new(AcceptedOnlySubscription {
+                    event: Some(ModuleTransportEvent::new(
+                        "blockchain_module",
+                        "nodeChanged",
+                        vec![Value::String(event.to_string())],
+                    )?),
+                }),
+            },
+            "accepted-only",
+            &snapshot,
+            expected,
+            HOST_LIFECYCLE_EVENT_TIMEOUT,
+        )
+        .await?;
+        anyhow::ensure!(
+            matches!(
+                confirmation,
+                ManagedLifecycleConfirmation::Pending {
+                    observation_error: None,
+                    ..
+                }
+            ),
+            "accepted start waited beyond immediate event drain"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_pending_survives_reload_and_rejects_duplicate_dispatch()
+    -> Result<()> {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+        let state = store.load()?;
+        let pending = state
+            .pending_host_operations
+            .get(&NodeKind::Bedrock)
+            .context("pending operation was not persisted")?;
+        anyhow::ensure!(!pending.operation_id.is_empty() && !pending.history_id.is_empty());
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        let before = transport_impl
+            .calls()?
+            .iter()
+            .filter(|call| call.method() == "nodeAction")
+            .count();
+        let result = action_with_store(
+            "default",
+            node_action_request(NodeKind::Bedrock, NodeAction::Start),
+            &transport,
+            &store,
+        )
+        .await;
+        anyhow::ensure!(result.is_err(), "duplicate action was accepted");
+        let after = transport_impl
+            .calls()?
+            .iter()
+            .filter(|call| call.method() == "nodeAction")
+            .count();
+        anyhow::ensure!(before == after, "duplicate command reached module");
+        let mut old_state = serde_json::to_value(&state)?;
+        old_state
+            .as_object_mut()
+            .context("state is not an object")?
+            .remove("pending_host_operations");
+        let old_state: LocalNodesState = serde_json::from_value(old_state)?;
+        anyhow::ensure!(old_state.pending_host_operations.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_interruption_requires_acceptance_and_retains_cause() -> Result<()>
+    {
+        for disconnect in [false, true] {
+            for omit_acceptance in [false, true] {
+                let (_directory, store, mut transport_impl) = deferred_bedrock_fixture().await?;
+                transport_impl.disconnect_after_dispatch = disconnect;
+                transport_impl.omit_acceptance = omit_acceptance;
+                record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+                let state = store.load()?;
+                let operation = state.operations.last().context("missing operation")?;
+                anyhow::ensure!(
+                    operation.status
+                        == if omit_acceptance {
+                            "failed"
+                        } else {
+                            "starting"
+                        }
+                );
+                let pending = state.pending_host_operations.get(&NodeKind::Bedrock);
+                anyhow::ensure!(pending.is_some() != omit_acceptance);
+                if disconnect && !omit_acceptance {
+                    anyhow::ensure!(operation.detail.contains("subscription disconnected"));
+                    anyhow::ensure!(
+                        pending
+                            .and_then(|pending| pending.observation_error.as_ref())
+                            .is_some()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_pending_completion_does_not_select_same_millisecond_history() -> Result<()> {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+        let mut state = store.load()?;
+        let timestamp = state
+            .operations
+            .last()
+            .context("missing Start")?
+            .timestamp_millis;
+        let initialized = state.operations.first_mut().context("missing Initialize")?;
+        initialized.id = format!("op-{timestamp}");
+        initialized.timestamp_millis = timestamp;
+        initialized.time = timestamp.to_string();
+        store.save(&state)?;
+        transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl);
+        let report = status_with_store("default", &transport, &store).await?;
+        anyhow::ensure!(
+            report
+                .operations
+                .first()
+                .is_some_and(|operation| operation.status == "initialized")
+        );
+        anyhow::ensure!(
+            report
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "running")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_delayed_failure_is_not_running() -> Result<()> {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+        {
+            let mut state = transport_impl
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording lifecycle lock poisoned"))?;
+            state.state = ManagedNodeLifecycleState::Stopped;
+            state.sequence += 1;
+            state.failed = true;
+        }
+        let transport: SharedModuleTransport = Arc::new(transport_impl);
+        let report = status_with_store("default", &transport, &store).await?;
+        let operation = report.operations.last().context("missing operation")?;
+        anyhow::ensure!(
+            operation.status == "failed" && operation.detail.contains("Recovery failed")
+        );
+        anyhow::ensure!(store.load()?.pending_host_operations.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_unsettled_initialize_does_not_install_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+        let mut transport_impl = RecordingManagedNodeLifecycleTransport::new(true);
+        transport_impl.defer_settlement = true;
+        let transport: SharedModuleTransport = Arc::new(transport_impl);
+        let request = initialize_request(NodeKind::Bedrock);
+        let mut state = store.load()?;
+        let plan = prepare_action("default", &state, &request)?;
+        let execution =
+            execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
+        anyhow::ensure!(
+            execution.is_err(),
+            "unsettled initialization was accepted as complete"
+        );
+        record_action_result(&mut state, "default", &request, &plan, execution, &store)?;
+        let state = store.load()?;
+        anyhow::ensure!(state.pending_host_operations.is_empty());
+        anyhow::ensure!(state.active_topology("default").is_none_or(|topology| {
+            topology
+                .nodes
+                .iter()
+                .all(|node| node.kind != NodeKind::Bedrock || !node.installed)
+        }));
+        anyhow::ensure!(
+            state
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "failed")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_delayed_stop_requires_correlated_completion() -> Result<()> {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        status_with_store("default", &transport, &store).await?;
+        record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Stop).await?;
+        let report = status_with_store("default", &transport, &store).await?;
+        anyhow::ensure!(
+            report
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "stopping")
+        );
+        transport_impl.set_state(ManagedNodeLifecycleState::Stopped)?;
+        let report = status_with_store("default", &transport, &store).await?;
+        anyhow::ensure!(
+            report
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "stopped")
+        );
+        anyhow::ensure!(store.load()?.pending_host_operations.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_bedrock_v1_stale_or_unrelated_snapshots_cannot_settle_pending() -> Result<()>
+    {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+        let state = store.load()?;
+        let pending = state
+            .pending_host_operations
+            .get(&NodeKind::Bedrock)
+            .context("missing pending")?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+        let mut snapshot = managed_node_lifecycle_snapshot_for_action(
+            NodeKind::Bedrock,
+            "blockchain_module",
+            &transport,
+        )
+        .await?;
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, None),
+            PendingHostOutcome::Waiting
+        ));
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, Some(&snapshot)),
+            PendingHostOutcome::Waiting
+        ));
+        snapshot.sequence += 1;
+        snapshot.instance_id = "different-instance".to_owned();
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, Some(&snapshot)),
+            PendingHostOutcome::Unconfirmed(_)
+        ));
+        snapshot.instance_id.clone_from(&pending.instance_id);
+        snapshot.epoch += 1;
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, Some(&snapshot)),
+            PendingHostOutcome::Unconfirmed(_)
+        ));
+        snapshot.epoch = pending.epoch;
+        snapshot.state = ManagedNodeLifecycleState::Running;
+        snapshot.pending_operation = None;
+        snapshot.last_completed_operation = Some(ManagedNodeOperation {
+            operation_id: Some("another-operation".to_owned()),
+            action: "start".to_owned(),
+            outcome: Some("succeeded".to_owned()),
+        });
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, Some(&snapshot)),
+            PendingHostOutcome::Unconfirmed(_)
+        ));
+        snapshot.last_completed_operation = Some(ManagedNodeOperation {
+            operation_id: Some(pending.operation_id.clone()),
+            action: "start".to_owned(),
+            outcome: Some("succeeded".to_owned()),
+        });
+        snapshot.sequence = pending.sequence;
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, Some(&snapshot)),
+            PendingHostOutcome::Waiting
+        ));
+        snapshot.sequence += 1;
+        anyhow::ensure!(matches!(
+            pending_host_outcome(pending, Some(&snapshot)),
+            PendingHostOutcome::Succeeded
+        ));
+        let mut replacement = transport_impl;
+        replacement.instance_id = "replacement-instance";
+        replacement.set_state(ManagedNodeLifecycleState::Running)?;
+        let replacement: SharedModuleTransport = Arc::new(replacement);
+        let report = status_with_store("default", &replacement, &store).await?;
+        anyhow::ensure!(
+            report
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "unconfirmed")
+        );
+        anyhow::ensure!(store.load()?.pending_host_operations.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn basecamp_bedrock_v1_blocks_actions_without_native_event_ingress() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = LocalNodeStore::for_config_dir(directory.path().to_path_buf());
@@ -5255,6 +6018,7 @@ mod tests {
                 liveness: None,
                 liveness_error: Some("Basecamp Bedrock probe timed out".to_owned()),
                 managed_actions: None,
+                managed_snapshot: None,
             }],
             &store,
         )?;
@@ -5305,6 +6069,7 @@ mod tests {
                 liveness: Some(true),
                 liveness_error: None,
                 managed_actions: None,
+                managed_snapshot: None,
             }],
             &store,
         )?;
@@ -5364,6 +6129,7 @@ mod tests {
                 liveness: Some(false),
                 liveness_error: Some("Context not initialized".to_owned()),
                 managed_actions: None,
+                managed_snapshot: None,
             }],
             &store,
         )?;
