@@ -1087,6 +1087,8 @@ fn prepare_action(
         );
     }
     let action = request.action;
+    // Host modules are unscoped: switching profiles must not overwrite an
+    // accepted operation on the same module. Status polling settles its owner.
     anyhow::ensure!(
         !state.pending_host_operations.contains_key(&kind),
         "{} already has an accepted lifecycle operation awaiting confirmation",
@@ -1384,6 +1386,7 @@ async fn execute_managed_node_lifecycle_v1_action(
             None,
             Some(PendingHostOperation {
                 topology_id: String::new(), // Filled under the owning topology when recorded.
+                profile: None,
                 history_id: String::new(),
                 operation_id,
                 instance_id: snapshot.instance_id().to_owned(),
@@ -2140,6 +2143,7 @@ fn record_action_result(
                     .id
                     .clone();
                 pending.history_id.clone_from(&history_id);
+                pending.profile = Some(normalized_profile(profile).to_owned());
                 state.pending_host_operations.insert(plan.kind, pending);
             }
             let lifecycle_confirmed = execution.lifecycle_detail.is_some();
@@ -2368,13 +2372,30 @@ fn reconcile_pending_host_operations(
         else {
             continue;
         };
-        if state
-            .active_topology(profile)
-            .is_none_or(|record| record.id != pending.topology_id)
+        // Older receipts lack a profile. Infer it only when the topology ID is
+        // unique across profiles; a devnet can share the public testnet's ID.
+        let owner_profile = pending.profile.as_deref().or_else(|| {
+            let testnet = state
+                .testnet
+                .as_ref()
+                .is_some_and(|record| record.id == pending.topology_id);
+            let local = state
+                .devnets
+                .iter()
+                .any(|record| record.id == pending.topology_id);
+            match (testnet, local) {
+                (true, false) => Some("default"),
+                (false, true) => Some("local"),
+                _ => None,
+            }
+        });
+        if owner_profile == Some(profile)
+            && state
+                .active_topology(profile)
+                .is_some_and(|record| record.id == pending.topology_id)
         {
-            continue;
+            protected.insert(observation.kind);
         }
-        protected.insert(observation.kind);
         let outcome = pending_host_outcome(&pending, observation.managed_snapshot.as_ref());
         let (lifecycle, status, detail) = match outcome {
             PendingHostOutcome::Waiting => continue,
@@ -2396,18 +2417,30 @@ fn reconcile_pending_host_operations(
                 (NodeLifecycleState::Unknown, "unconfirmed", detail)
             }
         };
-        let record = state
-            .active_topology_mut(profile)
-            .context("pending topology disappeared")?;
-        let config = record
-            .nodes
-            .iter_mut()
-            .find(|node| node.kind == observation.kind)
-            .context("pending node disappeared")?;
-        config.lifecycle_state = lifecycle;
-        config.pending_lifecycle_action = None;
-        record.updated_at = now_millis();
-        write_devnet_manifest(record)?;
+        let owner = match owner_profile {
+            Some("local") => state
+                .devnets
+                .iter_mut()
+                .find(|record| record.id == pending.topology_id),
+            Some("default") => state
+                .testnet
+                .as_mut()
+                .filter(|record| record.id == pending.topology_id),
+            _ => None,
+        };
+        // Completion belongs to the original topology, even when inactive.
+        // A deleted/ambiguous owner must not prevent settling module history.
+        if let Some(record) = owner
+            && let Some(config) = record
+                .nodes
+                .iter_mut()
+                .find(|node| node.kind == observation.kind)
+        {
+            config.lifecycle_state = lifecycle;
+            config.pending_lifecycle_action = None;
+            record.updated_at = now_millis();
+            write_devnet_manifest(record)?;
+        }
         if let Some(operation) = state
             .operations
             .iter_mut()
@@ -2435,6 +2468,9 @@ fn reconcile_observations(
         .active_topology(profile)
         .map(|topology| topology.id.clone());
     let Some(record) = state.active_topology_mut(profile) else {
+        if pending_changed {
+            store.save(state)?;
+        }
         return Ok(());
     };
     let mut changed = pending_changed;
@@ -5440,6 +5476,218 @@ mod tests {
                 .last()
                 .is_some_and(|operation| operation.status == "running")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_pending_operation_settles_original_owner_after_profile_switch() -> Result<()>
+    {
+        for same_topology_id in [false, true] {
+            let (directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+            let mut state = store.load()?;
+            let mut local = state.testnet.clone().context("missing testnet")?;
+            if !same_topology_id {
+                local.id = "other-devnet".to_owned();
+            }
+            local.workspace = directory
+                .path()
+                .join("other-workspace")
+                .display()
+                .to_string();
+            fs::create_dir_all(&local.workspace)?;
+            state.active_devnet = Some(local.id.clone());
+            state.devnets.push(local);
+            store.save(&state)?;
+            record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+            let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+            status_with_store("local", &transport, &store).await?;
+            let state = store.load()?;
+            anyhow::ensure!(
+                state
+                    .pending_host_operations
+                    .contains_key(&NodeKind::Bedrock)
+            );
+            anyhow::ensure!(
+                prepare_action(
+                    "local",
+                    &state,
+                    &node_action_request(NodeKind::Bedrock, NodeAction::Start)
+                )
+                .is_err(),
+                "profile switch bypassed global module's accepted operation"
+            );
+
+            transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+            let report = status_with_store("local", &transport, &store).await?;
+            let state = store.load()?;
+            anyhow::ensure!(
+                state.pending_host_operations.is_empty(),
+                "another profile could not settle completed global operation"
+            );
+            let original = state
+                .testnet
+                .as_ref()
+                .context("missing original topology")?
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Bedrock)
+                .context("missing original node")?;
+            anyhow::ensure!(
+                original.lifecycle_state == NodeLifecycleState::Running
+                    && original.pending_lifecycle_action.is_none(),
+                "settlement updated wrong topology"
+            );
+            anyhow::ensure!(
+                report
+                    .operations
+                    .last()
+                    .is_some_and(|operation| operation.status == "running")
+            );
+            prepare_action(
+                "local",
+                &state,
+                &node_action_request(NodeKind::Bedrock, NodeAction::Stop),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_pending_history_settles_after_owner_is_removed() -> Result<()> {
+        let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+        record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+        let mut state = store.load()?;
+        state.testnet = None;
+        store.save(&state)?;
+        transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+        let transport: SharedModuleTransport = Arc::new(transport_impl);
+        status_with_store("local", &transport, &store).await?;
+        let state = store.load()?;
+        anyhow::ensure!(
+            state.pending_host_operations.is_empty(),
+            "removed topology retained stale guard"
+        );
+        anyhow::ensure!(
+            state
+                .operations
+                .last()
+                .is_some_and(|operation| operation.status == "running")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_pending_operation_settles_inactive_or_deleted_devnet() -> Result<()> {
+        for remove_owner in [false, true] {
+            let (directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+            let mut state = store.load()?;
+            let mut owner = state.testnet.clone().context("missing testnet")?;
+            owner.id = "owner-devnet".to_owned();
+            owner.workspace = directory.path().join("owner").display().to_string();
+            fs::create_dir_all(&owner.workspace)?;
+            let mut other = owner.clone();
+            other.id = "other-devnet".to_owned();
+            other.workspace = directory.path().join("other").display().to_string();
+            fs::create_dir_all(&other.workspace)?;
+            state.active_devnet = Some(owner.id.clone());
+            state.devnets = vec![owner, other];
+            let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+            let request = node_action_request(NodeKind::Bedrock, NodeAction::Start);
+            let plan = prepare_action("local", &state, &request)?;
+            let execution =
+                execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
+            record_action_result(&mut state, "local", &request, &plan, execution, &store)?;
+            state.active_devnet = Some("other-devnet".to_owned());
+            if remove_owner {
+                state.devnets.retain(|record| record.id != "owner-devnet");
+            }
+            store.save(&state)?;
+            status_with_store("local", &transport, &store).await?;
+            anyhow::ensure!(
+                prepare_action("local", &store.load()?, &request).is_err(),
+                "topology switch bypassed pending module work"
+            );
+            transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+            status_with_store("local", &transport, &store).await?;
+            let state = store.load()?;
+            anyhow::ensure!(state.pending_host_operations.is_empty());
+            anyhow::ensure!(
+                state
+                    .operations
+                    .last()
+                    .is_some_and(|op| op.status == "running")
+            );
+            if !remove_owner {
+                let owner = state
+                    .devnets
+                    .iter()
+                    .find(|record| record.id == "owner-devnet")
+                    .context("original devnet disappeared")?;
+                let node = owner
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == NodeKind::Bedrock)
+                    .context("original Bedrock disappeared")?;
+                anyhow::ensure!(node.lifecycle_state == NodeLifecycleState::Running);
+                anyhow::ensure!(node.pending_lifecycle_action.is_none());
+            }
+            prepare_action(
+                "local",
+                &state,
+                &node_action_request(NodeKind::Bedrock, NodeAction::Stop),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_pending_receipt_without_profile_settles_only_unique_owner() -> Result<()> {
+        for ambiguous in [false, true] {
+            let (_directory, store, transport_impl) = deferred_bedrock_fixture().await?;
+            record_deferred_bedrock_action(&store, &transport_impl, NodeAction::Start).await?;
+            let mut value = serde_json::to_value(store.load()?)?;
+            value
+                .get_mut("pending_host_operations")
+                .and_then(|receipts| receipts.get_mut("bedrock"))
+                .and_then(Value::as_object_mut)
+                .context("missing receipt object")?
+                .remove("profile");
+            let mut state: LocalNodesState = serde_json::from_value(value)?;
+            if ambiguous {
+                state
+                    .devnets
+                    .push(state.testnet.clone().context("missing testnet")?);
+            }
+            // No active local topology: only the receipt's owner may be updated.
+            store.save(&state)?;
+            transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+            let transport: SharedModuleTransport = Arc::new(transport_impl);
+            status_with_store("local", &transport, &store).await?;
+            let state = store.load()?;
+            anyhow::ensure!(state.pending_host_operations.is_empty());
+            anyhow::ensure!(
+                state
+                    .operations
+                    .last()
+                    .is_some_and(|op| op.status == "running")
+            );
+            let original = state
+                .testnet
+                .as_ref()
+                .context("missing testnet")?
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Bedrock)
+                .context("missing Bedrock")?;
+            anyhow::ensure!(
+                original.lifecycle_state
+                    == if ambiguous {
+                        NodeLifecycleState::Starting
+                    } else {
+                        NodeLifecycleState::Running
+                    }
+            );
+        }
         Ok(())
     }
 

@@ -334,6 +334,8 @@ impl NodeLifecycleState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PendingHostOperation {
     pub(super) topology_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) profile: Option<String>,
     pub(super) history_id: String,
     pub(super) operation_id: String,
     pub(super) instance_id: String,
