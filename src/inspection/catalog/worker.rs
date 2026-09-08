@@ -465,22 +465,49 @@ async fn run_catalog_scan_with_pacer(
             }
         }
 
-        let delay = if made_progress {
-            no_progress_round = 0;
-            CATALOG_POLL_INTERVAL
-        } else {
-            no_progress_round = no_progress_round.saturating_add(1);
-            if should_publish_no_progress_warning(no_progress_round) {
-                let _published = context.publish(ZoneCatalogPublication {
-                    verification_state: CatalogVerificationState::Verified,
-                    catalog: Some(Arc::new(snapshot.clone())),
-                    readiness: None,
-                    current_error: Some(no_progress_warning_message().to_owned()),
-                });
-            }
-            no_progress_delay(no_progress_round)
-        };
+        let delay = catalog_poll_delay(
+            &snapshot,
+            &target,
+            made_progress,
+            &mut no_progress_round,
+            context,
+        );
         wait_for_retry(context, delay).await?;
+    }
+}
+
+fn catalog_poll_delay(
+    snapshot: &CatalogSnapshot,
+    target: &super::CatalogBlockReference,
+    made_progress: bool,
+    no_progress_round: &mut u32,
+    context: &ZoneCatalogRunContext,
+) -> Duration {
+    let caught_up = snapshot
+        .traversal
+        .as_ref()
+        .and_then(|traversal| traversal.ingestion_cursor.as_ref())
+        == Some(target);
+    // No new finalized target is ordinary idle polling, not missing data.
+    // Progress commits already publish a clear report; otherwise clear an old
+    // stall warning once when the cursor reaches the exact finalized block.
+    if made_progress || caught_up {
+        if !made_progress && *no_progress_round >= CATALOG_NO_PROGRESS_WARNING_ROUNDS {
+            publish_verified(context, snapshot.clone());
+        }
+        *no_progress_round = 0;
+        CATALOG_POLL_INTERVAL
+    } else {
+        *no_progress_round = no_progress_round.saturating_add(1);
+        if should_publish_no_progress_warning(*no_progress_round) {
+            let _published = context.publish(ZoneCatalogPublication {
+                verification_state: CatalogVerificationState::Verified,
+                catalog: Some(Arc::new(snapshot.clone())),
+                readiness: None,
+                current_error: Some(no_progress_warning_message().to_owned()),
+            });
+        }
+        no_progress_delay(*no_progress_round)
     }
 }
 
@@ -878,6 +905,119 @@ mod tests {
     }
 
     struct RepairingPageSource;
+
+    fn poll_snapshot(
+        cursor: Option<super::super::CatalogBlockReference>,
+    ) -> Result<CatalogSnapshot> {
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        Ok(CatalogSnapshot {
+            metadata: CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+            frontier: None,
+            traversal: Some(super::super::CatalogTraversal {
+                target_lib: Some(target),
+                ingestion_cursor: cursor,
+            }),
+            zones: Vec::new(),
+            evidence: Vec::new(),
+            segments: Vec::new(),
+            gaps: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn caught_up_polling_does_not_warn_or_back_off() -> Result<()> {
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        let snapshot = poll_snapshot(Some(target.clone()))?;
+        let (context, publications) = ZoneCatalogRunContext::test_context_with_publication_count(1);
+        let mut round = 0;
+        for _ in 0..10 {
+            ensure!(
+                catalog_poll_delay(&snapshot, &target, false, &mut round, &context)
+                    == CATALOG_POLL_INTERVAL,
+                "caught-up catalog backed off as though finalized data were missing"
+            );
+        }
+        ensure!(round == 0, "idle polls counted as failed progress");
+        ensure!(
+            publications.load(Ordering::SeqCst) == 0,
+            "idle catalog published a provider warning"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stalled_polling_warns_once_and_remains_bounded() -> Result<()> {
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        // A slot match alone must not hide a different finalized block identity.
+        for cursor in [
+            None,
+            Some(super::super::CatalogBlockReference {
+                slot: 2,
+                block_id: id('a'),
+            }),
+        ] {
+            let snapshot = poll_snapshot(cursor)?;
+            let (context, publications) =
+                ZoneCatalogRunContext::test_context_with_publication_count(1);
+            let mut round = 0;
+            for expected_round in 1..=10 {
+                let delay = catalog_poll_delay(&snapshot, &target, false, &mut round, &context);
+                ensure!(delay == no_progress_delay(expected_round));
+                ensure!(delay <= Duration::from_secs(30));
+                ensure!(
+                    publications.load(Ordering::SeqCst)
+                        == usize::from(expected_round >= CATALOG_NO_PROGRESS_WARNING_ROUNDS)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn caught_up_polling_clears_a_stall_warning_once() -> Result<()> {
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        let mut snapshot = poll_snapshot(None)?;
+        let (context, publications) = ZoneCatalogRunContext::test_context_with_publication_count(1);
+        let mut round = 0;
+        for _ in 0..4 {
+            let _delay = catalog_poll_delay(&snapshot, &target, false, &mut round, &context);
+        }
+        ensure!(publications.load(Ordering::SeqCst) == 1);
+        snapshot
+            .traversal
+            .as_mut()
+            .context("missing traversal")?
+            .ingestion_cursor = Some(target.clone());
+        for _ in 0..5 {
+            ensure!(
+                catalog_poll_delay(&snapshot, &target, false, &mut round, &context)
+                    == CATALOG_POLL_INTERVAL
+            );
+        }
+        ensure!(round == 0);
+        ensure!(
+            publications.load(Ordering::SeqCst) == 2,
+            "recovered warning not cleared exactly once"
+        );
+        Ok(())
+    }
 
     struct BlockingPacer {
         wait_events: mpsc::UnboundedSender<()>,
