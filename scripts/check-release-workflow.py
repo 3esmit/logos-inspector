@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 
@@ -114,16 +115,88 @@ def check_pinned_actions(text: str, label: str, errors: list[str]) -> None:
             errors.append(f"{label} uses mutable action reference `{pin}`")
 
 
+FLAKE_TOKEN = re.compile(
+    r'\s+|\#[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_\'-]*|.',
+    re.DOTALL,
+)
+FLAKE_ATTRIBUTE = re.compile(r"[A-Za-z_][A-Za-z0-9_'-]*")
+
+
+def flake_tokens(text: str) -> Iterator[str]:
+    for match in FLAKE_TOKEN.finditer(text):
+        token = match.group()
+        if token.isspace() or token.startswith(("#", "/*")):
+            continue
+        # Inputs must be literal. Do not tokenize interpolation contents as
+        # declarations, even when an expression contains nested quotes.
+        if token.startswith('"') and (len(token) == 1 or "${" in token):
+            raise ValueError("nonliteral or unterminated input string")
+        yield token
+
+
+def flake_attribute(token: str) -> str:
+    if token.startswith('"') and token.endswith('"') and "\\" not in token:
+        token = token[1:-1]
+    if not FLAKE_ATTRIBUTE.fullmatch(token):
+        raise ValueError("unsupported input attribute")
+    return token
+
+
+def flake_binding(
+    tokens: Iterator[str], first: str
+) -> tuple[tuple[str, ...], dict[tuple[str, ...], str]]:
+    path = [flake_attribute(first)]
+    token = next(tokens)
+    while token == ".":
+        path.append(flake_attribute(next(tokens)))
+        token = next(tokens)
+    if token != "=":
+        raise ValueError("expected input assignment")
+    token = next(tokens)
+    if token == "{":
+        values = flake_bindings(tokens)
+    elif token.startswith('"') or token in ("true", "false"):
+        values = {(): token}
+    else:
+        raise ValueError("unsupported input expression")
+    if next(tokens) != ";":
+        raise ValueError("expected literal input terminator")
+    return tuple(path), values
+
+
+def flake_bindings(tokens: Iterator[str]) -> dict[tuple[str, ...], str]:
+    bindings: dict[tuple[str, ...], str] = {}
+    while (token := next(tokens)) != "}":
+        path, values = flake_binding(tokens, token)
+        for suffix, value in values.items():
+            key = path + suffix
+            if any(key[:len(old)] == old or old[:len(key)] == key for old in bindings):
+                raise ValueError("duplicate or conflicting input declaration")
+            bindings[key] = value
+    return bindings
+
+
 def flake_input(text: str, name: str) -> tuple[str, str] | None:
-    pattern = re.compile(
-        rf"{re.escape(name)}\s*=\s*\{{.*?"
-        r'url\s*=\s*"github:([^"?]+)\?rev=([0-9a-f]{40})";',
-        re.DOTALL,
-    )
-    match = pattern.search(text)
-    if match is None:
+    """Read a pin from this repository's literal root inputs attribute set.
+
+    This is a conservative static policy check, not a Nix evaluator. Computed
+    input expressions and unsupported declaration shapes fail closed. Stop at
+    the inputs boundary; outputs contain arbitrary Nix code unrelated to pins.
+    """
+    try:
+        tokens = flake_tokens(text)
+        if next(tokens) != "{":
+            return None
+        while (token := next(tokens)) != "}":
+            path, values = flake_binding(tokens, token)
+            if path != ("inputs",):
+                continue
+            url = values.get((name, "url"), "")
+            match = re.fullmatch(r'"github:([^"?\\]+)\?rev=([0-9a-f]{40})"', url)
+            return (match.group(1), match.group(2)) if match else None
+    except (StopIteration, ValueError, RecursionError):
         return None
-    return match.group(1), match.group(2)
+    return None
 
 
 def run_check(command: list[str], label: str, errors: list[str]) -> None:
