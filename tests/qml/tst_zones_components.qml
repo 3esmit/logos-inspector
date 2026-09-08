@@ -1741,13 +1741,23 @@ TestCase {
         compare(feedback.Accessible.role, Accessible.StaticText)
         compare(feedback.Accessible.name, error)
         compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
         compare(endpoint.text, "https://foreign.example/")
 
         zoneState.sourceMutationError = qsTr("Channel source configuration revision conflict")
         compare(feedback.Accessible.name, zoneState.sourceMutationError)
+        editor.conflict = true
+        compare(feedback.visible, false)
+        compare(feedback.Accessible.ignored, true)
+
+        zoneState.sourceMutationError = qsTr("Current source configuration is unavailable")
+        compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
+        compare(feedback.Accessible.name, zoneState.sourceMutationError)
         zoneState.sourceMutationError = ""
         compare(feedback.Accessible.name, "")
         compare(feedback.visible, false)
+        compare(feedback.Accessible.ignored, true)
     }
 
     function test_source_section_error_exposes_accessible_feedback_without_editor() {
@@ -1765,10 +1775,18 @@ TestCase {
         compare(feedback.Accessible.role, Accessible.StaticText)
         compare(feedback.Accessible.name, zoneState.sourceMutationError)
         compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
         verify(sources.beginEditor("sequencer", null))
         compare(feedback.visible, false)
+        compare(feedback.Accessible.name, zoneState.sourceMutationError)
+        compare(feedback.Accessible.ignored, true)
+        sources.discardDraft()
+        compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
         zoneState.sourceMutationError = ""
         compare(feedback.Accessible.name, "")
+        compare(feedback.visible, false)
+        compare(feedback.Accessible.ignored, true)
     }
 
     function test_source_revision_conflict_reload_uses_current_persisted_revision() {
