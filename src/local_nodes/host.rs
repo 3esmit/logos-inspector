@@ -113,6 +113,8 @@ impl HostNodeObservation {
 
 #[derive(Debug)]
 struct PreparedHostAction {
+    profile: String,
+    topology_id: String,
     kind: NodeKind,
     action: NodeAction,
     module: &'static str,
@@ -444,7 +446,7 @@ async fn action_with_store(
     {
         let _state_lock = acquire_state_lock()?;
         let mut state = store.load()?;
-        record_action_result(&mut state, profile, &request, &plan, execution, store)?;
+        record_action_result(&mut state, &request, &plan, execution, store)?;
     }
 
     status_with_store(profile, module_transport, store).await
@@ -1154,6 +1156,8 @@ fn prepare_action(
         .transpose()?
         .unwrap_or_default();
     Ok(PreparedHostAction {
+        profile: profile.to_owned(),
+        topology_id: topology.id.clone(),
         kind,
         action,
         module: contract.module_id(),
@@ -2114,7 +2118,6 @@ fn is_transport_interruption(error: &anyhow::Error) -> bool {
 
 fn record_action_result(
     state: &mut LocalNodesState,
-    profile: &str,
     request: &LocalNodeActionRequest,
     plan: &PreparedHostAction,
     execution: Result<HostActionExecution>,
@@ -2137,13 +2140,9 @@ fn record_action_result(
                 .as_ref()
                 .and_then(|pending| pending.observation_error.clone());
             if let Some(mut pending) = execution.pending_operation {
-                pending.topology_id = state
-                    .active_topology(profile)
-                    .context("active topology missing while recording pending operation")?
-                    .id
-                    .clone();
+                pending.topology_id.clone_from(&plan.topology_id);
                 pending.history_id.clone_from(&history_id);
-                pending.profile = Some(normalized_profile(profile).to_owned());
+                pending.profile = Some(plan.profile.clone());
                 state.pending_host_operations.insert(plan.kind, pending);
             }
             let lifecycle_confirmed = execution.lifecycle_detail.is_some();
@@ -2198,7 +2197,7 @@ fn record_action_result(
         ),
     };
     if succeeded {
-        apply_successful_action(state, profile, plan, lifecycle_detail.as_deref())?;
+        apply_successful_action(state, plan, lifecycle_detail.as_deref())?;
     }
     state.push_operation(LocalNodeOperationReport {
         id: history_id,
@@ -2231,59 +2230,67 @@ fn action_success_status(action: NodeAction, lifecycle_confirmed: bool) -> &'sta
 
 fn apply_successful_action(
     state: &mut LocalNodesState,
-    profile: &str,
     plan: &PreparedHostAction,
     lifecycle_detail: Option<&str>,
 ) -> Result<()> {
-    let profile = normalized_profile(profile);
-    let topology_id = state
-        .active_topology(profile)
-        .map(|topology| topology.id.clone())
-        .context("active local node topology is required")?;
-    let record = state
-        .active_topology_mut(profile)
-        .context("active local node topology is required")?;
-    let config = record
-        .nodes
-        .iter_mut()
-        .find(|node| node.kind == plan.kind)
-        .with_context(|| format!("{} config is not available", adapter_for(plan.kind).label()))?;
-    match plan.action {
-        NodeAction::Initialize => {
-            config.installed = true;
-            config.package_path = Some(plan.module.to_owned());
-            config.lifecycle_state = NodeLifecycleState::Stopped;
-            config.pending_lifecycle_action = None;
-        }
-        NodeAction::Start => {
-            config.installed = true;
-            if lifecycle_detail.is_some() {
-                config.lifecycle_state = NodeLifecycleState::Running;
-                config.pending_lifecycle_action = None;
-            } else {
-                config.lifecycle_state = NodeLifecycleState::Starting;
-                config.pending_lifecycle_action = Some(NodeAction::Start);
-            }
-        }
-        NodeAction::Stop => {
-            if lifecycle_detail.is_some() {
+    let record = if plan.profile == "local" {
+        state
+            .devnets
+            .iter_mut()
+            .find(|record| record.id == plan.topology_id)
+    } else {
+        state
+            .testnet
+            .as_mut()
+            .filter(|record| record.id == plan.topology_id)
+    };
+    // Selection can change while the module call is awaited. A deleted owner
+    // must not discard accepted work or transfer its state to another topology.
+    if let Some(record) = record {
+        let config = record
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == plan.kind)
+            .with_context(|| {
+                format!("{} config is not available", adapter_for(plan.kind).label())
+            })?;
+        match plan.action {
+            NodeAction::Initialize => {
+                config.installed = true;
+                config.package_path = Some(plan.module.to_owned());
                 config.lifecycle_state = NodeLifecycleState::Stopped;
                 config.pending_lifecycle_action = None;
-            } else {
-                config.lifecycle_state = NodeLifecycleState::Stopping;
-                config.pending_lifecycle_action = Some(NodeAction::Stop);
             }
+            NodeAction::Start => {
+                config.installed = true;
+                if lifecycle_detail.is_some() {
+                    config.lifecycle_state = NodeLifecycleState::Running;
+                    config.pending_lifecycle_action = None;
+                } else {
+                    config.lifecycle_state = NodeLifecycleState::Starting;
+                    config.pending_lifecycle_action = Some(NodeAction::Start);
+                }
+            }
+            NodeAction::Stop => {
+                if lifecycle_detail.is_some() {
+                    config.lifecycle_state = NodeLifecycleState::Stopped;
+                    config.pending_lifecycle_action = None;
+                } else {
+                    config.lifecycle_state = NodeLifecycleState::Stopping;
+                    config.pending_lifecycle_action = Some(NodeAction::Stop);
+                }
+            }
+            NodeAction::Uninstall => clear_module_context(config),
+            _ => {}
         }
-        NodeAction::Uninstall => clear_module_context(config),
-        _ => {}
+        record.updated_at = now_millis();
+        write_devnet_manifest(record)?;
     }
-    record.updated_at = now_millis();
-    write_devnet_manifest(record)?;
     match plan.action {
         NodeAction::Initialize => {
             state
                 .module_context_topology_by_kind
-                .insert(plan.kind, topology_id);
+                .insert(plan.kind, plan.topology_id.clone());
         }
         NodeAction::Uninstall => state.clear_module_context_topology(plan.kind),
         _ => {}
@@ -4648,7 +4655,7 @@ mod tests {
             bail!("failed native nodeStopped lost its terminal detail: {error:#}");
         }
         let mut state = store.load()?;
-        record_action_result(&mut state, "default", &request, &plan, Err(error), &store)?;
+        record_action_result(&mut state, &request, &plan, Err(error), &store)?;
         let messaging = state
             .active_topology("default")
             .and_then(|topology| {
@@ -4684,7 +4691,7 @@ mod tests {
             bail!("missing native nodeStopped lost its timeout detail: {error:#}");
         }
         let mut state = store.load()?;
-        record_action_result(&mut state, "default", &request, &plan, Err(error), &store)?;
+        record_action_result(&mut state, &request, &plan, Err(error), &store)?;
         let messaging = state
             .active_topology("default")
             .and_then(|topology| {
@@ -5244,7 +5251,7 @@ mod tests {
         let plan = prepare_action("default", &state, &request)?;
         let execution =
             execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
-        record_action_result(&mut state, "default", &request, &plan, execution, &store)?;
+        record_action_result(&mut state, &request, &plan, execution, &store)?;
         let report = status_with_store("default", &transport, &store).await?;
         let node = report
             .nodes
@@ -5307,7 +5314,7 @@ mod tests {
         let plan = prepare_action("default", &state, &request)?;
         let execution =
             execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
-        record_action_result(&mut state, "default", &request, &plan, execution, store)
+        record_action_result(&mut state, &request, &plan, execution, store)
     }
 
     #[tokio::test]
@@ -5576,6 +5583,103 @@ mod tests {
         Ok(())
     }
 
+    async fn action_recording_preserves_prepared_owner(deferred: bool) -> Result<()> {
+        for remove_owner in [false, true] {
+            for select_other in [true, false] {
+                let (directory, store, mut transport_impl) = deferred_bedrock_fixture().await?;
+                transport_impl.defer_settlement = deferred;
+                let mut state = store.load()?;
+                let mut owner = state.testnet.clone().context("missing testnet")?;
+                owner.id = "owner-devnet".to_owned();
+                owner.workspace = directory.path().join("owner").display().to_string();
+                fs::create_dir_all(&owner.workspace)?;
+                let mut other = owner.clone();
+                other.id = "other-devnet".to_owned();
+                other.workspace = directory.path().join("other").display().to_string();
+                fs::create_dir_all(&other.workspace)?;
+                let other_before = serde_json::to_value(&other)?;
+                state.active_devnet = Some(owner.id.clone());
+                state.devnets = vec![owner, other];
+                let transport: SharedModuleTransport = Arc::new(transport_impl.clone());
+                let request = node_action_request(NodeKind::Bedrock, NodeAction::Start);
+                let plan = prepare_action("local", &state, &request)?;
+                let execution =
+                    execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO)
+                        .await?;
+                anyhow::ensure!(execution.pending_operation.is_some() == deferred);
+                // Another request can change topology while the module call is awaited.
+                state.active_devnet = select_other.then(|| "other-devnet".to_owned());
+                if remove_owner {
+                    state.devnets.retain(|record| record.id != "owner-devnet");
+                }
+                store.save(&state)?;
+                let mut state = store.load()?;
+                record_action_result(&mut state, &request, &plan, Ok(execution), &store)?;
+                let state = store.load()?;
+                let other = state
+                    .devnets
+                    .iter()
+                    .find(|record| record.id == "other-devnet")
+                    .context("other devnet disappeared")?;
+                anyhow::ensure!(
+                    serde_json::to_value(other)? == other_before,
+                    "recording changed a topology that did not prepare the action"
+                );
+                if !remove_owner {
+                    let node = state
+                        .devnets
+                        .iter()
+                        .find(|record| record.id == "owner-devnet")
+                        .and_then(|record| {
+                            record
+                                .nodes
+                                .iter()
+                                .find(|node| node.kind == NodeKind::Bedrock)
+                        })
+                        .context("original Bedrock disappeared")?;
+                    anyhow::ensure!(
+                        node.lifecycle_state
+                            == if deferred {
+                                NodeLifecycleState::Starting
+                            } else {
+                                NodeLifecycleState::Running
+                            }
+                    );
+                }
+                if deferred {
+                    let receipt = state
+                        .pending_host_operations
+                        .get(&NodeKind::Bedrock)
+                        .context("accepted operation was lost")?;
+                    anyhow::ensure!(receipt.topology_id == "owner-devnet");
+                    anyhow::ensure!(receipt.profile.as_deref() == Some("local"));
+                    anyhow::ensure!(prepare_action("default", &state, &request).is_err());
+                    transport_impl.set_state(ManagedNodeLifecycleState::Running)?;
+                    status_with_store("local", &transport, &store).await?;
+                }
+                let state = store.load()?;
+                anyhow::ensure!(state.pending_host_operations.is_empty());
+                anyhow::ensure!(
+                    state
+                        .operations
+                        .last()
+                        .is_some_and(|op| op.status == "running")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_pending_action_recording_preserves_prepared_owner() -> Result<()> {
+        action_recording_preserves_prepared_owner(true).await
+    }
+
+    #[tokio::test]
+    async fn basecamp_completed_action_recording_preserves_prepared_owner() -> Result<()> {
+        action_recording_preserves_prepared_owner(false).await
+    }
+
     #[tokio::test]
     async fn basecamp_pending_operation_settles_inactive_or_deleted_devnet() -> Result<()> {
         for remove_owner in [false, true] {
@@ -5596,7 +5700,7 @@ mod tests {
             let plan = prepare_action("local", &state, &request)?;
             let execution =
                 execute_host_action_with_lifecycle_timeout(&plan, &transport, Duration::ZERO).await;
-            record_action_result(&mut state, "local", &request, &plan, execution, &store)?;
+            record_action_result(&mut state, &request, &plan, execution, &store)?;
             state.active_devnet = Some("other-devnet".to_owned());
             if remove_owner {
                 state.devnets.retain(|record| record.id != "owner-devnet");
@@ -5730,7 +5834,7 @@ mod tests {
             execution.is_err(),
             "unsettled initialization was accepted as complete"
         );
-        record_action_result(&mut state, "default", &request, &plan, execution, &store)?;
+        record_action_result(&mut state, &request, &plan, execution, &store)?;
         let state = store.load()?;
         anyhow::ensure!(state.pending_host_operations.is_empty());
         anyhow::ensure!(state.active_topology("default").is_none_or(|topology| {
