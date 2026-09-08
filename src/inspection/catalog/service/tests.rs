@@ -18,6 +18,45 @@ use crate::inspection::catalog::{
     prepare_catalog_catch_up, reduce_catalog_page,
 };
 
+#[tokio::test]
+async fn blocking_catalog_error_preserves_storage_cause() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let missing = directory.path().join("missing.redb");
+    let underlying = match ZoneCatalog::open(&missing) {
+        Ok(_) => bail!("missing catalog unexpectedly opened"),
+        Err(error) => error.to_string(),
+    };
+    let result = ZoneCatalogRunContext::test_context(1)
+        .run_blocking_catalog(move || ZoneCatalog::open(missing))
+        .await;
+    let error = result
+        .err()
+        .context("missing catalog unexpectedly opened")?;
+    ensure!(
+        error.to_string().contains(&underlying),
+        "catalog service discarded storage cause: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn catalog_validation_error_keeps_record_payloads_private() -> Result<()> {
+    for error in [
+        CatalogError::invalid_input("private-record-payload"),
+        CatalogError::invalidated(
+            crate::inspection::catalog::CatalogInvalidationReason::RecordDecode,
+            "private-record-payload",
+        ),
+    ] {
+        ensure!(
+            !map_catalog_error(error)
+                .to_string()
+                .contains("private-record-payload")
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn logoscore_cli_source_descriptor_is_endpoint_free_and_separate_from_direct_http() -> Result<()> {
     let cli = ZoneCatalogSourceDescriptor::logoscore_cli();
