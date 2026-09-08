@@ -2646,6 +2646,43 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn testnet_defaults_seed_new_bedrock_inputs_without_replacing_existing_configs() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        anyhow::ensure!(ensure_testnet_topology(&mut state)?);
+        let record = state.testnet.as_ref().context("missing Testnet topology")?;
+        let bedrock = record
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("missing Bedrock node")?;
+        let initialization_path = PathBuf::from(
+            bedrock
+                .initialization_config_path
+                .as_deref()
+                .context("missing Bedrock initialization path")?,
+        );
+        let runtime_path = PathBuf::from(&bedrock.config_path);
+        let generated: Value = serde_json::from_slice(&fs::read(&initialization_path)?)?;
+        anyhow::ensure!(
+            generated.get("initial_peers")
+                == Some(&serde_json::json!(
+                    crate::testnet::LOGOS_TESTNET_BOOTSTRAP_PEERS
+                ))
+        );
+        anyhow::ensure!(generated.get("skip_ibd") == Some(&serde_json::json!(false)));
+
+        let operator_input = br#"{"initial_peers":["operator-owned-peer"],"skip_ibd":true}"#;
+        let operator_runtime = b"operator_configuration: retained\n";
+        fs::write(&initialization_path, operator_input)?;
+        fs::write(&runtime_path, operator_runtime)?;
+        anyhow::ensure!(!ensure_testnet_topology(&mut state)?);
+        anyhow::ensure!(fs::read(&initialization_path)? == operator_input);
+        anyhow::ensure!(fs::read(&runtime_path)? == operator_runtime);
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn generated_messaging_config_persists_a_private_stable_identity() -> Result<()> {
