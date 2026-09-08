@@ -7,6 +7,7 @@ use std::{
 
 use tokio::time::sleep;
 
+use super::service::map_catalog_error;
 use super::{
     CatalogCandidateActivation, CatalogEngineContext, CatalogL1RangePage, CatalogL1RangeRequest,
     CatalogL1Source, CatalogMetadata, CatalogPageReduction, CatalogRepairConfirmation,
@@ -854,10 +855,6 @@ fn map_source_error(error: super::CatalogL1SourceError) -> ZoneCatalogServiceErr
     ZoneCatalogServiceError::Source(detail.to_owned())
 }
 
-fn map_catalog_error(_error: super::CatalogError) -> ZoneCatalogServiceError {
-    ZoneCatalogServiceError::Catalog("catalog storage or validation failed".to_owned())
-}
-
 fn map_engine_error(error: super::CatalogEngineError) -> ZoneCatalogServiceError {
     ZoneCatalogServiceError::Worker(format!("catalog ingestion validation failed: {error}"))
 }
@@ -1038,6 +1035,11 @@ mod tests {
             )
             .await;
         ensure!(result.is_err(), "locked catalog was replaced");
+        let error = result.err().context("missing catalog lock error")?;
+        ensure!(
+            error.to_string().contains("Cannot acquire lock"),
+            "catalog startup discarded the lock failure cause: {error}"
+        );
         ensure!(path.exists(), "locked catalog was quarantined");
         ensure!(writer.snapshot()? == expected);
         ensure!(
