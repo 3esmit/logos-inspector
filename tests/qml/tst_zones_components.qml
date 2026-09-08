@@ -1716,6 +1716,79 @@ TestCase {
         verify(sources.hasDirtyDraft)
     }
 
+    function test_source_editor_error_exposes_updated_accessible_feedback() {
+        const detail = findChild(page, "zoneDetail")
+        verify(!!detail, "Object exists")
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "channelSourcesSection") !== null
+        })
+        const sources = findChild(detail, "channelSourcesSection")
+        verify(!!sources, "Object exists")
+        verify(sources.beginEditor("sequencer", null))
+        tryVerify(function () {
+            return findChild(sources, "channelSourceEditor") !== null
+        })
+        const editor = findChild(sources, "channelSourceEditor")
+        verify(!!editor, "Object exists")
+        const endpoint = findChild(editor, "channelSourceEndpointField")
+        verify(!!endpoint, "Object exists")
+        const feedback = findChild(editor, "channelSourceMutationError")
+        verify(!!feedback, "Object exists")
+        const error = qsTr("Sequencer source verification resolved to another Channel")
+        endpoint.text = "https://foreign.example/"
+        zoneState.sourceMutationError = error
+        compare(feedback.Accessible.role, Accessible.StaticText)
+        compare(feedback.Accessible.name, error)
+        compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
+        compare(endpoint.text, "https://foreign.example/")
+
+        zoneState.sourceMutationError = qsTr("Channel source configuration revision conflict")
+        compare(feedback.Accessible.name, zoneState.sourceMutationError)
+        editor.conflict = true
+        compare(feedback.visible, false)
+        compare(feedback.Accessible.ignored, true)
+
+        zoneState.sourceMutationError = qsTr("Current source configuration is unavailable")
+        compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
+        compare(feedback.Accessible.name, zoneState.sourceMutationError)
+        zoneState.sourceMutationError = ""
+        compare(feedback.Accessible.name, "")
+        compare(feedback.visible, false)
+        compare(feedback.Accessible.ignored, true)
+    }
+
+    function test_source_section_error_exposes_accessible_feedback_without_editor() {
+        const detail = findChild(page, "zoneDetail")
+        verify(!!detail, "Object exists")
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "channelSourcesSection") !== null
+        })
+        const sources = findChild(detail, "channelSourcesSection")
+        verify(!!sources, "Object exists")
+        const feedback = findChild(sources, "channelSourceSectionMutationError")
+        verify(!!feedback, "Object exists")
+        zoneState.sourceMutationError = qsTr("Channel source update failed.")
+        compare(feedback.Accessible.role, Accessible.StaticText)
+        compare(feedback.Accessible.name, zoneState.sourceMutationError)
+        compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
+        verify(sources.beginEditor("sequencer", null))
+        compare(feedback.visible, false)
+        compare(feedback.Accessible.name, zoneState.sourceMutationError)
+        compare(feedback.Accessible.ignored, true)
+        sources.discardDraft()
+        compare(feedback.visible, true)
+        compare(feedback.Accessible.ignored, false)
+        zoneState.sourceMutationError = ""
+        compare(feedback.Accessible.name, "")
+        compare(feedback.visible, false)
+        compare(feedback.Accessible.ignored, true)
+    }
+
     function test_source_revision_conflict_reload_uses_current_persisted_revision() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("sources"))
