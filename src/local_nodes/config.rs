@@ -1642,6 +1642,7 @@ mod tests {
         let state = LocalNodesState {
             version: 4,
             active_devnet: Some("devnet".to_owned()),
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: Default::default(),
             testnet: None,
             managed_workspace_root: directory.path().display().to_string(),

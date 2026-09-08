@@ -61,6 +61,7 @@ mod tests {
         let mut state = LocalNodesState {
             version: 3,
             active_devnet: None,
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: Some(super::super::model::LocalDevnetRecord {
                 deployment: super::super::model::LocalNodeDeployment::PublicTestnet,
@@ -140,6 +141,7 @@ mod tests {
         let mut state = LocalNodesState {
             version: 3,
             active_devnet: None,
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: Some(super::super::model::LocalDevnetRecord {
                 deployment: super::super::model::LocalNodeDeployment::PublicTestnet,

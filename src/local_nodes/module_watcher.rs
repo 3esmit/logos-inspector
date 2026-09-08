@@ -2271,6 +2271,7 @@ mod tests {
         LocalNodesState {
             version: 3,
             active_devnet: Some("devnet".to_owned()),
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: BTreeMap::from([(kind, "devnet".to_owned())]),
             testnet: None,
             managed_workspace_root: workspace.clone(),
