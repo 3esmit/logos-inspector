@@ -83,10 +83,13 @@ pub(crate) enum ExecutionZoneReadErrorKind {
     Capability,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecutionZoneReadError {
     pub(crate) kind: ExecutionZoneReadErrorKind,
+    pub(crate) diagnostic: String,
 }
+
+const MAX_EXECUTION_ZONE_READ_DIAGNOSTIC_BYTES: usize = 512;
 
 pub(crate) type ExecutionZoneReadResult<T> = std::result::Result<T, ExecutionZoneReadError>;
 
@@ -114,14 +117,16 @@ pub(super) fn optional_u64(value: Value) -> ExecutionZoneReadResult<Option<u64>>
         .as_u64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
         .map(Some)
-        .ok_or(ExecutionZoneReadError {
+        .ok_or_else(|| ExecutionZoneReadError {
             kind: ExecutionZoneReadErrorKind::Protocol,
+            diagnostic: "response was not an unsigned integer".to_owned(),
         })
 }
 
-pub(super) const fn capability_error() -> ExecutionZoneReadError {
+pub(super) fn capability_error() -> ExecutionZoneReadError {
     ExecutionZoneReadError {
         kind: ExecutionZoneReadErrorKind::Capability,
+        diagnostic: "source does not support this operation".to_owned(),
     }
 }
 
@@ -133,7 +138,25 @@ pub(super) fn map_read_error(error: anyhow::Error) -> ExecutionZoneReadError {
     } else {
         ExecutionZoneReadErrorKind::Unavailable
     };
-    ExecutionZoneReadError { kind }
+    ExecutionZoneReadError {
+        kind,
+        diagnostic: bounded_read_diagnostic(error),
+    }
+}
+
+fn bounded_read_diagnostic(error: anyhow::Error) -> String {
+    let mut diagnostic = format!("{error:#}");
+    if diagnostic.len() <= MAX_EXECUTION_ZONE_READ_DIAGNOSTIC_BYTES {
+        return diagnostic;
+    }
+
+    let mut end = MAX_EXECUTION_ZONE_READ_DIAGNOSTIC_BYTES - '\u{2026}'.len_utf8();
+    while !diagnostic.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    diagnostic.truncate(end);
+    diagnostic.push('\u{2026}');
+    diagnostic
 }
 
 #[cfg(test)]
@@ -166,5 +189,18 @@ mod tests {
         assert_eq!(protocol.kind, ExecutionZoneReadErrorKind::Protocol);
         assert_eq!(capability.kind, ExecutionZoneReadErrorKind::Capability);
         assert_eq!(unavailable.kind, ExecutionZoneReadErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn node_layers_preserve_bounded_transport_diagnostics() {
+        let unavailable = map_read_error(anyhow::anyhow!("transport failed: HTTP 502"));
+        assert_eq!(
+            unavailable.diagnostic, "transport failed: HTTP 502",
+            "transport cause was discarded"
+        );
+
+        let oversized = map_read_error(anyhow::anyhow!("x".repeat(600)));
+        assert!(oversized.diagnostic.ends_with('\u{2026}'));
+        assert!(oversized.diagnostic.len() <= MAX_EXECUTION_ZONE_READ_DIAGNOSTIC_BYTES);
     }
 }

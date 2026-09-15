@@ -11,7 +11,7 @@ use super::{
     ChannelSourceProbeStage, ChannelSourceRole, ChannelSourceTarget, FinalizedL1EvidenceBasis,
     SequencerAttestationBasis,
     indexer::{IndexerAdapter, MODULE_ID},
-    layer::ExecutionZoneReadErrorKind,
+    layer::{ExecutionZoneReadError, ExecutionZoneReadErrorKind},
     sequencer::SequencerAdapter,
 };
 
@@ -790,7 +790,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             SequencerAdapter::connect(&target)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer health request failed",
                         "configured source does not expose Sequencer health inspection",
                     )
@@ -799,7 +799,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .await
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer health request failed",
                         "configured source does not expose Sequencer health inspection",
                     )
@@ -815,7 +815,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             SequencerAdapter::connect(&target)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer Channel identity request failed",
                         "configured source does not expose Sequencer Channel identity",
                     )
@@ -824,7 +824,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .await
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer Channel identity request failed",
                         "configured source does not expose Sequencer Channel identity",
                     )
@@ -837,7 +837,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             SequencerAdapter::connect(&target)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer head request failed",
                         "configured source does not expose Sequencer head inspection",
                     )
@@ -846,7 +846,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .await
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer head request failed",
                         "configured source does not expose Sequencer head inspection",
                     )
@@ -863,7 +863,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             SequencerAdapter::connect(&target)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer block request failed",
                         "configured source does not expose Sequencer block inspection",
                     )
@@ -873,7 +873,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .map(|block| block.map(sequencer_block_reference))
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer block request failed",
                         "configured source does not expose Sequencer block inspection",
                     )
@@ -890,7 +890,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             SequencerAdapter::connect(&target)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer block request failed",
                         "configured source does not expose Sequencer block inspection",
                     )
@@ -899,7 +899,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .await
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Sequencer block request failed",
                         "configured source does not expose Sequencer block inspection",
                     )
@@ -915,7 +915,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Indexer health request failed",
                         "configured source does not expose Indexer health inspection",
                     )
@@ -924,7 +924,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .await
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Indexer health request failed",
                         "configured source does not expose Indexer health inspection",
                     )
@@ -940,7 +940,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Indexer finalized-head request failed",
                         "configured source does not expose Indexer head inspection",
                     )
@@ -949,7 +949,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .await
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Indexer finalized-head request failed",
                         "configured source does not expose Indexer head inspection",
                     )
@@ -966,7 +966,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Indexer block request failed",
                         "configured source does not expose Indexer block inspection",
                     )
@@ -976,7 +976,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 .map(|block| block.and_then(indexer_block_reference))
                 .map_err(|error| {
                     probe_read_failure(
-                        error.kind,
+                        error,
                         "Indexer block request failed",
                         "configured source does not expose Indexer block inspection",
                     )
@@ -986,18 +986,28 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
 }
 
 fn probe_read_failure(
-    kind: ExecutionZoneReadErrorKind,
+    error: ExecutionZoneReadError,
     diagnostic: &'static str,
     unsupported: &'static str,
 ) -> ChannelSourceProbeFailure {
-    match kind {
-        ExecutionZoneReadErrorKind::Unavailable => {
-            ChannelSourceProbeFailure::unavailable(diagnostic)
+    match error.kind {
+        ExecutionZoneReadErrorKind::Unavailable => ChannelSourceProbeFailure::unavailable(
+            with_read_diagnostic(diagnostic, error.diagnostic),
+        ),
+        ExecutionZoneReadErrorKind::Protocol => {
+            ChannelSourceProbeFailure::protocol(with_read_diagnostic(diagnostic, error.diagnostic))
         }
-        ExecutionZoneReadErrorKind::Protocol => ChannelSourceProbeFailure::protocol(diagnostic),
         ExecutionZoneReadErrorKind::Capability => {
             ChannelSourceProbeFailure::unsupported(unsupported)
         }
+    }
+}
+
+fn with_read_diagnostic(diagnostic: &'static str, detail: String) -> String {
+    if detail.is_empty() {
+        diagnostic.to_owned()
+    } else {
+        format!("{diagnostic}: {detail}")
     }
 }
 
