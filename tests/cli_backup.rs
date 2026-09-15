@@ -644,7 +644,7 @@ fn cli_backup_download_signals_settle_remote_cleanup_before_exit() -> Result<()>
     use nix::sys::signal::Signal;
 
     for (signal, label) in [(Signal::SIGINT, "SIGINT"), (Signal::SIGTERM, "SIGTERM")] {
-        assert_cli_backup_signal_cleanup(signal, label, true)?;
+        assert_cli_backup_signal_cleanup(signal, label, true, "0")?;
     }
     Ok(())
 }
@@ -655,9 +655,17 @@ fn cli_backup_download_signals_preserve_failed_cleanup_evidence() -> Result<()> 
     use nix::sys::signal::Signal;
 
     for (signal, label) in [(Signal::SIGINT, "SIGINT"), (Signal::SIGTERM, "SIGTERM")] {
-        assert_cli_backup_signal_cleanup(signal, label, false)?;
+        assert_cli_backup_signal_cleanup(signal, label, false, "0")?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_backup_download_signal_cleanup_allows_delayed_watch_exit() -> Result<()> {
+    use nix::sys::signal::Signal;
+
+    assert_cli_backup_signal_cleanup(Signal::SIGTERM, "SIGTERM", false, "0.400")
 }
 
 #[cfg(target_os = "linux")]
@@ -720,6 +728,7 @@ fn assert_cli_backup_signal_cleanup(
     signal: nix::sys::signal::Signal,
     label: &str,
     cancel_should_settle: bool,
+    watch_stop_delay: &str,
 ) -> Result<()> {
     use nix::{sys::signal::kill, unistd::Pid};
 
@@ -762,7 +771,7 @@ fn assert_cli_backup_signal_cleanup(
              printf '%s' \"$$\" > {watch_pid}\n\
              (trap '' TERM INT; while :; do sleep 1; done) &\n\
              printf '%s' \"$!\" > {descendant_pid}\n\
-             trap 'touch {watch_stopped}; exit 0' TERM INT\n\
+             trap 'sleep {watch_stop_delay}; touch {watch_stopped}; exit 0' TERM INT\n\
              printf '%s\\n' '{{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDoneV2\"}}'\n\
              while :; do sleep 1; done ;;\n\
            call)\n\
@@ -788,6 +797,7 @@ fn assert_cli_backup_signal_cleanup(
          esac\n",
         watch_pid = shell_path(&watch_pid_path),
         descendant_pid = shell_path(&descendant_pid_path),
+        watch_stop_delay = watch_stop_delay,
         watch_stopped = shell_path(&watch_stopped),
         staging = shell_path(&staging_path),
         operation_id = shell_path(&operation_id_path),
