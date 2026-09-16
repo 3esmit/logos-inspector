@@ -255,6 +255,59 @@ changed, reload the draft and review the current source configuration before
 saving. If catalog verification changes, keep or discard the draft, but do not
 expect Inspector to apply it until verification returns.
 
+### Paradox Testnet channel migration
+
+For the current Paradox Computer Zone, use:
+
+| Setting | Value |
+| --- | --- |
+| Channel ID | `7777777777777777777777777777777777777777777777777777777777777777` |
+| Sequencer RPC | `https://seq-testnet.paradox.computer/` |
+| Optional source label | `Paradox Computer` |
+
+Paradox moved from the rc5-era `8888…8888` channel to a fresh `7777…7777`
+channel on July 31, 2026, when its sequencer upgraded to LEZ v0.2.0. The
+deployment owner's [published channel aliases and migration explanation](https://github.com/paradoxcomputer/zonescan/blob/cb00e0748fa65ffc51764ed8f121c3f8cca53b84/src/main.rs#L36-L66)
+identify the current channel. The old channel is a separate history; it is
+not an alias for the current one.
+
+An existing `8888…` source pointing at this RPC fails with
+**Sequencer source verification resolved to another Channel**. That rejection
+protects the selected Zone from reading another channel's data. To recover:
+
+1. Open the verified Testnet Zone catalog and select the full `7777…7777`
+   Channel ID above. If that row is missing, wait for catalog verification and
+   coverage; do not substitute the historical `8888…8888` row.
+2. Open **Sources**, choose **Add Sequencer source**, and enter the RPC URL
+   above. Save, then select the source after it confirms this Channel.
+3. Configure any Channel Indexer separately under the new Zone. Keep the old
+   channel's history, source IDs, and persisted attestation separate; renaming
+   a label or editing a stored Channel ID does not migrate a chain.
+4. Open the selected Zone's **L2 Blocks** tab. Verify that the selected Channel
+   and source match the new configuration and that live block rows load.
+
+For a read-only check from a prepared source checkout:
+
+```bash
+cargo run -- cli rpc https://seq-testnet.paradox.computer/ getChannelId
+```
+
+The JSON output's `response.result` must equal the full Channel ID above.
+Before accepting a future mapping change, check the deployment owner's
+configuration and the selected Testnet's L1 evidence as well; an endpoint's
+reported ID alone is not permission to remap an existing channel.
+
+Verified September 7, 2026: the RPC reported `7777…7777`, the public L1
+[channel state](https://logos-testnet.paradox.computer/channel/7777777777777777777777777777777777777777777777777777777777777777)
+contained the same channel's registered signer and tip. Its immutable-range
+response at L1 slot `2625415` included L2 block `24346`, but a separate ancestry
+conflict between range entries prevented a clean catalog catch-up. These
+observations verify the reported Channel mapping, not canonical settlement.
+Keep source verification enabled; do not force catalog coverage or reuse an
+attestation after a Testnet genesis reset. See
+[issue #274](https://github.com/3esmit/logos-inspector/issues/274) for the original
+mismatched configuration report.
+
 ## Safe operating habits
 
 - Keep the selected connector visible in **Settings** while diagnosing data;
