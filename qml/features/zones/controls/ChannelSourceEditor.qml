@@ -207,6 +207,10 @@ Rectangle {
         }
 
         Text {
+            objectName: "channelSourceMutationError"
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
+            Accessible.ignored: !visible
             visible: root.zoneState.sourceMutationError.length > 0
                 && (!root.conflict
                     || root.zoneState.sourceMutationError.toLowerCase()

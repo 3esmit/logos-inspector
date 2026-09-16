@@ -297,6 +297,10 @@ ColumnLayout {
     }
 
     Text {
+        objectName: "channelSourceSectionMutationError"
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !visible
         visible: root.zoneState.sourceMutationError.length > 0 && !root.editorOpen
         text: root.zoneState.sourceMutationError
         color: root.theme.error
