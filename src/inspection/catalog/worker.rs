@@ -7,6 +7,7 @@ use std::{
 
 use tokio::time::sleep;
 
+use super::service::map_catalog_error;
 use super::{
     CatalogCandidateActivation, CatalogEngineContext, CatalogL1RangePage, CatalogL1RangeRequest,
     CatalogL1Source, CatalogMetadata, CatalogPageReduction, CatalogRepairConfirmation,
@@ -272,12 +273,13 @@ impl DirectZoneCatalogWorker {
         let paths = catalog_paths(catalog_directory).await?;
         for path in paths {
             context.ensure_current()?;
-            let snapshot = match open_catalog_snapshot(path.clone(), context).await {
+            let snapshot = match open_catalog_snapshot(path.clone(), context).await? {
                 Ok(snapshot) => snapshot,
-                Err(_) => {
+                Err(super::CatalogError::Invalidated(_)) => {
                     quarantine_catalog(path, "invalid", context).await?;
                     continue;
                 }
+                Err(error) => return Err(map_catalog_error(error)),
             };
             let _published = context.publish(ZoneCatalogPublication {
                 verification_state: CatalogVerificationState::CachedUnverified,
@@ -749,9 +751,14 @@ async fn catalog_paths(directory: &Path) -> ZoneCatalogServiceResult<Vec<PathBuf
 async fn open_catalog_snapshot(
     path: PathBuf,
     context: &ZoneCatalogRunContext,
-) -> ZoneCatalogServiceResult<CatalogSnapshot> {
+) -> ZoneCatalogServiceResult<super::CatalogResult<CatalogSnapshot>> {
+    // A writable open recovers committed pages after interrupted shutdown. The
+    // resulting snapshot still requires source verification before activation.
+    // Keep storage errors typed so lock/I/O failures cannot quarantine the file.
     context
-        .run_blocking_catalog(move || ZoneCatalog::open_read_only(path)?.snapshot())
+        .run_blocking_catalog(move || {
+            Ok(ZoneCatalog::open(path).and_then(|catalog| catalog.snapshot()))
+        })
         .await
 }
 
@@ -848,10 +855,6 @@ fn map_source_error(error: super::CatalogL1SourceError) -> ZoneCatalogServiceErr
     ZoneCatalogServiceError::Source(detail.to_owned())
 }
 
-fn map_catalog_error(_error: super::CatalogError) -> ZoneCatalogServiceError {
-    ZoneCatalogServiceError::Catalog("catalog storage or validation failed".to_owned())
-}
-
 fn map_engine_error(error: super::CatalogEngineError) -> ZoneCatalogServiceError {
     ZoneCatalogServiceError::Worker(format!("catalog ingestion validation failed: {error}"))
 }
@@ -878,6 +881,241 @@ mod tests {
     }
 
     struct RepairingPageSource;
+
+    struct RecoverySource {
+        genesis: char,
+    }
+
+    impl CatalogL1Source for RecoverySource {
+        fn chain_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1ChainStatus> {
+            Box::pin(async move {
+                let target = super::super::CatalogBlockReference {
+                    slot: 2,
+                    block_id: id('b'),
+                };
+                Ok(super::super::CatalogL1ChainStatus {
+                    snapshot: super::super::CatalogL1ChainSnapshot {
+                        tip: target.clone(),
+                        lib: target,
+                    },
+                    genesis_id: Some(id(self.genesis)),
+                })
+            })
+        }
+
+        fn time_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1TimeStatus> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "unexpected time query".to_owned(),
+                ))
+            })
+        }
+
+        fn finalized_range(
+            &self,
+            _request: CatalogL1RangeRequest,
+        ) -> super::super::CatalogL1SourceFuture<'_, CatalogL1RangePage> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "unexpected range query".to_owned(),
+                ))
+            })
+        }
+
+        fn block(
+            &self,
+            block_id: String,
+        ) -> super::super::CatalogL1SourceFuture<'_, Option<super::super::CatalogL1Block>> {
+            Box::pin(async move {
+                Ok([
+                    test_block(0, '0', '0'),
+                    test_block(1, 'a', '0'),
+                    test_block(2, 'b', 'a'),
+                ]
+                .into_iter()
+                .find(|block| block.checkpoint.block_id == block_id))
+            })
+        }
+    }
+
+    async fn recovery_fixture() -> Result<(tempfile::TempDir, Arc<ZoneCatalog>, CatalogSnapshot)> {
+        let directory = tempfile::tempdir()?;
+        // Keep the writer outside candidate discovery. Copy only after commits
+        // finish, while its recovery flag remains set: deterministic interruption.
+        let catalog = Arc::new(ZoneCatalog::create(
+            directory.path().join("live.db"),
+            CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+        )?);
+        let target = super::super::CatalogBlockReference {
+            slot: 2,
+            block_id: id('b'),
+        };
+        let prepared = prepare_catalog_catch_up(
+            &catalog.snapshot()?,
+            target.clone(),
+            CatalogEngineContext::new(1, 101)?,
+        )?
+        .context("fixture catch-up batch was not prepared")?;
+        let snapshot = catalog.commit_batch(prepared)?;
+        let page = CatalogL1RangePage {
+            events: vec![
+                test_page_event(0, '0', '0', &target),
+                test_page_event(1, 'a', '0', &target),
+                test_page_event(2, 'b', 'a', &target),
+            ],
+        };
+        let snapshot = apply_catalog_page(
+            catalog.clone(),
+            &RepairingPageSource,
+            snapshot,
+            page,
+            &ZoneCatalogRunContext::test_context(1),
+        )
+        .await?;
+        Ok((directory, catalog, snapshot))
+    }
+
+    #[tokio::test]
+    async fn startup_recovers_interrupted_catalog_without_losing_checkpoint() -> Result<()> {
+        let (directory, _writer, expected) = recovery_fixture().await?;
+        let path = directory.path().join("candidate.redb");
+        std::fs::copy(directory.path().join("live.db"), &path)?;
+        ensure!(
+            matches!(
+                redb::ReadOnlyDatabase::open(&path),
+                Err(redb::DatabaseError::RepairAborted)
+            ),
+            "fixture did not require recovery"
+        );
+        let worker = DirectZoneCatalogWorker::new(directory.path().to_path_buf());
+        let catalog = worker
+            .open_or_create_catalog(
+                directory.path(),
+                &RecoverySource { genesis: '0' },
+                &ZoneCatalogRunContext::test_context(1),
+            )
+            .await?;
+        ensure!(
+            catalog.snapshot()? == expected,
+            "recovery discarded committed catalog state"
+        );
+        ensure!(path.exists(), "recoverable catalog was quarantined");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_catalog_on_lock_failure() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("candidate.redb");
+        let writer = ZoneCatalog::create(
+            &path,
+            CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+        )?;
+        let expected = writer.snapshot()?;
+        let worker = DirectZoneCatalogWorker::new(directory.path().to_path_buf());
+        let result = worker
+            .open_or_create_catalog(
+                directory.path(),
+                &RecoverySource { genesis: '0' },
+                &ZoneCatalogRunContext::test_context(1),
+            )
+            .await;
+        ensure!(result.is_err(), "locked catalog was replaced");
+        let error = result.err().context("missing catalog lock error")?;
+        ensure!(
+            error.to_string().contains("Cannot acquire lock"),
+            "catalog startup discarded the lock failure cause: {error}"
+        );
+        ensure!(path.exists(), "locked catalog was quarantined");
+        ensure!(writer.snapshot()? == expected);
+        ensure!(
+            std::fs::read_dir(directory.path())?
+                .collect::<std::io::Result<Vec<_>>>()?
+                .len()
+                == 1,
+            "lock failure created replacement files"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_quarantines_invalid_catalog_schema() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("candidate.redb");
+        drop(ZoneCatalog::create(
+            &path,
+            CatalogMetadata::new(
+                NetworkScope::GenesisId {
+                    genesis_id: id('0'),
+                },
+                100,
+            )?,
+        )?);
+        let database = redb::Database::open(&path)?;
+        let transaction = database.begin_write()?;
+        {
+            let definition: redb::TableDefinition<'_, &str, &[u8]> =
+                redb::TableDefinition::new("zone_catalog_metadata_v1");
+            let mut table = transaction.open_table(definition)?;
+            drop(table.remove("schema")?);
+        }
+        transaction.commit()?;
+        drop(database);
+        let worker = DirectZoneCatalogWorker::new(directory.path().to_path_buf());
+        worker
+            .open_or_create_catalog(
+                directory.path(),
+                &RecoverySource { genesis: '0' },
+                &ZoneCatalogRunContext::test_context(1),
+            )
+            .await?;
+        ensure!(!path.exists(), "invalid schema was not quarantined");
+        ensure!(
+            std::fs::read_dir(directory.path())?
+                .collect::<std::io::Result<Vec<_>>>()?
+                .into_iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains(".invalid-"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_still_requires_matching_source_identity() -> Result<()> {
+        let (directory, _writer, expected) = recovery_fixture().await?;
+        let path = directory.path().join("candidate.redb");
+        std::fs::copy(directory.path().join("live.db"), &path)?;
+        let worker = DirectZoneCatalogWorker::new(directory.path().to_path_buf());
+        let catalog = worker
+            .open_or_create_catalog(
+                directory.path(),
+                &RecoverySource { genesis: 'f' },
+                &ZoneCatalogRunContext::test_context(1),
+            )
+            .await?;
+        ensure!(catalog.snapshot()?.metadata.network_scope != expected.metadata.network_scope);
+        ensure!(
+            std::fs::read_dir(directory.path())?
+                .collect::<std::io::Result<Vec<_>>>()?
+                .into_iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains(".mismatch-")),
+            "recovered data skipped source identity verification"
+        );
+        Ok(())
+    }
 
     struct BlockingPacer {
         wait_events: mpsc::UnboundedSender<()>,

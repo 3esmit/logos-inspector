@@ -1247,8 +1247,14 @@ fn map_source_error(error: CatalogL1SourceError) -> ZoneCatalogServiceError {
     ZoneCatalogServiceError::Source(detail.to_owned())
 }
 
-fn map_catalog_error(_error: CatalogError) -> ZoneCatalogServiceError {
-    ZoneCatalogServiceError::Catalog("catalog storage or validation failed".to_owned())
+pub(super) fn map_catalog_error(error: CatalogError) -> ZoneCatalogServiceError {
+    // Local storage failures need their lock/I/O cause for recovery. Validation
+    // details can include record contents and must not reach status reports.
+    let detail = match error {
+        CatalogError::Storage(_) => error.to_string(),
+        _ => "catalog storage or validation failed".to_owned(),
+    };
+    ZoneCatalogServiceError::Catalog(detail)
 }
 
 fn map_join_error(error: tokio::task::JoinError) -> ZoneCatalogServiceError {
