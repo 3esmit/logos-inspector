@@ -644,7 +644,7 @@ fn cli_backup_download_signals_settle_remote_cleanup_before_exit() -> Result<()>
     use nix::sys::signal::Signal;
 
     for (signal, label) in [(Signal::SIGINT, "SIGINT"), (Signal::SIGTERM, "SIGTERM")] {
-        assert_cli_backup_signal_cleanup(signal, label, true)?;
+        assert_cli_backup_signal_cleanup(signal, label, true, "0")?;
     }
     Ok(())
 }
@@ -655,7 +655,70 @@ fn cli_backup_download_signals_preserve_failed_cleanup_evidence() -> Result<()> 
     use nix::sys::signal::Signal;
 
     for (signal, label) in [(Signal::SIGINT, "SIGINT"), (Signal::SIGTERM, "SIGTERM")] {
-        assert_cli_backup_signal_cleanup(signal, label, false)?;
+        assert_cli_backup_signal_cleanup(signal, label, false, "0")?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_backup_download_signal_cleanup_allows_delayed_watch_exit() -> Result<()> {
+    use nix::sys::signal::Signal;
+
+    assert_cli_backup_signal_cleanup(Signal::SIGTERM, "SIGTERM", false, "0.400")
+}
+
+#[cfg(target_os = "linux")]
+fn has_failed_cli_backup_cleanup_evidence(stderr: &str) -> bool {
+    // Execution can report cleanup uncertainty before the supervisor adds its
+    // shutdown wrapper. Both paths must retain the same transport evidence.
+    (stderr.contains("cleanup remains unconfirmed")
+        || stderr.contains("cleanup uncertainty followed a cancellation request"))
+        && stderr.contains("storage download cleanup was not confirmed")
+        && stderr.contains("cancel=")
+        && stderr.contains("watch=ok")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_backup_cleanup_diagnostics_preserve_both_shutdown_orderings() -> Result<()> {
+    let cleanup = "storage download cleanup was not confirmed: cancel=configured logoscore exited with exit status: 10: no output, watch=ok";
+    let supervisor_first = format!(
+        "runtime operation stopped during shutdown; cleanup remains unconfirmed: {cleanup}"
+    );
+    let execution_first = format!(
+        "command stopped after cancellation requested; no child process was started; {cleanup}; cleanup uncertainty followed a cancellation request"
+    );
+    for evidence in [supervisor_first, execution_first] {
+        anyhow::ensure!(
+            has_failed_cli_backup_cleanup_evidence(&evidence),
+            "valid cleanup diagnostics rejected: {evidence}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_backup_cleanup_diagnostics_reject_missing_evidence() -> Result<()> {
+    for wrapper in [
+        "cleanup remains unconfirmed",
+        "cleanup uncertainty followed a cancellation request",
+    ] {
+        let complete = format!(
+            "{wrapper}: storage download cleanup was not confirmed: cancel=failed, watch=ok"
+        );
+        for required in [
+            wrapper,
+            "storage download cleanup was not confirmed",
+            "cancel=",
+            "watch=ok",
+        ] {
+            anyhow::ensure!(
+                !has_failed_cli_backup_cleanup_evidence(&complete.replace(required, "")),
+                "missing cleanup evidence accepted: {required}"
+            );
+        }
     }
     Ok(())
 }
@@ -665,6 +728,7 @@ fn assert_cli_backup_signal_cleanup(
     signal: nix::sys::signal::Signal,
     label: &str,
     cancel_should_settle: bool,
+    watch_stop_delay: &str,
 ) -> Result<()> {
     use nix::{sys::signal::kill, unistd::Pid};
 
@@ -707,7 +771,7 @@ fn assert_cli_backup_signal_cleanup(
              printf '%s' \"$$\" > {watch_pid}\n\
              (trap '' TERM INT; while :; do sleep 1; done) &\n\
              printf '%s' \"$!\" > {descendant_pid}\n\
-             trap 'touch {watch_stopped}; exit 0' TERM INT\n\
+             trap 'sleep {watch_stop_delay}; touch {watch_stopped}; exit 0' TERM INT\n\
              printf '%s\\n' '{{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDoneV2\"}}'\n\
              while :; do sleep 1; done ;;\n\
            call)\n\
@@ -733,6 +797,7 @@ fn assert_cli_backup_signal_cleanup(
          esac\n",
         watch_pid = shell_path(&watch_pid_path),
         descendant_pid = shell_path(&descendant_pid_path),
+        watch_stop_delay = watch_stop_delay,
         watch_stopped = shell_path(&watch_stopped),
         staging = shell_path(&staging_path),
         operation_id = shell_path(&operation_id_path),
@@ -822,10 +887,7 @@ fn assert_cli_backup_signal_cleanup(
             "{label} failing-cancel fixture reported false remote settlement"
         );
         anyhow::ensure!(
-            stderr.contains("cleanup remains unconfirmed")
-                && stderr.contains("storage download cleanup was not confirmed")
-                && stderr.contains("cancel=")
-                && stderr.contains("watch=ok"),
+            has_failed_cli_backup_cleanup_evidence(&stderr),
             "{label} backup CLI hid failed cleanup evidence: {stderr}"
         );
     }
