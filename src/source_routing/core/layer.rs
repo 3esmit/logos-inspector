@@ -502,6 +502,11 @@ mod tests {
             config.get("prolonged_bootstrap_period_secs"),
             Some(&json!(5))
         );
+        assert_eq!(config.get("skip_ibd"), Some(&json!(false)));
+        assert_eq!(
+            config.get("initial_peers"),
+            Some(&json!(crate::testnet::LOGOS_TESTNET_BOOTSTRAP_PEERS))
+        );
 
         let private_config = managed_config(
             "private",
@@ -516,6 +521,7 @@ mod tests {
                 .get("prolonged_bootstrap_period_secs")
                 .is_none()
         );
+        assert_eq!(private_config.get("initial_peers"), Some(&json!([])));
     }
 
     #[test]
