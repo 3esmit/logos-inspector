@@ -862,6 +862,7 @@ mod tests {
         LocalNodesState {
             version: 3,
             active_devnet: None,
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: BTreeMap::from([(
                 NodeKind::Indexer,
                 "logos-testnet".to_owned(),

@@ -471,6 +471,7 @@ mod tests {
         let state = LocalNodesState {
             version: 3,
             active_devnet: Some("devnet".to_owned()),
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: None,
             managed_workspace_root: "/tmp/local-nodes".to_owned(),
@@ -1032,6 +1033,7 @@ mod tests {
         let mut state = LocalNodesState {
             version: 3,
             active_devnet: None,
+            pending_host_operations: Default::default(),
             module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: Some(record),
             managed_workspace_root: directory.path().display().to_string(),
