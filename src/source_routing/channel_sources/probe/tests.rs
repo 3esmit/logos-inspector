@@ -980,6 +980,52 @@ fn probe_failure(kind: ChannelSourceFailureKind) -> ChannelSourceProbeFailure {
     }
 }
 
+#[test]
+fn adapter_probe_failure_retains_causal_read_diagnostic() {
+    for kind in [
+        super::super::layer::ExecutionZoneReadErrorKind::Unavailable,
+        super::super::layer::ExecutionZoneReadErrorKind::Protocol,
+    ] {
+        let failure = super::probe_read_failure(
+            super::super::layer::ExecutionZoneReadError {
+                kind,
+                diagnostic: "connection refused by host".to_owned(),
+            },
+            "Sequencer Channel identity request failed",
+            "configured source does not expose Sequencer Channel identity",
+        );
+
+        assert!(failure.diagnostic.ends_with("connection refused by host"));
+        assert!(
+            failure
+                .diagnostic
+                .starts_with("Sequencer Channel identity request failed")
+        );
+    }
+}
+
+#[test]
+fn unsupported_probe_failure_does_not_expose_read_details() {
+    let failure = super::probe_read_failure(
+        super::super::layer::ExecutionZoneReadError {
+            kind: super::super::layer::ExecutionZoneReadErrorKind::Capability,
+            diagnostic: "internal transport detail".to_owned(),
+        },
+        "Sequencer Channel identity request failed",
+        "configured source does not expose Sequencer Channel identity",
+    );
+
+    assert_eq!(
+        failure.kind,
+        ChannelSourceFailureKind::Unsupported,
+        "capability failures changed classification"
+    );
+    assert_eq!(
+        failure.diagnostic,
+        "configured source does not expose Sequencer Channel identity"
+    );
+}
+
 fn source_id(character: char) -> String {
     format!("src_{}", character.to_string().repeat(32))
 }

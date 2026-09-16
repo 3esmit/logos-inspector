@@ -614,7 +614,10 @@ mod tests {
                 L2SourceErrorKind::Capability,
             ),
         ] {
-            let mapped = map_execution_zone_error(ExecutionZoneReadError { kind: source });
+            let mapped = map_execution_zone_error(ExecutionZoneReadError {
+                kind: source,
+                diagnostic: "test diagnostic".to_owned(),
+            });
             assert_eq!(mapped.kind, expected);
         }
     }
