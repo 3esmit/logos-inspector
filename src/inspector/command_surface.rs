@@ -213,6 +213,8 @@ impl InspectorCommandSurface {
                     observation,
                     request.configuration_generation(),
                     &value,
+                    request.domain_name(),
+                    request.method_name(),
                 )?;
                 self.capability_registry
                     .complete_runtime_operation(&value)?;
@@ -800,6 +802,8 @@ mod tests {
                 "status": "running",
                 "context": { "configurationGeneration": 0 }
             }),
+            "blockchain",
+            "blockchainNode",
         )?;
 
         let reply = surface.call_inspector(

@@ -58,7 +58,7 @@ impl RuntimeOperationRequest {
         self.definition.method()
     }
 
-    pub(super) fn domain_name(&self) -> &'static str {
+    pub(crate) fn domain_name(&self) -> &'static str {
         self.definition.domain().as_str()
     }
 
