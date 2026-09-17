@@ -8,17 +8,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1789588928,
-        "narHash": "sha256-MHe2IS4R1qAq5vRU2E46u5QWid40qsSy1tyaBk1afEs=",
+        "lastModified": 1789668255,
+        "narHash": "sha256-8aG8WLiemNsBXzNwc9v/RA1sQLo0HrFVt3afOV0ua24=",
         "owner": "3esmit",
         "repo": "logos-blockchain-module",
-        "rev": "879b1839050a9a3eba6b0dbca97bc11848986897",
+        "rev": "405e4d859fcc3cf71b962df06146dfee8358e3d0",
         "type": "github"
       },
       "original": {
         "owner": "3esmit",
         "repo": "logos-blockchain-module",
-        "rev": "879b1839050a9a3eba6b0dbca97bc11848986897",
+        "rev": "405e4d859fcc3cf71b962df06146dfee8358e3d0",
         "type": "github"
       }
     },
@@ -519,17 +519,17 @@
         "rust-rapidsnark": "rust-rapidsnark"
       },
       "locked": {
-        "lastModified": 1789585164,
-        "narHash": "sha256-RFLCjyncXAFA1OVi7Pe+XEHFPXXIfrHJH6/aL5cbJm8=",
+        "lastModified": 1789665846,
+        "narHash": "sha256-+1lzR/LuhArq85gkPjpER8MuImEGjzYPR/jk9EkliAM=",
         "owner": "3esmit",
         "repo": "logos-blockchain",
-        "rev": "72da7c777142f586322933d499ee2de7a391e204",
+        "rev": "a49c4cb4d20a58bd1d5e9817bcab31a854278cdb",
         "type": "github"
       },
       "original": {
         "owner": "3esmit",
         "repo": "logos-blockchain",
-        "rev": "72da7c777142f586322933d499ee2de7a391e204",
+        "rev": "a49c4cb4d20a58bd1d5e9817bcab31a854278cdb",
         "type": "github"
       }
     },
@@ -538,17 +538,17 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1781004244,
-        "narHash": "sha256-zd4XYY+HPOMJXigHQDmXDvt7D1988YNPUwPPznhpFdA=",
+        "lastModified": 1788878036,
+        "narHash": "sha256-wL5m64kEcQE+CFYXLrUxbcOlqicBfSx+f/3i8fkBy1I=",
         "owner": "logos-blockchain",
         "repo": "logos-blockchain-circuits",
-        "rev": "2846ee7a4cfa24458bb8063412ab2e753b344d2f",
+        "rev": "ebf7ddf5b5b625ef4ea7c803171c670beebd05ef",
         "type": "github"
       },
       "original": {
         "owner": "logos-blockchain",
+        "ref": "v0.5.7",
         "repo": "logos-blockchain-circuits",
-        "rev": "2846ee7a4cfa24458bb8063412ab2e753b344d2f",
         "type": "github"
       }
     },
@@ -68787,17 +68787,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1780024773,
-        "narHash": "sha256-aU9nlrS9S+IJ2EiCzsaxzOXUhggogqTrJojBicE6Oeg=",
+        "lastModified": 1788505699,
+        "narHash": "sha256-PSPDCdbEBEbSDCWcqv5GkbyD2ACQ9Diz6vmEbWdy4dM=",
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "rev": "40b0a3a193e0840c76174b4a322874c8f6dd0a63",
+        "rev": "9eccf73c5b810052f08aa77ae0548c383259f17f",
         "type": "github"
       },
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "rev": "40b0a3a193e0840c76174b4a322874c8f6dd0a63",
+        "rev": "9eccf73c5b810052f08aa77ae0548c383259f17f",
         "type": "github"
       }
     },
