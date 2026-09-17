@@ -274,6 +274,8 @@ pub(crate) struct CapabilityObservation {
 struct RuntimeCapabilityObservation {
     observation: CapabilityObservation,
     configuration_generation: Option<u64>,
+    operation_domain: &'static str,
+    operation_method: &'static str,
 }
 
 const MAX_SOURCE_CONFIGURATIONS: usize = 8;
@@ -611,6 +613,8 @@ impl CapabilityRegistry {
         observation: Option<CapabilityObservation>,
         configuration_generation: Option<u64>,
         operation: &Value,
+        operation_domain: &'static str,
+        operation_method: &'static str,
     ) -> Result<()> {
         let Some(observation) = observation else {
             return Ok(());
@@ -621,7 +625,13 @@ impl CapabilityRegistry {
                 "runtime operation admission is missing operationId"
             ));
         };
-        if !runtime_operation_matches(operation, operation_id, configuration_generation) {
+        if !runtime_operation_matches(
+            operation,
+            operation_id,
+            configuration_generation,
+            operation_domain,
+            operation_method,
+        ) {
             self.abandon_observation(Some(observation))?;
             return Err(anyhow!(
                 "runtime operation admission does not match capability observation"
@@ -635,6 +645,8 @@ impl CapabilityRegistry {
                 RuntimeCapabilityObservation {
                     observation,
                     configuration_generation,
+                    operation_domain,
+                    operation_method,
                 },
             );
         Ok(())
@@ -664,7 +676,13 @@ impl CapabilityRegistry {
         let Some(lease) = state.runtime_observations.get(operation_id) else {
             return Ok(());
         };
-        if !runtime_operation_matches(operation, operation_id, lease.configuration_generation) {
+        if !runtime_operation_matches(
+            operation,
+            operation_id,
+            lease.configuration_generation,
+            lease.operation_domain,
+            lease.operation_method,
+        ) {
             return Ok(());
         }
         let Some(lease) = state.runtime_observations.remove(operation_id) else {
@@ -735,10 +753,12 @@ fn runtime_operation_matches(
     operation: &Value,
     operation_id: &str,
     configuration_generation: Option<u64>,
+    operation_domain: &str,
+    operation_method: &str,
 ) -> bool {
     runtime_operation_string(operation, "operationId") == Some(operation_id)
-        && runtime_operation_string(operation, "domain") == Some("blockchain")
-        && runtime_operation_string(operation, "method") == Some("blockchainNode")
+        && runtime_operation_string(operation, "domain") == Some(operation_domain)
+        && runtime_operation_string(operation, "method") == Some(operation_method)
         && runtime_operation_configuration_generation(operation) == configuration_generation
 }
 
@@ -762,7 +782,7 @@ fn runtime_operation_failure_detail(operation: &Value, status: &str) -> String {
         .iter()
         .find_map(|key| runtime_operation_string(operation, key))
         .map_or_else(
-            || format!("blockchain operation ended with status `{status}`"),
+            || format!("runtime operation ended with status `{status}`"),
             str::to_owned,
         )
 }
@@ -1015,6 +1035,8 @@ mod tests {
             observation,
             Some(generation),
             &runtime_blockchain_operation(operation_id, "running", generation, Value::Null, ""),
+            "blockchain",
+            "blockchainNode",
         )
     }
 
@@ -1216,6 +1238,43 @@ mod tests {
         ))?;
         if capability(&l1_report(&registry, endpoint, 0)?, "l1")?.status != "available" {
             bail!("accepted generation-zero terminal result was not projected");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_nodes_runtime_operation_admission_matches_declared_identity() -> Result<()> {
+        let registry = CapabilityRegistry::default();
+        let operation_id = "channel-indexer-stop";
+        let observation =
+            registry.begin_runtime_observation("channelIndexerAction", &json!([]), None)?;
+        registry.track_runtime_operation(
+            observation,
+            None,
+            &json!({
+                "operationId": operation_id,
+                "domain": "localNodes",
+                "method": "channelIndexerAction",
+                "status": "running",
+            }),
+            "localNodes",
+            "channelIndexerAction",
+        )?;
+
+        registry.complete_runtime_operation(&json!({
+            "operationId": operation_id,
+            "domain": "localNodes",
+            "method": "channelIndexerAction",
+            "status": "completed",
+            "result": { "status": "stopped" },
+        }))?;
+
+        let state = registry
+            .state
+            .lock()
+            .map_err(|_| anyhow!("capability evidence lock is poisoned"))?;
+        if !state.runtime_observations.is_empty() || !state.latest.is_empty() {
+            bail!("local-node runtime observation was not completed: {state:?}");
         }
         Ok(())
     }
@@ -1559,6 +1618,8 @@ mod tests {
                 RuntimeCapabilityObservation {
                     observation,
                     configuration_generation: Some(generation),
+                    operation_domain: "blockchain",
+                    operation_method: "blockchainNode",
                 },
             );
         }
