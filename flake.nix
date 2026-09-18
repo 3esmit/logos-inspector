@@ -2,12 +2,12 @@
   description = "Logos Inspector QML UI plugin and standalone app";
 
   inputs = {
-    logos-module-builder.url = "github:3esmit/logos-module-builder?rev=324b459c3f7b59171d249f3ccbcc362403b3fcaf";
+    logos-module-builder.url = "github:3esmit/logos-module-builder?rev=39b159144aa37f4000cfbbb1c348a8479ee0864e";
     logos-module-builder.inputs.logos-protocol.follows = "logos-protocol";
     # The scoped C client API is part of the protocol source. Keep the module
     # builder and every Inspector target on the same published ABI, rather
     # than maintaining a second local protocol facade.
-    logos-protocol.url = "github:3esmit/logos-protocol/6086c922bf27ea53e073e92c997421c6e91baacd";
+    logos-protocol.url = "github:3esmit/logos-protocol/3f307064aea1a7a6747f0374b8216c0549d1aceb";
     logos-protocol.inputs.logos-nix.follows = "logos-module-builder/logos-nix";
     logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
     blockchain_module = {
@@ -16,7 +16,7 @@
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     storage_module = {
-      url = "github:3esmit/logos-storage-module?rev=ed6f60604dd5d61fe1a89f8abc4603632a288473";
+      url = "github:3esmit/logos-storage-module?rev=eff57f02fb7c858f1a0a163cd8a4fa9c2f03c476";
       inputs.logos-module-builder.follows = "logos-module-builder";
     };
     delivery_module = {
@@ -335,7 +335,10 @@ EOF
       qmlModule = logos-module-builder.lib.mkLogosQmlModule {
         src = source;
         configFile = ./metadata.json;
-        flakeInputs = inputs;
+        # The UI consumes the sibling core module. Expose that local module
+        # output so current module-builder can install its published LIDL
+        # contract without treating the core as an external flake input.
+        flakeInputs = inputs // { logos_inspector = coreModule; };
       };
 
       mkCoreFfiPackage = pkgs:

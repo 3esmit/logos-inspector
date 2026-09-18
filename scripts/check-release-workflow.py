@@ -28,7 +28,7 @@ FORK_INPUTS = {
     ),
     "storage_module": (
         "3esmit/logos-storage-module",
-        "ed6f60604dd5d61fe1a89f8abc4603632a288473",
+        "eff57f02fb7c858f1a0a163cd8a4fa9c2f03c476",
     ),
     "delivery_module": (
         "3esmit/logos-delivery-module",
