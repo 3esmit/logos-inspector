@@ -1361,6 +1361,7 @@ fn persisted_basecamp_indexer_config(
         normalized_channel_id(configured_channel)? == channel_id,
         "Basecamp Channel Indexer configuration belongs to a different Channel"
     );
+    make_indexer_config_readable(&path)?;
     Ok(path.display().to_string())
 }
 
@@ -1382,6 +1383,7 @@ fn ensure_basecamp_indexer_config(
             validate_indexer_config_value(&value, context).context(
                 "Channel Indexer configuration is invalid; open Zone Sources and repair it before starting",
             )?;
+            make_indexer_config_readable(&path)?;
         }
         None => {
             write_indexer_config_bytes(config_root, &path, &default_indexer_config_bytes(context)?)?
@@ -3053,7 +3055,8 @@ fn ensure_valid_indexer_config(config_root: &Path, record: &ChannelIndexerRecord
     let value = parse_indexer_config_text(text)?;
     validate_indexer_config_value(&value, &context).context(
         "Channel Indexer configuration is invalid; open Zone Sources and repair it before starting",
-    )
+    )?;
+    make_indexer_config_readable(&path)
 }
 
 impl ChannelIndexerRecord {
@@ -3223,6 +3226,7 @@ fn write_indexer_config_bytes(config_root: &Path, path: &Path, bytes: &[u8]) -> 
         .as_file_mut()
         .flush()
         .context("failed to flush staged Channel Indexer configuration")?;
+    make_indexer_config_readable(staged.path())?;
     staged
         .as_file()
         .sync_all()
@@ -3232,6 +3236,21 @@ fn write_indexer_config_bytes(config_root: &Path, path: &Path, bytes: &[u8]) -> 
         .map_err(|error| error.error)
         .context("failed to atomically replace Channel Indexer configuration")?;
     sync_config_directory(parent)
+}
+
+pub(super) fn make_indexer_config_readable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).with_context(|| {
+            format!(
+                "failed to make Channel Indexer configuration readable {}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn validate_indexer_config_location(
@@ -4025,6 +4044,16 @@ mod tests {
         let default_bytes = fs::read(&path)?;
         let default_value: Value = serde_json::from_slice(&default_bytes)?;
         anyhow::ensure!(default_value.get("allow_chain_reset") == Some(&Value::Bool(false)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let mode = fs::metadata(&path)?.permissions().mode() & 0o777;
+            anyhow::ensure!(
+                mode == 0o644,
+                "managed Indexer configuration must be readable by the module host, got {mode:o}"
+            );
+        }
 
         let mut saved_value = default_value;
         saved_value
@@ -4037,6 +4066,17 @@ mod tests {
             .insert("cross_zone".to_owned(), Value::Null);
         let saved_bytes = serde_json::to_vec(&saved_value)?;
         write_indexer_config_bytes(directory.path(), &path, &saved_bytes)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let mode = fs::metadata(&path)?.permissions().mode() & 0o777;
+            anyhow::ensure!(
+                mode == 0o644,
+                "managed Indexer configuration must be readable by the module host, got {mode:o}"
+            );
+        }
 
         ensure_valid_indexer_config(directory.path(), &record)?;
         anyhow::ensure!(fs::read(&path)? == saved_bytes);
@@ -5202,6 +5242,12 @@ mod tests {
             &config_path,
             &default_indexer_config_bytes(&context)?,
         )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+        }
         let implementation = Arc::new(BasecampIndexerTestTransport::new());
         let transport: SharedModuleTransport = implementation.clone();
         let request = ChannelIndexerActionRequest {
@@ -5234,6 +5280,16 @@ mod tests {
             }),
             "Basecamp purge did not dispatch reset_storage"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let mode = fs::metadata(&config_path)?.permissions().mode() & 0o777;
+            anyhow::ensure!(
+                mode == 0o644,
+                "managed Indexer configuration must be readable by the module host, got {mode:o}"
+            );
+        }
         Ok(())
     }
 

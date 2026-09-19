@@ -1933,6 +1933,7 @@ fn prepare_indexer_start_config(
     }
     fs::write(config_path, config_text)
         .with_context(|| format!("failed to write {}", config_path.display()))?;
+    super::channel_indexer::make_indexer_config_readable(config_path)?;
     record.updated_at = now_millis();
     write_devnet_manifest(record)?;
     Ok(None)
@@ -2876,6 +2877,21 @@ mod tests {
                     == Some("1s"),
             "unexpected managed Indexer config: {config}"
         );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+            anyhow::ensure!(
+                prepare_indexer_start_config(&mut state, "default", &request)?.is_none()
+            );
+            let mode = fs::metadata(&config_path)?.permissions().mode() & 0o777;
+            anyhow::ensure!(
+                mode == 0o644,
+                "managed Indexer configuration must be readable by the module host, got {mode:o}"
+            );
+        }
 
         let indexer = state
             .testnet
